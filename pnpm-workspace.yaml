@@ -141,7 +141,7 @@ allowBuilds:
 # Bump versions HERE, not in individual package.json files. See pnpm-workspace.yaml.
 catalog:
   stockfish: 19.0.1
-  "@tanstack/ai-anthropic": 1.1.0
+  "@tanstack/ai-anthropic": 1.1.1
   chess.js: 1.4.0
   pg: ^8.23.1
   "@babel/parser": 8.1.0
@@ -155,7 +155,7 @@ catalog:
   better-auth: 1.7.18
   # Ships outside better-auth core; keep in lockstep with better-auth above.
   "@better-auth/api-key": 1.7.18
-  lucide-react: ^1.68.0
+  lucide-react: ^1.69.0
   next-themes: ^0.4.6
   # Shared Web/UI React version.
   react: ^19.3.1
@@ -171,15 +171,15 @@ catalog:
   "@types/react-dom": ^19.3.0
   tailwindcss: ^4.3.4
   typescript: ^7.0.2
-  vite: ^8.3.5
+  vite: ^8.3.6
   "@vitejs/plugin-react": ^6.2.1
   postcss: ^8.5.32
-  "@tanstack/ai": 1.1.0
-  "@tanstack/ai-openai": 1.1.0
-  "@tanstack/ai-openrouter": 1.1.0
+  "@tanstack/ai": 1.2.0
+  "@tanstack/ai-openai": 1.1.1
+  "@tanstack/ai-openrouter": 1.1.1
   "@tanstack/react-form": ^1.33.5
-  "@tanstack/react-query": ^5.106.0
-  "@tanstack/react-query-devtools": ^5.106.0
+  "@tanstack/react-query": ^5.106.1
+  "@tanstack/react-query-devtools": ^5.106.1
   "@tanstack/react-router": ^1.170.46
   "@tanstack/react-router-devtools": ^1.167.2
   "@tanstack/react-router-ssr-query": ^1.167.3
@@ -194,8 +194,8 @@ catalog:
   ioredis: ^6.0.0
   tsdown: ^0.23.5
   "@aws-sdk/client-s3": ^3.1162.0
-  i18next: ^26.7.1
-  react-i18next: ^17.1.12
+  i18next: ^26.7.2
+  react-i18next: ^17.1.13
   i18next-browser-languagedetector: ^8.3.0
   openai: ^7.51.0
   "@anthropic-ai/sdk": ^1.5.0
