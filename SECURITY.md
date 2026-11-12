@@ -4,7 +4,7 @@
 
 Please report security vulnerabilities **privately** through GitHub private vulnerability reporting:
 
-<https://github.com/FlyCockpit/cockpit-chess/security/advisories/new>
+<https://github.com/FlyCockpit/chess/security/advisories/new>
 
 Do not open public issues, discussions or pull requests for security problems. We aim to acknowledge reports within 72 hours.
 

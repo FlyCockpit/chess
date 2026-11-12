@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://shieldcn.dev/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
-  <a href="https://github.com/FlyCockpit/cockpit-chess/releases"><img src="https://shieldcn.dev/github/FlyCockpit/cockpit-chess/release.svg" alt="GitHub release"></a>
+  <a href="https://github.com/FlyCockpit/chess/releases"><img src="https://shieldcn.dev/github/FlyCockpit/chess/release.svg" alt="GitHub release"></a>
   <a href="https://nodejs.org"><img src="https://shieldcn.dev/badge/Node.js-26.13.1%2B-339933.svg?logo=nodedotjs" alt="Node.js 26.13.1+"></a>
   <a href="https://github.com/FlyCockpit"><img src="https://shieldcn.dev/badge/part%20of-FlyCockpit-0ea5e9.svg" alt="Part of FlyCockpit"></a>
 </p>
@@ -181,7 +181,7 @@ local experiments; they do not count toward official model standings.
 
 ### Local browser companion
 
-Once the first release is published, download the `cockpit-chess` binary for your platform from [GitHub Releases](https://github.com/FlyCockpit/cockpit-chess/releases) (each release lists SHA256SUMS) and run:
+Once the first release is published, download the `cockpit-chess` binary for your platform from [GitHub Releases](https://github.com/FlyCockpit/chess/releases) (each release lists SHA256SUMS) and run:
 
 ```sh
 cockpit-chess serve

@@ -18,7 +18,7 @@ Stockfish is distributed as a subprocess engine in the container images and comp
 
 The [README](./README.md) covers requirements and local setup: Node.js and pnpm versions, PostgreSQL 18 and Valkey 9, the container quick start, and host development with `pnpm dev`. `pnpm doctor` diagnoses common local setup problems.
 
-Releases distribute server and worker container images through GHCR, and Bun-compiled companion CLI binaries through [GitHub Releases](https://github.com/FlyCockpit/cockpit-chess/releases).
+Releases distribute server and worker container images through GHCR, and Bun-compiled companion CLI binaries through [GitHub Releases](https://github.com/FlyCockpit/chess/releases).
 
 ## Database changes
 

@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. Do not report security problems here; use [private vulnerability reporting](https://github.com/FlyCockpit/cockpit-chess/security/advisories/new).
+        Thanks for reporting a bug. Do not report security problems here; use [private vulnerability reporting](https://github.com/FlyCockpit/chess/security/advisories/new).
         Never paste API keys, tokens, secrets or other personal data into an issue.
   - type: textarea
     id: summary
