@@ -1,0 +1,25 @@
+{
+  "skipToContent": "Saltar al contenido",
+  "items": {
+    "home": "Inicio",
+    "dashboard": "Panel de control",
+    "settings": "Configuración",
+    "admin": "Administración"
+  },
+  "languageLabel": "Idioma",
+  "mainNav": {
+    "ariaLabel": "Navegación principal"
+  },
+  "themeToggle": {
+    "label": "Cambiar tema",
+    "light": "Claro",
+    "dark": "Oscuro",
+    "system": "Sistema"
+  },
+  "userMenu": {
+    "myAccount": "Mi cuenta",
+    "signIn": "Iniciar sesión",
+    "signOut": "Cerrar sesión",
+    "signUp": "Registrarse"
+  }
+}

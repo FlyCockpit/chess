@@ -1,0 +1,12 @@
+{
+  "subject": "Planned data deletion completed",
+  "body": "Cockpit Chess removed data it no longer uses after the scheduled waiting period. No action is required.",
+  "what": "What was deleted",
+  "fallbackEffects": "Data listed in the database change’s contract.sql",
+  "when": "When (UTC)",
+  "migration": "Database change",
+  "notes": "Notes",
+  "backup": "Backup taken before deletion",
+  "recovery": "If you need this data back, ask your maintainer to recover only the required records from the plain-dump backup. The restore command replaces the entire database and would undo later changes; preview it first and use the recovery instructions in docs/schema-migrations.md.",
+  "noBackup": "No backup was configured before this deletion. Ask your maintainer about other recovery options and setting up backups."
+}

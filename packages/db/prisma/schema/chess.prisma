@@ -1,0 +1,42 @@
+/// A complete replay archive. Public readers always filter published=true.
+model ChessMatch {
+  id              String    @id @default(cuid(2))
+  slug            String    @unique
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+  ownerId         String
+  Owner           User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  title           String
+  whiteName       String
+  blackName       String
+  status          String    @default("draft")
+  published       Boolean   @default(false)
+  official        Boolean   @default(false)
+  source          String    @default("hosted")
+  rulesKey        String
+  contextMode     String
+  identityMode    String
+  runToken        String?
+  heartbeatAt     DateTime?
+  archive         Json
+  /// Leaderboard stats, derived once from the archive on its terminal write
+  /// (apps/worker persist, chess.importGame). Null until the match finishes;
+  /// readers skip rows without them instead of re-parsing archives.
+  result          String?
+  whiteModel      String?
+  whiteProtocol   String?
+  blackModel      String?
+  blackProtocol   String?
+  whiteIllegal    Int?
+  blackIllegal    Int?
+  /// Usage-based cost in micros (integer minor units). Null = unknown cost.
+  whiteCostMicros BigInt?
+  blackCostMicros BigInt?
+  /// The ruleset's move format ("strict" | "lenient"), denormalized for leaderboard labels.
+  moveFormat      String?
+
+  @@index([published, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([ownerId, createdAt(sort: Desc)])
+  @@index([status, heartbeatAt])
+  @@map("chess_match")
+}

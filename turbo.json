@@ -1,0 +1,100 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "agentGuidance": false,
+  "ui": "tui",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "env": ["BUILD_VERSION", "RENDER_GIT_COMMIT", "VITE_*"],
+      // `.env*` is package-relative (apps/web/.env…). `$TURBO_ROOT$/.env` is the
+      // repo-root file, which apps/web/vite.config.ts hydrates into the Vite
+      // process — and Vite's loadEnv merges prefix-matching process.env keys, so a
+      // VITE_* key there changes the emitted client bundle. Without it Turbo would
+      // replay a stale dist.
+      //
+      // Scoped to `build` rather than declared in `globalDependencies`: a global
+      // entry puts the file's content hash in the cache key of EVERY task, so
+      // rotating a local SMTP password would invalidate lint, test, and
+      // check-types too. Only the build output can depend on this file.
+      // `RENDER_GIT_COMMIT` is Render's injected git SHA, the version fallback
+      // in apps/web/vite.config.ts when BUILD_VERSION is unset. `VITE_*` covers
+      // the process-env keys that config reads (VITE_DEV_PORT,
+      // VITE_DEV_SERVER_URL, VITE_DEV_HOST) and inlines into the client bundle.
+      "inputs": ["$TURBO_DEFAULT$", ".env*", "$TURBO_ROOT$/.env"],
+      "outputs": ["dist/**"]
+    },
+    "lint": {
+      "dependsOn": ["^lint"]
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "src/**/*.ts",
+        "src/**/*.tsx",
+        "src/**/*.json",
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx",
+        "prisma/schema/**/*.prisma",
+        "prisma/migrations/**",
+        "prisma/fixtures/**",
+        "vitest.config.*",
+        "vite.config.*",
+        "$TURBO_ROOT$/vitest.config.ts",
+        "$TURBO_ROOT$/scripts/test-io-guard.ts",
+        "$TURBO_ROOT$/scripts/vitest-test-io-guard-fixture.config.ts"
+      ]
+    },
+    "check-types": {
+      "dependsOn": ["^check-types"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true,
+      "passThroughEnv": [
+        "DATABASE_URL",
+        "DATABASE_POOL_MAX",
+        "COCKPIT_CHESS_INSTANCE_ID",
+        "BACKUP_*",
+        "REDIS_URL",
+        "NODE_ENV",
+        "PORT",
+        "HOST",
+        "SERVER_PORT",
+        "WORKER_MODE",
+        "PORTLESS_*",
+        "BETTER_AUTH_*",
+        "CORS_ORIGIN",
+        "SSO_*",
+        "FORCE_SSO",
+        "SIGNUP_ENABLED",
+        "TRUST_PROXY_HOPS",
+        "OPENROUTER_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "CHESS_HOSTED_ENABLED",
+        "TRANSLATION_*",
+        "RATE_LIMIT_*",
+        "SMTP_*",
+        "PUBLIC_APP_URL",
+        "ADMIN_EMAILS",
+        "VITE_*"
+      ]
+    },
+    "db:generate": {
+      "cache": false
+    },
+    "db:validate": {
+      "inputs": [
+        "prisma/schema/**/*.prisma",
+        "prisma/migrations/**",
+        "prisma/fixtures/**",
+        "prisma.config.ts"
+      ]
+    },
+    "db:studio": {
+      "cache": false,
+      "persistent": true,
+      "passThroughEnv": ["DATABASE_URL", "ALLOW_NONLOCAL_DB_STUDIO", "ASSERT_LOCAL_DB_ESCAPE"]
+    }
+  }
+}

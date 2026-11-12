@@ -1,0 +1,3 @@
+{
+  "extends": "@cockpit-chess/config/tsconfig.base.json"
+}

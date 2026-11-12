@@ -1,0 +1,29 @@
+{
+  "name": "@cockpit-chess/chess",
+  "version": "1.0.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./runner": "./src/runner.ts",
+    "./local-contract": "./src/local-contract.ts"
+  },
+  "scripts": {
+    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cockpit-chess/agent-runtime": "workspace:*",
+    "chess.js": "catalog:",
+    "zod": "catalog:",
+    "js-tiktoken": "1.0.21",
+    "stockfish": "catalog:"
+  },
+  "devDependencies": {
+    "@cockpit-chess/config": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

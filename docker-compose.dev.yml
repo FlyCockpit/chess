@@ -1,0 +1,77 @@
+# Local development services — Postgres + Valkey (Redis-compatible) + a mailpit mail sink
+# Credentials match .env.example defaults so no extra config is needed.
+#
+# Usage:
+#   pnpm dev:services          # start in background
+#   docker compose -f docker-compose.dev.yml down   # stop
+#   docker compose -f docker-compose.dev.yml down -v # stop + delete data
+
+name: cockpit-chess-dev
+
+services:
+  postgres:
+    image: postgres:18
+    container_name: cockpit-chess-dev-postgres
+    environment:
+      POSTGRES_DB: cockpit_chess
+      POSTGRES_USER: postgres
+      # DEV ONLY — do not use this password in production.
+      POSTGRES_PASSWORD: password
+    ports:
+      # Bind to loopback only. A bare "5432:5432" binds 0.0.0.0 and, because
+      # Docker writes its own iptables rules ahead of ufw/firewalld, would
+      # expose Postgres to the public internet on a VPS — with the dev password
+      # below — even behind a closed host firewall. localhost dev is unaffected.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # Postgres 18+ images keep PGDATA at /var/lib/postgresql/<major>/docker and
+      # declare the VOLUME at /var/lib/postgresql, so mount the parent (this also
+      # lets a future `pg_upgrade --link` see both majors side by side). Old dev
+      # volumes are incompatible; v18 initialises a fresh cluster under 18/docker.
+      - cockpit_chess_dev_postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Valkey — the BSD-licensed, protocol-compatible Redis fork. The service
+  # name, REDIS_URL and redis:// URLs stay as-is; BullMQ/ioredis speak RESP.
+  redis:
+    image: valkey/valkey:9.1-alpine
+    container_name: cockpit-chess-dev-redis
+    ports:
+      # Loopback only — see the postgres note above. Valkey has no auth here, so
+      # a 0.0.0.0 binding on a VPS is an open, unauthenticated data store.
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - cockpit_chess_dev_redis:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Local mail sink — captures every outgoing email (signup verification,
+  # password reset, 2FA codes) so the real flows work offline with zero
+  # credentials. `pnpm run setup` points .env at it (SMTP_HOST=localhost,
+  # SMTP_PORT=1025); read captured mail at http://localhost:8025. Set real
+  # SMTP_* values in .env to send through a provider instead — the app
+  # switches over with no other change.
+  mailpit:
+    image: axllent/mailpit:v1.33
+    container_name: cockpit-chess-dev-mailpit
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    ports:
+      # Loopback only — see the postgres note above.
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+    restart: unless-stopped
+
+volumes:
+  cockpit_chess_dev_postgres:
+  cockpit_chess_dev_redis:

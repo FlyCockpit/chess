@@ -1,0 +1,61 @@
+.git
+# Minimal build identity; no objects, config or remotes enter the context.
+!.git/HEAD
+!.git/packed-refs
+!.git/refs/heads
+!.git/refs/heads/**
+.gitignore
+.env
+.env.*
+**/.env
+**/.env.*
+*.md
+.vscode
+.idea
+.claude
+.playwright-cli
+
+# Dependency stores
+node_modules
+**/node_modules
+.pnpm-store
+.pnpm-store*
+
+# Companion CLI — not part of the container images; keeping it out of the build
+# context stops CLI-only changes from busting Docker layer caches.
+apps/cli
+
+# Build outputs and generated artifacts
+dist
+**/dist
+**/dist-local
+build
+**/build
+coverage
+**/coverage
+packages/db/prisma/generated
+
+# Local database dumps
+backups
+**/backups
+
+# Local framework/tool caches
+.turbo
+**/.turbo
+.cache
+**/.cache
+.vite
+**/.vite
+.next
+**/.next
+.astro
+**/.astro
+apps/web/.tanstack
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Per-agent state can contain generated disposable credentials.
+.docker-volumes
+**/.docker-volumes
+notes
+**/notes

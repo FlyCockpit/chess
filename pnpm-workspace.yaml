@@ -1,0 +1,209 @@
+packages:
+  - apps/*
+  - packages/*
+minimumReleaseAge: 10080
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+# Explicit current-libc selection makes pnpm retain complete platform metadata,
+# including publication dates used by the minimum release-age gate.
+supportedArchitectures:
+  libc: [ current ]
+# Excludes for packages that fail the 7-day minimum-age check on re-resolution.
+# All previous entries (devalue, react-doctor, oxlint + bindings, i18next) were
+# audited on 2026-05-27, and the brace-expansion carve-out for GHSA-mh99-v99m-4gvg
+# aged out on 2026-07-30. Later security-fix exclusions have also cleared the
+# seven-day gate. Add only exact, reviewed versions if a new fix is too young.
+# Security-fix carve-outs only — see pnpm-workspace.yaml.
+# Each entry MUST carry a `drop-after: YYYY-MM-DD` marker in its comment. That
+# date is enforced by `pnpm deps:check-excludes` (CI lint job) — once it passes,
+# the build fails until the entry is deleted. Without it a carve-out taken for a
+# one-week security window quietly becomes a permanent exemption from the gate.
+# Restore as a block sequence, never flow style — the checker only parses blocks:
+#   minimumReleaseAgeExclude:
+#     # drop-after: YYYY-MM-DD
+#     - <pkg>@<version>
+minimumReleaseAgeExclude:
+  # GHSA-fvxx-76fc-893x (revoked sessions still accepted with cookieCache) and
+  # GHSA-9hm7-xhfp-cx58 (genericOAuth trusts unverified email): better-auth
+  # 1.7.18 (released 2026-11-05) is the newest fixed release and is <7 days old.
+  # Every @better-auth/* package moves in lockstep (one @better-auth/core), so
+  # each 1.7.18 package is carved out exactly. Owner-approved 2026-11-09.
+  # drop-after: 2026-11-12
+  - better-auth@1.7.18
+  - "@better-auth/core@1.7.18" # drop-after: 2026-11-12
+  - "@better-auth/telemetry@1.7.18" # drop-after: 2026-11-12
+  - "@better-auth/kysely-adapter@1.7.18" # drop-after: 2026-11-12
+  - "@better-auth/prisma-adapter@1.7.18" # drop-after: 2026-11-12
+  - "@better-auth/drizzle-adapter@1.7.18" # drop-after: 2026-11-12
+  - "@better-auth/memory-adapter@1.7.18" # drop-after: 2026-11-12
+  - "@better-auth/mongo-adapter@1.7.18" # drop-after: 2026-11-12
+  - "@better-auth/api-key@1.7.18" # drop-after: 2026-11-12
+# Each selector lifts a transitive out of its vulnerable range. All target
+# versions pass the 7-day minimumReleaseAge gate; selectors are scoped tight so
+# unrelated majors are untouched.
+overrides:
+  systeminformation@<5.33.16: 5.33.16 # GHSA-3f7j-7jwc-fxfj (command injection)
+  hono@<4.12.25: ">=4.12.25" # CVE-2026-54290 (CORS credential origin reflection)
+  picomatch@>=4 <4.0.4: ">=4.0.4" # CVE-2026-33671 (ReDoS via extglob)
+  defu@<6.1.5: ">=6.1.5" # CVE-2026-35209 (prototype pollution)
+  # GHSA-4c8g-83qw-93j6 (>=3.1.3), GHSA-v2hh-gcrm-f6hx (>=3.1.4),
+  # GHSA-7p8r-x3mc-p8w7 (>=3.1.5), and the 2026-10-23 batch (>=3.1.9:
+  # GHSA-w74x-v6f9-j3xg, GHSA-wjr9-j795-jxcr, GHSA-xhq7-xmqj-769h,
+  # GHSA-333x-w4r6-6crp) superseded the earlier CVE pins. Scoped to the v3 line only
+  # (v2 and v4 were never in the vulnerable range and v4 is a breaking major).
+  # Reached via ajv (prisma, react-doctor>conf).
+  fast-uri@>=3 <3.1.9: ">=3.1.9 <4"
+  undici@>=7 <7.30.1: ">=7.30.1 <8" # GHSA-rfgv-xxqx-mfg5 / GHSA-w293-vg96-wgc3 / GHSA-xjj6-f33q-929c (DoS / TLS bypass)
+  ip-address@>=10 <10.3.1: ">=10.3.1 <11" # GHSA-mwp4-54f8-5fhr (SSRF)
+  # GHSA-52cp-r559-cp3m (prototype pollution) and GHSA-5p4m-2wfm-xmqj
+  # (quadratic CPU) in the schema loader. Scoped to the v4 line; v3 and v5 consumers are untouched. Reached via
+  # @tanstack/start-plugin-core>xmlbuilder2.
+  js-yaml@>=4 <4.3.2: ">=4.3.2 <5"
+  # GHSA-r28c-9q8g-f849 — patched in 8.5.18. Most flagged paths are transitive
+  # (vite and vitest) and a catalog bump would not re-resolve
+  # them; this override does. The catalog's own ^8.5.16 was separately re-resolved
+  # to 8.5.19 in the lockfile (overrides do not apply to `catalog:` specifiers).
+  postcss@<8.5.18: ">=8.5.18"
+  # brace-expansion DoS: GHSA-3jxr-9vmj-r5cp + GHSA-mh99-v99m-4gvg, both only
+  # patched on the v5 line (>=5.0.9); later recursion fixes raise the floor
+  # to 5.0.11. Scoped to
+  # >=3 so no v2 consumer is force-upgraded: brace-expansion v5's CJS build
+  # exports { expand } instead of a callable default, which a v2 consumer cannot
+  # call. Reached via react-doctor>eslint.
+  #
+  # As of the `filelist>minimatch` override below there is no minimatch v5 left
+  # in the tree, so this scoping currently protects nobody — it is kept because
+  # dropping it would force any FUTURE v2 consumer a dependency bump drags in
+  # onto an incompatible v5, and a range is cheaper than rediscovering that.
+  brace-expansion@>=3 <5.0.11: ">=5.0.11 <6" # GHSA-qhr7-859c-m2p7 / GHSA-6j4f-fj2g-mc7p (recursion DoS)
+  # The last v2 consumer of brace-expansion was
+  # vite-plugin-pwa>workbox-build>...>ejs>jake>filelist>minimatch@5, and the v2
+  # line has no fix for GHSA-mh99-v99m-4gvg (2.1.2 is its final release, still in
+  # the advisory's <=5.0.7 range). filelist only calls `minimatch.match`, which
+  # minimatch 11 still exports from its CommonJS build, so lifting that one
+  # consumer to v11 removes the vulnerable v2 copy instead of suppressing it.
+  # v11 (not v10) also clears GHSA-g3hv-75wg-m249.
+  "filelist>minimatch": ^11.0.4
+  # CVE-2026-44635 (JSON-path injection) is patched in 0.28.17. Pinned EXACT
+  # to the newest mature compatible release to keep a single kysely in the tree:
+  # better-auth peers `kysely ^0.28.17 || ^0.29.0`, and two copies of @better-auth/core split
+  # its types so a plugin stops being assignable to BetterAuthPlugin.
+  # kysely is only used transitively via better-auth here.
+  kysely: 0.29.6
+  path-to-regexp@>=8 <8.4.0: ">=8.4.0" # CVE-2026-4926 (ReDoS)
+  body-parser@>=2 <2.4.0: ">=2.4.0 <3" # GHSA-27r3-jxmh-p828 (DoS) — via express in @modelcontextprotocol/sdk (shadcn)
+  # GHSA-mrhx-c7xc-m3w5 (memory exhaustion). Scoped to the v4 line: zod 3 has no
+  # fixed release and its consumers cannot take v4.
+  zod@>=4 <4.6.6: ">=4.6.6 <5"
+  # workbox-build transitives — vite-plugin-pwa 2.x → workbox-build 7.4.1 is
+  # the latest upstream release and still pulls in vulnerable versions. Drop
+  # these overrides if workbox-build patches the chain.
+  serialize-javascript@<7.1.3: ">=7.1.3" # GHSA-5c6j-r48x-rmvq (RCE via RegExp.flags) / GHSA-m5mm-p8h7-m29v (XSS via </script>)
+  lodash@<4.18.0: ">=4.18.0" # GHSA-r5fr-rjxr-66jc (code injection via _.template)
+  "@babel/plugin-transform-modules-systemjs@<7.29.4": ">=7.29.4 <8" # GHSA-fv7c-fp4j-7gwp (preserve Babel 7 consumers)
+  "sharp-ico>sharp": ^0.35.5 # GHSA-wq5f-xc86-pv6w (librsvg) — vite-pwa icon generator chain
+  proxy-addr@>=1.1 <2.0.8: ">=2.0.8 <3" # GHSA-jqcg-44mw-7w3h (IP spoofing)
+  shell-quote@>=1.8.4 <1.11.0: ">=1.11.0 <2" # GHSA-pqg4-j6r4-53mv (command injection)
+  # Floor, not a pin: an exact pin also caught router-core's ^1.6.7 and split it
+  # from its seroval-plugins (core and plugins must share a minor or SSR fails).
+  seroval@>=1 <1.6.11: ">=1.6.11" # GHSA-f86p-h4j2-7qgj / GHSA-9wx9-5pv9-3349 (serialization injection)
+  source-map-js@>=1 <1.2.2: ">=1.2.2 <2" # GHSA-68fv-2mgg-jv7q / CVE-2026-93749 (DoS)
+  compression@>=1 <1.8.2: ">=1.8.2 <2" # GHSA-vc2v-76pw-4v95 (memory exhaustion)
+  "@modelcontextprotocol/sdk@>=1.12 <1.31.0": ">=1.31.0 <2" # GHSA-6qxp-vccf-f47h (OAuth disclosure)
+  nanoid@>=3 <3.3.18: ">=3.3.18 <4" # GHSA-2v37-7h3g-55p8 (DoS)
+  deepmerge-ts@>=7 <8: ">=8.0.0 <9" # GHSA-ggr8-5vv4-36mx (stack exhaustion)
+  mysql2@<3.22.0: ">=3.22.0" # GHSA-3f6p-5ww8-9rcr (auth plugin downgrade)
+  "@xmldom/xmldom@<0.9.12": ">=0.9.12" # GHSA-2883-xcg3-v3hh (entity expansion DoS)
+blockExoticSubdeps: true
+dangerouslyAllowAllBuilds: false
+savePrefix: ""
+# Moved here from the package.json "pnpm" field, which pnpm 11 no longer reads.
+peerDependencyRules:
+  allowedVersions:
+    vite: "*"
+allowBuilds:
+  # Its postinstall is `node scripts/check-types.js || true` — a best-effort
+  # diagnostic that always exits 0 and produces nothing the runtime needs. Denied
+  # rather than allowed: skipping it costs nothing and keeps a third-party install
+  # script from running. Listed explicitly (not omitted) because an *undecided*
+  # package is what makes pnpm fail every `pnpm <script>` with ERR_PNPM_IGNORED_BUILDS.
+  '@openrouter/sdk': false
+  # tree-sitter-bash ships prebuilt tree-sitter-bash.wasm; the native binding is not needed.
+  tree-sitter-bash: false
+  '@prisma/engines': true
+  esbuild: true
+  lefthook: true
+  msgpackr-extract: true
+  msw: true
+  prisma: true
+  sharp: true
+# Catalog: single-version deps shared across workspace packages.
+# Bump versions HERE, not in individual package.json files. See pnpm-workspace.yaml.
+catalog:
+  stockfish: 19.0.1
+  "@tanstack/ai-anthropic": 1.1.0
+  chess.js: 1.4.0
+  pg: ^8.23.1
+  "@babel/parser": 8.1.0
+  dotenv: ^18.0.9
+  zod: ^4.6.7
+  "@types/node": ^26.6.6
+  hono: ^4.13.16
+  "@orpc/server": ^1.16.1
+  "@orpc/openapi": ^1.16.1
+  "@orpc/zod": ^1.16.1
+  better-auth: 1.7.18
+  # Ships outside better-auth core; keep in lockstep with better-auth above.
+  "@better-auth/api-key": 1.7.18
+  lucide-react: ^1.68.0
+  next-themes: ^0.4.6
+  # Shared Web/UI React version.
+  react: ^19.3.1
+  react-dom: ^19.3.1
+  sileo: ^0.1.6
+  "@prisma/client": ^7.10.1
+  # Keep the Prisma CLI in lockstep with @prisma/client above — they must match.
+  # Consumed by packages/db at runtime via `catalog:`.
+  prisma: ^7.10.1
+  "@orpc/client": ^1.16.1
+  "@orpc/tanstack-query": ^1.16.1
+  "@types/react": ^19.3.0
+  "@types/react-dom": ^19.3.0
+  tailwindcss: ^4.3.4
+  typescript: ^7.0.2
+  vite: ^8.3.5
+  "@vitejs/plugin-react": ^6.2.1
+  postcss: ^8.5.32
+  "@tanstack/ai": 1.1.0
+  "@tanstack/ai-openai": 1.1.0
+  "@tanstack/ai-openrouter": 1.1.0
+  "@tanstack/react-form": ^1.33.5
+  "@tanstack/react-query": ^5.106.0
+  "@tanstack/react-query-devtools": ^5.106.0
+  "@tanstack/react-router": ^1.170.46
+  "@tanstack/react-router-devtools": ^1.167.2
+  "@tanstack/react-router-ssr-query": ^1.167.3
+  "@tanstack/react-start": ^1.169.4
+  tsx: ^4.23.15
+  vitest: ^5.1.0
+  vitest-mock-extended: ^5.1.1
+  rate-limiter-flexible: ^11.2.4
+  nodemailer: ^10.3.1 # GHSA-v53p-9fqp-m79j / GHSA-prgh-xp8r-p3m5 (address parser DoS)
+  "@types/nodemailer": ^8.0.2
+  bullmq: ^6.7.0
+  ioredis: ^6.0.0
+  tsdown: ^0.23.5
+  "@aws-sdk/client-s3": ^3.1162.0
+  i18next: ^26.7.1
+  react-i18next: ^17.1.12
+  i18next-browser-languagedetector: ^8.3.0
+  openai: ^7.51.0
+  "@anthropic-ai/sdk": ^1.5.0
+  # Keep the SDK version supported by @tanstack/ai-openrouter; SDK 1's HTTPClient
+  # is incompatible with the adapter's SDK 0.13.20. Direct dep so the runtime
+  # can inject Anthropic prompt-cache
+  # breakpoints via the SDK's HTTPClient beforeRequest hook. See adapters.ts.
+  "@openrouter/sdk": 0.13.20
+  "qrcode.react": ^4.2.0
+  "@fontsource-variable/roboto": ^5.3.0
+  "tailwind-merge": ^3.7.0

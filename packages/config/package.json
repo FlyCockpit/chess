@@ -1,0 +1,30 @@
+{
+  "name": "@cockpit-chess/config",
+  "license": "AGPL-3.0-only",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tsconfig.base.json": "./tsconfig.base.json",
+    "./biome.json": "./biome.json",
+    "./postcss.config.mjs": "./postcss.config.mjs",
+    "./cli": {
+      "default": "./src/cli.ts"
+    },
+    "./locales": {
+      "default": "./src/locales.ts"
+    },
+    "./orpc-batch": {
+      "default": "./src/orpc-batch.ts"
+    },
+    "./theme-init": {
+      "default": "./src/theme-init.ts"
+    }
+  },
+  "files": [
+    "tsconfig.base.json",
+    "biome.json",
+    "postcss.config.mjs",
+    "src"
+  ]
+}

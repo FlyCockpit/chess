@@ -1,0 +1,14 @@
+{
+  "extends": "@cockpit-chess/config/tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "node"],
+    "rootDirs": ["."],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@locales/*": ["../../packages/locales/src/*"],
+      "@cockpit-chess/ui/*": ["../../packages/ui/src/*"]
+    }
+  }
+}

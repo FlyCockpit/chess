@@ -1,0 +1,26 @@
+{
+  "name": "@cockpit-chess/test-utils",
+  "license": "AGPL-3.0-only",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@cockpit-chess/api": "workspace:*",
+    "@cockpit-chess/auth": "workspace:*",
+    "@cockpit-chess/db": "workspace:*",
+    "vitest": "catalog:",
+    "vitest-mock-extended": "catalog:"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cockpit-chess/config": "workspace:*",
+    "typescript": "catalog:"
+  }
+}

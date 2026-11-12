@@ -1,0 +1,38 @@
+# Post-merge CI for the companion CLI (`apps/cli`): compiles the standalone
+# binaries and smoke-tests each on its real OS via cli-build.yml on pushes to
+# the default branch. Pull requests get the same build from pr-checks.yml
+# (`cli-build`, required by `PR validation` when the PR touches the CLI), so
+# this workflow has no pull_request trigger. Type checks, lint, and unit tests
+# run with the rest of the workspace in pr-checks.yml.
+name: CLI CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/cli/**"
+      - "apps/web/**"
+      - "packages/chess/**"
+      - "packages/locales/**"
+      - "packages/ui/**"
+      - "packages/config/src/cli.ts"
+      - "packages/api/src/routers/cli.ts"
+      - ".github/workflows/cli-ci.yml"
+      - ".github/workflows/cli-build.yml"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+  workflow_dispatch:
+
+# Least-privilege by default.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: cli-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and smoke test
+    uses: ./.github/workflows/cli-build.yml

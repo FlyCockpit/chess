@@ -1,0 +1,27 @@
+{
+  "name": "@cockpit-chess/mailer",
+  "license": "AGPL-3.0-only",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests"
+  },
+  "dependencies": {
+    "@cockpit-chess/env": "workspace:*",
+    "nodemailer": "catalog:"
+  },
+  "devDependencies": {
+    "@cockpit-chess/config": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/nodemailer": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

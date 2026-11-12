@@ -1,0 +1,39 @@
+{
+  "name": "@cockpit-chess/db",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    },
+    "./instance-heartbeat": {
+      "default": "./src/instance-heartbeat.ts"
+    },
+    "./data-deletion-notices": {
+      "default": "./src/data-deletion-notices.ts"
+    }
+  },
+  "scripts": {
+    "db:generate": "prisma generate",
+    "db:validate": "prisma validate && prisma format && prisma format --check",
+    "check-types": "tsc --noEmit",
+    "postinstall": "prisma generate",
+    "db:studio": "bash ../../scripts/assert-local-database.sh db:studio && prisma studio",
+    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.10.1",
+    "@prisma/client": "catalog:",
+    "@cockpit-chess/env": "workspace:*",
+    "dotenv": "catalog:",
+    "pg": "catalog:",
+    "zod": "catalog:",
+    "prisma": "catalog:"
+  },
+  "devDependencies": {
+    "@cockpit-chess/config": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

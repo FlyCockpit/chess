@@ -1,0 +1,70 @@
+{
+  "name": "@cockpit-chess/api",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    },
+    "./context": {
+      "default": "./src/context.ts"
+    },
+    "./routers/index": {
+      "default": "./src/routers/index.ts"
+    },
+    "./routers/cli": {
+      "default": "./src/routers/cli.ts"
+    },
+    "./lib/slug": {
+      "default": "./src/lib/slug.ts"
+    },
+    "./lib/chess-stats": {
+      "default": "./src/lib/chess-stats.ts"
+    },
+    "./lib/backup-freshness": {
+      "default": "./src/lib/backup-freshness.ts"
+    },
+    "./lib/auth-token-retention": {
+      "default": "./src/lib/auth-token-retention.ts"
+    },
+    "./lib/two-factor-policy": {
+      "default": "./src/lib/two-factor-policy.ts"
+    },
+    "./lib/rate-limit-families": {
+      "default": "./src/lib/rate-limit-families.ts"
+    },
+    "./lib/cli-install-token": {
+      "default": "./src/lib/cli-install-token.ts"
+    },
+    "./lib/cli-release": {
+      "default": "./src/lib/cli-release.ts"
+    }
+  },
+  "scripts": {
+    "check-types": "tsc -p tsconfig.check-types.json --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests"
+  },
+  "dependencies": {
+    "@orpc/client": "catalog:",
+    "@orpc/openapi": "catalog:",
+    "@orpc/server": "catalog:",
+    "@orpc/zod": "catalog:",
+    "@aws-sdk/client-s3": "catalog:",
+    "@cockpit-chess/auth": "workspace:*",
+    "@cockpit-chess/config": "workspace:*",
+    "@cockpit-chess/db": "workspace:*",
+    "@cockpit-chess/env": "workspace:*",
+    "@cockpit-chess/mailer": "workspace:*",
+    "@cockpit-chess/queue": "workspace:*",
+    "rate-limiter-flexible": "catalog:",
+    "zod": "catalog:",
+    "@cockpit-chess/chess": "workspace:*"
+  },
+  "devDependencies": {
+    "hono": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "vitest-mock-extended": "catalog:"
+  }
+}

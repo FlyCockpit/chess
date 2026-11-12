@@ -1,0 +1,33 @@
+{
+  "name": "@cockpit-chess/cli",
+  "license": "AGPL-3.0-only",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "cockpit-chess": "./src/main.ts"
+  },
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests",
+    "compile": "bun scripts/compile.ts"
+  },
+  "dependencies": {
+    "@orpc/client": "catalog:",
+    "@cockpit-chess/config": "workspace:*",
+    "commander": "^15.0.0",
+    "@cockpit-chess/chess": "workspace:*",
+    "@orpc/server": "catalog:",
+    "zod": "catalog:",
+    "i18next": "catalog:",
+    "@cockpit-chess/locales": "workspace:*"
+  },
+  "devDependencies": {
+    "@cockpit-chess/api": "workspace:*",
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

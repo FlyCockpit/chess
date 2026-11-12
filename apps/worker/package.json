@@ -1,0 +1,38 @@
+{
+  "name": "worker",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    "./runtime": "./src/runtime.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests",
+    "check-types": "tsc --noEmit",
+    "build": "tsdown",
+    "start": "node dist/index.mjs"
+  },
+  "dependencies": {
+    "@cockpit-chess/api": "workspace:*",
+    "@cockpit-chess/auth": "workspace:*",
+    "@cockpit-chess/db": "workspace:*",
+    "@cockpit-chess/env": "workspace:*",
+    "@cockpit-chess/mailer": "workspace:*",
+    "@cockpit-chess/queue": "workspace:*",
+    "bullmq": "catalog:",
+    "ioredis": "catalog:",
+    "@cockpit-chess/chess": "workspace:*",
+    "stockfish": "catalog:"
+  },
+  "devDependencies": {
+    "@cockpit-chess/config": "workspace:*",
+    "@types/node": "catalog:",
+    "tsdown": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "vitest-mock-extended": "catalog:"
+  }
+}

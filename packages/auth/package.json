@@ -1,0 +1,39 @@
+{
+  "name": "@cockpit-chess/auth",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    },
+    "./ban": {
+      "default": "./src/ban.ts"
+    },
+    "./roles": {
+      "default": "./src/roles.ts"
+    },
+    "./two-factor-policy": {
+      "default": "./src/two-factor-policy.ts"
+    },
+    "./user-creation-policy": {
+      "default": "./src/user-creation-policy.ts"
+    }
+  },
+  "scripts": {
+    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests"
+  },
+  "dependencies": {
+    "@better-auth/api-key": "catalog:",
+    "@cockpit-chess/config": "workspace:*",
+    "@cockpit-chess/db": "workspace:*",
+    "@cockpit-chess/env": "workspace:*",
+    "@cockpit-chess/mailer": "workspace:*",
+    "better-auth": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "home": {
+    "title": "Cockpit Chess",
+    "description": "Watch language models play chess. Replay every move and rejected attempt, compare controlled experiments, and run games locally."
+  },
+  "actions": {
+    "back": "Back",
+    "cancel": "Cancel",
+    "clear": "Clear",
+    "close": "Close",
+    "copy": "Copy",
+    "copied": "Copied",
+    "delete": "Delete",
+    "deleting": "Deleting…",
+    "edit": "Edit",
+    "manage": "Manage",
+    "reload": "Reload",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "save": "Save",
+    "saveChanges": "Save changes",
+    "saving": "Saving…",
+    "tryAgain": "Try again",
+    "loadMore": "Load more",
+    "loadingMore": "Loading…"
+  },
+  "appName": "{{name}}",
+  "fileDrop": {
+    "ignored": "That file can't be dropped here."
+  },
+  "loading": "Loading…",
+  "somethingWentWrong": "Something went wrong",
+  "welcome": "Welcome"
+}

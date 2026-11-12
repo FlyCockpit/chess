@@ -1,0 +1,59 @@
+name: Bug report
+description: Report something that does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not report security problems here; use [private vulnerability reporting](https://github.com/FlyCockpit/cockpit-chess/security/advisories/new).
+        Never paste API keys, tokens, secrets or other personal data into an issue.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and the actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment kind
+      options:
+        - Docker (container images)
+        - Self-hosted (running from source)
+        - CLI
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Release version or the commit SHA you are running.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Node.js version, browser, container runtime, model provider or Stockfish version, as relevant.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log output, with personal data and secrets removed.
+      render: text

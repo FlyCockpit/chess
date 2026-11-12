@@ -1,0 +1,17 @@
+generator client {
+  provider        = "prisma-client"
+  output          = "../generated"
+  moduleFormat    = "esm"
+  runtime         = "nodejs"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  // `pg_trgm` backs the GIN trigram indexes on the ILIKE-filtered columns
+  // (User.email/name). It ships in the
+  // stock postgres:18 image used by docker-compose.dev.yml, packages/db/
+  // docker-compose.yml, and Dokploy. The committed 0_init migration creates it
+  // before the application indexes.
+  extensions = [pg_trgm]
+}

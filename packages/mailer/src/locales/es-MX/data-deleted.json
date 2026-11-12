@@ -1,0 +1,12 @@
+{
+  "subject": "Se completó la eliminación programada de datos",
+  "body": "Cockpit Chess eliminó datos que ya no utiliza después del periodo de espera programado. No necesitas hacer nada.",
+  "what": "Datos eliminados",
+  "fallbackEffects": "Datos indicados en el archivo contract.sql del cambio de base de datos",
+  "when": "Fecha y hora (UTC)",
+  "migration": "Cambio de base de datos",
+  "notes": "Notas",
+  "backup": "Respaldo creado antes de la eliminación",
+  "recovery": "Si necesitas recuperar estos datos, pide a la persona que mantiene tu aplicación que recupere solo los registros necesarios del respaldo de volcado simple. El comando restore reemplaza toda la base de datos y desharía los cambios posteriores; primero revisa su vista previa y las instrucciones de recuperación en docs/schema-migrations.md.",
+  "noBackup": "No había un respaldo configurado antes de esta eliminación. Consulta con la persona que mantiene tu aplicación sobre otras opciones de recuperación y la configuración de respaldos."
+}

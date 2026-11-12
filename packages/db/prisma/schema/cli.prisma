@@ -1,0 +1,70 @@
+// Companion-CLI credentials. Both models are owned by Better-Auth plugins
+// (`deviceAuthorization` from better-auth core, `apiKey` from
+// `@better-auth/api-key`); field names must match the plugin schemas exactly.
+// They are only ever accepted on the CLI surface (`/api/cli/rpc`) — every
+// cookie surface strips `Authorization`. See the Authentication section of
+// packages/api/src/routers/cli.ts.
+
+/// One RFC 8628 device-authorization request (`cockpit-chess login`). Short-lived:
+/// pending rows expire after the plugin's `expiresIn`, and the daily
+/// expired-token sweep deletes them.
+model DeviceCode {
+  id              String    @id @default(cuid(2))
+  deviceCode      String
+  userCode        String
+  /// Set when a signed-in user opens the verification page with this code.
+  userId          String?
+  User            User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt       DateTime
+  /// "pending" | "approved" | "denied" — owned by the plugin.
+  status          String
+  lastPolledAt    DateTime?
+  pollingInterval Int?
+  clientId        String?
+  scope           String?
+
+  @@unique([deviceCode])
+  @@unique([userCode])
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("device_code")
+}
+
+/// A long-lived CLI credential (`cockpit-chess login --with-api-key`). Only the hash is
+/// stored; `start` is the displayable prefix. Never accepted by admin
+/// procedures (`requireAdmin` rejects the "api-key" credential).
+model ApiKey {
+  id                  String    @id @default(cuid(2))
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @default(now()) @updatedAt
+  configId            String    @default("default")
+  name                String?
+  start               String?
+  prefix              String?
+  /// SHA-256 of the key — the plaintext is shown once at creation.
+  key                 String
+  /// The owning user's id (`references: "user"`).
+  referenceId         String
+  User                User      @relation(fields: [referenceId], references: [id], onDelete: Cascade)
+  refillInterval      Int?
+  refillAmount        Int?
+  lastRefillAt        DateTime?
+  enabled             Boolean?  @default(true)
+  // The plugin's own per-key limiter is disabled (the Redis `rl:cli` bucket
+  // covers the surface), but the columns are part of its schema.
+  rateLimitEnabled    Boolean?  @default(true)
+  rateLimitTimeWindow Int?
+  rateLimitMax        Int?
+  requestCount        Int?      @default(0)
+  remaining           Int?
+  lastRequest         DateTime?
+  expiresAt           DateTime?
+  permissions         String?
+  metadata            String?
+
+  @@index([key])
+  @@index([configId])
+  @@index([referenceId])
+  @@index([expiresAt])
+  @@map("apikey")
+}
