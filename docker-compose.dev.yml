@@ -39,7 +39,7 @@ services:
   # Valkey — the BSD-licensed, protocol-compatible Redis fork. The service
   # name, REDIS_URL and redis:// URLs stay as-is; BullMQ/ioredis speak RESP.
   redis:
-    image: valkey/valkey:9.1-alpine
+    image: valkey/valkey:9.2-alpine
     container_name: cockpit-chess-dev-redis
     ports:
       # Loopback only — see the postgres note above. Valkey has no auth here, so
