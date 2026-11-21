@@ -38,7 +38,7 @@
     "i18next-browser-languagedetector": "catalog:",
     "lucide-react": "catalog:",
     "next-themes": "catalog:",
-    "nuqs": "^2.10.2",
+    "nuqs": "^2.10.3",
     "qrcode.react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
