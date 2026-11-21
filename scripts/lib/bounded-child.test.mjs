@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { boundedChild } from "./bounded-child.mjs";
 
@@ -32,21 +33,57 @@ test("native client success, failure, pre-start cancellation and timed cancellat
   assert.ok(owner.child.signalCode);
 });
 
-test("a native client ignoring TERM is killed and reaped before cancellation completes", async () => {
+// Bounded: with no escalation the child would outlive the test forever.
+test("a native client ignoring TERM is killed and reaped before cancellation completes", {
+  timeout: 10_000,
+}, async (t) => {
+  // The production 5 s escalation runs on a mocked clock; the child, its
+  // signals and its close stay real. The child reports each SIGTERM it ignores
+  // and answers every stdin line, so the test knows TERM was delivered and that
+  // the child is still alive just before the escalation is due.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const abort = new AbortController();
   const owner = boundedChild(
     process.execPath,
     [
       "-e",
-      "process.on('SIGTERM', () => {}); process.stdout.write('ready'); setInterval(() => {}, 1000)",
+      [
+        "process.on('SIGTERM', () => process.stdout.write('term\\n'));",
+        "process.stdin.on('data', () => process.stdout.write('alive\\n'));",
+        "process.stdout.write('ready\\n');",
+      ].join(" "),
     ],
-    {
-      signal: abort.signal,
-      stdio: ["ignore", "pipe", "ignore"],
-    },
+    { signal: abort.signal, stdio: ["pipe", "pipe", "ignore"] },
   );
-  owner.child.stdout.once("data", () => abort.abort());
-  await assert.rejects(owner.done);
+  // A failed or timed-out run must not leave the TERM-ignoring child behind.
+  t.after(() => {
+    if (owner.child.exitCode === null && owner.child.signalCode === null)
+      owner.child.kill("SIGKILL");
+  });
+  const queue = [];
+  let waiting;
+  const deliver = (line) => {
+    if (waiting) waiting(line);
+    else queue.push(line);
+    waiting = undefined;
+  };
+  createInterface({ input: owner.child.stdout })
+    .on("line", deliver)
+    .on("close", () => deliver("closed"));
+  const next = () =>
+    queue.length > 0
+      ? Promise.resolve(queue.shift())
+      : new Promise((resolveLine) => {
+          waiting = resolveLine;
+        });
+  assert.equal(await next(), "ready");
+  abort.abort();
+  assert.equal(await next(), "term");
+  t.mock.timers.tick(4_999);
+  owner.child.stdin.write("ping\n");
+  assert.equal(await next(), "alive", "SIGKILL must wait for the full 5 s escalation");
+  t.mock.timers.tick(1);
+  await assert.rejects(owner.done, { code: "CHILD_CANCELLED" });
   assert.equal(owner.child.signalCode, "SIGKILL");
 });
 

@@ -28,65 +28,67 @@ function run(
   } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "backup-host-test-"));
-  const log = join(dir, "calls.jsonl");
+  const log = join(dir, "calls.log");
+  // A bash script, not Node: host.sh calls docker a dozen times per run, and a
+  // Node start per call was most of this file's time. Each call appends
+  // "<argc>\0<arg>\0…\0<0|1>\0" and, with --env-file, "<path>\0<contents>\0"
+  // (read while the process substitution is still open).
   writeFileSync(
     join(dir, "docker"),
     `#!/usr/bin/env bash
+env_path= env_text= has_env=0 has_format=0 has_restore=0 has_guided=0
 for ((index=1; index<=$#; index++)); do
-  if [ "\${!index}" = --env-file ]; then
-    next=$((index + 1))
-    export HOST_TEST_CAPTURED_ENV="$(cat "\${!next}")"
-  fi
+  case "\${!index}" in
+    --env-file) next=$((index + 1)); env_path=\${!next}; env_text=$(cat "$env_path"); has_env=1 ;;
+    --format) has_format=1 ;;
+    restore) has_restore=1 ;;
+    --guided) has_guided=1 ;;
+  esac
 done
-exec node "$(dirname "$0")/docker-stub.cjs" "$@"
-`,
-  );
-  writeFileSync(
-    join(dir, "docker-stub.cjs"),
-    `
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-const call = { args };
-const index = args.indexOf("--env-file");
-if (index !== -1) {
-  call.envPath = args[index + 1];
-  call.env = process.env.HOST_TEST_CAPTURED_ENV;
-}
-fs.appendFileSync(process.env.HOST_TEST_LOG, JSON.stringify(call) + "\\n");
-const text = args.join(" ");
-if (args[0] === "ps") {
-  if (args.includes("--format")) process.stdout.write(process.env.HOST_TEST_PROJECTS);
-  else if (text.includes("service=server")) console.log("app-server");
-  else if (text.includes("service=postgres")) console.log("app-postgres");
-  else console.log("app-server\\napp-worker\\napp-backup\\napp-postgres\\napp-redis");
-} else if (args[0] === "inspect") {
-  const format = args[2];
-  const id = args[3];
-  if (format === "{{.Image}}") console.log("app-image");
-  else if (format === "{{.Config.Image}}") console.log("postgres:18");
-  else if (format.includes(".Mounts")) console.log(process.env.HOST_TEST_VOLUME);
-  else if (format.includes(".NetworkSettings")) console.log("dokploy-network alpha_default");
-  else if (format.includes(".Config.Labels")) console.log(id.replace("app-", ""));
-  else if (format.includes(".State.Running")) console.log("true");
-  else if (format.includes(".Config.Env")) fs.writeSync(1, "DATABASE_URL=" + "postgresql://fake:fake@db/app\\nBACKUP_S3_BUCKET=fake-backups\\nBACKUP_S3_SECRET_ACCESS_KEY=fake-secret\\nS3_ACCESS_KEY_ID=fake-upload-key\\nUNRELATED_SECRET=must-not-pass\\n");
-} else if (args[0] === "image" && args[1] === "inspect") {
-  if (process.env.HOST_TEST_IMAGE_GONE) {
-    console.error("Error response from daemon: No such image: " + args.at(-1));
-    process.exitCode = 1;
-  }
-} else if (args[0] === "stop") {
-  // Once: the first stop (after the stop prompt) is interrupted by a signal.
-  const signalled = process.env.HOST_TEST_LOG + ".signalled";
-  if (process.env.HOST_TEST_STOP_SIGNAL && !fs.existsSync(signalled)) {
-    fs.writeFileSync(signalled, "");
-    process.kill(process.ppid, process.env.HOST_TEST_STOP_SIGNAL);
-  }
-  if (process.env.HOST_TEST_MARK) fs.writeFileSync(process.env.HOST_TEST_MARK, "");
-  process.exitCode = !process.env.HOST_TEST_STOP_FAIL_ON || args.at(-1) === process.env.HOST_TEST_STOP_FAIL_ON ? Number(process.env.HOST_TEST_STOP_EXIT) : 0;
-} else if (args[0] === "run" && args.includes("restore") && args.includes("--guided")) {
-  if (process.env.HOST_TEST_RESTORE_SIGNAL) process.kill(process.ppid, process.env.HOST_TEST_RESTORE_SIGNAL);
-  process.exitCode = Number(process.env.HOST_TEST_RESTORE_EXIT);
-}
+{
+  printf '%s\\0' "$#" "$@" "$has_env"
+  if [ "$has_env" = 1 ]; then printf '%s\\0' "$env_path" "$env_text"; fi
+} >>"$HOST_TEST_LOG"
+text="$*"
+case "$1" in
+  ps)
+    if [ "$has_format" = 1 ]; then printf '%s' "$HOST_TEST_PROJECTS"
+    elif [[ $text == *service=server* ]]; then echo app-server
+    elif [[ $text == *service=postgres* ]]; then echo app-postgres
+    else printf 'app-server\\napp-worker\\napp-backup\\napp-postgres\\napp-redis\\n'
+    fi ;;
+  inspect)
+    format=$3 id=$4
+    if [ "$format" = "{{.Image}}" ]; then echo app-image
+    elif [ "$format" = "{{.Config.Image}}" ]; then echo postgres:18
+    elif [[ $format == *.Mounts* ]]; then echo "$HOST_TEST_VOLUME"
+    elif [[ $format == *.NetworkSettings* ]]; then echo "dokploy-network alpha_default"
+    elif [[ $format == *.Config.Labels* ]]; then echo "\${id/app-/}"
+    elif [[ $format == *.State.Running* ]]; then echo true
+    elif [[ $format == *.Config.Env* ]]; then printf 'DATABASE_URL=%s\\nBACKUP_S3_BUCKET=fake-backups\\nBACKUP_S3_SECRET_ACCESS_KEY=fake-secret\\nS3_ACCESS_KEY_ID=fake-upload-key\\nUNRELATED_SECRET=must-not-pass\\n' "postgresql://fake:fake@db/app"
+    fi ;;
+  image)
+    if [ "$2" = inspect ] && [ -n "\${HOST_TEST_IMAGE_GONE:-}" ]; then
+      echo "Error response from daemon: No such image: \${@: -1}" >&2
+      exit 1
+    fi ;;
+  stop)
+    # Once: the first stop (after the stop prompt) is interrupted by a signal.
+    if [ -n "\${HOST_TEST_STOP_SIGNAL:-}" ] && [ ! -e "$HOST_TEST_LOG.signalled" ]; then
+      : >"$HOST_TEST_LOG.signalled"
+      kill -s "$HOST_TEST_STOP_SIGNAL" "$PPID"
+    fi
+    if [ -n "\${HOST_TEST_MARK:-}" ]; then : >"$HOST_TEST_MARK"; fi
+    if [ -z "\${HOST_TEST_STOP_FAIL_ON:-}" ] || [ "\${@: -1}" = "$HOST_TEST_STOP_FAIL_ON" ]; then
+      exit "$HOST_TEST_STOP_EXIT"
+    fi ;;
+  run)
+    if [ "$has_restore" = 1 ] && [ "$has_guided" = 1 ]; then
+      if [ -n "\${HOST_TEST_RESTORE_SIGNAL:-}" ]; then kill -s "$HOST_TEST_RESTORE_SIGNAL" "$PPID"; fi
+      exit "$HOST_TEST_RESTORE_EXIT"
+    fi ;;
+esac
+exit 0
 `,
   );
   chmodSync(join(dir, "docker"), 0o755);
@@ -119,15 +121,25 @@ if (args[0] === "ps") {
     },
   );
   const calls = (() => {
+    let fields;
     try {
-      return readFileSync(log, "utf8")
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line));
+      fields = readFileSync(log, "utf8").split("\0");
     } catch {
       return [];
     }
+    const parsed = [];
+    let at = 0;
+    while (at < fields.length - 1) {
+      const count = Number(fields[at++]);
+      const call = { args: fields.slice(at, at + count) };
+      at += count;
+      if (fields[at++] === "1") {
+        call.envPath = fields[at++];
+        call.env = fields[at++];
+      }
+      parsed.push(call);
+    }
+    return parsed;
   })();
   const files = readdirSync(dir);
   rmSync(dir, { recursive: true, force: true });
@@ -184,7 +196,7 @@ test("host forwards only backup settings through an --env-file process substitut
   // The app upload key is not a backup setting: never forwarded.
   assert.doesNotMatch(call.env, /^S3_ACCESS_KEY_ID=/m);
   assert.doesNotMatch(call.env, /UNRELATED_SECRET/);
-  assert.deepEqual(result.files.sort(), ["calls.jsonl", "docker", "docker-stub.cjs"]);
+  assert.deepEqual(result.files.sort(), ["calls.log", "docker"]);
   assert.doesNotMatch(result.stdout + result.stderr, /fake-secret|postgresql:/);
 });
 
@@ -583,7 +595,7 @@ test("host drill uses a throwaway private network and removes its database witho
       ["network", "rm"],
     ],
   );
-  assert.deepEqual(result.files.sort(), ["calls.jsonl", "docker", "docker-stub.cjs"]);
+  assert.deepEqual(result.files.sort(), ["calls.log", "docker"]);
   assert.doesNotMatch(result.stdout + result.stderr, /fake-secret|postgresql:/);
 });
 
