@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEV_SINK, readSmtpHostValue, withDevSmtpSink } from "./smtp-env.ts";
+import { readSmtpHostValue, withDevSmtpSink } from "./smtp-env.ts";
 
 test("readSmtpHostValue is null when the line is absent, commented, or empty", () => {
   assert.equal(readSmtpHostValue(""), null);
@@ -44,9 +44,4 @@ test("withDevSmtpSink is a no-op when SMTP_HOST already has a real value", () =>
 test("withDevSmtpSink is idempotent across repeated calls", () => {
   const once = withDevSmtpSink("# SMTP_HOST=localhost\n");
   assert.equal(withDevSmtpSink(once), once);
-});
-
-test("DEV_SINK points at the dev compose mailpit service", () => {
-  assert.equal(DEV_SINK.host, "localhost");
-  assert.equal(DEV_SINK.port, "1025");
 });

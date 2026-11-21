@@ -80,6 +80,9 @@ const SKIP_DIRS = new Set([
   ".next",
   "target",
   ".git",
+  // Generated clients (packages/db/prisma/generated): machine-written, never
+  // cited by hand, and large enough to dominate the scan.
+  "generated",
 ]);
 
 // A citation: `<path>.md § <rest of line>`. Any markdown doc counts
@@ -87,7 +90,12 @@ const SKIP_DIRS = new Set([
 // The section text stops at a newline or a `]`, because docs cite each other as
 // markdown links (`[x.md § Sec](./x.md#sec)`) and the capture must not swallow
 // the link target.
-const CITATION_RE = /([\w./-]+\.md)\s*§\s*([^\n\]]+)/g;
+// The lookbehind lets a path start only where a path token starts. Without it
+// every position inside a long run of path characters with no `.md § ` after
+// it (a minified bundle, a base64 blob) restarts the greedy scan, which is
+// quadratic in the token's length; with it the matches are the same (the
+// leftmost start already wins) and the scan is linear.
+export const CITATION_RE = /(?<![\w./-])([\w./-]+\.md)\s*§\s*([^\n\]]+)/g;
 
 // The other spelling: a markdown link whose label carries the `§` but not the
 // filename, with the doc named only in the target —
@@ -230,28 +238,26 @@ function anchorMatches(cite: string, anchors: Set<string>): boolean {
   return false;
 }
 
-const errors: string[] = [];
-const warnings: string[] = [];
-const anchorCache = new Map<string, Set<string> | null>();
-let citationCount = 0;
-let docLinkCount = 0;
-
-const codeFiles: string[] = [];
-for (const dir of CODE_DIRS) walk(resolve(ROOT, dir), codeFiles);
-for (const doc of ROOT_DOCS) codeFiles.push(resolve(ROOT, doc));
-
-for (const file of codeFiles) {
-  if (file === SELF) continue;
-  const source = readFileSync(file, "utf8");
-  const where = relative(ROOT, file).replaceAll("\\", "/");
-
-  // Link-form citations first, recording the span each one occupies. A link
-  // whose label happens to include the filename
-  // (`[docs/environment.md § Validation vs loading](./environment.md#validation-vs-loading)`) matches BOTH
-  // patterns, so the bare-form pass below skips anything already covered —
-  // otherwise it double-counts and reports the same problem twice.
+/**
+ * Every `§` citation in `source`, and the span of each link-form one.
+ *
+ * Link-form citations first, recording the span each one occupies. A link
+ * whose label happens to include the filename
+ * (`[docs/environment.md § Validation vs loading](./environment.md#validation-vs-loading)`)
+ * matches BOTH patterns, so the bare-form pass skips anything already covered;
+ * otherwise it double-counts and reports the same problem twice.
+ *
+ * Both patterns need a literal `§`, so a file without one is skipped before
+ * either regex runs (most files). The check is per file, not per line: a bare
+ * citation may put the `§` on the line after the path (`\s*` spans newlines).
+ */
+export function findCitations(source: string): {
+  found: Array<{ docRel: string; cite: string }>;
+  linkSpans: Array<[number, number]>;
+} {
   const found: Array<{ docRel: string; cite: string }> = [];
   const linkSpans: Array<[number, number]> = [];
+  if (!source.includes("§")) return { found, linkSpans };
   for (const match of source.matchAll(LINK_CITATION_RE)) {
     linkSpans.push([match.index, match.index + match[0].length]);
     found.push({ docRel: match[3] ?? "", cite: match[2] ?? "" });
@@ -260,97 +266,128 @@ for (const file of codeFiles) {
     if (linkSpans.some(([start, end]) => match.index >= start && match.index < end)) continue;
     found.push({ docRel: match[1] ?? "", cite: match[2] ?? "" });
   }
+  return { found, linkSpans };
+}
 
-  for (const raw of found) {
-    citationCount++;
-    const docRel = raw.docRel;
-    const cite = normalize(raw.cite);
+function main(): void {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const anchorCache = new Map<string, Set<string> | null>();
+  let citationCount = 0;
+  let docLinkCount = 0;
 
-    if (cite.length === 0) {
-      errors.push(`${where}: citation "${docRel} §" has no section text.`);
-      continue;
-    }
+  const codeFiles: string[] = [];
+  for (const dir of CODE_DIRS) walk(resolve(ROOT, dir), codeFiles);
+  for (const doc of ROOT_DOCS) codeFiles.push(resolve(ROOT, doc));
 
-    // A doc citing a sibling writes a path relative to itself
-    // (`environment.md` from inside `docs/`), while code cites
-    // repo-relative (`docs/environment.md`). Try the citing file's own
-    // directory first, then the repo root.
-    const cacheKey = `${dirname(file)}\u0000${docRel}`;
-    let anchors = anchorCache.get(cacheKey);
-    if (anchors === undefined) {
-      anchors = null;
-      for (const candidate of [resolve(dirname(file), docRel), resolve(ROOT, docRel)]) {
-        try {
-          anchors = collectAnchors(candidate);
-          break;
-        } catch {
-          // try the next candidate
+  for (const file of codeFiles) {
+    if (file === SELF) continue;
+    const source = readFileSync(file, "utf8");
+    const where = relative(ROOT, file).replaceAll("\\", "/");
+
+    const { found, linkSpans } = findCitations(source);
+
+    for (const raw of found) {
+      citationCount++;
+      const docRel = raw.docRel;
+      const cite = normalize(raw.cite);
+
+      if (cite.length === 0) {
+        errors.push(`${where}: citation "${docRel} §" has no section text.`);
+        continue;
+      }
+
+      // A doc citing a sibling writes a path relative to itself
+      // (`environment.md` from inside `docs/`), while code cites
+      // repo-relative (`docs/environment.md`). Try the citing file's own
+      // directory first, then the repo root.
+      const cacheKey = `${dirname(file)}\u0000${docRel}`;
+      let anchors = anchorCache.get(cacheKey);
+      if (anchors === undefined) {
+        anchors = null;
+        for (const candidate of [resolve(dirname(file), docRel), resolve(ROOT, docRel)]) {
+          try {
+            anchors = collectAnchors(candidate);
+            break;
+          } catch {
+            // try the next candidate
+          }
         }
+        anchorCache.set(cacheKey, anchors);
       }
-      anchorCache.set(cacheKey, anchors);
-    }
 
-    if (anchors === null) {
-      // A doc citing a missing doc is always drift. A code comment citing a doc
-      // whose whole directory is gone is a stale comment, reported as a warning
-      // so it can be cleaned up separately; a missing file beside a directory
-      // that still exists is a typo or rename, and fatal.
-      const dirExists = [
-        dirname(resolve(dirname(file), docRel)),
-        dirname(resolve(ROOT, docRel)),
-      ].some((dir) => existsSync(dir));
-      if (dirExists || isDocLinkFile(where)) {
+      if (anchors === null) {
+        // A doc citing a missing doc is always drift. A code comment citing a doc
+        // whose whole directory is gone is a stale comment, reported as a warning
+        // so it can be cleaned up separately; a missing file beside a directory
+        // that still exists is a typo or rename, and fatal.
+        const dirExists = [
+          dirname(resolve(dirname(file), docRel)),
+          dirname(resolve(ROOT, docRel)),
+        ].some((dir) => existsSync(dir));
+        if (dirExists || isDocLinkFile(where)) {
+          errors.push(
+            `${where}: cited doc "${docRel}" does not exist — ` +
+              `renamed or misspelled? (If the doc was deliberately removed, drop the citation.)`,
+          );
+        } else {
+          warnings.push(
+            `${where}: cited doc "${docRel}" does not exist on disk (citation skipped).`,
+          );
+        }
+        continue;
+      }
+
+      if (!anchorMatches(cite, anchors)) {
         errors.push(
-          `${where}: cited doc "${docRel}" does not exist — ` +
-            `renamed or misspelled? (If the doc was deliberately removed, drop the citation.)`,
+          `${where}: "${docRel} § ${raw.cite.trim()}" — no matching section heading in ${docRel}.`,
         );
-      } else {
-        warnings.push(`${where}: cited doc "${docRel}" does not exist on disk (citation skipped).`);
       }
-      continue;
     }
 
-    if (!anchorMatches(cite, anchors)) {
+    // Relative doc-to-doc links: a missing target is always an error.
+    if (!isDocLinkFile(where)) continue;
+    for (const match of maskCode(source).matchAll(DOC_LINK_RE)) {
+      if (linkSpans.some(([start, end]) => match.index >= start && match.index < end)) continue;
+      docLinkCount++;
+      const target = match[1] ?? "";
+      if (existsSync(resolve(dirname(file), target))) continue;
       errors.push(
-        `${where}: "${docRel} § ${raw.cite.trim()}" — no matching section heading in ${docRel}.`,
+        `${where}: link target "${target}" does not exist — ` +
+          `renamed or misspelled? (If the doc was deliberately removed, drop the link.)`,
       );
     }
   }
 
-  // Relative doc-to-doc links: a missing target is always an error.
-  if (!isDocLinkFile(where)) continue;
-  for (const match of maskCode(source).matchAll(DOC_LINK_RE)) {
-    if (linkSpans.some(([start, end]) => match.index >= start && match.index < end)) continue;
-    docLinkCount++;
-    const target = match[1] ?? "";
-    if (existsSync(resolve(dirname(file), target))) continue;
-    errors.push(
-      `${where}: link target "${target}" does not exist — ` +
-        `renamed or misspelled? (If the doc was deliberately removed, drop the link.)`,
-    );
+  if (warnings.length > 0) {
+    console.warn("Code comments citing docs in removed directories (not fatal):\n");
+    for (const w of warnings) console.warn(`  ! ${w}`);
+    console.warn("");
   }
-}
 
-if (warnings.length > 0) {
-  console.warn("Code comments citing docs in removed directories (not fatal):\n");
-  for (const w of warnings) console.warn(`  ! ${w}`);
-  console.warn("");
-}
+  if (errors.length > 0) {
+    console.error("Doc-citation drift detected:\n");
+    for (const e of errors) console.error(`  • ${e}`);
+    console.error(
+      "\nEither fix the `<doc>.md § <section>` citation to name a real\n" +
+        "heading, or restore/rename the heading in the cited doc so the two agree. For a link\n" +
+        "target, point it at the file's new path, or drop the link if the doc is gone for good.",
+    );
+    process.exit(1);
+  }
 
-if (errors.length > 0) {
-  console.error("Doc-citation drift detected:\n");
-  for (const e of errors) console.error(`  • ${e}`);
-  console.error(
-    "\nEither fix the `<doc>.md § <section>` citation to name a real\n" +
-      "heading, or restore/rename the heading in the cited doc so the two agree. For a link\n" +
-      "target, point it at the file's new path, or drop the link if the doc is gone for good.",
+  console.log(
+    `Doc citations OK — ${citationCount} \`<doc>.md § <section>\` reference(s) ` +
+      `across ${codeFiles.length} code and doc file(s) all resolve to a real section, ` +
+      `and ${docLinkCount} relative doc link(s) all resolve to a file on disk` +
+      `${warnings.length > 0 ? ` (${warnings.length} skipped: target absent)` : ""}.`,
   );
+}
+
+// Node without import.meta.main (added in 24.2 and 22.18) would run this CLI as a
+// silent no-op that exits 0, so refuse instead (use the Node version in .nvmrc).
+if (typeof import.meta.main !== "boolean") {
+  console.error("check-doc-citations: Node 24 (.nvmrc) is required (no import.meta.main)");
   process.exit(1);
 }
-
-console.log(
-  `Doc citations OK — ${citationCount} \`<doc>.md § <section>\` reference(s) ` +
-    `across ${codeFiles.length} code and doc file(s) all resolve to a real section, ` +
-    `and ${docLinkCount} relative doc link(s) all resolve to a file on disk` +
-    `${warnings.length > 0 ? ` (${warnings.length} skipped: target absent)` : ""}.`,
-);
+if (import.meta.main) main();

@@ -17,7 +17,7 @@ const SMTP_PORT_LINE = /^(\s*)#?\s*SMTP_PORT\s*=/;
 const SMTP_FROM_LINE = /^(\s*)#?\s*SMTP_FROM\s*=/;
 
 /** The dev sink values setup writes when nothing real is configured. */
-export const DEV_SINK = {
+const DEV_SINK = {
   host: "localhost",
   port: "1025",
   from: "noreply@dev.local",
