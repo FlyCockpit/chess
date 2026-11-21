@@ -286,9 +286,18 @@ describe("shared env — serving-process identity", () => {
 });
 
 describe("shared env — independent backup monitoring", () => {
-  it("defaults monitoring on and warns about an unconfigured bucket", async () => {
+  it("defaults backups off without a missing-bucket warning", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const mod = await importServerEnv();
+    expect(mod.env.BACKUP_ENABLED).toBe(false);
+    expect(warn.mock.calls.some((call) => call.join(" ").includes("Freshness monitoring"))).toBe(
+      false,
+    );
+  });
+
+  it("warns about a missing bucket only when backups are enabled", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mod = await importServerEnv({ BACKUP_ENABLED: "true" });
     expect(mod.env.BACKUP_ENABLED).toBe(true);
     expect(warn.mock.calls.some((call) => call.join(" ").includes("Freshness monitoring"))).toBe(
       true,
@@ -298,6 +307,7 @@ describe("shared env — independent backup monitoring", () => {
   it("allows a monitor-only runtime without writer credentials", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const mod = await importServerEnv({
+      BACKUP_ENABLED: "true",
       BACKUP_S3_BUCKET: "deployment-backups",
       BACKUP_S3_REGION: "us-east-1",
       BACKUP_MONITOR_S3_ACCESS_KEY_ID: "monitor-fixture",
@@ -307,7 +317,7 @@ describe("shared env — independent backup monitoring", () => {
     expect(warn.mock.calls.some((call) => call.join(" ").includes("BACKUP_"))).toBe(false);
   });
 
-  it("disables only monitoring without requiring a backup destination at boot", async () => {
+  it("does not require a backup destination when disabled", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const mod = await importServerEnv({ BACKUP_ENABLED: "false" });
     expect(mod.env.BACKUP_ENABLED).toBe(false);

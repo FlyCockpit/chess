@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
-import { archiveCreatedAt, archiveTables, drillVerdict, parseDrillArgs } from "./drill.mjs";
+import { gzipSync } from "node:zlib";
+import {
+  archiveCreatedAt,
+  archiveListing,
+  archiveTables,
+  drillVerdict,
+  parseDrillArgs,
+} from "./drill.mjs";
 
 const LISTING = `;
 ; Archive created at 2026-11-11 03:00:01 UTC
@@ -70,5 +80,69 @@ describe("restore drill", () => {
       ["latest", "extra"],
     ])
       assert.throws(() => parseDrillArgs(argv), /usage: restore-drill/, JSON.stringify(argv));
+  });
+
+  it("never passes without reading the archive's table list", () => {
+    const counts = new Map([["public._prisma_migrations", 3]]);
+    const migrations = { applied: 3, unfinished: 0 };
+    const unread = drillVerdict({ expected: null, counts, migrations, listingError: "boom" });
+    assert.equal(unread.pass, false);
+    assert.match(unread.problems.join(), /could not read the archive's table list \(boom\)/);
+    assert.equal(drillVerdict({ expected: [], counts, migrations }).pass, false);
+  });
+
+  it("reads the table list of a raw, a gzip-wrapped and an s3:// source", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "drill-test-"));
+    try {
+      const raw = Buffer.concat([Buffer.from("PGDMP"), Buffer.alloc(600, 1)]);
+      const rawFile = path.join(dir, "a.dump");
+      const gzFile = path.join(dir, "a.dump.gz");
+      writeFileSync(rawFile, raw);
+      writeFileSync(gzFile, gzipSync(raw));
+      /** @type {Buffer[]} */
+      const seen = [];
+      const list = (/** @type {string} */ file) => {
+        seen.push(readFileSync(file));
+        return { status: 0, stdout: LISTING, stderr: "" };
+      };
+      for (const source of [rawFile, gzFile])
+        assert.equal(await archiveListing(source, [], {}, { list }), LISTING);
+      /** @type {unknown[]} */
+      const downloads = [];
+      const download = async (/** @type {{ dest: string }} */ args) => {
+        downloads.push({ ...args, dest: undefined });
+        writeFileSync(args.dest, gzipSync(raw));
+      };
+      assert.equal(
+        await archiveListing(
+          "s3://b/k.dump.gz",
+          ["--etag", '"e1"', "--version-id", "v1"],
+          {},
+          {
+            download,
+            list,
+          },
+        ),
+        LISTING,
+      );
+      assert.deepEqual(downloads, [
+        {
+          location: { bucket: "b", key: "k.dump.gz" },
+          eTag: '"e1"',
+          versionId: "v1",
+          dest: undefined,
+        },
+      ]);
+      // pg_restore always sees the unwrapped archive, never the gzip bytes.
+      assert.equal(seen.length, 3);
+      for (const bytes of seen) assert.ok(bytes.equals(raw));
+      await assert.rejects(archiveListing("s3://b/k", [], {}, { download, list }), /--etag/);
+      await assert.rejects(
+        archiveListing(rawFile, [], {}, { list: () => ({ status: 1, stdout: "", stderr: "bad" }) }),
+        /pg_restore --list failed: bad/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

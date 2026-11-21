@@ -165,7 +165,15 @@ export async function contractScenarios({ step, serverUrl, container, repo, pg, 
   };
 
   const apply = async (db, names, options = {}) => {
-    const { mode = "apply", id, role, folders = FOLDERS, image = IMAGE, schema } = options;
+    const {
+      mode = "apply",
+      id,
+      role,
+      folders = FOLDERS,
+      image = IMAGE,
+      schema,
+      backupEnabled = "true",
+    } = options;
     const url = urlFor(db, { schema });
     const dir = dirOf(folders, names);
     const config = tempConfig({ url, migrations: dir });
@@ -179,7 +187,11 @@ export async function contractScenarios({ step, serverUrl, container, repo, pg, 
         mode,
         role,
         pg: options.pg ?? pg,
-        env: { DATABASE_URL: url, ...(id ? { COCKPIT_CHESS_INSTANCE_ID: id } : {}) },
+        env: {
+          DATABASE_URL: url,
+          ...(backupEnabled === undefined ? {} : { BACKUP_ENABLED: backupEnabled }),
+          ...(id ? { COCKPIT_CHESS_INSTANCE_ID: id } : {}),
+        },
         migrationsDir: dir,
         runPrisma: (args, opts) =>
           prisma([...args, "--config", config], { ...opts, capture: true }).then((r) => {
@@ -383,7 +395,7 @@ export async function contractScenarios({ step, serverUrl, container, repo, pg, 
         rmSync(hookLog, { force: true });
         const r = await apply(s1, B);
         assert.equal(r.code, 0, r.out);
-        assert.deepEqual(hookCalls(), ["--label pre-drop --keep 5"]);
+        assert.deepEqual(hookCalls(), ["--label pre-drop --keep 5 --required"]);
         assert.match(r.out, /DATA DELETED: column "t"\."x"/);
         assert.match(r.out, /DATA DELETED: value "B" of enum "E" \(rows moved to "A"\)/);
         assert.match(r.out, /backup: pre-drop-20991231T000000Z\.dump/);
@@ -446,6 +458,35 @@ export async function contractScenarios({ step, serverUrl, container, repo, pg, 
         rmSync(path.join(work, "hook-fail"));
       }
     });
+    await step(
+      "contracts 10e: BACKUP_ENABLED=true and no backup hook in the image → the contracts are skipped",
+      async () => {
+        const r = await apply(s1, D, { backupHook: path.join(work, "no-such-hook.sh") });
+        assert.equal(r.code, 0, r.out);
+        assert.match(
+          r.out,
+          /BACKUP_ENABLED=true but this image has no backup hook; scheduled deletions skipped this run/,
+        );
+        assert.equal((await row(s1, F3)).contract_attempts, 1, "no attempt was made");
+      },
+    );
+    await step(
+      "contracts 10d: BACKUP_ENABLED=false → no pre-drop hook, the due deletion still runs",
+      async () => {
+        // The hook would fail; off means it is never called, so it cannot block.
+        writeFileSync(path.join(work, "hook-fail"), "");
+        rmSync(hookLog, { force: true });
+        try {
+          const r = await apply(s1, D, { backupEnabled: "false" });
+          assert.equal(r.code, 0, r.out);
+          assert.deepEqual(hookCalls(), []);
+          assert.doesNotMatch(r.out, /pre-drop backup failed/);
+          assert.ok((await row(s1, F3)).contract_attempts > 1, "the deletion was attempted");
+        } finally {
+          rmSync(path.join(work, "hook-fail"));
+        }
+      },
+    );
     await step(
       "contracts: the pre-deploy catalog read does not wait behind ACCESS EXCLUSIVE",
       async () => {
@@ -759,7 +800,7 @@ export async function contractScenarios({ step, serverUrl, container, repo, pg, 
           assert.match(r.out, /restored from a logical backup \(registry table recreated\)/);
           assert.ok((await columns(s4)).includes("x"), "not re-applied this run");
           const same = await app(
-            actualDb(s4),
+            s4,
             `SELECT registry_oid::text = to_regclass('"_cockpit_chess_cluster"')::oid::text AS same FROM "_cockpit_chess_cluster"`,
           );
           assert.deepEqual(same, [{ same: true }]);
@@ -828,7 +869,12 @@ export async function contractScenarios({ step, serverUrl, container, repo, pg, 
       `CREATE TABLE "w" ("id" SERIAL NOT NULL, "s" "S" NOT NULL DEFAULT 'B', "note" TEXT, "n" INTEGER NOT NULL DEFAULT 0, CONSTRAINT "w_pkey" PRIMARY KEY ("id"));`,
       // A user plpgsql trigger and procedure that bind the enum type.
       `CREATE FUNCTION "w_note"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."s" = 'A'::"S" THEN NEW."note" := 'is-a'; END IF; RETURN NEW; END $$;`,
-      `CREATE TRIGGER "w_note" BEFORE INSERT OR UPDATE ON "w" FOR EACH ROW EXECUTE FUNCTION "w_note"();`,
+      // BEFORE triggers fire in name order (byte order). "__w_note" sorts like
+      // the earliest possible unquoted trigger name: before
+      // "cockpit_chess_sync_*", after the generated "0_cockpit_chess_sync_<hash>".
+      // It must see the remapped value ("note" = 'is-a' below), which proves
+      // the sync trigger fires first.
+      `CREATE TRIGGER "__w_note" BEFORE INSERT OR UPDATE ON "w" FOR EACH ROW EXECUTE FUNCTION "w_note"();`,
       `CREATE PROCEDURE "pp"(INOUT r TEXT) LANGUAGE plpgsql AS $$ DECLARE x "S" := 'A'; BEGIN r := x::text; END $$;`,
     ].join("\n");
     const ENUM_FOLDERS = {

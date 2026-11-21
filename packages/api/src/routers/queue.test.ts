@@ -180,21 +180,47 @@ describe("queueRouter", () => {
     expect(redisGet).not.toHaveBeenCalled();
   });
 
-  it('reports a set-but-unusable bucket as misconfigured rather than as "off"', async () => {
+  it('reports the monitor\'s misconfigured verdict for a set-but-unusable bucket rather than "off"', async () => {
     // Hiding this behind `configured: false` means the admin card disappears
-    // and the operator never learns that no backups are being taken.
+    // and the operator never learns that no backups are being taken. Only the
+    // monitor holds the BACKUP_MONITOR_S3_* pair, so the verdict comes from
+    // its record.
+    backupEnabled.mockReturnValue(true);
+    const verdict = {
+      state: "misconfigured",
+      checkedAt: "2026-09-08T00:00:00.000Z",
+      maxAgeHours: 36,
+      reason: "BACKUP_S3_REGION must be a real AWS region.",
+    };
+    redisGet.mockResolvedValue(JSON.stringify(verdict));
+    const client = createRouterClient(queueRouter, { context: buildContext("admin") });
+
+    await expect(client.backupStatus()).resolves.toEqual({ configured: true, status: verdict });
+    expect(redisGet).toHaveBeenCalledWith("backup:freshness");
+  });
+
+  it("never re-judges the monitor credentials a dedicated worker's server does not receive", async () => {
+    // app-worker: the server has BACKUP_S3_BUCKET (writer keys) but never the
+    // monitor pair, so its own env would read as misconfigured. The worker's
+    // recorded verdict wins.
     backupEnabled.mockReturnValue(true);
     backupMisconfiguration.mockReturnValue({
       state: "misconfigured",
-      reason: "BACKUP_S3_REGION must be a real AWS region.",
+      reason: "BACKUP_MONITOR_S3_ACCESS_KEY_ID / BACKUP_MONITOR_S3_SECRET_ACCESS_KEY are missing.",
     });
+    const verdict = {
+      state: "fresh",
+      checkedAt: "2026-09-08T00:00:00.000Z",
+      latestKey: "database/backup-1.dump",
+      latestAt: "2026-09-07T03:00:00.000Z",
+      ageHours: 21,
+      maxAgeHours: 36,
+    };
+    redisGet.mockResolvedValue(JSON.stringify(verdict));
     const client = createRouterClient(queueRouter, { context: buildContext("admin") });
 
-    await expect(client.backupStatus()).resolves.toEqual({
-      configured: true,
-      status: { state: "misconfigured", reason: "BACKUP_S3_REGION must be a real AWS region." },
-    });
-    expect(redisGet).not.toHaveBeenCalled();
+    await expect(client.backupStatus()).resolves.toEqual({ configured: true, status: verdict });
+    expect(backupMisconfiguration).not.toHaveBeenCalled();
   });
 
   it("hides backup status from non-admins", async () => {

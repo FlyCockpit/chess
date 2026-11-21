@@ -11,7 +11,6 @@ import { z } from "zod";
 import { adminOr404Procedure } from "../index";
 import {
   backupFreshnessEnabled,
-  misconfiguredBackupFreshness,
   readBackupFreshness,
   setupMissingBackupFreshness,
 } from "../lib/backup-freshness";
@@ -36,9 +35,13 @@ export const queueRouter = {
   /**
    * Last backup-freshness verdict for the admin dashboard. `configured: false`
    * means logical backups are off (provider-only profile) and there is nothing
-   * to show. A bucket that is set but unusable is NOT that case: it reports
-   * `configured: true` with a `misconfigured` verdict, because a backup that
-   * can never run has to be louder than one that is merely late, not quieter.
+   * to show. A bucket that is set but unusable is NOT that case: the monitor
+   * records a `misconfigured` verdict, because a backup that can never run has
+   * to be louder than one that is merely late, not quieter. That verdict comes
+   * from the monitor's record, never from this process's env: only the
+   * selected monitor runtime holds the BACKUP_MONITOR_S3_* pair (a dedicated
+   * worker's server never does), so judging those credentials here would
+   * report every correctly configured app-worker deployment as misconfigured.
    * `status: null` with `configured: true` means the worker has not recorded a
    * verdict within its TTL — treat as unknown, not healthy.
    */
@@ -46,8 +49,6 @@ export const queueRouter = {
     if (!backupFreshnessEnabled()) return { configured: false as const, status: null };
     const setupMissing = setupMissingBackupFreshness();
     if (setupMissing) return { configured: true as const, status: setupMissing };
-    const misconfigured = misconfiguredBackupFreshness();
-    if (misconfigured) return { configured: true as const, status: misconfigured };
     return { configured: true as const, status: await readBackupFreshness(redisConnection) };
   }),
 

@@ -66,16 +66,17 @@ image entrypoint and reused by admission and the host heartbeat; never set it
 as operator configuration. \`BUILD_VERSION\` is a build argument containing the
 full Git SHA; the image bakes it into a file beside the bundle.
 
-\`BACKUP_ENABLED=true\` enables freshness monitoring only. It never suppresses
-manual, pre-migrate, pre-drop, restore or daily writing when false. Daily
+\`BACKUP_ENABLED\` defaults false: automatic pre-migrate/pre-drop snapshots and
+freshness monitoring are off, with no effect on migrations or readiness. Explicit
+manual backups and required restore snapshots remain available. Daily
 writing starts off: enable exactly one \`BACKUP_SCHEDULE=daily\` service, with
 \`BACKUP_HOUR_UTC=3\` (0–23) and \`BACKUP_KEEP=14\` (1–365). Pre-migrate snapshots
 keep five; the migration runner explicitly keeps five for pre-drop snapshots.
 Other direct manual/pre-restore labels default to unbounded local retention.
 S3 expiration belongs to the bucket lifecycle policy.
 
-Fresh installs need no snapshot. Existing databases without a destination
-warn; failures of configured backups block migration. Explicit \`--required\`
+Fresh installs need no snapshot. When backups are enabled, a missing destination
+or a failed backup blocks migration of an existing database. Explicit \`--required\`
 and replacement-restore snapshot requirements still apply. Use a distinct
 \`BACKUP_S3_PREFIX\` per deployment; generated Compose includes environment and
 host. Writer/restore credentials need GetObject, GetObjectVersion, PutObject
@@ -96,8 +97,10 @@ address the outermost counted proxy appended to \`X-Forwarded-For\`. The
 default \`0\` keys on the TCP socket peer and ignores \`X-Forwarded-For\`, which
 is correct when the server port is reached directly. Behind a proxy with \`0\`,
 every client shares the proxy's single rate-limit bucket; generated Dokploy
-configuration sets \`1\` for Traefik. A short chain or a malformed entry falls
-back to the socket peer, never to a client-supplied entry. See
+configuration sets \`1\` for Traefik. A proxy-appended port (\`1.2.3.4:5678\`,
+\`[2001:db8::1]:5678\`) is stripped from the selected entry; a short chain or an
+entry that is still malformed falls back to the socket peer, never to a
+client-supplied entry. See
 [Deployment: client IP and reverse proxies](deployment.md#client-ip-and-reverse-proxies).
 `;
 

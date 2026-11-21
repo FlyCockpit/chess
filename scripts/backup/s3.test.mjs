@@ -6,7 +6,16 @@ import { Readable } from "node:stream";
 import { text as streamText } from "node:stream/consumers";
 import { after, before, describe, it } from "node:test";
 
-import { backupS3Config, describeObject, downloadObject, sameETag, uploadBackup } from "./s3.mjs";
+import {
+  backupS3Config,
+  backupS3Logger,
+  createS3Client,
+  describeObject,
+  downloadObject,
+  SDK_STREAMING_RETRY_WARNING,
+  sameETag,
+  uploadBackup,
+} from "./s3.mjs";
 
 const baseEnv = {
   BACKUP_S3_BUCKET: "backups",
@@ -74,6 +83,33 @@ describe("backupS3Config", () => {
     assert.throws(() => backupS3Config({ BACKUP_S3_BUCKET: "b" }), /ACCESS_KEY/);
     assert.throws(() => backupS3Config({ ...baseEnv, BACKUP_S3_REGION: "" }), /real AWS region/);
     assert.throws(() => backupS3Config({ ...baseEnv, BACKUP_S3_PREFIX: "/" }), /must not be empty/);
+  });
+});
+
+describe("backup S3 logger", () => {
+  it("drops only the SDK's detail-free streaming warning", async (t) => {
+    // The SDK's exact text, so a drifted constant fails here.
+    const sdkWarning = "An error was encountered in a non-retryable streaming request.";
+    assert.equal(SDK_STREAMING_RETRY_WARNING, sdkWarning);
+    const warn = t.mock.method(console, "warn", () => {});
+    const quiet = ["trace", "debug", "info", "log", "error"].map((level) =>
+      t.mock.method(console, level, () => {}),
+    );
+    for (const level of /** @type {const} */ (["trace", "debug", "info", "error"])) {
+      backupS3Logger[level]("SDK input or output", { secret: "x" });
+    }
+    backupS3Logger.warn(sdkWarning);
+    backupS3Logger.warn("a different SDK warning");
+    backupS3Logger.warn(sdkWarning, "with detail");
+    assert.deepEqual(
+      warn.mock.calls.map((call) => call.arguments),
+      [["a different SDK warning"], [sdkWarning, "with detail"]],
+    );
+    for (const mock of quiet) assert.equal(mock.mock.callCount(), 0);
+    const client = await createS3Client(backupS3Config(baseEnv));
+    t.after(() => client.destroy());
+    assert.equal(client.config.logger, backupS3Logger);
+    assert.equal(await client.config.maxAttempts(), 1);
   });
 });
 

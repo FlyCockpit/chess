@@ -1,15 +1,14 @@
-import { isTwoFactorPolicySatisfied } from "@cockpit-chess/api/lib/two-factor-policy";
+import { checkAdminAuthority } from "@cockpit-chess/api";
 import { auth, type Session } from "@cockpit-chess/auth";
-import { isUserBanned } from "@cockpit-chess/auth/ban";
-import { isAdminRole } from "@cockpit-chess/auth/roles";
 
 type AdminSessionGateResult =
   | { ok: true; session: Session }
   | { ok: false; status: 401 | 403; error: string; errorDescription: string };
 
 // This gate protects Better-Auth plugin endpoints whose request surface is
-// reached without any oRPC context, so it re-implements the same rule as the
-// oRPC `requireAdmin` middleware: verified email, admin role, and forced 2FA.
+// reached without any oRPC context. It applies the same single rule as the
+// oRPC `requireAdmin` middleware (checkAdminAuthority): not banned, verified
+// email, admin role, and forced 2FA.
 export async function requireVerifiedAdminSession(
   headers: Headers,
 ): Promise<AdminSessionGateResult> {
@@ -57,39 +56,20 @@ export async function requireVerifiedAdminSession(
   // What it does buy is coverage for a ban applied WITHOUT clearing sessions —
   // a direct DB update, a future admin path that forgets to, or a session minted
   // between the two statements. Defense in depth.
-  if (isUserBanned(session.user)) {
+  // The one admin rule (checkAdminAuthority in @cockpit-chess/api, shared
+  // with requireAdmin / requireAdminOr404). Cookie-only: no API-key credential.
+  const authority = await checkAdminAuthority(session);
+  if (!authority.ok) {
     return {
       ok: false,
-      status: 403,
-      error: "access_denied",
-      errorDescription: "Verified admin access required",
-    };
-  }
-
-  if (!session.user.emailVerified) {
-    return {
-      ok: false,
-      status: 403,
-      error: "access_denied",
-      errorDescription: "Verified admin access required",
-    };
-  }
-
-  if (!isAdminRole(session.user.role)) {
-    return {
-      ok: false,
-      status: 403,
-      error: "access_denied",
-      errorDescription: "Verified admin access required",
-    };
-  }
-
-  if (!(await isTwoFactorPolicySatisfied(session.user))) {
-    return {
-      ok: false,
-      status: 403,
-      error: "access_denied",
-      errorDescription: "Two-factor authentication setup is required",
+      status: authority.reason === "unauthenticated" ? 401 : 403,
+      error: authority.reason === "unauthenticated" ? "unauthorized" : "access_denied",
+      errorDescription:
+        authority.reason === "unauthenticated"
+          ? "Authentication required"
+          : authority.reason === "two-factor"
+            ? "Two-factor authentication setup is required"
+            : "Verified admin access required",
     };
   }
 

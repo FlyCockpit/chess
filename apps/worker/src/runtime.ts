@@ -245,17 +245,13 @@ export async function startWorkerRuntime(options: {
 
     // Backup freshness is gated on the BACKUP_* config and uses its own
     // bucket and credentials. BACKUP_ENABLED=false opts out of monitoring
-    // without controlling migration snapshots or the daily backup writer.
+    // and migration snapshots; the daily backup writer is a separate opt-in.
     try {
       requireRunning();
       const action = await syncBackupFreshnessScheduler(checkBackupFreshnessQueue);
       if (action === "upserted") {
         console.log(
           `[check-backup-freshness] Registered job scheduler (${CHECK_BACKUP_FRESHNESS_CRON_PATTERN}).`,
-        );
-      } else {
-        console.log(
-          "[check-backup-freshness] Backup monitoring is disabled (BACKUP_ENABLED=false); removed job scheduler.",
         );
       }
     } catch (err) {

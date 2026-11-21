@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
  * Prints the full commit SHA an image is built from, or nothing when unknown.
- * Runs inside the Docker build (Dockerfile, builder stage); the server reports
- * the result on `/ready` so `pnpm deploy:check` can tell which release is live.
+ * Runs inside the Docker build (Dockerfile and Dockerfile.worker, builder
+ * stage); the server reports the result on `/ready` so `pnpm deploy:check` can
+ * tell which release is live, and `pnpm dokploy:verify` reads each image's file.
  *
  *   node scripts/build-commit.mjs [<repo-dir>]
  *

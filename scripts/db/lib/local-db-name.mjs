@@ -1,7 +1,8 @@
 /**
  * Exact local database names for THIS checkout.
  *
- *   main checkout  (git dir == git common dir) → `cockpit_chess` (or $EXPECTED_DB)
+ *   main checkout  (git dir == git common dir) → DEFAULT_MAIN_DB (or $EXPECTED_DB,
+ *                                                 except for db:reset:local)
  *   linked worktree                            → `cockpit_chess_wt_<10 hex>`
  *   shadow DB (either)                         → `<name>_shadow`
  *
@@ -22,6 +23,8 @@ import { fileURLToPath } from "node:url";
 
 export const LOCAL_HOSTS = ["localhost", "127.0.0.1", "::1"];
 export const SHADOW_SUFFIX = "_shadow";
+/** The main checkout's local database (docker-compose.dev.yml POSTGRES_DB). Rename both together. */
+export const DEFAULT_MAIN_DB = "cockpit_chess";
 
 function git(cwd, args) {
   return execFileSync("git", args, {
@@ -39,7 +42,7 @@ export function localDatabaseNames(options = {}) {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
   const gitRead = options.gitRead ?? git;
-  const base = env.EXPECTED_DB || "cockpit_chess";
+  const base = env.EXPECTED_DB || DEFAULT_MAIN_DB;
   let gitDir = null;
   let commonDir = null;
   try {

@@ -3,6 +3,9 @@
  * `pnpm db:test-migrations` — end-to-end test of the migration tooling
  * against a DISPOSABLE Postgres (a throwaway `postgres:18` docker container,
  * or `--server-url <superuser url>` for one you already run, e.g. CI).
+ * `--container-prefix <name>` names the throwaway container (default
+ * `<app>-test-migrations`); without the flag, TEST_CONTAINER_PREFIX does
+ * (shared with `backup:test` and `runtime:test-operations`).
  *
  * It copies the db tooling + packages/db into a temp git repo (so nothing in
  * this checkout is written) and exercises:
@@ -89,7 +92,18 @@ function freePort() {
 }
 
 async function startPostgres() {
-  const name = `cockpit-chess-test-migrations-${randomBytes(4).toString("hex")}`;
+  // `--container-prefix <name>` (or TEST_CONTAINER_PREFIX, for chained runs)
+  // keeps a shared machine's containers in its own namespace. The flag wins.
+  const prefixIndex = process.argv.indexOf("--container-prefix");
+  const [prefix, source] =
+    prefixIndex >= 0
+      ? [process.argv[prefixIndex + 1], "--container-prefix"]
+      : process.env.TEST_CONTAINER_PREFIX !== undefined
+        ? [process.env.TEST_CONTAINER_PREFIX, "TEST_CONTAINER_PREFIX"]
+        : ["cockpit-chess-test-migrations", "the default prefix"];
+  if (!prefix || !/^[a-z0-9][a-z0-9_.-]*$/.test(prefix))
+    throw new Error(`${source} needs a Docker name prefix ([a-z0-9][a-z0-9_.-]*)`);
+  const name = `${prefix}-${randomBytes(4).toString("hex")}`;
   const run = sh("docker", [
     "run",
     "-d",
@@ -262,13 +276,32 @@ async function main() {
     path.join(repo, "scripts/db/lib/scratch-db.mjs")
   );
   const localName = `cockpit_chess_test_${runSuffix}`;
+  // The fixture checkout's own default name is the per-run scratch name, so a
+  // shared --server-url never sees the real `cockpit_chess`. db:reset:local
+  // refuses EXPECTED_DB, so rename DEFAULT_MAIN_DB in the fixture copy instead.
+  const fixtureNames = path.join(repo, "scripts/db/lib/local-db-name.mjs");
+  const namesSource = readFileSync(fixtureNames, "utf8");
+  const renamed = namesSource.replace(
+    'export const DEFAULT_MAIN_DB = "cockpit_chess";',
+    `export const DEFAULT_MAIN_DB = "${localName}";`,
+  );
+  assert.notEqual(renamed, namesSource, "fixture DEFAULT_MAIN_DB rewrite");
+  writeFileSync(fixtureNames, renamed);
   const env = {
     ...process.env,
     EXPECTED_PORT: server.port,
-    EXPECTED_DB: localName,
     CHECKPOINT_DISABLE: "1",
   };
-  delete env.DATABASE_URL;
+  // Never inherit the checkout's target or guard escapes into this fixture.
+  for (const name of [
+    "DATABASE_URL",
+    "SHADOW_DATABASE_URL",
+    "CHECK_DATABASE_URL",
+    "ASSERT_LOCAL_DB_ESCAPE",
+    "ALLOW_NONLOCAL_DB_MIGRATE_APPLY",
+    "EXPECTED_DB",
+  ])
+    delete env[name];
   const localUrl = withDatabase(server.url, localName);
   const node = (script, scriptArgs = [], extraEnv = {}) =>
     sh(process.execPath, [path.join(repo, "scripts/db", script), ...scriptArgs], {
@@ -291,6 +324,8 @@ async function main() {
   const { prisma: fixturePrisma, tempConfig: fixtureTempConfig } = await import(
     path.join(repo, "scripts/db/lib/prisma.mjs")
   );
+  const noopBackupHook = path.join(repo, "noop-backup-hook.sh");
+  writeFileSync(noopBackupHook, "exit 0\n");
   const runtime = async (dbUrl, options = {}) => {
     const lines = [];
     const original = { log: console.log, error: console.error };
@@ -300,7 +335,9 @@ async function main() {
       const code = await run({
         connectRetryMs: 0,
         pollMs: 200,
-        backupHook: path.join(repo, "no-backup-hook.sh"),
+        // Present and successful without a dump: with BACKUP_ENABLED=true a
+        // missing hook refuses the migration.
+        backupHook: noopBackupHook,
         runPrisma: async (args, opts) => {
           await options.beforePrisma?.(args);
           const result = await fixturePrisma(args, opts);
@@ -308,7 +345,7 @@ async function main() {
           return result;
         },
         ...options,
-        env: { DATABASE_URL: dbUrl, ...(options.env ?? {}) },
+        env: { DATABASE_URL: dbUrl, BACKUP_ENABLED: "true", ...(options.env ?? {}) },
       });
       return { code, out: lines.join("\n") };
     } finally {
@@ -401,7 +438,7 @@ async function main() {
     );
 
     await step(
-      "fresh multi-migration history skips a configured failing backup hook on real PostgreSQL",
+      "fresh multi-migration history: BACKUP_ENABLED=true refuses on a failing hook (no fresh exemption); off never calls it",
       async () => {
         const url = await freshDb("fresh_multi");
         const folders = mkdtempSync(path.join(tmpdir(), "cockpit-chess-fresh-history-"));
@@ -419,17 +456,25 @@ async function main() {
           const hook = path.join(folders, "must-not-run.sh");
           writeFileSync(hook, "exit 71\n");
           const config = fixtureTempConfig({ url, migrations: folders });
+          let refused;
           let result;
           try {
-            result = await runtime(url, {
-              migrationsDir: folders,
-              backupHook: hook,
-              contracts: false,
-              runPrisma: (args, options) => fixturePrisma([...args, "--config", config], options),
-            });
+            const once = (enabled) =>
+              runtime(url, {
+                migrationsDir: folders,
+                backupHook: hook,
+                env: { BACKUP_ENABLED: enabled },
+                contracts: false,
+                runPrisma: (args, options) => fixturePrisma([...args, "--config", config], options),
+              });
+            refused = await once("true");
+            result = await once("false");
           } finally {
             rmSync(path.dirname(config), { recursive: true, force: true });
           }
+          assert.equal(refused.code, 1, refused.out);
+          assert.match(refused.out, /pre-migration backup failed \(exit 71\); refusing to migrate/);
+          assert.doesNotMatch(refused.out, /prisma migrate deploy…/);
           assert.equal(result.code, 0, result.out);
           assert.doesNotMatch(result.out, /running the pre-migration backup/);
           assert.equal(
@@ -923,7 +968,7 @@ async function main() {
             pollMs: 200,
             waitTimeoutMs: 60_000,
             backupHook: hook,
-            env: { DATABASE_URL: db, PATH: process.env.PATH },
+            env: { DATABASE_URL: db, PATH: process.env.PATH, BACKUP_ENABLED: "true" },
           });
         codes = await Promise.all([leader(), leader()]);
       } finally {

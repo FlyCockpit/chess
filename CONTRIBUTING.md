@@ -43,7 +43,7 @@ Before opening a pull request, run:
 pnpm verify:fast
 ```
 
-It runs Biome, the policy checks, and the typecheck and tests affected by your change. CI runs the full gate (`pnpm verify`). Unit tests use mocks and fake providers. Migration/backup integration harnesses require an explicitly disposable PostgreSQL instance; never point them at development, shared or production data. CI runs those dedicated harnesses separately. Do not skip hooks with `git commit --no-verify`; fix the failing check instead.
+It runs Biome, the policy checks, and the typecheck and tests affected by your change. CI runs the full gate (`pnpm verify`). Unit tests use mocks and fake providers. Migration/backup integration harnesses require an explicitly disposable PostgreSQL instance; never point them at development, shared or production data. CI runs those dedicated harnesses separately. The Docker harnesses (`pnpm backup:test`, `pnpm db:test-migrations`, `pnpm runtime:test-operations`) name every container, network and throwaway image they create under one prefix: `TEST_CONTAINER_PREFIX=<name>` sets it for all three, so a shared machine or a chained run stays in its own namespace without passing flags through, and `--container-prefix <name>` on `backup:test` and `db:test-migrations` overrides it. An empty or invalid value is an error, never the default. Do not skip hooks with `git commit --no-verify`; fix the failing check instead.
 
 ## Pull requests
 

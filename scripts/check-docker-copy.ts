@@ -447,23 +447,27 @@ function commitMetadataErrors(dockerignore: string): string[] {
   return errors;
 }
 
-/** Commit stamping must happen after the cached build and ship with its bundle. */
-function buildIdentityErrors(text: string): string[] {
+/**
+ * Commit stamping must happen after the cached build and ship with its bundle:
+ * the server reports it on `/ready`, and `pnpm dokploy:verify` reads each
+ * image's file (`apps/server` in Dockerfile, `apps/worker` in Dockerfile.worker).
+ */
+function buildIdentityErrors(text: string, app = "server", dockerfile = "Dockerfile"): string[] {
   const lines = [...logicalLines(text)].map(({ line }) => line);
   const build = lines.findIndex((line) => /^RUN pnpm turbo build\b/.test(line));
   const stamp = lines.indexOf(
-    "RUN node scripts/build-commit.mjs . > apps/server/dist/BUILD_COMMIT",
+    `RUN node scripts/build-commit.mjs . > apps/${app}/dist/BUILD_COMMIT`,
   );
   const errors: string[] = [];
   if (build < 0 || stamp <= build)
-    errors.push("Dockerfile must stamp BUILD_COMMIT after the Turbo build, outside its cache.");
-  if (!lines.includes("COPY --from=builder /app/apps/server/dist ./apps/server/dist"))
-    errors.push("Dockerfile must ship the stamped server dist directory.");
+    errors.push(`${dockerfile} must stamp BUILD_COMMIT after the Turbo build, outside its cache.`);
+  if (!lines.includes(`COPY --from=builder /app/apps/${app}/dist ./apps/${app}/dist`))
+    errors.push(`${dockerfile} must ship the stamped ${app} dist directory.`);
   let runner = false;
   for (const line of lines) {
     if (/^FROM\s/i.test(line)) runner = /\sAS\s+runner$/i.test(line);
     if (runner && /^COPY\s/i.test(line) && /\.git(?:\s|\/|$)/.test(line))
-      errors.push("Dockerfile must not copy Git metadata into the runtime image.");
+      errors.push(`${dockerfile} must not copy Git metadata into the runtime image.`);
   }
   return errors;
 }
@@ -487,6 +491,20 @@ COPY --from=builder /app/apps/server/dist ./apps/server/dist`;
   );
   deepStrictEqual(
     buildIdentityErrors(`${identity}\nCOPY --from=builder /app/.git ./.git`).length,
+    1,
+  );
+  const workerIdentity = identity.replaceAll("apps/server/", "apps/worker/");
+  deepStrictEqual(buildIdentityErrors(workerIdentity, "worker", "Dockerfile.worker"), []);
+  deepStrictEqual(buildIdentityErrors(workerIdentity).length, 2);
+  deepStrictEqual(
+    buildIdentityErrors(
+      workerIdentity.replace(
+        "RUN node scripts/build-commit.mjs . > apps/worker/dist/BUILD_COMMIT",
+        "",
+      ),
+      "worker",
+      "Dockerfile.worker",
+    ).length,
     1,
   );
   deepStrictEqual(
@@ -786,6 +804,13 @@ const dockerignore = existsSync(resolve(ROOT, ".dockerignore"))
 errors.push(...dockerignoreErrors(dockerignore));
 errors.push(...commitMetadataErrors(dockerignore));
 errors.push(...buildIdentityErrors(readFileSync(resolve(ROOT, "Dockerfile"), "utf8")));
+errors.push(
+  ...buildIdentityErrors(
+    readFileSync(resolve(ROOT, "Dockerfile.worker"), "utf8"),
+    "worker",
+    "Dockerfile.worker",
+  ),
+);
 // BuildKit prefers `<Dockerfile>.dockerignore` next to a Dockerfile over the
 // root .dockerignore, which would silently drop the exclusions above. Every
 // image builds from the repo root with the root file only.

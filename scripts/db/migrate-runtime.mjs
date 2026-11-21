@@ -191,6 +191,8 @@ export async function run(options = {}) {
   for (const name of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(name, cancel);
   try {
     if (!databaseUrl) throw new Refusal("DATABASE_URL is not set.");
+    if (env.BACKUP_ENABLED && !["true", "false"].includes(env.BACKUP_ENABLED))
+      throw new Refusal("BACKUP_ENABLED must be true or false.");
     const role = options.role ?? "server";
     if (role !== "server" && role !== "worker")
       throw new Refusal(`--role must be "server" or "worker" (got "${role}").`);
@@ -598,7 +600,10 @@ async function applyLocked(ctx, lock, deadline, pollMs) {
   if (recoverable.length) facts = await readMutationFacts(ctx, lock.client);
   log(`pending migration(s): ${toApply.join(", ")}`);
   lock.assertHeld("the pre-migration backup");
-  const backup = freshDatabase ? { ran: false, label: null } : await preMigrateBackup(ctx);
+  // No exemption for a brand-new database (owner decision: "backups enabled
+  // with no destination fails the migration"): the first start reports a
+  // missing destination before any data exists, not the first upgrade.
+  const backup = await preMigrateBackup(ctx);
   if (JSON.stringify(await readMutationFacts(ctx, lock.client)) !== JSON.stringify(facts)) {
     log(
       "database/history/contract state changed during backup; restarting classification and backup.",
@@ -946,14 +951,20 @@ async function applyDue(ctx, client, lock, { migrations, run, level, now, inputs
   }
   if (!valid.length) return;
   let backup = run.backup?.label ?? null;
-  if (!run.fresh && !run.backup?.ran) {
+  if (ctx.env.BACKUP_ENABLED === "true" && !run.fresh && !run.backup?.ran) {
     lock.assertHeld("the pre-drop backup");
-    const result = await runBackupHook(ctx, ["--label", "pre-drop", "--keep", "5"]);
-    if (result.missing) warn("no backup hook in this image; deleting without a pre-drop backup.");
-    else if (result.code !== 0) {
+    const result = await runBackupHook(ctx, ["--label", "pre-drop", "--keep", "5", "--required"]);
+    if (result.missing) {
       loud([
-        `the configured pre-drop backup failed (exit ${result.code}); scheduled deletions skipped this run.`,
-        "Fix the backup configuration (docs/backup-restore.md).",
+        "BACKUP_ENABLED=true but this image has no backup hook; scheduled deletions skipped this run.",
+      ]);
+      return;
+    }
+    if (result.code !== 0) {
+      loud([
+        `the pre-drop backup failed (exit ${result.code}); scheduled deletions skipped this run.`,
+        "BACKUP_ENABLED=true needs a working destination: mount a writable /backups volume and/or set BACKUP_S3_* " +
+          "(docs/backup-restore.md).",
       ]);
       return;
     }
@@ -1112,8 +1123,9 @@ async function reportReplayError(ctx, migration) {
 
 /**
  * Run scripts/backup/pre-migrate.sh with `args`, teeing its output, and read
- * the dump's file name from its "Verified" line (null when no destination is
- * configured: the hook warns and exits 0).
+ * the dump's file name from its "Verified" line. The runner always passes
+ * `--required` (it only calls the hook when BACKUP_ENABLED=true), so a missing
+ * destination exits non-zero instead of warning.
  * @returns {Promise<{ missing: boolean, code: number, label: string | null }>}
  */
 async function runBackupHook(ctx, args = []) {
@@ -1152,18 +1164,19 @@ async function runBackupHook(ctx, args = []) {
 
 /** @returns {Promise<{ ran: boolean, label: string | null }>} */
 async function preMigrateBackup(ctx) {
+  if (ctx.env.BACKUP_ENABLED !== "true") return { ran: false, label: null };
   if (!existsSync(ctx.backupHook)) {
-    warn(
-      `pre-migration backup hook ${path.relative(ROOT, ctx.backupHook)} is not in this image; migrating without a pre-migration backup.`,
+    throw new Refusal(
+      `BACKUP_ENABLED=true but the pre-migration backup hook ${path.relative(ROOT, ctx.backupHook)} is not in this image; refusing to migrate without a backup.`,
     );
-    return { ran: false, label: null };
   }
   log("running the pre-migration backup hook…");
-  const { code, label } = await runBackupHook(ctx);
+  const { code, label } = await runBackupHook(ctx, ["--required"]);
   if (code !== 0) {
     throw new Refusal(
-      `the configured pre-migration backup failed (exit ${code}); refusing to migrate without it. ` +
-        "Fix the backup configuration (docs/backup-restore.md) or remove it deliberately.",
+      `the pre-migration backup failed (exit ${code}); refusing to migrate without it. ` +
+        "BACKUP_ENABLED=true needs a working destination: mount a writable /backups volume and/or set BACKUP_S3_*, " +
+        "fix the failure above (docs/backup-restore.md), or set BACKUP_ENABLED=false deliberately.",
     );
   }
   return { ran: true, label };

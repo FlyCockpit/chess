@@ -19,7 +19,7 @@ function DashboardPage() {
     isError: appSettingsError,
     refetch: refetchAppSettings,
   } = useQuery(orpc.settings.getAll.queryOptions());
-  const { t } = useTranslation(["common", "dashboard"]);
+  const { t } = useTranslation("dashboard");
   const appName = env.VITE_APP_NAME;
 
   return (
@@ -34,7 +34,7 @@ function DashboardPage() {
         />
       ) : (
         <PageHeader
-          title={`${t("common:welcome")} ${t("common:appName", { name: appName })}`}
+          title={t("dashboard:welcomeTitle", { name: appName })}
           description={t("dashboard:welcomeBack", { name: session.user.name })}
         />
       )}

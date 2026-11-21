@@ -70,6 +70,28 @@ export function backupS3Config(env = process.env) {
   };
 }
 
+// The SDK's retry middleware warns this (on console, when the client has no
+// logger) for every failed request with a streaming body, before rethrowing
+// the error. Uploads always stream, so one failed upload printed it once per
+// attempt as if something else broke. It carries no detail; the error itself
+// still reaches the caller, which reports it. Every other SDK warning still
+// goes to the console. trace/debug/info/error stay silent exactly like the
+// SDK's default no-op logger: its logger middleware sends every command's
+// input and output to info and every failed command to error.
+export const SDK_STREAMING_RETRY_WARNING =
+  "An error was encountered in a non-retryable streaming request.";
+export const backupS3Logger = {
+  trace() {},
+  debug() {},
+  info() {},
+  /** @param {unknown[]} args */
+  warn(...args) {
+    if (args.length === 1 && args[0] === SDK_STREAMING_RETRY_WARNING) return;
+    console.warn(...args);
+  },
+  error() {},
+};
+
 /** @param {BackupS3Config} config */
 export async function createS3Client(config) {
   const { S3Client } = await import("@aws-sdk/client-s3");
@@ -80,6 +102,7 @@ export async function createS3Client(config) {
     credentials: config.credentials,
     // Stream retries are owned below so each attempt opens a fresh stream.
     maxAttempts: 1,
+    logger: backupS3Logger,
     // SDK checksums cover the actual dump bytes; this client never presigns.
   });
 }
@@ -362,8 +385,19 @@ export async function downloadObject({
 
 async function main() {
   const [command, file] = process.argv.slice(2);
+  if (command === "check-config") {
+    // Startup check (pre-migrate.sh --startup-notice with BACKUP_ENABLED=true):
+    // validate the settings only — no network, no credentials printed.
+    try {
+      backupS3Config();
+    } catch (error) {
+      console.error(`FATAL: [backup] ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
   if (command !== "upload" || !file) {
-    console.error("usage: node s3.mjs upload <file>");
+    console.error("usage: node s3.mjs upload <file> | node s3.mjs check-config");
     process.exitCode = 2;
     return;
   }

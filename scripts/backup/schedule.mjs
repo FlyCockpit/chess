@@ -36,10 +36,20 @@
  * the next deploy (or container restart) migrates normally.
  *
  * The healthcheck turns unhealthy when the last run failed or the last success
- * is older than 26 hours, so Docker / Dokploy show a missed backup.
+ * is older than 26 hours, so Docker / Dokploy show a missed backup. With
+ * BACKUP_SCHEDULE=daily a missing or unreadable status file is unhealthy too:
+ * the loop writes it before anything else, so its absence means the loop is
+ * not running or cannot record what it did.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -54,7 +64,8 @@ const STALE_AFTER_MS = 26 * HOUR_MS;
 const START_DELAY_MS = 5 * 60 * 1000;
 const MIGRATION_POLL_MS = 15_000;
 const MIGRATION_WAIT_MAX_MS = 30 * 60 * 1000;
-const STATUS_FILE = "/tmp/cockpit-chess-backup-status.json";
+/** Where the loop records its status for the healthcheck (a parameter in tests). */
+export const STATUS_FILE = "/tmp/cockpit-chess-backup-status.json";
 const LOCAL_DIR = "/backups";
 /** Hidden (never listed or restored); survives restarts with the volume. */
 const STATE_FILE = path.join(LOCAL_DIR, ".backup-schedule.json");
@@ -187,6 +198,47 @@ export function healthOf(status, nowMs) {
   return { healthy: true, reason: "last backup succeeded" };
 }
 
+const isTime = (value) => typeof value === "number" && Number.isFinite(value);
+
+/**
+ * The healthcheck's verdict from this service's settings and the status file's
+ * text (null when it cannot be read). Off is healthy whatever the file says;
+ * daily needs a valid status the loop wrote.
+ * @param {string | null} text
+ * @param {NodeJS.ProcessEnv} env
+ * @param {number} nowMs
+ * @param {string} [file] the status file `text` came from (for the reason)
+ * @returns {{ healthy: boolean, reason: string }}
+ */
+export function healthFromStatus(text, env, nowMs, file = STATUS_FILE) {
+  let config;
+  try {
+    config = scheduleConfig(env);
+  } catch (error) {
+    return { healthy: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+  if (!config.enabled) return { healthy: true, reason: "scheduled backups are off" };
+  if (text === null)
+    return {
+      healthy: false,
+      reason: `no backup status in ${file}: the scheduler is not running or cannot write it (see this service's log)`,
+    };
+  let status;
+  try {
+    status = JSON.parse(text);
+  } catch {
+    status = null;
+  }
+  if (
+    status?.enabled !== true ||
+    !isTime(status.startedAt) ||
+    !(status.lastSuccess === null || isTime(status.lastSuccess)) ||
+    !(status.lastFailure === null || isTime(status.lastFailure))
+  )
+    return { healthy: false, reason: `the backup status in ${file} is not valid` };
+  return healthOf(status, nowMs);
+}
+
 /**
  * The success to report after a restart: the remembered one; without a state
  * file (a volume from before it existed) the newest local daily dump, but only
@@ -251,13 +303,28 @@ function writeState(state) {
   }
 }
 
-function writeStatus(status) {
+/**
+ * @param {{ enabled: boolean, startedAt: number, lastSuccess: number | null, lastFailure: number | null }} status
+ * @param {string} [file]
+ * @param {{ writeFileSync: typeof writeFileSync, renameSync: typeof renameSync, unlinkSync: typeof unlinkSync }} [io] the fs calls (a seam for tests)
+ */
+export function writeStatus(
+  status,
+  file = STATUS_FILE,
+  io = { writeFileSync, renameSync, unlinkSync },
+) {
+  // Write then rename, so the healthcheck never reads a half-written file.
+  const partial = `${file}.${process.pid}.tmp`;
   try {
-    writeFileSync(STATUS_FILE, JSON.stringify(status));
+    io.writeFileSync(partial, JSON.stringify(status));
+    io.renameSync(partial, file);
   } catch (error) {
-    log(
-      `WARNING: could not write ${STATUS_FILE}: ${error instanceof Error ? error.message : error}`,
-    );
+    try {
+      io.unlinkSync(partial);
+    } catch {
+      // Nothing was written.
+    }
+    log(`WARNING: could not write ${file}: ${error instanceof Error ? error.message : error}`);
   }
 }
 
@@ -449,15 +516,24 @@ async function runLoop() {
   }
 }
 
-function health() {
-  let status;
+/**
+ * The healthcheck's verdict from the status file on disk.
+ * @param {NodeJS.ProcessEnv} env
+ * @param {number} nowMs
+ * @param {string} [file]
+ */
+export function healthFromFile(env, nowMs, file = STATUS_FILE) {
+  let text = null;
   try {
-    status = JSON.parse(readFileSync(STATUS_FILE, "utf8"));
+    text = readFileSync(file, "utf8");
   } catch {
-    console.log("starting");
-    return 0;
+    // Missing or unreadable: healthFromStatus decides what that means.
   }
-  const verdict = healthOf(status, Date.now());
+  return healthFromStatus(text, env, nowMs, file);
+}
+
+function health() {
+  const verdict = healthFromFile(process.env, Date.now());
   console.log(verdict.reason);
   return verdict.healthy ? 0 : 1;
 }

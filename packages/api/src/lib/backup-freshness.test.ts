@@ -39,6 +39,7 @@ vi.mock("@aws-sdk/client-s3", () => ({
 
 const {
   BACKUP_CHECKER_INTERVAL_HOURS,
+  backupMonitorS3Logger,
   findLatestBackup,
   backupFreshnessRedisKey,
   backupFreshnessEnabled,
@@ -220,8 +221,35 @@ describe("checkBackupFreshness", () => {
           accessKeyId: "monitor-key",
           secretAccessKey: "monitor-secret",
         },
+        logger: backupMonitorS3Logger,
       }),
     );
+  });
+
+  it("gives its S3 client the writer's quiet SDK logger", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const quiet = (["log", "info", "debug", "trace", "error"] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => {}),
+    );
+    try {
+      for (const logger of [backupMonitorS3Logger, writer.backupS3Logger]) {
+        for (const level of ["trace", "debug", "info", "error"] as const)
+          logger[level]("SDK input or output", { secret: "x" });
+        logger.warn(writer.SDK_STREAMING_RETRY_WARNING);
+        logger.warn("a different SDK warning");
+        logger.warn(writer.SDK_STREAMING_RETRY_WARNING, "with detail");
+      }
+      const [monitor, writerCalls] = [warn.mock.calls.slice(0, 2), warn.mock.calls.slice(2)];
+      expect(monitor).toEqual([
+        ["a different SDK warning"],
+        [writer.SDK_STREAMING_RETRY_WARNING, "with detail"],
+      ]);
+      expect(writerCalls).toEqual(monitor);
+      for (const spy of quiet) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      for (const spy of quiet) spy.mockRestore();
+    }
   });
 
   it("uses the writer's exact normalized explicit prefix", async () => {

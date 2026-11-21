@@ -88,7 +88,9 @@ export const serverVars = {
   // one bucket. 1 for a single proxy (the generated Dokploy config sets 1 for
   // Traefik); add one per extra proxy whose header the next proxy keeps (2 for
   // Cloudflare -> Traefik only with Traefik trusting Cloudflare's ranges). With
-  // N > 0 the app must be reachable only through those proxies.
+  // N > 0 the app must be reachable only through those proxies. A
+  // proxy-appended port is stripped from the selected entry; a short chain or
+  // a selected entry that is still not an IP falls back to the socket peer.
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
   ADMIN_EMAILS: z.string().optional(),
   // TTL (seconds) for the in-memory SSR HTML cache of public pages

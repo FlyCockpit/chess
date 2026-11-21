@@ -24,11 +24,9 @@
     "loadMore": "Load more",
     "loadingMore": "Loading…"
   },
-  "appName": "{{name}}",
   "fileDrop": {
     "ignored": "That file can't be dropped here."
   },
   "loading": "Loading…",
-  "somethingWentWrong": "Something went wrong",
-  "welcome": "Welcome"
+  "somethingWentWrong": "Something went wrong"
 }

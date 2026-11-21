@@ -35,10 +35,13 @@ export const sharedVars = {
   // Fresh UUID set by the image entrypoint for each server/worker host.
   // Admission and the serving-process heartbeat must share this identity.
   COCKPIT_CHESS_INSTANCE_ID: z.uuid().optional(),
-  // BACKUP_ENABLED controls freshness monitoring only (including setup-missing).
-  // Writing uses the canonical backup commands and opt-in BACKUP_SCHEDULE.
-  // Writer/restore credentials and ListBucket-only monitor credentials stay separate.
-  BACKUP_ENABLED: strictBooleanFlag(true),
+  // ---- Backups. BACKUP_ENABLED (strict true|false, default false) is the
+  // backup switch: the migration runner (scripts/db/migrate-runtime.mjs)
+  // takes its pre-migration / pre-drop dumps only when it is true, and the
+  // worker monitors freshness only when it is true. Explicit backup commands
+  // and BACKUP_SCHEDULE work either way. BACKUP_S3_* must use a dedicated
+  // backup identity, separate from app uploads.
+  BACKUP_ENABLED: strictBooleanFlag(false),
   BACKUP_S3_BUCKET: z.string().optional(),
   BACKUP_S3_ACCESS_KEY_ID: z.string().optional(),
   BACKUP_S3_SECRET_ACCESS_KEY: z.string().optional(),

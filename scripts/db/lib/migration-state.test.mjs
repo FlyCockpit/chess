@@ -6,6 +6,7 @@ import { describe, test } from "node:test";
 import {
   classify,
   MIGRATION_RUNNER_LOCK_KEY,
+  migrationInFlight,
   PRISMA_ADVISORY_LOCK,
   pgConnectionString,
   prismaSchemaName,
@@ -220,4 +221,13 @@ test("empty or fully rolled-back history is not a fresh catalog when user object
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("migrationInFlight names Prisma's lock, then the runner lock, else null", () => {
+  assert.equal(migrationInFlight({ inProgress: false, runnerActive: false }), null);
+  assert.match(
+    migrationInFlight({ inProgress: true, runnerActive: true }) ?? "",
+    /Prisma's migration lock/,
+  );
+  assert.match(migrationInFlight({ inProgress: false, runnerActive: true }) ?? "", /runner lock/);
 });

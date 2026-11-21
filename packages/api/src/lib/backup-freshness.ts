@@ -178,7 +178,9 @@ export type BackupFreshness =
   | {
       /**
        * Freshness monitoring is enabled but the off-site bucket is not configured
-       * yet. BACKUP_ENABLED controls monitoring only, never dump writing.
+       * yet. BACKUP_ENABLED=true also takes the automatic
+       * pre-migration / pre-drop dumps (which may go to a /backups volume
+       * only); monitoring needs the bucket.
        */
       state: "setup-missing";
       checkedAt: string;
@@ -196,6 +198,27 @@ export type BackupFreshness =
       maxAgeHours: number;
       message: string;
     };
+
+/**
+ * The same quiet SDK logger as the backup writer's (scripts/backup/s3.mjs
+ * `backupS3Logger`, which the scheduler and every backup command use):
+ * trace/debug/info/error stay silent like the SDK's default no-op logger (its
+ * logger middleware sends every command's input and output to info and every
+ * failed command to error; the error still reaches the caller), and warn
+ * reaches the console except for the detail-free streaming-retry warning.
+ */
+const SDK_STREAMING_RETRY_WARNING =
+  "An error was encountered in a non-retryable streaming request.";
+export const backupMonitorS3Logger = {
+  trace() {},
+  debug() {},
+  info() {},
+  warn(...args: unknown[]) {
+    if (args.length === 1 && args[0] === SDK_STREAMING_RETRY_WARNING) return;
+    console.warn(...args);
+  },
+  error() {},
+};
 
 type BackupBucket = {
   client: S3Client;
@@ -217,7 +240,9 @@ export function backupFreshnessMisconfiguration(): string | null {
 
 /**
  * True when this deployment intends to monitor off-site backup freshness.
- * BACKUP_ENABLED never controls canonical backup commands or BACKUP_SCHEDULE.
+ * BACKUP_ENABLED (default false) is the backup switch: it gates monitoring
+ * and the runner's automatic dumps, never the explicit backup commands or
+ * BACKUP_SCHEDULE.
  * A missing bucket still reports setup-missing when monitoring is enabled.
  */
 export function backupFreshnessEnabled(): boolean {
@@ -249,8 +274,9 @@ export function setupMissingBackupFreshness(now: Date = new Date()): BackupFresh
 
 /**
  * The verdict for a set-but-unusable backup config, or null when the config is
- * fine (or absent). Computed from env, not from Redis: the worker never gets to
- * run the check in this state, so the admin card would otherwise show nothing.
+ * fine (or absent). Computed from env instead of listing the bucket: the fix is
+ * an env var. Only the monitor runtime (which holds the BACKUP_MONITOR_S3_*
+ * pair) may call this; it records the verdict for the admin card.
  */
 export function misconfiguredBackupFreshness(now: Date = new Date()): BackupFreshness | null {
   const reason = backupFreshnessMisconfiguration();
@@ -301,6 +327,7 @@ function buildBackupBucket(): BackupBucket | null {
       accessKeyId: env.BACKUP_MONITOR_S3_ACCESS_KEY_ID,
       secretAccessKey: env.BACKUP_MONITOR_S3_SECRET_ACCESS_KEY,
     },
+    logger: backupMonitorS3Logger,
   });
   return {
     client,

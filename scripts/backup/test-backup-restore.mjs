@@ -3,7 +3,12 @@
  * End-to-end test for scripts/backup/pre-migrate.sh and restore.sh against
  * disposable postgres:18 containers. Needs Docker; touches nothing else.
  *
- *   node scripts/backup/test-backup-restore.mjs
+ *   node scripts/backup/test-backup-restore.mjs [--container-prefix <name>]
+ *
+ * `--container-prefix` (or TEST_CONTAINER_PREFIX; the flag wins) names every
+ * container, the network and the tools image `<name>-...` (default
+ * `cockpit-chess-backup-test`; see e2e-names.mjs), so parallel runs stay in
+ * their own namespace. The run removes its own tools image at the end.
  *
  * pg_dump/pg_restore/psql are not assumed on the host: the scripts run inside
  * a throwaway "tools" image (postgres:18 + the node binary from node:26.13.1-slim),
@@ -24,13 +29,18 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { containerPrefix, e2eNames } from "./e2e-names.mjs";
 
 const SCRIPTS = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let hostPort;
-const TOOLS_IMAGE = "cockpit-chess-backup-test-tools:pg18";
 const suffix = `${process.pid}-${Date.now().toString(36)}`;
-const NETWORK = `backup-test-${suffix}`;
-const PG = `backup-pg-${suffix}`;
+const names = e2eNames(containerPrefix(process.argv.slice(2)), suffix);
+const TOOLS_IMAGE = names.toolsImage;
+const NETWORK = names.network;
+const PG = names.pg;
+/** Named tool containers, removed at teardown. */
+const toolContainers = new Set();
+let toolNumber = 0;
 const work = mkdtempSync(join(tmpdir(), "backup-restore-test-"));
 const backups = join(work, "backups");
 const uid = `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`;
@@ -40,6 +50,13 @@ const uid = `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`;
  * @param {{ input?: string, allowFail?: boolean }} [options]
  */
 function docker(args, { input, allowFail = false } = {}) {
+  // Every container is named: a tool container that was started without
+  // --name gets the next prefixed name.
+  if (args[0] === "run" && !args.includes("--name")) {
+    const name = names.tool(++toolNumber);
+    toolContainers.add(name);
+    args = [args[0], "--name", name, ...args.slice(1)];
+  }
   const result = spawnSync("docker", args, {
     encoding: "utf8",
     input,
@@ -231,8 +248,10 @@ RUN ldconfig && node --version
 
 function teardown() {
   // -v: a force-removed --rm container keeps its anonymous PGDATA volume.
-  docker(["rm", "-f", "-v", PG], { allowFail: true });
+  for (const name of [...toolContainers, PG]) docker(["rm", "-f", "-v", name], { allowFail: true });
   docker(["network", "rm", NETWORK], { allowFail: true });
+  // The tools image is this run's own (its tag carries the run suffix).
+  docker(["image", "rm", TOOLS_IMAGE], { allowFail: true });
   rmSync(work, { recursive: true, force: true });
 }
 
@@ -246,10 +265,15 @@ try {
   setup();
   const sourcePrint = fingerprint("app");
 
-  step("pre-migrate: no destination → WARNING and exit 0", () => {
+  step("pre-migrate: no destination → silent exit 0; --required → non-zero", () => {
     const result = tool("app", ["bash", "/app/scripts/backup/pre-migrate.sh"], { mount: "none" });
     assert.equal(result.code, 0, result.out);
-    assert.match(result.out, /WARNING: \[backup\] No pre-migration backup was taken/);
+    assert.doesNotMatch(result.out, /Verified/);
+    const required = tool("app", ["bash", "/app/scripts/backup/pre-migrate.sh", "--required"], {
+      mount: "none",
+    });
+    assert.notEqual(required.code, 0, required.out);
+    assert.match(required.out, /no backup destination/);
   });
 
   step("pre-migrate: unwritable /backups → non-zero", () => {
@@ -286,7 +310,7 @@ try {
 
   step("restore: no --confirm → preview only, nothing changed", () => {
     const result = restore("restored_raw", raw);
-    assert.equal(result.code, 1, result.out);
+    assert.equal(result.code, 3, result.out);
     assert.match(result.out, /preview only/);
     assert.match(result.out, /--confirm RESTORE:restored_raw/);
     assert.equal(
@@ -300,7 +324,7 @@ try {
 
   step("restore: wrong --confirm is refused", () => {
     const result = restore("restored_raw", raw, "--confirm", "RESTORE:app");
-    assert.equal(result.code, 1, result.out);
+    assert.equal(result.code, 3, result.out);
     assert.match(result.out, /--confirm must be exactly RESTORE:restored_raw/);
     assert.equal(sql("restored_raw", "SELECT to_regclass('public.\"User\"') IS NULL"), "t");
   });
@@ -425,7 +449,7 @@ try {
 
   step("restore: non-empty target without --replace is refused", () => {
     const result = restore("restored_raw", raw, "--confirm", "RESTORE:restored_raw");
-    assert.equal(result.code, 1, result.out);
+    assert.equal(result.code, 3, result.out);
     assert.match(result.out, /is not empty/);
     assert.equal(fingerprint("restored_raw"), sourcePrint);
   });
@@ -475,7 +499,7 @@ try {
       "postgres",
       "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'restored_gz' AND pid <> pg_backend_pid()",
     );
-    assert.equal(result.code, 1, result.out);
+    assert.equal(result.code, 3, result.out);
     assert.match(result.out, /other connection\(s\)/);
     assert.equal(dumps("pre-restore-").length, 1, "a refused restore must not snapshot");
   });
@@ -500,7 +524,7 @@ try {
       "postgres",
       "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'restored_gz' AND pid <> pg_backend_pid()",
     );
-    assert.equal(result.code, 1, result.out);
+    assert.equal(result.code, 3, result.out);
     assert.match(result.out, /Prisma migration is running/);
   });
 
@@ -524,7 +548,7 @@ try {
       "postgres",
       "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'restored_gz' AND pid <> pg_backend_pid()",
     );
-    assert.equal(result.code, 1, result.out);
+    assert.equal(result.code, 3, result.out);
     assert.match(result.out, /migration runner .* is working on this database/);
   });
 
@@ -537,7 +561,7 @@ try {
       "--confirm",
       "RESTORE:restored_misc",
     );
-    assert.equal(result.code, 1, result.out);
+    assert.equal(result.code, 3, result.out);
     assert.match(result.out, /plain-SQL dump/);
   });
 
@@ -552,7 +576,7 @@ try {
       "--confirm",
       "RESTORE:restored_misc",
     );
-    assert.equal(result.code, 1, result.out);
+    assert.equal(result.code, 3, result.out);
     assert.match(result.out, /incomplete or corrupt|rejected the archive/);
     assert.equal(
       sql(
@@ -587,8 +611,18 @@ try {
       "--confirm",
       "RESTORE:restored_misc",
     );
-    assert.equal(result.code, 1, result.out);
-    assert.match(result.out, /rolled back/);
+    // psql stops at the failing COPY (ON_ERROR_STOP, exit 3) before the
+    // confirmation after COMMIT: provably rolled back, whether or not COMMIT
+    // had already been written (it never ran). Exit 4, ROLLED_BACK_EXIT.
+    assert.equal(result.code, 4, result.out);
+    assert.match(
+      result.out,
+      /ROLLED BACK: restore failed \(psql exit 3, pg_restore exit 0\)\. (COMMIT was never sent|psql stopped on an SQL error \(ON_ERROR_STOP\) before confirming COMMIT), so the transaction was rolled back; "restored_misc" is unchanged/,
+    );
+    assert.doesNotMatch(result.out, /Restore complete|uncertain/i);
+    // It failed where intended (the COPY that violates later_check), not at
+    // some unrelated earlier step that would leave the same state behind.
+    assert.match(result.out, /later_check/);
     assert.equal(fingerprint("restored_misc"), sourcePrint);
     assert.equal(sql("restored_misc", "SELECT to_regclass('public.ok') IS NULL"), "t");
   });
@@ -653,8 +687,15 @@ try {
       "--confirm",
       "RESTORE:restored_misc",
     );
-    assert.equal(result.code, 1, result.out);
-    assert.doesNotMatch(result.out, /Restore complete/);
+    // The terminated backend aborted the transaction: rolled back (exit 4),
+    // because COMMIT was never sent (pg_restore was still blocked on the full
+    // pipe) or because the server reports the transaction aborted.
+    assert.equal(result.code, 4, result.out);
+    assert.match(
+      result.out,
+      /ROLLED BACK: restore failed \(psql exit 2, pg_restore exit -?\d+\)\. (COMMIT was never sent|the server reports the restore transaction aborted), so the transaction was rolled back; "restored_misc" is unchanged/,
+    );
+    assert.doesNotMatch(result.out, /Restore complete|uncertain/);
     spawnSync("sleep", ["3"]);
     assert.equal(sql("postgres", "SELECT string_agg(got::text, ',') FROM lock_probe"), "false");
     assert.equal(fingerprint("restored_misc"), sourcePrint);

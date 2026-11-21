@@ -27,7 +27,7 @@ const STALE_ALERT_COOLDOWN_SECONDS = 24 * 60 * 60;
  * process. The verdict is written to Redis for the admin dashboard and, when
  * it needs attention, emailed to admins with operational alerts enabled.
  *
- * Only scheduled when BACKUP_ENABLED=true (monitor intent only). When
+ * Only scheduled when BACKUP_ENABLED=true (the backup switch). When
  * a bucket is configured but unusable the verdict is `misconfigured`, which
  * alerts like any other attention state. Enabled monitoring without a bucket yet
  * report `setup-missing`.

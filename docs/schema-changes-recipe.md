@@ -178,6 +178,10 @@ The PR job `migrations` runs `pnpm db:check-migrations` against a throwaway Post
 
 **"My local database is out of sync / I want to start over."** After owner approval, `pnpm db:reset:local` — drops and rebuilds only this checkout's database, then regenerates the Prisma client; there is no seed command.
 
+**"db:reset:local says my database is not marked as disposable."** It was created before the mark existed (or by something other than `pnpm db:worktree` / a fresh `pnpm dev:services` volume), or the URL reaches another server through a tunnel. Nothing was dropped. If it really is this checkout's own local database, the user runs `pnpm db:worktree --adopt` once at a terminal; agents hand that command to the user.
+
+**"db:migrate:apply says another session holds a migration lock."** A deploy runner, a restore, or another `prisma migrate deploy` is working on that database. Nothing was changed; wait and re-run.
+
 **"Types are stale after applying."** `pnpm db:migrate:apply` regenerates the client; if the editor still complains, restart the TypeScript server (or run `pnpm db:generate`).
 
 **"Production refuses to start after my merge."** Read the log line: it names the state (`pending` with a migration the running release cannot tolerate, `failed`, `db-ahead`, `no-history-nonempty`). Follow [schema-migrations.md § Recovery runbook](./schema-migrations.md#recovery-runbook).

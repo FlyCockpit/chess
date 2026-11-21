@@ -8,9 +8,11 @@ import { defineConfig, minimal2023Preset } from "@vite-pwa/assets-generator/conf
 // - maskable: padding 0.27 scales the artwork's farthest opaque pixel inside
 //   the center 80% circle (the maskable safe zone).
 //
-// The apple touch icon is NOT generated here (`sizes: []`):
-// `public/apple-touch-icon-180x180.png` is maintained by hand as an opaque
-// tile (iOS rounds the corners itself and has no dark variant for web clips).
+// The apple touch icon is NOT generated here (`sizes: []`): it is the Icon
+// Composer tile `assets/app-icon.png` with its transparent corners filled by
+// the tile's own background, sampled row by row (a dark vertical gradient),
+// and resized to `public/apple-touch-icon-180x180.png` (iOS rounds the corners
+// itself, shows transparency as black, and has no dark variant for web clips).
 const background = "#4a97fa";
 
 export default defineConfig({

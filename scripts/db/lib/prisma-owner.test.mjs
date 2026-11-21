@@ -11,7 +11,12 @@ import { fileURLToPath } from "node:url";
 const dir = mkdtempSync(path.join(tmpdir(), "cockpit-chess-prisma-owner-test-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
-const linux = process.platform === "linux";
+// The owner's native engine contract is exercised only on Linux (the app image's
+// platform); elsewhere each test skips with this reason. Linux CI runs them.
+const linuxOnly =
+  process.platform === "linux"
+    ? false
+    : "Linux-only: the Prisma owner's native engine contract runs in the Linux app image; Linux CI runs it";
 const hash = "a".repeat(40);
 for (const pkg of ["engines", "engines-version"]) {
   const target = path.join(dir, "node_modules/@prisma", pkg);
@@ -102,19 +107,19 @@ for (const args of [
   ["resolve", "--rolled-back", "0_init"],
 ])
   test(`owned ${args.join(" ")} acknowledges native drain with command-specific RPC evidence`, {
-    skip: !linux,
+    skip: linuxOnly,
   }, async () => {
     const result = await launch(args).done;
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.drained, true);
   });
-test("a failed RPC drains but never becomes success", { skip: !linux }, async () => {
+test("a failed RPC drains but never becomes success", { skip: linuxOnly }, async () => {
   const result = await launch(["deploy"], { RPC_FAIL: "1" }).done;
   assert.equal(result.code, 1, result.stderr);
   assert.equal(result.drained, true);
 });
 for (const key of ["ESCAPE", "BAD_RPC"])
-  test(`${key} is refused`, { skip: !linux }, async () => {
+  test(`${key} is refused`, { skip: linuxOnly }, async () => {
     const result = await launch(["deploy"], { [key]: "1" }).done;
     assert.equal(result.code, 1, result.stderr);
     assert.equal(result.drained, true);
@@ -124,7 +129,7 @@ async function ready(file) {
   while (!existsSync(file) && Date.now() < deadline) await delay(10);
   assert.equal(existsSync(file), true, "native engine reached the barrier");
 }
-test("SIGTERM explicitly drains a hanging engine", { skip: !linux }, async () => {
+test("SIGTERM explicitly drains a hanging engine", { skip: linuxOnly }, async () => {
   const file = path.join(dir, "term-ready");
   const owner = launch(["deploy"], { HANG: "1", READY_FILE: file });
   await ready(file);
@@ -133,7 +138,7 @@ test("SIGTERM explicitly drains a hanging engine", { skip: !linux }, async () =>
   assert.equal(result.code, 1);
   assert.equal(result.drained, true);
 });
-test("parent IPC disconnect cancels and drains a hanging engine", { skip: !linux }, async () => {
+test("parent IPC disconnect cancels and drains a hanging engine", { skip: linuxOnly }, async () => {
   const file = path.join(dir, "disconnect-ready");
   const owner = launch(["deploy"], { HANG: "1", READY_FILE: file });
   await ready(file);
@@ -148,7 +153,7 @@ test("parent IPC disconnect cancels and drains a hanging engine", { skip: !linux
 });
 
 test("pinned Prisma diff uses the owned collector without a database and preserves Unicode SQL", {
-  skip: !linux,
+  skip: linuxOnly,
 }, async () => {
   const { prisma } = await import("./prisma.mjs");
   const schema = path.join(dir, "unicode.prisma");
@@ -165,7 +170,7 @@ test("pinned Prisma diff uses the owned collector without a database and preserv
 });
 
 test("deploy owns a diagnostic engine followed by the actual apply engine", {
-  skip: !linux,
+  skip: linuxOnly,
 }, async () => {
   const result = await launch(["deploy"], { TWO_PHASE: "1" }).done;
   assert.equal(result.code, 0, result.stderr);
@@ -173,7 +178,7 @@ test("deploy owns a diagnostic engine followed by the actual apply engine", {
 });
 for (const env of [{ PRELIM_ONLY: "1" }, { TWO_PHASE: "1", PRELIM_FAIL: "1" }])
   test(`diagnostic engines cannot substitute for successful apply: ${Object.keys(env).join(",")}`, {
-    skip: !linux,
+    skip: linuxOnly,
   }, async () => {
     const result = await launch(["deploy"], env).done;
     assert.equal(result.code, 1, result.stderr);
@@ -181,14 +186,14 @@ for (const env of [{ PRELIM_ONLY: "1" }, { TWO_PHASE: "1", PRELIM_FAIL: "1" }])
   });
 
 test("deploy owns the pinned one-shot connectivity preflight and requires actual apply", {
-  skip: !linux,
+  skip: linuxOnly,
 }, async () => {
   const result = await launch(["deploy"], { CONNECTIVITY_PREFLIGHT: "1" }).done;
   assert.equal(result.code, 0, result.stderr);
   assert.equal(result.drained, true);
 });
 test("native CLI commands other than the read-only connectivity preflight are refused", {
-  skip: !linux,
+  skip: linuxOnly,
 }, async () => {
   const result = await launch(["deploy"], { BAD_PREFLIGHT: "1" }).done;
   assert.equal(result.code, 1, result.stderr);
@@ -196,7 +201,7 @@ test("native CLI commands other than the read-only connectivity preflight are re
 });
 
 test("successful RPC and owned stop cannot erase independent native error diagnostics", {
-  skip: !linux,
+  skip: linuxOnly,
 }, async () => {
   const result = await launch(["deploy"], { TWO_PHASE: "1", EXTRA_DIAGNOSTIC: "1" }).done;
   assert.equal(result.code, 1, result.stderr);
@@ -205,7 +210,7 @@ test("successful RPC and owned stop cannot erase independent native error diagno
 });
 
 test("a fatal owner exit cannot manufacture native drain acknowledgement", {
-  skip: !linux,
+  skip: linuxOnly,
 }, async () => {
   const result = await launch(["deploy"], { NO_ACK: "1" }).done;
   assert.equal(result.code, null);

@@ -2,7 +2,7 @@ import { isUserBanned } from "@cockpit-chess/auth/ban";
 import { isAdminRole } from "@cockpit-chess/auth/roles";
 import { ORPCError, os } from "@orpc/server";
 
-import type { Context } from "./context";
+import type { Context, CredentialKind } from "./context";
 import { isTwoFactorPolicySatisfied } from "./lib/two-factor-policy";
 
 export {
@@ -12,6 +12,35 @@ export {
 } from "./lib/two-factor-policy";
 
 const o = os.$context<Context>();
+
+export type AdminAuthorityFailure =
+  | "unauthenticated"
+  | "banned"
+  | "api-key"
+  | "unverified"
+  | "not-admin"
+  | "two-factor";
+
+/**
+ * The admin authority rule, defined once: a signed-in user who is not banned,
+ * not using an API key (a long-lived bearer that never went through sign-in or
+ * 2FA), with a verified email, an admin role and the forced second factor.
+ * `requireAdmin`, `requireAdminOr404` and the server's cookie-only
+ * `requireVerifiedAdminSession` (apps/server/src/admin-session-gate.ts) all
+ * call this and only map the failure to their own response.
+ */
+export async function checkAdminAuthority<S extends NonNullable<Context["session"]>>(
+  session: S | null | undefined,
+  credential?: CredentialKind,
+): Promise<{ ok: true; session: S } | { ok: false; reason: AdminAuthorityFailure }> {
+  if (!session?.user) return { ok: false, reason: "unauthenticated" };
+  if (isUserBanned(session.user)) return { ok: false, reason: "banned" };
+  if (credential === "api-key") return { ok: false, reason: "api-key" };
+  if (!session.user.emailVerified) return { ok: false, reason: "unverified" };
+  if (!isAdminRole(session.user.role)) return { ok: false, reason: "not-admin" };
+  if (!(await isTwoFactorPolicySatisfied(session.user))) return { ok: false, reason: "two-factor" };
+  return { ok: true, session };
+}
 
 export const publicProcedure = o;
 
@@ -46,39 +75,30 @@ const requireRequiredTwoFactor = o.middleware(async ({ context, next }) => {
 
 export const protectedProcedure = authenticatedProcedure.use(requireRequiredTwoFactor);
 
+const ADMIN_FORBIDDEN: Record<
+  Exclude<AdminAuthorityFailure, "unauthenticated" | "banned">,
+  string
+> = {
+  // packages/api/src/routers/cli.ts: admin procedures need a real session
+  // (cookie or a device-flow token approved from a signed-in browser).
+  "api-key": "API keys cannot be used for admin access.",
+  unverified: "Email verification required for admin access.",
+  "not-admin": "Admin access required.",
+  "two-factor": "Two-factor authentication setup is required.",
+};
+
 const requireAdmin = o.middleware(async ({ context, next }) => {
-  // `requireAuth` is always chained before this middleware, so session is
-  // non-null at runtime — but the middleware-chain types don't carry that
-  // narrowing through, so repeat the guard for the type checker.
-  if (!context.session?.user || isUserBanned(context.session.user)) {
-    throw new ORPCError("UNAUTHORIZED");
-  }
-  // An API key is a long-lived bearer credential that never went through
-  // sign-in or 2FA; admin procedures need a real session (cookie or a
-  // device-flow token approved from a signed-in browser). packages/api/src/routers/cli.ts.
-  if (context.credential === "api-key") {
-    throw new ORPCError("FORBIDDEN", {
-      message: "API keys cannot be used for admin access.",
-    });
-  }
-  if (!context.session.user.emailVerified) {
-    throw new ORPCError("FORBIDDEN", {
-      message: "Email verification required for admin access.",
-    });
-  }
-  if (!isAdminRole(context.session.user.role)) {
-    throw new ORPCError("FORBIDDEN", {
-      message: "Admin access required.",
-    });
-  }
-  if (!(await isTwoFactorPolicySatisfied(context.session.user))) {
-    throw new ORPCError("FORBIDDEN", {
-      message: "Two-factor authentication setup is required.",
-    });
+  // `requireAuth` is always chained before this middleware; the rule repeats
+  // the session check anyway (checkAdminAuthority).
+  const authority = await checkAdminAuthority(context.session, context.credential);
+  if (!authority.ok) {
+    if (authority.reason === "unauthenticated" || authority.reason === "banned")
+      throw new ORPCError("UNAUTHORIZED");
+    throw new ORPCError("FORBIDDEN", { message: ADMIN_FORBIDDEN[authority.reason] });
   }
   return next({
     context: {
-      session: context.session,
+      session: authority.session,
     },
   });
 });
@@ -91,25 +111,11 @@ export const adminProcedure = publicProcedure.use(requireAuth).use(requireAdmin)
 // (e.g. the /admin route group) so existence of the endpoint is not leaked
 // to non-admins.
 const requireAdminOr404 = o.middleware(async ({ context, next }) => {
-  const notFound = () => new ORPCError("NOT_FOUND", { message: "Not found" });
-  if (!context.session?.user || isUserBanned(context.session.user)) {
-    throw notFound();
-  }
-  if (context.credential === "api-key") {
-    throw notFound();
-  }
-  if (!context.session.user.emailVerified) {
-    throw notFound();
-  }
-  if (!isAdminRole(context.session.user.role)) {
-    throw notFound();
-  }
-  if (!(await isTwoFactorPolicySatisfied(context.session.user))) {
-    throw notFound();
-  }
+  const authority = await checkAdminAuthority(context.session, context.credential);
+  if (!authority.ok) throw new ORPCError("NOT_FOUND", { message: "Not found" });
   return next({
     context: {
-      session: context.session,
+      session: authority.session,
     },
   });
 });

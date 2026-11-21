@@ -1,4 +1,5 @@
 /** Generate a reviewable native-Git setup. No network, credentials, or writes. */
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { relative } from "node:path";
@@ -10,13 +11,69 @@ import { ENV_VARS } from "./lib/env-manifest.js";
 type Topology = "app" | "app-worker";
 type Options = {
   environment: "development" | "production";
+  backups?: boolean;
   gitRef: string;
   topology: Topology;
   url: string;
+  /**
+   * The repository Dokploy builds from. Set: every build context is the pinned
+   * Git context `<gitUrl>#<gitRef>`, so the pasted (raw) Compose builds
+   * without a source tree. Unset: `context: .` (plain `docker compose` from a
+   * checkout; the CLI's `--git-url local`).
+   */
+  gitUrl?: string;
 };
 const keys = new Set(ENV_VARS.map((variable) => variable.key));
 const sharedKeys = new Set(Object.keys(sharedVars));
 const serverKeys = new Set([...sharedKeys, ...Object.keys(serverVars)]);
+
+/**
+ * A repository URL Docker can use as a Git build context: https://, ssh:// or
+ * scp-like `user@host:path`. Never credentials (the file is pasted into
+ * Dokploy and kept in its database), never a `#` (the ref is appended).
+ */
+export function assertGitUrl(gitUrl: string) {
+  const fail = (why: string): never => {
+    throw new Error(`--git-url ${why}`);
+  };
+  if (!gitUrl || /[\s#?"'`$\\]/.test(gitUrl))
+    fail(
+      "must be a repository URL without spaces, quotes, `$`, `\\`, `?` (a query) or `#` (the ref is appended).",
+    );
+  if (/^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^/]/.test(gitUrl)) return;
+  let parsed: URL;
+  try {
+    parsed = new URL(gitUrl);
+  } catch {
+    return fail("must be https://…, ssh://… or git@host:owner/repo.git.");
+  }
+  if (
+    !["https:", "ssh:"].includes(parsed.protocol) ||
+    !parsed.hostname ||
+    parsed.pathname.length < 2
+  )
+    fail("must be https://…, ssh://… or git@host:owner/repo.git.");
+  if (parsed.password || (parsed.protocol === "https:" && parsed.username))
+    fail(
+      "must not contain credentials: the generated file is pasted into Dokploy. Use a public URL, or an SSH URL the Dokploy server's Docker can fetch.",
+    );
+  if (parsed.search || parsed.hash) fail("must not have a query or fragment.");
+}
+
+/**
+ * A Git build context drops `.git` unless asked to keep it; the server image
+ * reads its commit from `.git/HEAD` (scripts/build-commit.mjs) when
+ * BUILD_VERSION is unset, so `/ready` and `pnpm deploy:check` can tell which
+ * release is live.
+ */
+const keepGitDir = (options: Options) =>
+  options.gitUrl === undefined
+    ? ""
+    : '\n        # Keep .git in the Git context: the build reads its commit from .git/HEAD.\n        BUILDKIT_CONTEXT_KEEP_GIT_DIR: "1"';
+
+/** The build context of every service: the pinned Git context, or `.`. */
+const buildContext = (options: Options) =>
+  options.gitUrl === undefined ? "." : JSON.stringify(`${options.gitUrl}#${options.gitRef}`);
 
 export function generateDokployConfig(options: Options) {
   if (!["development", "production"].includes(options.environment))
@@ -27,6 +84,7 @@ export function generateDokployConfig(options: Options) {
     throw new Error("Development automatic deployment follows main.");
   if (options.environment === "production" && !/^release\/[a-f0-9]{40}$/.test(options.gitRef))
     throw new Error("Production requires an immutable release/<full-commit-sha> Git tag.");
+  if (options.gitUrl !== undefined) assertGitUrl(options.gitUrl);
   const url = new URL(options.url);
   if (
     url.protocol !== "https:" ||
@@ -66,20 +124,24 @@ export function generateDokployConfig(options: Options) {
     // Cloudflare in front of Traefik is 2). See apps/server/src/client-ip.ts.
     TRUST_PROXY_HOPS: "1",
     BACKUP_S3_PREFIX: prefix,
-    ...refs(writerKeys),
-    ...(!worker ? refs(monitorKeys) : {}),
+    // BACKUP_ENABLED gates the server's pre-migration / pre-drop dumps and
+    // BACKUP_MAX_AGE_HOURS re-ages the admin card's verdict, in both
+    // topologies; the monitor keys go only to the selected monitor runtime.
+    ...(options.backups ? refs(serverBackupKeys) : {}),
+    ...(options.backups && !worker ? refs(monitorKeys) : {}),
   };
   const workerEnvironment = {
     ...runtime,
     NODE_ENV: "production",
     MIGRATE_ON_START: "false",
     BACKUP_S3_PREFIX: prefix,
-    ...refs(monitorKeys),
+    ...(options.backups ? refs(monitorKeys) : {}),
   };
   const application = (role: string, dockerfile: string, environment: Record<string, string>) => ({
     name: `${projectName(options)}-${role}`,
     sourceType: "git",
-    customGitUrl: "<your repository URL; configure its Git credentials in Dokploy>",
+    customGitUrl:
+      options.gitUrl ?? "<your repository URL; configure its Git credentials in Dokploy>",
     customGitBranch: options.gitRef,
     autoDeploy: options.environment === "development",
     buildType: "dockerfile",
@@ -144,8 +206,8 @@ export function generateDokployConfig(options: Options) {
       server: optionalFor(serverKeys, serverEnvironment),
       ...(worker ? { worker: optionalFor(sharedKeys, workerEnvironment) } : {}),
     },
-    backupSetupRequired:
-      "Before storing real data, choose provider backups or enable exactly one daily backup service and external missed-backup alert. Daily defaults off. Fresh empty installs need no snapshot; existing databases without a destination warn; configured backup failures block. BACKUP_ENABLED controls monitor intent only (default true). Writer credentials belong to server startup and the backup service and are stripped before app execution; monitor credentials belong only to the selected worker runtime. Follow docs/deployment.md.",
+    backupSetup:
+      "Backups default off; no storage, sidecar or backup settings are required to deploy. Opt in with --backups true, BACKUP_ENABLED=true for migration snapshots and monitoring, and exactly one BACKUP_SCHEDULE=daily service for daily writing. When enabled, configured backup failures block migrations. Writer credentials belong to server startup and the backup service and are stripped before app execution; monitor credentials belong only to the selected worker runtime. Follow docs/deployment.md.",
     rolloutContract:
       "The server applies committed migrations before HTTP startup; external workers wait up to 300s and register their instance. Start-first orders tasks, not cross-Application completion. Accept the expected commit and readiness with deploy:check; preserve adjacent-release queue compatibility.",
     releaseContract:
@@ -177,6 +239,12 @@ const writerKeys = [
   "BACKUP_S3_FORCE_PATH_STYLE",
   "BACKUP_S3_SSE",
 ];
+/**
+ * The server in both topologies: the backup switch (its migration snapshots),
+ * the writer keys, and the age limit it re-ages the recorded freshness verdict
+ * with (packages/api/src/lib/backup-freshness.ts refreshBackupFreshness).
+ */
+const serverBackupKeys = ["BACKUP_ENABLED", "BACKUP_MAX_AGE_HOURS", ...writerKeys];
 const monitorKeys = [
   "BACKUP_ENABLED",
   "BACKUP_MAX_AGE_HOURS",
@@ -188,7 +256,7 @@ const monitorKeys = [
   "BACKUP_MONITOR_S3_SECRET_ACCESS_KEY",
 ];
 const backupDefaults: Record<string, string> = {
-  BACKUP_ENABLED: "true",
+  BACKUP_ENABLED: "false",
   BACKUP_MAX_AGE_HOURS: "36",
   BACKUP_S3_REGION: "auto",
   BACKUP_S3_FORCE_PATH_STYLE: "false",
@@ -226,8 +294,8 @@ function composeEnvironments(options: Options): Record<string, Record<string, st
       MIGRATE_ON_START: "true",
       // One trusted proxy (Traefik); see apps/server/src/client-ip.ts.
       TRUST_PROXY_HOPS: "1",
-      ...refsForCompose(writerKeys),
-      ...(!worker ? refsForCompose(monitorKeys) : {}),
+      ...(options.backups ? refsForCompose(serverBackupKeys) : {}),
+      ...(options.backups && !worker ? refsForCompose(monitorKeys) : {}),
       BACKUP_S3_PREFIX: prefix,
     },
     ...(worker
@@ -237,7 +305,7 @@ function composeEnvironments(options: Options): Record<string, Record<string, st
             ...refsForCompose(["SMTP_HOST", "SMTP_USER", "SMTP_PASS", "SMTP_FROM"]),
             SMTP_PORT: composeVar("SMTP_PORT", "587"),
             MIGRATE_ON_START: "false",
-            ...refsForCompose(monitorKeys),
+            ...(options.backups ? refsForCompose(monitorKeys) : {}),
             BACKUP_S3_PREFIX: prefix,
           },
         }
@@ -257,23 +325,29 @@ function composeChecklist(options: Options) {
   return {
     file: "docker-compose.dokploy.yml",
     topology: options.topology,
+    buildContext:
+      options.gitUrl === undefined
+        ? "local (`context: .`): only for plain `docker compose` in a checkout. A pasted Dokploy Compose has no source tree; regenerate with --git-url <repository URL> for Dokploy."
+        : `${options.gitUrl}#${options.gitRef}: each deploy builds ${options.gitRef} from the repository, so the pasted Compose needs no source tree. The Dokploy server's Docker fetches the URL itself.`,
     import:
-      "Import the generated Compose in the connected Git project; every role builds the selected Git ref.",
+      "Dokploy → your project → Compose → paste the generated file (no repository connection needed); every role builds the pinned Git context.",
     environmentVariables: Object.fromEntries(
-      Object.entries(composeEnvironments(options)).map(([role, entries]) => [
-        role,
-        [
-          ...new Set(
-            Object.values(entries).flatMap((value) =>
-              [...value.matchAll(/\$\{([A-Z0-9_]+):-\}/g)].map((match) => match[1]!),
+      Object.entries(composeEnvironments(options))
+        .filter(([role]) => options.backups || role !== "backup")
+        .map(([role, entries]) => [
+          role,
+          [
+            ...new Set(
+              Object.values(entries).flatMap((value) =>
+                [...value.matchAll(/\$\{([A-Z0-9_]+):-\}/g)].map((match) => match[1]!),
+              ),
             ),
-          ),
-        ].sort(),
-      ]),
+          ].sort(),
+        ]),
     ),
     manualMigration: "docker compose run --rm server migrate",
     backups:
-      "The backup profile is opt-in; enable it and set BACKUP_SCHEDULE=daily, or use provider backups. Mount /backups on server and backup. Exactly one schedule per database; BACKUP_ENABLED is monitor intent only.",
+      "Backups default off. Generate with --backups true to include local storage and the optional backup profile; set BACKUP_ENABLED=true for migration snapshots and monitoring and BACKUP_SCHEDULE=daily on exactly one backup service.",
   };
 }
 
@@ -289,10 +363,10 @@ export function generateDokployCompose(options: Options): string {
       .join("\n");
   const runtime = (role: "server" | "worker") => `  ${role}:
     build:
-      context: .
+      context: ${buildContext(options)}
       dockerfile: ${role === "server" ? "Dockerfile" : "Dockerfile.worker"}
       args:
-        BUILD_VERSION: \${BUILD_VERSION:-}
+        BUILD_VERSION: \${BUILD_VERSION:-}${keepGitDir(options)}
     restart: unless-stopped
     stop_grace_period: 30s
     depends_on:
@@ -304,9 +378,7 @@ export function generateDokployCompose(options: Options): string {
 ${envLines(role)}
 ${
   role === "server"
-    ? `    volumes:
-      - backups:/backups
-    labels:
+    ? `${options.backups ? "    volumes:\n      - backups:/backups\n" : ""}    labels:
 ${[
   "traefik.enable=true",
   `traefik.http.routers.${router}.rule=Host(\`${new URL(options.url).hostname}\`)`,
@@ -336,10 +408,18 @@ ${[
       restart_policy:
         condition: on-failure
 `;
-  return `# Generated from the connected Git ref ${options.gitRef}; do not commit this artifact.
+  return `# Generated for Git ref ${options.gitRef}; do not commit this artifact.
+#   pnpm dokploy:config --environment ${options.environment} --git-ref ${options.gitRef} --git-url ${options.gitUrl ?? "local"} --topology ${options.topology} --url ${options.url}${options.backups ? " --backups true" : ""}
+${
+  options.gitUrl === undefined
+    ? `# Build context: \`.\` (--git-url local), for plain docker compose in a checkout only;
+# a pasted Dokploy Compose has no source tree, so regenerate with --git-url.`
+    : `# Every image builds from the pinned Git context ${options.gitUrl}#${options.gitRef};
+# the Dokploy server's Docker fetches it (no source tree needed).`
+}
 # Server-led migrations; external workers wait before starting consumers.
-# Daily backups default off. Before real data, choose provider backups or enable
-# the backup profile with BACKUP_SCHEDULE=daily. Exactly one schedule per DB.
+# Backups default off; no backup settings or storage are required.
+# Opt in with --backups true, BACKUP_ENABLED=true and BACKUP_SCHEDULE=daily.
 # Writer keys are stripped after server startup; monitor uses its own read-only keys.
 name: ${project}
 
@@ -371,37 +451,72 @@ ${envLines("redis")}
       timeout: 5s
       retries: 5
 ${runtime("server")}${options.topology === "app-worker" ? runtime("worker") : ""}
-  backup:
+${
+  options.backups
+    ? `  backup:
     profiles: [backup]
     build:
-      context: .
+      context: ${buildContext(options)}
       dockerfile: Dockerfile
       args:
-        BUILD_VERSION: \${BUILD_VERSION:-}
+        BUILD_VERSION: \${BUILD_VERSION:-}${keepGitDir(options)}
     command: backup-schedule
     restart: unless-stopped
+    # Docker copies the image's /backups into the empty named volume when the
+    # first container mounting it is created; creating server and backup
+    # concurrently races that copy-up. Create backup only once the server started.
     depends_on:
       postgres:
         condition: service_healthy
+      server:
+        condition: service_started
     environment:
 ${envLines("backup")}
     volumes:
       - backups:/backups
-    # A scheduler has no HTTP listener; do not inherit the server probe.
+    # A scheduler has no HTTP listener: replace the image's server probe with
+    # the scheduler's own verdict (unhealthy after a failed run, or when the
+    # last success is over 26 hours old; healthy while BACKUP_SCHEDULE=off).
+    # The probe itself reports "first backup in progress" for the first hour;
+    # start_period only discounts failed probes before the first healthy one.
     healthcheck:
-      disable: true
-
+      test: ["CMD", "node", "/app/scripts/backup/schedule.mjs", "health"]
+      interval: 5m
+      timeout: 30s
+      retries: 1
+      start_period: 10m
+`
+    : ""
+}
 volumes:
   postgres-data:
   redis-data:
-  backups:
-networks:
+${options.backups ? "  backups:\n" : ""}networks:
   default:
     driver: bridge
   dokploy:
     name: dokploy-network
     external: true
 `;
+}
+
+/**
+ * `--git-url`: the repository each image builds from (`<url>#<git-ref>`).
+ * Absent: the checkout's `origin` remote. `local`: `context: .` (plain
+ * `docker compose` from a checkout, never a pasted Dokploy Compose).
+ */
+export function resolveGitUrl(
+  flag: string | undefined,
+  origin: () => string | undefined,
+): string | undefined {
+  if (flag === "local") return undefined;
+  if (flag !== undefined) return flag;
+  const remote = origin()?.trim();
+  if (!remote)
+    throw new Error(
+      "No --git-url and no `origin` remote: pass --git-url <repository URL> (what Dokploy builds from), or --git-url local for plain docker compose in a checkout.",
+    );
+  return remote;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -413,19 +528,31 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       const value = args[index + 1];
       if (
         !key ||
-        !["--environment", "--git-ref", "--topology", "--url"].includes(key) ||
+        !["--environment", "--git-ref", "--git-url", "--topology", "--url", "--backups"].includes(
+          key,
+        ) ||
         fields[key] ||
         !value ||
         value.startsWith("--")
       )
         throw new Error(
-          "Use --environment development|production --git-ref <ref> --topology app|app-worker --url <https-origin>.",
+          "Use --environment development|production --git-ref <ref> --topology app|app-worker --url <https-origin> [--git-url <repository URL, default the origin remote>|local] [--backups true|false].",
         );
       fields[key] = value;
     }
+    if (fields["--backups"] && !["true", "false"].includes(fields["--backups"]))
+      throw new Error("--backups must be true or false.");
     const options = {
+      backups: fields["--backups"] === "true",
       environment: fields["--environment"],
       gitRef: fields["--git-ref"],
+      gitUrl: resolveGitUrl(fields["--git-url"], () => {
+        const remote = spawnSync("git", ["remote", "get-url", "origin"], {
+          cwd: fileURLToPath(new URL("..", import.meta.url)),
+          encoding: "utf8",
+        });
+        return remote.status === 0 ? remote.stdout : undefined;
+      }),
       topology: fields["--topology"] || "app",
       url: fields["--url"],
     };

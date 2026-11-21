@@ -137,6 +137,15 @@ async function main() {
   if (process.argv[2] !== "--disposable-services") {
     throw new Error("Use node scripts/test-runtime-operations.mjs --disposable-services.");
   }
+  // Container names only. TEST_CONTAINER_PREFIX (shared with backup:test and
+  // db:test-migrations) keeps this run's containers under your own prefix; an
+  // empty or invalid value is an error, never the default.
+  const namePrefix = process.env.TEST_CONTAINER_PREFIX ?? "cockpit-chess-runtime";
+  assert.match(
+    namePrefix,
+    /^[a-z0-9][a-z0-9_.-]*$/,
+    "TEST_CONTAINER_PREFIX is a Docker name prefix ([a-z0-9][a-z0-9_.-]*)",
+  );
   const environment = { PATH: process.env.PATH };
   const docker = (...args) =>
     execFileSync("docker", args, {
@@ -157,7 +166,7 @@ async function main() {
       "--detach",
       "--rm",
       "--name",
-      `app-runtime-pg-${randomUUID()}`,
+      `${namePrefix}-pg-${randomUUID()}`,
       "--memory",
       "256m",
       "--tmpfs",
@@ -174,7 +183,7 @@ async function main() {
       "--detach",
       "--rm",
       "--name",
-      `app-runtime-redis-${randomUUID()}`,
+      `${namePrefix}-redis-${randomUUID()}`,
       "--memory",
       "64m",
       "--publish",

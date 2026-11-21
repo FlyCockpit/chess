@@ -236,6 +236,60 @@ function checkDatabase() {
   }
 }
 
+function checkPreMigrationBackup() {
+  // BACKUP_ENABLED is the switch; a destination alone does not turn automatic
+  // backups on (scripts/db/migrate-runtime.mjs). It also turns on freshness
+  // monitoring in the worker.
+  const enabled = process.env.BACKUP_ENABLED;
+  if (enabled && enabled !== "true" && enabled !== "false") {
+    record({
+      name: "pre-migration backup",
+      status: "fail",
+      detail: `BACKUP_ENABLED must be true or false (got "${enabled}")`,
+      required: false,
+    });
+    return;
+  }
+  if (
+    enabled === "true" &&
+    process.env.BACKUP_S3_BUCKET &&
+    (!process.env.BACKUP_S3_ACCESS_KEY_ID || !process.env.BACKUP_S3_SECRET_ACCESS_KEY)
+  ) {
+    // A monitor-only setup (bucket + BACKUP_MONITOR_S3_*): a migrating start
+    // refuses it (pre-migrate.sh --startup-notice validates BACKUP_S3_*).
+    record({
+      name: "pre-migration backup",
+      status: "warn",
+      detail:
+        "BACKUP_ENABLED=true and BACKUP_S3_BUCKET without BACKUP_S3_ACCESS_KEY_ID / BACKUP_S3_SECRET_ACCESS_KEY: a migrating start refuses this; add the writer key for the server/migrate job, or set BACKUP_ENABLED=false there",
+      required: false,
+    });
+    return;
+  }
+  if (enabled === "true") {
+    record({
+      name: "pre-migration backup",
+      status: process.env.BACKUP_S3_BUCKET ? "ok" : "warn",
+      detail: process.env.BACKUP_S3_BUCKET
+        ? "BACKUP_ENABLED=true, BACKUP_S3_BUCKET is set"
+        : "BACKUP_ENABLED=true without BACKUP_S3_BUCKET: the app image also needs a writable /backups volume, or its migration refuses to start; freshness monitoring reports setup-missing",
+      required: false,
+    });
+    return;
+  }
+  record({
+    name: "pre-migration backup",
+    status: "ok",
+    detail: "off (default; migrations do not require backups)",
+    hint:
+      "In production, have the deploy take a backup before pending migrations: set BACKUP_ENABLED=true and mount " +
+      "a volume at /backups on the server and/or set BACKUP_S3_BUCKET + BACKUP_S3_*, or take a provider " +
+      "snapshot first. For daily backups regenerate with --backups true and run one backup-schedule " +
+      "service with BACKUP_SCHEDULE=daily. See docs/backup-restore.md.",
+    required: false,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // 4. Redis connection (uses `ioredis` from @cockpit-chess/queue via workspace exec)
 // ---------------------------------------------------------------------------
@@ -554,6 +608,7 @@ async function main() {
 
   checkPortless();
   await checkEnv();
+  checkPreMigrationBackup();
   // Stop further checks if env failed — they would all fail with confusing
   // messages and the user needs to fix env first.
   const envOk = results.find((r) => r.name === "env (zod schema)")?.status === "ok";

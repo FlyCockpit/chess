@@ -1,15 +1,32 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import {
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { after, describe, it } from "node:test";
 import {
   dailyPrunePlan,
   dueAtStart,
   dumpDay,
+  healthFromFile,
+  healthFromStatus,
   healthOf,
   migrationGate,
   nextAction,
   nextRunAt,
   recoveredLastSuccess,
+  STATUS_FILE,
   scheduleConfig,
+  writeStatus,
 } from "./schedule.mjs";
 
 const HOUR = 3_600_000;
@@ -85,6 +102,153 @@ describe("healthOf", () => {
     );
     assert.equal(healthOf({ ...base, lastSuccess: now - 27 * HOUR }, now).healthy, false);
     assert.equal(healthOf(base, now).healthy, false);
+  });
+});
+
+describe("healthFromStatus (the healthcheck)", () => {
+  const now = Date.UTC(2026, 10, 11, 12);
+  const daily = { BACKUP_SCHEDULE: "daily" };
+  const status = (fields) =>
+    JSON.stringify({
+      enabled: true,
+      startedAt: now - 2 * HOUR,
+      lastSuccess: now - HOUR,
+      lastFailure: null,
+      ...fields,
+    });
+  it("is healthy when off, whatever the status file says", () => {
+    for (const text of [null, "", "{", status({ lastFailure: now })])
+      assert.equal(healthFromStatus(text, {}, now).healthy, true);
+  });
+  it("with daily backups, a missing, partial or malformed status file is unhealthy", () => {
+    for (const text of [
+      null,
+      "",
+      '{"enabled":true,"startedAt":',
+      "null",
+      "[]",
+      status({ enabled: false }),
+      status({ startedAt: "yesterday" }),
+      status({ lastSuccess: "today" }),
+      status({ lastFailure: undefined }),
+    ])
+      assert.equal(healthFromStatus(text, daily, now).healthy, false, String(text));
+    assert.match(healthFromStatus(null, daily, now).reason, /no backup status/);
+  });
+  it("with daily backups, a valid status file gets healthOf's verdict", () => {
+    assert.deepEqual(healthFromStatus(status({}), daily, now), {
+      healthy: true,
+      reason: "last backup succeeded",
+    });
+    assert.equal(healthFromStatus(status({ lastFailure: now }), daily, now).healthy, false);
+    assert.equal(
+      healthFromStatus(status({ lastSuccess: now - 27 * HOUR }), daily, now).healthy,
+      false,
+    );
+  });
+  it("invalid schedule settings are unhealthy", () => {
+    const verdict = healthFromStatus(status({}), { BACKUP_SCHEDULE: "hourly" }, now);
+    assert.equal(verdict.healthy, false);
+    assert.match(verdict.reason, /BACKUP_SCHEDULE/);
+  });
+});
+
+describe("the status file (writeStatus + healthFromFile)", () => {
+  const now = Date.UTC(2026, 10, 11, 12);
+  const daily = { BACKUP_SCHEDULE: "daily" };
+  const dir = mkdtempSync(path.join(tmpdir(), "schedule-status-"));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+  let n = 0;
+  const fresh = () => path.join(dir, `status-${++n}.json`);
+  const ok = {
+    enabled: true,
+    startedAt: now - 2 * HOUR,
+    lastSuccess: now - HOUR,
+    lastFailure: null,
+  };
+
+  it("defaults to the fixed path in /tmp", () => {
+    assert.equal(STATUS_FILE, "/tmp/cockpit-chess-backup-status.json");
+  });
+  it("reads the status the loop wrote", () => {
+    const file = fresh();
+    writeStatus(ok, file);
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), ok);
+    assert.deepEqual(healthFromFile(daily, now, file), {
+      healthy: true,
+      reason: "last backup succeeded",
+    });
+    writeStatus({ ...ok, lastFailure: now }, file);
+    assert.equal(healthFromFile(daily, now, file).healthy, false);
+  });
+  it("a missing status file is unhealthy with daily backups, and names the file", () => {
+    const file = fresh();
+    const verdict = healthFromFile(daily, now, file);
+    assert.equal(verdict.healthy, false);
+    assert.match(verdict.reason, /no backup status/);
+    assert.ok(verdict.reason.includes(file), verdict.reason);
+    assert.equal(healthFromFile({}, now, file).healthy, true);
+  });
+  it("an unreadable status file (a directory) is unhealthy with daily backups", () => {
+    const file = fresh();
+    mkdirSync(file);
+    assert.match(healthFromFile(daily, now, file).reason, /no backup status/);
+  });
+  it("replaces the file by rename (a reader never sees a half-written one) and leaves no partial", () => {
+    const file = fresh();
+    writeStatus(ok, file);
+    // A hard link keeps the old inode: an in-place write would change it too.
+    const old = `${file}.old-link`;
+    linkSync(file, old);
+    const next = { ...ok, lastSuccess: now };
+    writeStatus(next, file);
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), next);
+    assert.deepEqual(JSON.parse(readFileSync(old, "utf8")), ok);
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.endsWith(".tmp")),
+      [],
+    );
+  });
+  it("writes only to a partial file, then renames it over the status file", () => {
+    const file = fresh();
+    writeStatus(ok, file);
+    /** @type {string[][]} */
+    const calls = [];
+    const io = {
+      writeFileSync: (/** @type {string} */ target, /** @type {string} */ data) => {
+        calls.push(["write", target]);
+        writeFileSync(target, data);
+      },
+      renameSync: (/** @type {string} */ from, /** @type {string} */ to) => {
+        calls.push(["rename", from, to]);
+        renameSync(from, to);
+      },
+      unlinkSync: (/** @type {string} */ target) => {
+        calls.push(["unlink", target]);
+        unlinkSync(target);
+      },
+    };
+    writeStatus({ ...ok, lastSuccess: now }, file, io);
+    const partial = `${file}.${process.pid}.tmp`;
+    assert.deepEqual(calls, [
+      ["write", partial],
+      ["rename", partial, file],
+    ]);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).lastSuccess, now);
+  });
+  it("a failed write warns, leaves the target alone and removes its partial", (t) => {
+    const file = fresh();
+    // The target is a non-empty directory, so the rename fails after the write.
+    mkdirSync(file);
+    writeFileSync(path.join(file, "x"), "");
+    const log = t.mock.method(console, "log", () => {});
+    writeStatus(ok, file);
+    assert.match(String(log.mock.calls.at(-1)?.arguments[0]), /WARNING: could not write/);
+    assert.deepEqual(readdirSync(file), ["x"]);
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.endsWith(".tmp")),
+      [],
+    );
   });
 });
 

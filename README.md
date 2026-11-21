@@ -329,7 +329,7 @@ For external orchestration, run `migrate` successfully before rolling out the sa
 | `BACKUP_SCHEDULE` | No | Daily writer: `off` by default; choose `daily` and enable Compose profile `backup` |
 | `BACKUP_HOUR_UTC`, `BACKUP_KEEP` | No | Daily hour 0–23 (default 3); newest-day local retention 1–365 (default 14) |
 | `BACKUP_S3_*` | For off-site dumps | Writer/restore transport and an explicit deployment prefix, e.g. `cockpit-chess/production/chess.example.com/database` |
-| `BACKUP_ENABLED` | No | Defaults `true`; freshness monitoring only, never disables backup writes |
+| `BACKUP_ENABLED` | No | Defaults `false`; opt-in migration snapshots and freshness monitoring; daily scheduling is a separate opt-in |
 | `BACKUP_MONITOR_S3_*`, `BACKUP_MAX_AGE_HOURS` | For bucket monitoring | Separate ListBucket-only credentials and age threshold (default 36 hours) |
 | `BUILD_VERSION` | Build argument | Full Git SHA baked into the server’s `BUILD_COMMIT` file and reported by `/ready`; no runtime `BUILD_COMMIT` variable |
 
@@ -347,7 +347,7 @@ Both runtimes need the intended `DATABASE_URL` and `REDIS_URL`. The server addit
 
 Before real data, choose provider backups/PITR or enable exactly one daily service using both the `backup` profile and `BACKUP_SCHEDULE=daily`. Mount `/backups`, configure an off-site destination with a distinct per-deployment prefix, and run a restore drill. Local-only dumps are lost with the VPS.
 
-A genuinely empty fresh install needs no snapshot. On existing databases, a missing destination warns and continues; a configured backup failure blocks migrations. Manual `backup` requires a destination. Pre-migration dumps keep 5 locally, runner pre-drop dumps explicitly keep 5, and manual/pre-restore dumps default to no pruning; daily retention defaults to 14 UTC days containing dumps. S3 expiration belongs in bucket lifecycle rules.
+A genuinely empty fresh install needs no snapshot. On existing databases with `BACKUP_ENABLED=true`, a missing destination or a failed backup blocks migrations. Manual `backup` requires a destination. Pre-migration dumps keep 5 locally, runner pre-drop dumps explicitly keep 5, and manual/pre-restore dumps default to no pruning; daily retention defaults to 14 UTC days containing dumps. S3 expiration belongs in bucket lifecycle rules.
 
 `restore` verifies and previews before mutation, pins S3 objects by ETag/version, requires exact target confirmation and `--replace` for populated targets, and snapshots before replacement unless the owner explicitly uses a provider snapshot. Restore and its seven-day deletion hold commit together. See [backup and restore](./docs/backup-restore.md) for commands, recovery and monitoring.
 

@@ -20,7 +20,7 @@ export function backupCommonConfigWarnings(value: BackupConfig): string[] {
   const warnings: string[] = [];
   if (value.BACKUP_ENABLED && !value.BACKUP_S3_BUCKET) {
     warnings.push(
-      "BACKUP_ENABLED=true but BACKUP_S3_BUCKET is not set. Freshness monitoring is enabled but no off-site bucket is configured — set BACKUP_S3_BUCKET and a dedicated BACKUP_MONITOR_S3_* key. Configure backup writing separately with the canonical backup commands and BACKUP_SCHEDULE.",
+      "BACKUP_ENABLED=true but BACKUP_S3_BUCKET is not set. Freshness monitoring is enabled but no off-site bucket is configured — set BACKUP_S3_BUCKET and a dedicated BACKUP_MONITOR_S3_* key. Pre-migration dumps can still go to a mounted /backups volume; daily writing uses BACKUP_SCHEDULE.",
     );
   }
   if (!value.BACKUP_S3_BUCKET) return warnings;

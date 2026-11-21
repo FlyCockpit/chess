@@ -24,4 +24,6 @@ void instance.init({
   defaultNS: "chess",
   interpolation: { escapeValue: false },
 });
-export const t = (key: string, values?: Record<string, string | number>) => instance.t(key, values);
+// i18next 27 types reject an explicit `undefined` options argument.
+export const t = (key: string, values?: Record<string, string | number>) =>
+  values === undefined ? instance.t(key) : instance.t(key, values);

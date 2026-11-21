@@ -24,11 +24,9 @@
     "loadMore": "Cargar más",
     "loadingMore": "Cargando…"
   },
-  "appName": "{{name}}",
   "fileDrop": {
     "ignored": "Ese archivo no se puede soltar aquí."
   },
   "loading": "Cargando…",
-  "somethingWentWrong": "Algo salió mal",
-  "welcome": "Bienvenido"
+  "somethingWentWrong": "Algo salió mal"
 }

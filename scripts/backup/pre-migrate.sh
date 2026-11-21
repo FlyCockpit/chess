@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
-# Pre-migration backup — called by the migration runner when migrations are
-# pending, and by restore.mjs (--label pre-restore --required) to snapshot a
-# target before replacing it.
+# Pre-migration backup — called by the migration runner (--required, only when
+# BACKUP_ENABLED=true) when migrations are pending or before a scheduled
+# deletion (--label pre-drop), by restore.mjs (--label pre-restore --required)
+# to snapshot a target before replacing it, by the `backup` command
+# (--label manual --required), and by the daily schedule.mjs service
+# (--label daily --required).
+#
+# Linux only: it runs inside the app image (Debian) on the deployment server
+# and uses GNU find/mktemp/mountpoint. Its tests run in a Linux container
+# where Docker exists (scripts/backup/pre-migrate.test.mjs).
 #
 # Destinations (either, both, or neither):
 #   /backups          — used when it is a mounted volume and writable (the
@@ -10,16 +17,22 @@
 #   BACKUP_S3_BUCKET  — when set, the dump is also uploaded with BACKUP_S3_*.
 #
 # Exit status (the runner's contract):
-#   0  backup written and verified, OR no destination configured (a WARNING is
-#      logged; the migration proceeds without a logical backup).
-#   1  a configured backup failed — the runner must not migrate.
+#   0  backup written and verified, OR (without --required) no destination
+#      configured (silent).
+#   1  a configured backup failed, or --required found no destination — the
+#      runner must not migrate.
 #   3  the dump is written and verified in /backups, but the S3 upload failed
 #      (still a failure for the runner; schedule.mjs re-uploads that file
 #      instead of dumping again).
 #
 # Usage: pre-migrate.sh [--label <name>] [--required] [--keep <n>]
+#   --startup-notice  never dumps. BACKUP_ENABLED unset/false: print the
+#               backups-off notice once and exit 0. BACKUP_ENABLED=true: exit 1
+#               unless a usable destination is configured (and BACKUP_S3_*
+#               settings are valid), so a deploy that asked for backups fails
+#               clearly at startup instead of at its first migration.
 #   --label     file-name prefix (default pre-migrate; [a-z0-9-] only)
-#   --required  fail instead of warning when no destination is configured
+#   --required  fail when no destination is configured
 #   --keep      local dumps of this label to keep (default 5 for pre-migrate,
 #               0 = never prune, the default for every other label)
 set -euo pipefail
@@ -28,6 +41,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LOCAL_DIR="/backups"
 label="pre-migrate"
 required=0
+startup_notice=0
 keep=""
 
 fatal() {
@@ -41,6 +55,10 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || fatal "--label needs a value."
       label="$2"
       shift 2
+      ;;
+    --startup-notice)
+      startup_notice=1
+      shift
       ;;
     --required)
       required=1
@@ -60,6 +78,12 @@ if [ -z "$keep" ]; then
 fi
 [[ "$keep" =~ ^[0-9]+$ ]] || fatal "--keep must be a non-negative integer."
 
+case "${BACKUP_ENABLED:-}" in
+  "" | false) enabled=0 ;;
+  true) enabled=1 ;;
+  *) fatal "BACKUP_ENABLED must be true or false (got \"${BACKUP_ENABLED}\")." ;;
+esac
+
 # /backups counts as configured only when it is a real mount. The image
 # pre-creates an empty /backups owned by the runtime user (so a fresh named
 # volume inherits writable ownership); that bare directory is not a backup
@@ -72,6 +96,16 @@ is_mount() {
   fi
 }
 
+if [ "$startup_notice" = 1 ] && [ "$enabled" = 0 ]; then
+  # An upgrade from the old default (BACKUP_ENABLED=true) with a destination
+  # already set up would otherwise lose its automatic dumps quietly.
+  if [ -n "${BACKUP_S3_BUCKET:-}" ] || { [ -d "$LOCAL_DIR" ] && is_mount "$LOCAL_DIR"; }; then
+    echo "WARNING: [backup] A backup destination is configured but BACKUP_ENABLED is not true, so NO automatic pre-migration or pre-drop backup is taken and freshness is not monitored. Set BACKUP_ENABLED=true to turn them on (it now defaults to false)." >&2
+  fi
+  echo "NOTICE: [backup] Backups are OFF (BACKUP_ENABLED is not true); migrations and scheduled deletions run without a backup. To turn them on, set BACKUP_ENABLED=true and mount a writable volume at /backups and/or set BACKUP_S3_BUCKET with BACKUP_S3_* credentials; for daily dumps also run the backup-schedule service with BACKUP_SCHEDULE=daily (Dokploy: pnpm dokploy:config --backups true). See docs/backup-restore.md." >&2
+  exit 0
+fi
+
 use_local=0
 if [ -d "$LOCAL_DIR" ] && ! is_mount "$LOCAL_DIR"; then
   : # image-created placeholder directory, not a mounted volume
@@ -79,22 +113,31 @@ elif [ -d "$LOCAL_DIR" ] && [ -w "$LOCAL_DIR" ]; then
   use_local=1
 elif [ -d "$LOCAL_DIR" ]; then
   # A mounted volume the process cannot write is a configured backup that
-  # cannot succeed — do not silently skip it.
+  # cannot succeed — do not silently skip it (also at startup: BACKUP_ENABLED
+  # is true here, so the deploy asked for backups).
   fatal "$LOCAL_DIR exists but is not writable by $(id -un) (uid $(id -u)). Fix the volume's ownership."
 fi
 use_s3=0
 [ -z "${BACKUP_S3_BUCKET:-}" ] || use_s3=1
 
 if [ "$use_local" = 0 ] && [ "$use_s3" = 0 ]; then
+  if [ "$startup_notice" = 1 ]; then
+    fatal "BACKUP_ENABLED=true but no backup destination is configured: mount a writable volume at $LOCAL_DIR and/or set BACKUP_S3_BUCKET with BACKUP_S3_*, or set BACKUP_ENABLED=false to run without backups (docs/backup-restore.md)."
+  fi
   if [ "$required" = 1 ]; then
     fatal "no backup destination: mount a writable volume at $LOCAL_DIR or set BACKUP_S3_BUCKET and BACKUP_S3_*."
   fi
-  cat >&2 <<EOF
-WARNING: [backup] No pre-migration backup was taken — no destination is configured.
-         Recommended: mount a writable volume at $LOCAL_DIR (Dokploy: a volume mount
-         on the app service), and/or set BACKUP_S3_BUCKET with BACKUP_S3_* credentials,
-         or take a provider snapshot before deploying. Continuing without one.
-EOF
+  exit 0
+fi
+
+if [ "$startup_notice" = 1 ]; then
+  if [ "$use_s3" = 1 ]; then
+    node "$HERE/s3.mjs" check-config || exit 1
+  fi
+  destinations=""
+  [ "$use_local" = 0 ] || destinations="$LOCAL_DIR"
+  [ "$use_s3" = 0 ] || destinations="${destinations:+$destinations and }BACKUP_S3_BUCKET"
+  echo "[backup] Backups are ON (BACKUP_ENABLED=true): pre-migration and pre-drop dumps go to $destinations." >&2
   exit 0
 fi
 

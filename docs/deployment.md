@@ -20,20 +20,25 @@ pnpm dokploy:config --environment development --git-ref main --url https://dev.c
 pnpm dokploy:config --environment production --git-ref release/<full-commit-sha> --topology app-worker --url https://chess.example.com
 ```
 
+Every image builds from the pinned Git context `<repository URL>#<git-ref>`: the pasted Compose has no source tree, so the Dokploy server's Docker fetches that ref itself on each deploy. Those builds keep `.git` (`BUILDKIT_CONTEXT_KEEP_GIT_DIR`), so the server image still reads its commit from `.git/HEAD` when `BUILD_VERSION` is unset and `/ready` reports it for `pnpm deploy:check`. The URL defaults to the checkout's `origin` remote; pass `--git-url <URL>` for another (https://, ssh:// or `git@host:owner/repo.git`). It must be fetchable by Docker on the Dokploy server (a public repository, or an SSH URL whose key that Docker can use) and may not carry credentials: the generator refuses a token in the URL, because the file is stored in Dokploy. `--git-url local` writes `context: .`, only for plain `docker compose` in a checkout (see below).
+
 Each invocation writes `docker-compose.dokploy.yml`, a gitignored deployment artifact, and prints a JSON checklist. Generate and keep the artifacts for each environment separately. The checklist is a reference for native Dokploy Applications, not an API/import payload. The command reads no credentials and makes no remote changes.
 
-In Dokploy, create the environment's Compose deployment, connect this repository at the chosen ref, and import its generated Compose file. Supply the variables listed in the checklist's `compose` section through Dokploy's Environment settings. Secrets have no built-in defaults. Do not commit a filled environment file or enable Dockerfile `.env` creation.
+In Dokploy, create the environment's Compose deployment and paste its generated Compose file. Each deploy builds the images from the Git context in the file (the checklist's `compose.buildContext`), so the pasted Compose needs no repository connection. For development auto-deploy, add the compose's deploy webhook (its **Deployments** tab) to your Git host for pushes to `main`; confirm it on your Dokploy version with one push. Production stays manual: regenerate for the new `release/<full-commit-sha>` tag, paste the file and click **Deploy**. Supply the variables listed in the checklist's `compose` section through Dokploy's Environment settings. Secrets have no built-in defaults. Do not commit a filled environment file or enable Dockerfile `.env` creation.
 
 The generated file includes:
 
 - Server, PostgreSQL 18, Valkey 9 with `noeviction`, and an optional dedicated worker.
+- The backup service (with `--backups true`) is created only after the server has started: both mount the fresh `backups` volume, and creating them concurrently races Docker's copy of the image's `/backups` into it.
 - Project-specific networks, volumes and Traefik identifiers derived from environment and host; database/cache ports are private.
 - TLS routing and response compression for the validated HTTPS origin.
 - Start-first updates and rollbacks with a 30-second shutdown grace period.
-- A node-writable named `/backups` volume for startup snapshots and the optional daily backup service.
+- No backup storage or sidecar by default. Generate with `--backups true` to include a node-writable `/backups` volume and optional daily service.
 - An explicit backup prefix such as `cockpit-chess/production/chess.example.com/database` shared by the writer and selected monitor runtime.
 
-The daily backup service also requires the **`backup` Compose profile** and `BACKUP_SCHEDULE=daily`. Neither is enabled by default. Choose backups before storing real data; see [Backups before real data](#backups-before-real-data).
+A minimal deployment needs only `POSTGRES_PASSWORD`, `REDIS_PASSWORD` and `BETTER_AUTH_SECRET`; the generated origin and role settings are already filled. Set `ADMIN_EMAILS` to bootstrap the first admin. SMTP is needed for email flows. No backup settings are required: migrations and health checks work with backups off, and startup logs one notice explaining how to enable them.
+
+Backups are optional. Generate with `--backups true`, then enable the **`backup` Compose profile** and `BACKUP_SCHEDULE=daily` for one daily service. Set `BACKUP_ENABLED=true` for migration snapshots and off-site freshness monitoring; see [Backups before real data](#backups-before-real-data).
 
 For Dokploy-managed PostgreSQL or Valkey, use the native Application checklist with the actual internal hostnames and complete connection strings. Project/environment variables are reference stores: map each value explicitly into each Application. Never nest `${{project.*}}` references inside an environment connection string. Keep `MIGRATE_ON_START` and `WORKER_MODE` on their specific roles.
 
@@ -49,13 +54,14 @@ For Dokploy-managed PostgreSQL or Valkey, use the native Application checklist w
 | `TRUST_PROXY_HOPS` | Server; exact count of trusted reverse proxies for the client-IP rate-limit key. Generated config sets `1` (Traefik). See [Client IP and reverse proxies](#client-ip-and-reverse-proxies). |
 | `BACKUP_S3_*` writer keys | Server admission and backup/restore operations |
 | `BACKUP_MONITOR_S3_*` | Selected embedded or external worker runtime; ListBucket only |
-| `BACKUP_ENABLED` | Monitor intent only, default `true`; never controls backup writing |
+| `BACKUP_ENABLED` | Server (its migration snapshots) and the selected monitor runtime. Backup switch, strict `true`/`false`, default `false`: `true` takes the pre-migration and pre-drop dumps (a migrating start fails without a destination) and turns on freshness monitoring; explicit backup commands and the daily service work either way |
+| `BACKUP_MAX_AGE_HOURS` | Server and the selected monitor runtime, the same value (default 36): the monitor records stale beyond it, and the server re-ages that recorded verdict with its own copy for the admin card |
 | `BACKUP_SCHEDULE`, `BACKUP_HOUR_UTC`, `BACKUP_KEEP` | Daily service: `off`/`daily`, hour 0–23 (default 3), retention 1–365 (default 14) |
 | `BUILD_VERSION` | Docker build argument containing the full lowercase Git SHA |
 
 `VITE_*` values are compiled into the web bundle; changing them requires a rebuild. Leave `VITE_SERVER_URL` unset for a same-origin deployment. `VITE_APP_NAME` defaults to Cockpit Chess. Set `CORS_ORIGIN` only for an intentional cross-origin browser deployment, using an exact origin.
 
-The server image bakes a `BUILD_COMMIT` file beside its bundle outside the Turbo cache, using `BUILD_VERSION` or readable minimal Git metadata. This is not a runtime environment variable. A checkout/worktree without either usable source reports `commit: null`; deployment acceptance cannot establish its identity. CI should always pass the full SHA:
+The server and worker images bake a `BUILD_COMMIT` file beside their bundles outside the Turbo cache, using `BUILD_VERSION` or readable minimal Git metadata. This is not a runtime environment variable; the server reports it on `/ready`, and `pnpm dokploy:verify` reads it from each container. A checkout/worktree without either usable source reports `commit: null`; deployment acceptance cannot establish its identity. CI should always pass the full SHA:
 
 ```sh
 docker build --build-arg BUILD_VERSION="$(git rev-parse HEAD)" -t cockpit-chess-server -f Dockerfile .
@@ -76,7 +82,7 @@ Anonymous rate limits (sign-in, OTP, CLI, anonymous budgets) key on the client I
 
 With `0` the server keys on the TCP socket peer and ignores `X-Forwarded-For`. If a proxy is in front but the value stays `0`, every client is keyed on the proxy's address and shares **one** rate-limit bucket: a single noisy client can exhaust sign-in or CLI budgets for everyone. That fails safe (nobody can pick their own bucket) but is wrong for production; set the hop count. When the value is `0` and a private-network peer sends `X-Forwarded-For` (an uncounted proxy), the server logs one `[client-ip]` warning per process.
 
-With a value above `0`, the server must be reachable only through those proxies (the generated Compose publishes no host port); a caller that can reach the port directly could otherwise forge the trusted entries. A request whose chain is shorter than the hop count, or whose trusted entry is not an IP address, is keyed on the socket peer, never on a client-supplied entry. Set the value higher than your real proxy count and clients choose their own key again, so count exactly.
+With a value above `0`, the server must be reachable only through those proxies (the generated Compose publishes no host port); a caller that can reach the port directly could otherwise forge the trusted entries. A proxy that appends the client's port (`1.2.3.4:5678` or `[2001:db8::1]:5678`, Azure Application Gateway's default) needs no change: the server strips the port from the selected entry before validating it. A request whose chain is shorter than the hop count, or whose trusted entry is still not an IP address, is keyed on the socket peer, never on a client-supplied entry. Set the value higher than your real proxy count and clients choose their own key again, so count exactly.
 
 A proxy only counts if the next one keeps what it wrote. Dokploy's Traefik does not trust incoming `X-Forwarded-For` by default: behind Cloudflare it replaces the header with Cloudflare's edge address, so `2` finds a one-entry chain and every visitor shares the socket bucket, and `1` keys visitors per Cloudflare edge. Use `2` only after setting Traefik's `entryPoints.<name>.forwardedHeaders.trustedIPs` to Cloudflare's published ranges and firewalling the origin to Cloudflare; otherwise keep `1`.
 
@@ -84,7 +90,7 @@ The proxy network is shared: other Dokploy applications on `dokploy-network` can
 
 ## Migration startup and instance admission
 
-The server defaults to `MIGRATE_ON_START=true`. Before HTTP startup, `scripts/db/migrate-runtime.mjs` inspects committed migration history, acquires the runner lock, recovers only provably transactional interrupted attempts, snapshots when configured, applies pending SQL and evaluates due scheduled deletions. A fresh empty application catalog starts from `0_init`; populated catalogs without valid migration history are refused. It never adopts an untracked schema.
+The server defaults to `MIGRATE_ON_START=true`. Before HTTP startup, `scripts/db/migrate-runtime.mjs` inspects committed migration history, acquires the runner lock, recovers only provably transactional interrupted attempts, snapshots when `BACKUP_ENABLED=true` and configured, applies pending SQL and evaluates due scheduled deletions. A fresh empty application catalog starts from `0_init`; populated catalogs without valid migration history are refused. It never adopts an untracked schema.
 
 The external worker uses `MIGRATE_ON_START=false` and the same image history. It waits up to **300 seconds** for admission. Wait mode reads schema/history but **writes instance registration**; it never runs scheduled deletions. A failed migration or checksum mismatch refuses startup. An older image can start against a newer database only if every missing migration is rollback-safe and no corresponding deletion has run. There is no breaking-change override.
 
@@ -115,7 +121,9 @@ With the generated Compose configuration, an explicit migration run is:
 docker compose run --rm server migrate
 ```
 
-For an external platform, take the chosen provider snapshot, run `migrate` as a deploy-gated one-shot job, then roll out the same SHA with `MIGRATE_ON_START=false` on app replicas and worker. Abort rollout if the job fails. This is the same app image, not a separate schema image.
+For plain `docker compose` from a clean checkout (no Dokploy), generate with `--git-url local` so the images build that checkout (`context: .`), and set `BUILD_VERSION="$(git rev-parse HEAD)"`. That SHA is right only for a local context: with a Git context the build fetches the ref from the repository, so leave `BUILD_VERSION` unset and the image reads the commit it actually built from its kept `.git`.
+
+For an external platform, optionally take a provider snapshot, run `migrate` as a deploy-gated one-shot job, then roll out the same SHA with `MIGRATE_ON_START=false` on app replicas and worker. Abort rollout if the job fails. This is the same app image, not a separate schema image.
 
 ## Confirming a deploy is live
 
@@ -129,27 +137,41 @@ The check polls `/ready` and requires two consecutive ready responses from that 
 
 The optional development workflow uses repository variables `DEPLOY_CHECK_URL` and `DEPLOY_CHECK_TIMEOUT`; these are CI settings, not application env declarations. It follows `main`, so target the development origin rather than a manually pinned production release.
 
-On the VPS, an optional deeper read-only check inspects current Swarm task generations and container health:
+On the VPS, from a checkout, an optional deeper read-only check waits (up to `--timeout-seconds`, default 600) until the server (and worker) containers are healthy, every runtime container (a live `backup` service included) was built from the expected commit (the `BUILD_COMMIT` file each image bakes), and `/ready` passes and reports the same commit, so an earlier release a failed redeploy left running never passes. `--commit` is required. Choose the mode that matches how you deployed.
+
+For the generated Compose, pass its Compose project and the topology it was generated with (`app` by default):
 
 ```sh
-pnpm dokploy:verify --server <actual-server-service> --url https://chess.example.com --worker <actual-worker-service> --commit <full-commit-sha>
+pnpm dokploy:verify --mode compose --project <compose project> --topology app-worker --url https://chess.example.com --commit <full-commit-sha>
 ```
 
-Omit `--worker` for embedded jobs. A rollback, changed service generation, failed task, missing healthcheck or readiness mismatch fails verification. Dokploy's build-success notification cannot replace these checks.
+Dokploy's Compose project name is the compose's app name (shown in its settings); for plain `docker compose` it is the file's `name:`. `docker ps --filter label=com.docker.compose.service=server --format '{{.Label "com.docker.compose.project"}}'` lists the candidates. The check requires exactly one `server` container, and in `app-worker` exactly one `worker` (`docker compose run` one-offs such as `run --rm server migrate` do not count). It fails on a missing or second one, an unhealthy, exited or restarting one, one replaced or restarted while it watches, or one built from another commit. In `app` a live `worker` container fails (it would consume the server's queues a second time); pass `--topology app-worker` if the deployment has one. A live `backup` service must also run the expected commit and must not restart; its own health reports backup freshness rather than startup, so an unhealthy backup service is a warning. Stopped `backup` or leftover `worker` containers are ignored.
+
+For native Dokploy Applications (Swarm services), name each role's actual service; omit `--worker` for embedded jobs:
+
+```sh
+pnpm dokploy:verify --mode applications --server <actual-server-service> --worker <actual-worker-service> --url https://chess.example.com --commit <full-commit-sha>
+```
+
+It inspects the current Swarm task generation of each service. A rollback, changed service generation, failed task, missing healthcheck, selected container built from another commit, or readiness mismatch fails verification.
+
+Both modes read only container labels and state, Swarm service and task state, and the commit file; never environment or logs. Dokploy's build-success notification cannot replace these checks.
 
 ## Backups before real data
 
-Choose provider backups/PITR with retention and failure alerts, or enable exactly one logical daily backup service with the `backup` profile and `BACKUP_SCHEDULE=daily`. Add an off-site versioned S3 destination, a distinct per-deployment prefix, lifecycle retention and separate ListBucket-only monitoring credentials. Mount `/backups` on the server and daily service. A VPS-local dump is lost with the VPS.
+Backups are opt-in. To enable them, choose provider backups/PITR with retention and failure alerts, or regenerate with `--backups true` and enable exactly one logical daily service with the `backup` profile and `BACKUP_SCHEDULE=daily`. Add an off-site versioned S3 destination, a distinct per-deployment prefix, lifecycle retention and separate ListBucket-only monitoring credentials. Mount `/backups` on the server and daily service. A VPS-local dump is lost with the VPS.
 
-A truly fresh install needs no pre-migration snapshot. Existing databases without a destination warn and continue; a configured backup failure blocks migrations. A configured pre-drop failure skips deletions while allowing the app to start. Manual `backup` and populated-target restore snapshots require a destination. `BACKUP_ENABLED=false` disables only freshness monitoring; it suppresses none of these writes.
+With `BACKUP_ENABLED` unset or `false`, automatic migration/pre-drop snapshots and freshness monitoring are skipped, even if storage settings remain. Migrations and readiness proceed normally. With `BACKUP_ENABLED=true` the runner requires both dumps, on a brand-new database too (no exemption): no usable destination fails a migrating start (`MIGRATE_ON_START=true` or the `migrate` job) before it migrates, a failed pre-migration dump blocks migrations, and a pre-drop dump that fails later (the destination checked at startup but the dump itself failing) skips deletions while allowing startup. Explicit manual `backup` and populated-target restore snapshots still require a destination. The daily writer is independently opt-in through `BACKUP_SCHEDULE=daily`.
 
-Writer keys are unset before the long-running app executes. Docker container configuration still contains startup credentials; the server helper passes them directly into one-off operations. Do not treat process unsetting as removal from container metadata.
+Writer keys are unset before the long-running app executes: the entrypoint is PID 1 while the runner (its child) holds them, then drops them and execs `tini` with the app, so `/proc/1/environ` and the app's environment are clean. Docker container configuration still contains startup credentials; the server helper passes them directly into one-off operations. Do not treat process unsetting as removal from container metadata.
 
 Follow [backup and restore](./backup-restore.md) for exact retention, confirmation/pinning, host helper, drills and seven-day deletion holds. Run and record a drill before relying on a backup and after backup changes. Provider-native backups need provider recovery-point monitoring; they do not appear as canonical logical dumps in the app's bucket freshness card.
 
 ## Restore and replacement-database handoff
 
 Freeze deployments, stop ingress and all write/job producers, and record the current Git SHA and every consumer's target. Preview the archive inside the target network. Populated targets require `--replace`, exact `RESTORE:<database>` confirmation, and a pre-restore snapshot unless the owner explicitly supplies `--skip-snapshot` after taking a provider snapshot. S3 sources require exact ETag and optional version pins. Follow [the restore runbook](./backup-restore.md#restore).
+
+If restore was invoked and its outcome is ambiguous (timeout, interruption, transport failure or a nonzero exit other than `3` or `4`), leave writers stopped for inspection: such an exit does not prove the database unchanged. Exit `3` is restore's own "refused or cancelled before anything changed" status and exit `4` its "started, failed and provably rolled back; the target is unchanged" status ([backup-restore.md § Restore](./backup-restore.md#restore)): nothing was restored, so the host helper starts the original writers again, as it does after a completed restore (exit `0`).
 
 For a replacement database, change and recreate **every** consumer: server/embedded jobs, external worker, daily service or external scheduler, monitoring, provider policies and other clients. Updating a shared reference does not change existing containers. Keep old consumers stopped. Use an isolated replacement backup prefix and update the writer and monitor consistently; an old-prefix object must not establish replacement backup health.
 

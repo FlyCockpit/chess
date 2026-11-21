@@ -16,7 +16,7 @@
   "dependencies": {
     "@orpc/client": "catalog:",
     "@cockpit-chess/config": "workspace:*",
-    "commander": "^15.0.0",
+    "commander": "^15.1.0",
     "@cockpit-chess/chess": "workspace:*",
     "@orpc/server": "catalog:",
     "zod": "catalog:",
