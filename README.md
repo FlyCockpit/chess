@@ -382,7 +382,7 @@ The scripts most sessions need:
 - `pnpm db:migrate <name>`: Generate migration SQL for review
 - `pnpm db:migrate:apply`: Apply committed migrations locally and regenerate the client
 - `pnpm db:worktree`: Provision this checkout’s local and shadow databases
-- `pnpm verify:fast`: Lint, policy checks, and affected typecheck/tests — run before handing work off
+- `pnpm verify:fast`: Lint, policy checks, and affected typecheck/tests — run before handing work off. The db/backup/deploy script suites run only when something they read changed (`scripts/test-scripts-affected.ts`, failing open); `pnpm verify` and CI always run them
 
 Other scripts:
 

@@ -21,8 +21,8 @@
     "check": "biome check --write . && pnpm policy:prisma-query-casts",
     "check:ci": "biome check . && pnpm policy:prisma-query-casts && pnpm policy:prisma-query-casts:test && pnpm lint:design",
     "verify": "pnpm check:ci && pnpm policy:checks && pnpm db:test-unit && pnpm backup:test-unit && pnpm deploy:test-unit && pnpm policy:secret-patterns && pnpm policy:local-db-guard && pnpm policy:agents-size && pnpm policy:test-colocation && pnpm policy:queue-wiring && pnpm policy:access-matrix && pnpm check-types && pnpm test && pnpm test:setup && pnpm knip && pnpm env:check && pnpm env:check-entrypoints && pnpm docker:check-copy && pnpm docs:check-citations && pnpm deps:check-excludes",
-    "verify:fast": "pnpm biome check . && pnpm deps:check-excludes && pnpm policy:prisma-query-casts && pnpm lint:design && pnpm policy:agents-size && pnpm policy:test-colocation && pnpm policy:queue-wiring && pnpm policy:access-matrix && pnpm docs:check-citations && pnpm env:check && pnpm policy:checks && pnpm db:test-unit && pnpm backup:test-unit && pnpm deploy:test-unit && pnpm turbo check-types --affected --output-logs=errors-only && pnpm check-types:scripts && pnpm turbo run test --affected --output-logs=errors-only && pnpm test:setup",
-    "verify:tooling": "pnpm policy:checks:self-test && pnpm docs:check-citations:test && pnpm policy:hooks && pnpm policy:trufflehog-filter && pnpm policy:access-matrix:self-test && pnpm dokploy:test && pnpm db:test-unit && pnpm backup:test-unit && pnpm deploy:test-unit",
+    "verify:fast": "pnpm biome check . && pnpm deps:check-excludes && pnpm policy:prisma-query-casts && pnpm lint:design && pnpm policy:agents-size && pnpm policy:test-colocation && pnpm policy:queue-wiring && pnpm policy:access-matrix && pnpm docs:check-citations && pnpm env:check && pnpm policy:checks && pnpm test:scripts:affected && pnpm turbo check-types --affected --output-logs=errors-only && pnpm check-types:scripts && pnpm turbo run test --affected --output-logs=errors-only && pnpm test:setup",
+    "verify:tooling": "pnpm policy:checks:self-test && pnpm docs:check-citations:test && pnpm test:scripts:affected:test && pnpm policy:hooks && pnpm policy:trufflehog-filter && pnpm policy:access-matrix:self-test && pnpm dokploy:test && pnpm db:test-unit && pnpm backup:test-unit && pnpm deploy:test-unit",
     "dev:web": "turbo -F web dev",
     "dev:server": "turbo -F server dev",
     "dev:worker": "turbo -F worker dev",
@@ -86,6 +86,8 @@
     "backup:test-unit": "node --test scripts/backup/*.test.mjs",
     "backup:test": "node scripts/backup/test-backup-restore.mjs",
     "deploy:check": "node scripts/deploy-check.mjs",
+    "test:scripts:affected": "node scripts/test-scripts-affected.ts",
+    "test:scripts:affected:test": "node --test scripts/test-scripts-affected.test.ts",
     "deploy:test-unit": "node --test scripts/deploy-check.test.mjs scripts/build-commit.test.mjs"
   },
   "dependencies": {
