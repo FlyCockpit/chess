@@ -120,12 +120,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # The full gate, not a subset: `pnpm verify` also runs the policy checks,
       # env manifest/entrypoint checks, Dockerfile COPY-list check, knip and the
-      # doc-citation check; `pnpm verify:tooling` adds the policy-tooling
-      # self-tests split out of `verify` (also run per-PR and nightly). A
-      # release is exactly the moment those must hold. Everything both run is
-      # offline and DB-free; migration integration runs on the PR PG18 service, so
-      # the release runner needs nothing extra.
-      - run: pnpm verify && pnpm verify:tooling
+      # doc-citation check; `pnpm verify:tooling:self-tests` adds the
+      # policy-tooling self-tests split out of `verify` (also run per-PR and
+      # nightly). It is `pnpm verify:tooling` without the db/backup/deploy
+      # script suites, which `verify` already ran. A release is exactly the
+      # moment those must hold. Everything both run is offline and DB-free;
+      # migration integration runs on the PR PG18 service, so the release
+      # runner needs nothing extra.
+      - run: pnpm verify && pnpm verify:tooling:self-tests
       - run: pnpm audit --audit-level=high
 
   # Publishes ghcr.io/<owner>/<repo> (app) and ghcr.io/<owner>/<repo>-worker.

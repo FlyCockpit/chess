@@ -55,6 +55,24 @@ describe("the mapping", () => {
     for (const suite of SUITES) assert.ok(ci.includes(`pnpm ${SUITE_SCRIPTS[suite]}`), suite);
   });
 
+  test("release runs each suite once; nightly verify:tooling still runs all three", () => {
+    const steps = (name: string) => (scripts[name] ?? "").split(" && ");
+    const selfTests = steps("verify:tooling:self-tests");
+    assert.deepEqual(steps("verify:tooling"), [
+      "pnpm verify:tooling:self-tests",
+      ...SUITES.map((suite) => `pnpm ${SUITE_SCRIPTS[suite]}`),
+    ]);
+    const release = readFileSync(join(ROOT, ".github/workflows/release.yml"), "utf8");
+    assert.match(release, /^\s*- run: pnpm verify && pnpm verify:tooling:self-tests$/m);
+    const nightly = readFileSync(join(ROOT, ".github/workflows/nightly-tooling.yml"), "utf8");
+    assert.match(nightly, /^\s*run: pnpm verify:tooling$/m);
+    for (const suite of SUITES) {
+      const step = `pnpm ${SUITE_SCRIPTS[suite]}`;
+      assert.ok(!selfTests.includes(step), `verify:tooling:self-tests runs ${step} again`);
+      assert.equal(steps("verify").filter((s) => s === step).length, 1, `verify runs ${step}`);
+    }
+  });
+
   test("every tracked or untracked file is classified by a rule", () => {
     const unclassified = tracked().filter((path) => ruleFor(path) === undefined);
     assert.deepEqual(
