@@ -1,6 +1,8 @@
 import { env } from "@cockpit-chess/env/web";
+import { cn } from "@cockpit-chess/ui/lib/utils";
 import { Link, useParams } from "@tanstack/react-router";
 
+import { useAuthSession } from "@/hooks/use-auth-session";
 import { DEFAULT_LOCALE, isSupportedLocale } from "@/i18n/config";
 
 import { LanguageSwitcher } from "./language-switcher";
@@ -14,6 +16,7 @@ export default function Header() {
   // top-level `/` redirect) without throwing when the `lang` param is absent.
   const params = useParams({ strict: false });
   const lang = isSupportedLocale(params.lang) ? params.lang : DEFAULT_LOCALE;
+  const isAuthenticated = useAuthSession().state.status === "authenticated";
 
   return (
     <header>
@@ -35,7 +38,15 @@ export default function Header() {
           <span className="min-w-0 max-w-40 truncate sm:max-w-56 lg:max-w-none">{appName}</span>
         </Link>
         <MainNav />
-        <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2">
+        {/* Signed in, the group stays on one line and the account trigger
+            shrinks (to 44px) before anything runs past the trailing line.
+            Signed out, Sign Up and Sign In cannot shrink, so the group wraps. */}
+        <div
+          className={cn(
+            "ml-auto flex items-center gap-2",
+            isAuthenticated ? "min-w-0" : "max-w-full flex-wrap justify-end",
+          )}
+        >
           <LanguageSwitcher />
           <ModeToggle />
           <UserMenu />

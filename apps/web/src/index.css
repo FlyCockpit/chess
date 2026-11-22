@@ -16,6 +16,9 @@
   height: 100svh;
   min-width: 0;
   display: grid;
+  /* One minmax(0,1fr) column: an implicit auto column grows to the header's
+   * min-content and can push the frame past the viewport. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   /* viewport-fit=cover (__root.tsx): keep content out of the notch and home
    * indicator, using the same globals.css vars as the _app shell. */

@@ -61,13 +61,14 @@ function SheetContent({
         {showCloseButton && (
           <SheetPrimitive.Close
             data-slot="sheet-close"
+            // 44px box flush with the edge (the X stays where the 28px button at
+            // `top-3 right-2` drew it): the focus ring is drawn inside the box,
+            // so the viewport cannot clip it.
             render={
-              // The ::after box is laid out from the padding box, inside the
-              // 1px border, so 9px reaches 8px past the 28px button: a 44px target.
               <Button
                 variant="ghost"
-                className="absolute top-3 right-2 after:absolute after:-inset-[9px] after:content-['']"
-                size="icon-sm"
+                className="absolute top-1 right-0 focus-visible:ring-inset focus-visible:ring-offset-0"
+                size="icon-touch"
               />
             }
           >

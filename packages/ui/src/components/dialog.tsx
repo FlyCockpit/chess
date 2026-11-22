@@ -59,11 +59,13 @@ function DialogContent({
           <DialogPrimitive.Close
             data-slot="dialog-close"
             render={
-              // The ::after box is laid out from the padding box, inside the
-              // 1px border, so 9px reaches 8px past the 28px button: a 44px target.
+              // The hit area is a 44px square centred on the 28px button, whatever
+              // its border or size. An inset expansion would be measured from the
+              // padding box, inside the 1px border (`-inset-2` gave 26 + 16 = 42px).
+              // At `right-2` the square ends exactly on the popup's edge.
               <Button
                 variant="ghost"
-                className="absolute top-3 right-2 after:absolute after:-inset-[9px] after:content-['']"
+                className="absolute top-3 right-2 after:absolute after:top-1/2 after:left-1/2 after:size-11 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']"
                 size="icon-sm"
               />
             }

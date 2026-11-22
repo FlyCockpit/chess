@@ -72,15 +72,36 @@ describe("modal accessibility", () => {
         child.props["data-slot"]?.endsWith("close"),
     );
     if (
-      !isValidElement<{ children: ReactNode; render: ReactElement<{ className: string }> }>(close)
+      !isValidElement<{
+        children: ReactNode;
+        render: ReactElement<{ className: string; size: string }>;
+      }>(close)
     )
       throw new Error("Missing close button");
     const out = renderToStaticMarkup(close.props.children);
     expect(out).toContain(esCommon.actions.close);
     expect(out).not.toContain(">Close<");
-    // The ::after expansion starts from the padding box (26px inside the 28px
-    // button's 1px border): 9px on each side = a 44px target.
-    expect(close.props.render.props.className).toContain("after:-inset-[9px]");
+    const { className, size } = close.props.render.props;
+    if (_name === "dialog") {
+      // A 44px square centred on the 28px button, whatever its border or size.
+      // An inset expansion starts at the padding box (`-inset-2` gave 42px).
+      expect(size).toBe("icon-sm");
+      for (const part of [
+        "after:absolute",
+        "after:top-1/2",
+        "after:left-1/2",
+        "after:size-11",
+        "after:-translate-x-1/2",
+        "after:-translate-y-1/2",
+      ])
+        expect(className.split(" ")).toContain(part);
+      expect(className).not.toMatch(/after:-?inset-/);
+    } else {
+      // A 44px box flush with the viewport edge, so its focus ring is drawn inside it.
+      expect(size).toBe("icon-touch");
+      expect(className).toContain("focus-visible:ring-inset");
+      expect(className).toContain("focus-visible:ring-offset-0");
+    }
   });
   it.each([
     ["dialog", DialogContent],
