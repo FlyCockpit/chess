@@ -728,6 +728,20 @@ esac
 }
 
 /**
+ * A git hook (or any caller) may export GIT_DIR, GIT_INDEX_FILE and the like;
+ * inherited by the fixture repository's git calls (here and in the wrapper),
+ * they would point at the caller's repository. Drop every GIT_* variable and
+ * stop discovery at the temp dir; each call sets its own GIT_DIR.
+ * @returns {NodeJS.ProcessEnv}
+ */
+function fixtureEnv() {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+  );
+  return { ...env, GIT_CEILING_DIRECTORIES: tmpdir() };
+}
+
+/**
  * A throwaway two-commit repository, so the wrapper test needs no history in
  * this checkout (a fresh single-commit clone has no `HEAD^`).
  * @param {string} dir
@@ -737,11 +751,12 @@ function createFixtureRepo(dir) {
   const gitDir = join(dir, "fixture.git");
   /** @param {string[]} args */
   const git = (...args) => {
-    const result = spawnSync("git", args, {
+    // No hooks either: a global core.hooksPath must not judge this repo.
+    const result = spawnSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
       encoding: "utf8",
       input: "",
       env: {
-        ...process.env,
+        ...fixtureEnv(),
         GIT_DIR: gitDir,
         GIT_AUTHOR_NAME: "fixture",
         GIT_AUTHOR_EMAIL: "fixture@example.invalid",
@@ -769,7 +784,7 @@ function gitCommit(revision, gitDir) {
   const result = spawnSync("git", ["rev-parse", "--verify", `${revision}^{commit}`], {
     encoding: "utf8",
     cwd: join(dirname(fileURLToPath(import.meta.url)), ".."),
-    env: { ...process.env, GIT_DIR: gitDir },
+    env: { ...fixtureEnv(), GIT_DIR: gitDir },
   });
   if (result.error || result.status !== 0) {
     throw new Error(`could not resolve inert wrapper-test commit ${revision}`);
@@ -790,7 +805,7 @@ function gitCommit(revision, gitDir) {
  */
 function runWrapper(env, expectedExit, label, base, head) {
   const result = spawnSync("bash", ["scripts/trufflehog-pr-scan.sh", base, head], {
-    env: { ...process.env, ...env },
+    env: { ...fixtureEnv(), ...env },
     encoding: "utf8",
     cwd: join(dirname(fileURLToPath(import.meta.url)), ".."),
   });
@@ -878,7 +893,7 @@ async function wrapperIntegrationTest() {
 
     const overrideAttempt = spawnSync("bash", ["scripts/trufflehog-pr-scan.sh", base, head], {
       env: {
-        ...process.env,
+        ...fixtureEnv(),
         ...baseEnv,
         FAKE_DOCKER_TRUFFLEHOG_MODE: "exit42_garbage",
         TRUFFLEHOG_FINDINGS_EXIT: "invalid",

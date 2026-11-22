@@ -228,11 +228,12 @@ export function changedFiles(git: Git = runGit, root: string = ROOT): string[] |
     if (base) break;
   }
   if (!base) return undefined;
-  const diff = git(["diff", "--name-only", "--no-renames", base]);
-  const untracked = git(["ls-files", "--others", "--exclude-standard"]);
+  // -z: paths verbatim (no core.quotePath quoting of non-ASCII names).
+  const diff = git(["diff", "-z", "--name-only", "--no-renames", base]);
+  const untracked = git(["ls-files", "-z", "--others", "--exclude-standard"]);
   if (diff === undefined || untracked === undefined) return undefined;
   const ignored = IGNORED_INPUTS.filter((path) => existsSync(join(root, path)));
-  return [...diff.split("\n"), ...untracked.split("\n"), ...ignored].filter(Boolean);
+  return [...diff.split("\0"), ...untracked.split("\0"), ...ignored].filter(Boolean);
 }
 
 // Node without import.meta.main (added in 24.2 and 22.18) would run this CLI as a
