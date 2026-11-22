@@ -2,6 +2,10 @@
 
 /* Cockpit's arena is a self-contained broadcast surface. */
 .cc-public-shell {
+  /* One horizontal inset for the bordered arena panels (game, board, sidebar and
+   * rule cards), so stacked and side-by-side panels share their inner text line. It is the board panel's own padding, so the playable board keeps
+   * its size. Block padding stays per panel. See docs/design-system.md § Edge lines. */
+  --cc-panel-inset: 20px;
   --muted: oklch(0.21 0.012 195);
   --muted-foreground: oklch(0.72 0.015 190);
   --border: oklch(0.3 0.01 190);
@@ -54,7 +58,10 @@
 .cc-nav a {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  /* The label starts where its 44px hit box starts instead of being centred
+   * inside it, so when the nav wraps to its own row (650px and below) the first
+   * label sits on the header's leading line. */
+  justify-content: flex-start;
   min-width: 44px;
   min-height: 44px;
   padding: 12px 0;
@@ -221,7 +228,7 @@
 }
 .cc-game-card {
   text-align: left;
-  padding: 22px;
+  padding: 22px var(--cc-panel-inset);
   border: 1px solid oklch(0.3 0.01 190);
   border-radius: 8px;
   background: oklch(0.19 0.012 195);
@@ -247,7 +254,7 @@
 }
 .cc-board-panel {
   min-width: 0;
-  padding: 20px;
+  padding: 20px var(--cc-panel-inset);
   background: oklch(0.2 0.012 190);
   border: 1px solid oklch(0.32 0.012 190);
   border-radius: 10px;
@@ -448,7 +455,7 @@
 }
 .cc-match-sidebar {
   min-width: 0;
-  padding: 22px;
+  padding: 22px var(--cc-panel-inset);
   border: 1px solid oklch(0.31 0.01 190);
   border-radius: 10px;
   background: oklch(0.18 0.012 195);
@@ -641,7 +648,7 @@
 .cc-rule-card {
   border: 1px solid oklch(0.31 0.015 190);
   border-radius: 8px;
-  padding: 26px;
+  padding: 26px var(--cc-panel-inset);
   background: oklch(0.19 0.012 190);
 }
 .cc-rule-card h2 {
@@ -687,12 +694,22 @@
   border-bottom: 1px solid oklch(0.28 0.01 190);
   font-variant-numeric: tabular-nums;
 }
+/* The table has no box of its own: its first column starts on the page text line and its last
+ * column's box ends on the trailing line. */
+.cc-table :is(th, td):first-child {
+  padding-left: 0;
+}
+.cc-table :is(th, td):last-child {
+  padding-right: 0;
+}
 .cc-baseline-layout {
   display: grid;
   grid-template-columns: minmax(0, 600px) 1fr;
   gap: 32px;
 }
 .cc-lab-instructions {
+  /* Not on --cc-panel-inset: this padding sets the lab grid's minimum second
+   * column (`1fr`), so changing it would resize the playable board. */
   padding: 26px;
   border: 1px solid oklch(0.32 0.015 190);
   border-radius: 8px;
@@ -743,6 +760,9 @@
   color: oklch(0.94 0.01 90);
 }
 @media (max-width: 900px) {
+  .cc-public-shell {
+    --cc-panel-inset: 14px;
+  }
   .cc-header {
     gap: 20px;
     padding: 16px 24px;
@@ -774,10 +794,10 @@
     font-size: 29px;
   }
   .cc-board-panel {
-    padding: 14px;
+    padding-block: 14px;
   }
   .cc-match-sidebar {
-    padding: 16px;
+    padding-block: 16px;
   }
 }
 @media (max-width: 650px) {
@@ -860,7 +880,7 @@
     margin-inline: 8px;
   }
   .cc-rule-card {
-    padding: 22px;
+    padding-block: 22px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
