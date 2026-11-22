@@ -5086,7 +5086,7 @@ async function selfTest() {
     ["env pnpm run db:worktree --adopt", true],
     ["psql -c \"COMMENT/**/ON DATABASE x IS 'y'\"", true],
     ["psql -c 'COM''MENT ON DATABASE x IS y'", true],
-    // Long psql options before the SQL are not SQL comments (review finding).
+    // Long psql options before the SQL are not SQL comments.
     ["psql --command \"COMMENT ON DATABASE x IS 'y'\"", true],
     ["psql --dbname=postgres -c \"COMMENT ON DATABASE x IS 'y'\"", true],
     // SQL fed through a pipe, docker exec, a dynamic --adopt, a pty wrapper.
@@ -5095,7 +5095,7 @@ async function selfTest() {
     ["ADOPT=--adopt; pnpm db:worktree $ADOPT", true],
     ["printf 'x\\n' | script -qc \"pnpm db:worktree --adopt\" /dev/null", true],
     ["echo hello", false],
-    // Round-2 review: combined options/comments, quoted --adopt in a wrapper,
+    // Combined options/comments, quoted --adopt in a wrapper,
     // the init script, and read-only commands that must stay allowed.
     [
       "psql --dbname=postgres -c \"COMMENT/**/ON DATABASE x IS E'cockpit-chess:disposable-local-databas\\x65 v1'\"",
@@ -5795,7 +5795,7 @@ async function selfTest() {
     [String.raw`find node_modules -follow -exec npm exec --call='printf {}' \;`, true],
     [String.raw`find node_modules -exec bash -c 'printf "%s" "$1"' sh '{}' \;`, false],
   );
-  // -- R2: source-consumer, parser normalization, and integrity boundaries --
+  // -- Source-consumer, parser normalization, and integrity boundaries ----
   bashCases.push(
     ["echo harmless | sh | cat", true],
     ["echo harmless | cat | bash", true],
@@ -5825,7 +5825,7 @@ async function selfTest() {
     ["python3 -c 'print(1)'", true],
     ["node --version", false],
   );
-  // -- R3-H1..H4: complete direct-operation inventory ---------------------
+  // -- Complete direct-operation inventory --------------------------------
   // These are literal evaluator inputs only. They prove every protected file
   // reaches the same target gate through enclosing list/control/pipeline CST
   // shapes, while the mutation rows cover removal and move-source effects.

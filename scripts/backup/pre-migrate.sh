@@ -97,10 +97,10 @@ is_mount() {
 }
 
 if [ "$startup_notice" = 1 ] && [ "$enabled" = 0 ]; then
-  # An upgrade from the old default (BACKUP_ENABLED=true) with a destination
-  # already set up would otherwise lose its automatic dumps quietly.
+  # A destination set up without BACKUP_ENABLED=true would otherwise look like
+  # working backups while no automatic dump is taken.
   if [ -n "${BACKUP_S3_BUCKET:-}" ] || { [ -d "$LOCAL_DIR" ] && is_mount "$LOCAL_DIR"; }; then
-    echo "WARNING: [backup] A backup destination is configured but BACKUP_ENABLED is not true, so NO automatic pre-migration or pre-drop backup is taken and freshness is not monitored. Set BACKUP_ENABLED=true to turn them on (it now defaults to false)." >&2
+    echo "WARNING: [backup] A backup destination is configured but BACKUP_ENABLED is not true, so NO automatic pre-migration or pre-drop backup is taken and freshness is not monitored. Set BACKUP_ENABLED=true to turn them on (it defaults to false)." >&2
   fi
   echo "NOTICE: [backup] Backups are OFF (BACKUP_ENABLED is not true); migrations and scheduled deletions run without a backup. To turn them on, set BACKUP_ENABLED=true and mount a writable volume at /backups and/or set BACKUP_S3_BUCKET with BACKUP_S3_* credentials; for daily dumps also run the backup-schedule service with BACKUP_SCHEDULE=daily (Dokploy: pnpm dokploy:config --backups true). See docs/backup-restore.md." >&2
   exit 0

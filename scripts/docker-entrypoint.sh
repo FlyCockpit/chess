@@ -2,7 +2,7 @@
 # Docker entrypoint — PID 1 of the app and worker images (the Dockerfiles set
 # ENTRYPOINT to this script, not to tini). It runs before the container CMD.
 #
-# Backup writer keys stay out of the app (owner decision 2026-11-13): this
+# Backup writer keys stay out of the app: this
 # script holds BACKUP_S3_ACCESS_KEY_ID / BACKUP_S3_SECRET_ACCESS_KEY only while
 # the migration runner (and its pre-migration / pre-drop backups) runs as its
 # child, then unsets them and `exec`s tini with the CMD. tini becomes PID 1

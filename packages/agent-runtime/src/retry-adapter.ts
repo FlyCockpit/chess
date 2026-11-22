@@ -96,11 +96,10 @@ export type RetryFailoverOptions = {
  *     whether a half-written answer is worth paying for twice.
  *
  * The alternative — buffering the whole stream and yielding it only on success —
- * makes every failure retryable, and it is what this adapter used to do. It is
- * not worth it: it silently defeats streaming for EVERY successful response, the
- * common case. `onChunk` cannot fire until the model has finished, so a durable
- * SSE stream publishes nothing for the length of the answer and the UI sits
- * frozen until it arrives whole. Buying a rarer retry with the feature's entire
+ * makes every failure retryable. It is not worth it: it silently defeats
+ * streaming for EVERY successful response, the common case. `onChunk` cannot
+ * fire until the model has finished, so a durable SSE stream publishes nothing
+ * for the length of the answer and the UI sits frozen until it arrives whole. Buying a rarer retry with the feature's entire
  * reason for existing is the wrong trade.
  */
 export const createRetryFailoverAdapter = (

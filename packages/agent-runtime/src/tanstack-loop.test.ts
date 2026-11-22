@@ -680,7 +680,7 @@ describe("executeTanstackLoop wall-clock deadline", () => {
     expect(isDeadlineAbort(controller.signal.reason)).toBe(false);
   });
 
-  // An abort that lands between dispatches used to `break` out of the loop and be
+  // An abort that lands between dispatches must not `break` out of the loop and be
   // reported as a clean "completed" — the most misleading stop reason available.
   it("reports an abort between dispatches as aborted, with the usage already billed", async () => {
     scriptedChunks = [

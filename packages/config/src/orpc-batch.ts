@@ -7,9 +7,9 @@
 // *splitting* threshold (it recursively halves an oversized batch), while the
 // server's is a *rejection* threshold. So a client value above the server's
 // does not degrade gracefully — the server answers the whole batch with an
-// HTTP 413 and every query in it fails at once. The app previously
-// shipped client=10 (the library default, left implicit) against server=3,
-// which broke any page mounting 4+ concurrent queries in one tick.
+// HTTP 413 and every query in it fails at once (a client at the library
+// default of 10 against a server at 3 breaks any page mounting 4+ concurrent
+// queries in one tick).
 //
 // 10 matches the oRPC library default on both sides.
 //

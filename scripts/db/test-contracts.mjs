@@ -10,7 +10,7 @@
  *   admission · 6 transient vs counted failures · 8 name reuse · 9 fresh DB ·
  *   10 the pre-drop backup · 11 enum removal (persistent session, unowned
  *   trigger function, procedure, external cancel) · 12 holds · 13 recover
- * Scenario 5 (FOR SHARE vs FOR UPDATE ordering) is covered by the spike only.
+ * Scenario 5 (FOR SHARE vs FOR UPDATE ordering) is not exercised here.
  */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";

@@ -1682,7 +1682,7 @@ export function normalizeType(input) {
 
 /**
  * Allowlisted in-place widenings that PostgreSQL 18 applies without a
- * rewrite (Step 0 l): varchar(n)→varchar(m≥n), varchar(n)→text,
+ * rewrite: varchar(n)→varchar(m≥n), varchar(n)→text,
  * numeric(p,s)→numeric(p'≥p,s). Never with USING, never for arrays.
  * @param {NormalizedType | undefined} from
  * @param {NormalizedType | undefined} to
@@ -2381,7 +2381,7 @@ function sameDefault(a, b) {
   return normalizeSql(a) === normalizeSql(b);
 }
 
-// --- Prisma's enum rebuild (Step 0 b) --------------------------------------
+// --- Prisma's enum rebuild ------------------------------------------------
 
 /** A one-action `ALTER TABLE`, or null. */
 function singleAlter(statement) {
@@ -2475,8 +2475,8 @@ function findEnumRebuildsIn(sql, parsed) {
 }
 
 /**
- * Recognize Prisma 7.10's enum value-removal rebuild in a diff (verified text,
- * Step 0 b): optional `BEGIN;`, `CREATE TYPE "E_new" AS ENUM (…)`, one
+ * Recognize Prisma 7.10's enum value-removal rebuild in a diff (verified
+ * text): optional `BEGIN;`, `CREATE TYPE "E_new" AS ENUM (…)`, one
  * `ALTER COLUMN … DROP DEFAULT` per defaulted column (schema-qualified table),
  * one `ALTER COLUMN … TYPE "E_new"[[]] USING (…)` per column, the two
  * renames, `DROP TYPE "<schema>"."E_old"`, then one `SET DEFAULT` per

@@ -224,7 +224,7 @@ describe("planContracts (the due rule)", () => {
         holds: [],
       });
 
-    test("the reviewer's scenario: the serving old release (level ≥ M) blocks; nothing is due", () => {
+    test("an out-of-order folder: the serving old release (level ≥ M) blocks; nothing is due", () => {
       const result = outOfOrder([oldRelease(), newRelease()]);
       assert.deepEqual(result.due, []);
       assert.equal(result.entries[0].status, "waiting");

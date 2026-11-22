@@ -668,7 +668,7 @@ type AccessAudit = {
  * search, so one comment cannot cover a sibling property below it.
  *
  * The escape names the middleware it excuses. A bare `// access:audited —
- * <why>` used to exempt *every* unregistered middleware on the property, which
+ * <why>` would exempt *every* unregistered middleware on the property, which
  * is exactly the silent blanket an authorization gate must not have, so it is
  * returned as malformed and fails.
  */

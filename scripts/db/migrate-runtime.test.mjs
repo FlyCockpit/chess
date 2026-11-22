@@ -316,7 +316,7 @@ describe("breaking gate: statements old code cannot run against (incompatible)",
     assert.deepEqual(r.calls, [], "nothing deployed past the gate");
   });
 
-  test("the retired MAINTENANCE_DEPLOY variable no longer lets it through", async () => {
+  test("an override-looking MAINTENANCE_DEPLOY variable does not let it through", async () => {
     const db = fakeDb({ rows: [done("0_init")] });
     const r = await runtime(db, {
       migrationsDir: idir,

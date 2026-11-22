@@ -307,11 +307,11 @@ describe("pruneAgentMessages", () => {
     expect(text).toContain("[stored result id=");
   });
   // A trusted and an untrusted result whose bodies are byte-identical must not
-  // land on the same stored id. They used to: the id was a hash of the body
-  // alone, so the second `put` overwrote the first record wholesale — and since
+  // land on the same stored id. If the id were a hash of the body alone, the
+  // second `put` would overwrite the first record wholesale — and since
   // the record carries the `untrusted` flag that re-wraps every retrieved slice
-  // in the injection fence, whichever result was stored last decided the trust
-  // level for BOTH. Trusted-last silently disarmed the fence for
+  // in the injection fence, whichever result was stored last would decide the
+  // trust level for BOTH. Trusted-last would silently disarm the fence for
   // attacker-authored content.
   it("stores identical trusted and untrusted bodies under distinct ids", async () => {
     const body = "L".repeat(3_000);

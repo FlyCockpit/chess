@@ -107,7 +107,7 @@ export async function diffToSchema(dir, { env, schemaDir = SCHEMA_DIR, run = pri
 
 /**
  * The static pre-change catalog: `prisma migrate diff --from-empty
- * --to-migrations <synthetic> --script` (Step 0 e), folded by catalogFromSql.
+ * --to-migrations <synthetic> --script`, folded by catalogFromSql.
  * @param {string} dir synthetic directory
  * @param {{ env?: NodeJS.ProcessEnv, run?: typeof prisma }} [options]
  */

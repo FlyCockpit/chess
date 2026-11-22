@@ -652,7 +652,7 @@ export const CONTRACT_PREAMBLE_TIMEOUT_MS = 5_000;`;
   });
   // Passing: the shipped values — 510s start-period vs 505.
   deepStrictEqual(healthcheckStartPeriodErrors("Dockerfile", healthcheckFixture(510), budget), []);
-  // Violating: the old 480s start-period no longer covers every step.
+  // Violating: a 480s start-period does not cover every step.
   deepStrictEqual(
     healthcheckStartPeriodErrors("Dockerfile", healthcheckFixture(480), budget).length,
     1,

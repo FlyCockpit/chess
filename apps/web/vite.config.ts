@@ -18,10 +18,9 @@ import { defineConfig } from "vitest/config";
 // part of the client/SSR bundle graph, so it stays clear of the rule that the
 // production SSR graph must never reach dotenv (see @cockpit-chess/env/load-dotenv).
 //
-// Loading it here means the root `.env` now reaches this process BEFORE config
-// evaluation. (It already reached the process eventually — `@cockpit-chess/env/shared`
-// used to load it when the first SSR module was evaluated — but that was long
-// after this file ran.) Two consequences to keep in mind:
+// Loading it here means the root `.env` reaches this process BEFORE config
+// evaluation, not only once the first SSR module loads `@cockpit-chess/env/shared`.
+// Two consequences to keep in mind:
 //   - Vite's `loadEnv` merges prefix-matching keys from process.env after
 //     parsing the app-local files, so a `VITE_*` key would otherwise reach the
 //     client from the ROOT .env and outrank apps/web/.env. `VITE_*` belongs in

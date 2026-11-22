@@ -44,8 +44,8 @@ keep five; the migration runner explicitly keeps five for pre-drop snapshots.
 Other direct manual/pre-restore labels default to unbounded local retention.
 S3 expiration belongs to the bucket lifecycle policy.
 
-Fresh installs need no snapshot. When backups are enabled, a missing destination
-or a failed backup blocks migration of an existing database. Explicit `--required`
+When backups are enabled, a missing destination or a failed backup blocks
+migration, on a brand-new database too. Explicit `--required`
 and replacement-restore snapshot requirements still apply. Use a distinct
 `BACKUP_S3_PREFIX` per deployment; generated Compose includes environment and
 host. Writer/restore credentials need GetObject, GetObjectVersion, PutObject

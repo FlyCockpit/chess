@@ -600,8 +600,8 @@ async function applyLocked(ctx, lock, deadline, pollMs) {
   if (recoverable.length) facts = await readMutationFacts(ctx, lock.client);
   log(`pending migration(s): ${toApply.join(", ")}`);
   lock.assertHeld("the pre-migration backup");
-  // No exemption for a brand-new database (owner decision: "backups enabled
-  // with no destination fails the migration"): the first start reports a
+  // No exemption for a brand-new database (backups enabled with no
+  // destination fails the migration): the first start reports a
   // missing destination before any data exists, not the first upgrade.
   const backup = await preMigrateBackup(ctx);
   if (JSON.stringify(await readMutationFacts(ctx, lock.client)) !== JSON.stringify(facts)) {
