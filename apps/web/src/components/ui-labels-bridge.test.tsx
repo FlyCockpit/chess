@@ -78,8 +78,9 @@ describe("modal accessibility", () => {
     const out = renderToStaticMarkup(close.props.children);
     expect(out).toContain(esCommon.actions.close);
     expect(out).not.toContain(">Close<");
-    // 28px icon + 8px expansion on each side = 44px target.
-    expect(close.props.render.props.className).toContain("after:-inset-2");
+    // The ::after expansion starts from the padding box (26px inside the 28px
+    // button's 1px border): 9px on each side = a 44px target.
+    expect(close.props.render.props.className).toContain("after:-inset-[9px]");
   });
   it.each([
     ["dialog", DialogContent],

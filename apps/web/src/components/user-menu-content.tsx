@@ -51,11 +51,14 @@ export default function UserMenuContent() {
       >
         <span className="min-w-0 truncate">{session.user.name}</span>
       </DropdownMenuTrigger>
-      <DropdownMenuContent className="bg-card">
+      <DropdownMenuContent className="min-w-56 bg-card">
         <DropdownMenuGroup>
           <DropdownMenuLabel>{t("userMenu.myAccount")}</DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem>{session.user.email}</DropdownMenuItem>
+          {/* A very long address ends in an ellipsis; the full one stays in the tooltip. */}
+          <DropdownMenuItem title={session.user.email}>
+            <span className="min-w-0 truncate">{session.user.email}</span>
+          </DropdownMenuItem>
           {userMenuItems.map((item) => (
             <DropdownMenuItem
               key={item.id}

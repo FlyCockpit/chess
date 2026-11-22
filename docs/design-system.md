@@ -19,9 +19,9 @@ The shell is the template's, and so are its lines: header and page content 16px 
 
 | Container | Text line | Box line | Trailing line | Centre / icon column |
 |---|---|---|---|---|
-| Dialog (`DialogContent p-4`) | 16px | Same as the text line | 16px. The close X's glyph ink ends on this line. | The close button is 28px (`icon-sm`) at every width, at `top-3 right-2`, centred on the title line. Its `after:-inset-2` extends the hit area 8px past the inside of the button's 1px border, to 42px. |
+| Dialog (`DialogContent p-4`) | 16px | Same as the text line | 16px. The close X's glyph ink ends on this line. | The close button is 28px (`icon-sm`) at every width, at `top-3 right-2`, centred on the title line. Its hit area is 44px: `after:-inset-[9px]` is laid out from the padding box, inside the button's 1px border, so it reaches 8px past the 28px button on each side. |
 | Sheet (`SheetContent`, header and footer `p-4`) | 16px inside the border | Same as the text line | 16px. The close X's glyph ink ends on this line. | Same close button as Dialog: 28px at `top-3 right-2`, centred on the title line. No screen uses a Sheet yet. |
-| Dropdown menu (user menu) | 32px when any row has an icon. Rows without an icon take `inset`, including Sign Out. | — | — | The icon column sits 10px in (`size-4`, no extra margin on the icon). "My Account" and the email line start on the icon column's edge (10px) as the group header. |
+| Dropdown menu (user menu) | 32px when any row has an icon. Rows without an icon take `inset`, including Sign Out. | — | — | The icon column sits 10px in (`size-4`, no extra margin on the icon). "My Account" and the email line start on the icon column's edge (10px) as the group header. The menu is at least 224px wide (`min-w-56`, owner 11-22), or the trigger's width if wider. The email row stays on one line: a longer address ends in an ellipsis (`truncate`), and the full one is in its `title`. |
 | Vertical nav list (settings sub-nav at `md:`) | The icon column sits on the page text line, under the "Settings" heading. Labels follow after `gap-2`. | The highlight box is outdented by the item padding (12px, `md:-ml-3` on the track). | — | Icons are `size-4` on one column. |
 
 ### Arena (`_public` routes and the CLI local lab, `index.css` `.cc-*`)

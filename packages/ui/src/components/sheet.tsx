@@ -62,9 +62,11 @@ function SheetContent({
           <SheetPrimitive.Close
             data-slot="sheet-close"
             render={
+              // The ::after box is laid out from the padding box, inside the
+              // 1px border, so 9px reaches 8px past the 28px button: a 44px target.
               <Button
                 variant="ghost"
-                className="absolute top-3 right-2 after:absolute after:-inset-2 after:content-['']"
+                className="absolute top-3 right-2 after:absolute after:-inset-[9px] after:content-['']"
                 size="icon-sm"
               />
             }
