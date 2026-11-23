@@ -97,7 +97,11 @@ address the outermost counted proxy appended to \`X-Forwarded-For\`. The
 default \`0\` keys on the TCP socket peer and ignores \`X-Forwarded-For\`, which
 is correct when the server port is reached directly. Behind a proxy with \`0\`,
 every client shares the proxy's single rate-limit bucket; generated Dokploy
-configuration sets \`1\` for Traefik. A proxy-appended port (\`1.2.3.4:5678\`,
+configuration sets \`1\` for Traefik. A Cloudflare Tunnel whose \`cloudflared\`
+talks to the server directly is \`1\`; \`2\` when it talks to a Traefik or Caddy
+that trusts \`cloudflared\`'s forwarded headers
+([home server behind a Cloudflare Tunnel](deployment.md#home-server-behind-a-cloudflare-tunnel)).
+A proxy-appended port (\`1.2.3.4:5678\`,
 \`[2001:db8::1]:5678\`) is stripped from the selected entry; a short chain or an
 entry that is still malformed falls back to the socket peer, never to a
 client-supplied entry. See
