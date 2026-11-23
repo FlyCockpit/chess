@@ -78,6 +78,8 @@ Anonymous rate limits (sign-in, OTP, CLI, anonymous budgets) key on the client I
 | --- | --- |
 | Generated Dokploy Compose or checklist (client → Traefik → server) | `1` (set by the generator) |
 | Cloudflare → Traefik → server, with Traefik trusting Cloudflare (below) | `2` |
+| Cloudflare Tunnel: `cloudflared` → server ([home server](#home-server-behind-a-cloudflare-tunnel)) | `1` |
+| Cloudflare Tunnel: `cloudflared` → Traefik → server, with Traefik trusting `cloudflared` | `2` |
 | No proxy: the server port is reached directly (LAN, bare host, local dev) | `0` (default) |
 
 With `0` the server keys on the TCP socket peer and ignores `X-Forwarded-For`. If a proxy is in front but the value stays `0`, every client is keyed on the proxy's address and shares **one** rate-limit bucket: a single noisy client can exhaust sign-in or CLI budgets for everyone. That fails safe (nobody can pick their own bucket) but is wrong for production; set the hop count. When the value is `0` and a private-network peer sends `X-Forwarded-For` (an uncounted proxy), the server logs one `[client-ip]` warning per process.
@@ -188,6 +190,44 @@ After a timeout, lost connection or cancellation, keep rollout gated. Inspect th
 ## Response compression
 
 Attach a Traefik compress middleware to the server router. The generated Compose file already sets `traefik.http.middlewares.<name>.compress` and `traefik.http.routers.<name>.middlewares` labels. Verify a full public page returns `Content-Encoding: br` or `gzip`; small responses can remain uncompressed. The Dokploy verifier reports a non-fatal warning if compression cannot be confirmed.
+
+## Home server behind a Cloudflare Tunnel
+
+A machine at home with no public IP can serve the app through a named Cloudflare Tunnel (Free or Pro plan). `cloudflared` runs next to the app and dials out to Cloudflare; nothing listens on the internet and no router port is forwarded. The app runs unchanged behind it: it speaks plain HTTP, the web client polls running matches every 2 seconds rather than holding a socket, and nothing uses WebSockets or Server-Sent Events.
+
+Topology, recommended first:
+
+1. **Visitor → Cloudflare edge → `cloudflared` → server.** `cloudflared` is a service in the same Compose project and reaches the server at `http://server:3000` on the project network. Traefik is not in the path. `TRUST_PROXY_HOPS=1`, which the generated config already sets.
+2. **Visitor → Cloudflare edge → `cloudflared` → Traefik → server**, when Dokploy's Traefik on the same machine also routes other applications. `TRUST_PROXY_HOPS=2`, and only after Traefik trusts `cloudflared`'s address for forwarded headers (`entryPoints.<name>.forwardedHeaders.trustedIPs`): otherwise Traefik replaces the chain with `cloudflared`'s address, the chain is too short, and every visitor shares one bucket. Keep `1` until that is set. The generated router listens only on `websecure` and names the `letsencrypt` resolver; Dokploy's resolver uses the HTTP challenge, which needs Let's Encrypt to reach Traefik's `web` entrypoint, and the ingress below routes no such path. Point `cloudflared` at Traefik over HTTPS with `originRequest.originServerName: chess.example.com`, and give Traefik a certificate `cloudflared` can verify: a DNS-01 resolver (no inbound ports needed) or a private CA passed to `cloudflared` as `originRequest.caPool`. Skipping verification on that private hop (`noTLSVerify: true`) is a last resort. Topology 1 avoids all of this.
+
+A locally managed tunnel's `config.yml` for topology 1 (create the tunnel and its DNS route with `cloudflared tunnel create` and `cloudflared tunnel route dns`; a dashboard-managed tunnel takes the same hostname → service rule in its Public Hostname settings and runs with `TUNNEL_TOKEN`):
+
+```yaml
+tunnel: <tunnel-uuid>
+credentials-file: /etc/cloudflared/<tunnel-uuid>.json
+ingress:
+  - hostname: chess.example.com
+    service: http://server:3000
+  - service: http_status:404
+```
+
+Run `cloudflared` (a pinned `cloudflare/cloudflared` image, `tunnel --no-autoupdate run`) as an extra service on the Compose project's `default` network with that file and the credentials JSON mounted read-only. Validate the rules with `cloudflared tunnel ingress validate`. Without Dokploy on the machine, plain `docker compose` (generate with `--git-url local`, see [Operational image commands](#operational-image-commands)) also needs the external network the generated file names to exist once: `docker network create dokploy-network`.
+
+**Only the tunnel reaches the server.** The generated Compose publishes no host port for the server, PostgreSQL or Valkey; keep it that way. If `cloudflared` runs on the host instead of in Compose, publish the server on a free loopback port, for example `127.0.0.1:13000:3000` (the host side must not be `3000`, which Dokploy's own panel uses), and set `service: http://127.0.0.1:13000`. Do this only on Docker Engine 28.0 or later: older engines let other hosts on the same LAN reach ports published to `127.0.0.1`. A bare `3000:3000` listens on every interface (Docker's published ports bypass host firewalls such as `ufw`), and with `TRUST_PROXY_HOPS` above `0` a LAN caller could then send its own `X-Forwarded-For` and choose its rate-limit key. The co-tenant caveat under [Client IP and reverse proxies](#client-ip-and-reverse-proxies) applies to anything else on the server's networks.
+
+**Client IP.** The Cloudflare edge appends the visitor's address to any `X-Forwarded-For` the visitor sent, and `cloudflared` forwards the header unchanged, so it counts as one hop. The server ignores `CF-Connecting-IP`: it is trustworthy only while the tunnel is the sole way in, gives the same address as `TRUST_PROXY_HOPS=1` when it is, and a second header-trust mode would let a misconfigured origin accept a forged value. Left at `0`, every visitor is keyed on `cloudflared`'s address (one shared bucket) and the server logs one `[client-ip]` warning.
+
+**Environment.** Generate the Compose with the tunnel hostname, `pnpm dokploy:config … --url https://chess.example.com`; that sets `BETTER_AUTH_URL`, the only origin Better-Auth trusts for a same-origin deployment. Leave `CORS_ORIGIN` and `VITE_SERVER_URL` unset; if you set the optional `PUBLIC_APP_URL`, use the same `https://` origin. Home ISPs commonly block outbound port 25, so send email through an authenticated relay on `SMTP_PORT=587` (the generated default) or `465`. The rest of this guide is unchanged: `pnpm deploy:check https://chess.example.com` reads `/ready` through the tunnel. Dokploy's own panel and its deploy webhook are not reachable from your Git host without their own route; deploy manually or expose the panel behind Cloudflare Access.
+
+**Cloudflare limits and what they touch here.**
+
+| Limit | This app |
+| --- | --- |
+| Request bodies over 100 MB (Free/Pro) are refused with `413` at the edge | No valid request comes near it: the server refuses bodies over 10 MiB (`apps/server/src/index.ts`) and match archives over 2,000,000 bytes (`MAX_ARCHIVE_BYTES` in `packages/chess/src/index.ts`). An oversized body gets a `413`; an oversized archive gets a `400` or `413`, depending on which check catches it. The limit is on uploads only; CLI downloads are redirects to the release host in any case. |
+| `524` when the origin sends no response for about 100 s (Cloudflare currently documents 125 s; only Enterprise can raise it) | Hosted matches run as background jobs whose state the browser polls, and the CLI's device sign-in polls every few seconds. The slowest synchronous requests send email (verification, password reset and 2FA codes, admin invitations, the transport check before a code is sent); the mailer bounds connection setup to 10 s and socket idle to 20 s, starts a retry only within 25 s, and abandons a send after 60 s and the transport check after 20 s (`packages/mailer/src/index.ts`), so SMTP waits end well before Cloudflare's timeout; each caller decides how a failed send is reported (an invitation returns `emailSent: false`, the one-time-code endpoint relies on the transport check). |
+| WebSockets drop when Cloudflare restarts an edge or `cloudflared` reconnects | Not used. A polling request that fails during a tunnel reconnect is retried by the query's own retry and refetch schedule (a running match's details poll every 2 seconds, the match lists every few seconds). |
+
+**What does not apply.** The generated Traefik labels' TLS and ACME settings (`websecure`, `tls.certresolver=letsencrypt`) are not in the path in topology 1: Cloudflare terminates the visitor's TLS with its edge certificate, and with this ingress Dokploy's HTTP challenge cannot reach Traefik anyway. Traefik's compress middleware is out of the path in topology 1; Cloudflare compresses text responses at the edge. Cloudflare's ranges and `trustedIPs` for Cloudflare itself are not needed: the server's peer is `cloudflared`, never the edge.
 
 ## Troubleshooting
 

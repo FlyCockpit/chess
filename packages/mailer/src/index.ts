@@ -10,6 +10,47 @@ interface SendEmailOptions {
 
 let transporter: Transporter | null = null;
 
+/**
+ * Sends run inside user requests (sign-up and reset mail, 2FA codes, admin
+ * invitations, the transport preflight), so they must give up long before a
+ * fronting proxy does: Cloudflare answers 524 after about 100 s without a
+ * response, and nodemailer's own defaults (2 min to connect, 10 min of socket
+ * idle, both per attempt) would hold the request for minutes.
+ *
+ * The connection and idle timeouts end a dead relay's attempt early. They
+ * bound inactivity, not elapsed time (a relay answering each command just
+ * before the idle timeout could keep one attempt going), so every operation
+ * also races its own elapsed deadline. A retry starts only inside the retry
+ * window. An attempt abandoned at the deadline is not cancelled: its
+ * connection stays open until it completes, fails or goes idle, and the
+ * message may still go out, so the deadline rejects with `SmtpDeadlineError`
+ * (delivery unknown) rather than a plain failure.
+ */
+export const SMTP_CONNECTION_TIMEOUT_MS = 10_000;
+export const SMTP_SOCKET_TIMEOUT_MS = 20_000;
+export const SMTP_RETRY_WINDOW_MS = 25_000;
+export const SMTP_SEND_DEADLINE_MS = 60_000;
+export const SMTP_VERIFY_DEADLINE_MS = 20_000;
+const SMTP_ATTEMPTS = 3;
+
+/** The operation was abandoned at its deadline; whether it took effect is unknown. */
+export class SmtpDeadlineError extends Error {
+  override name = "SmtpDeadlineError";
+}
+
+/** Settle with `operation`, or reject with `SmtpDeadlineError` once `ms` have elapsed. */
+async function withDeadline<T>(operation: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new SmtpDeadlineError(message)), ms);
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function getTransporter(): Transporter {
   if (transporter) return transporter;
 
@@ -25,6 +66,9 @@ function getTransporter(): Transporter {
   transporter = nodemailer.createTransport({
     host: SMTP_HOST,
     port: SMTP_PORT ?? 587,
+    connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+    greetingTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+    socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
     ...(SMTP_USER && SMTP_PASS ? { auth: { user: SMTP_USER, pass: SMTP_PASS } } : {}),
   });
 
@@ -50,19 +94,23 @@ export async function sendEmail({ to, subject, html }: SendEmailOptions): Promis
     );
   }
 
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      await transport.sendMail({ from, to, subject, html });
-      return;
-    } catch (err) {
-      lastError = err;
-      if (attempt < 3) {
+  const send = async (): Promise<void> => {
+    const started = Date.now();
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= SMTP_ATTEMPTS; attempt++) {
+      try {
+        await transport.sendMail({ from, to, subject, html });
+        return;
+      } catch (err) {
+        lastError = err;
+        if (attempt === SMTP_ATTEMPTS) break;
         await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+        if (Date.now() - started >= SMTP_RETRY_WINDOW_MS) break;
       }
     }
-  }
-  throw lastError;
+    throw lastError;
+  };
+  await withDeadline(send(), SMTP_SEND_DEADLINE_MS, "SMTP send deadline exceeded");
 }
 
 /**
@@ -88,7 +136,11 @@ export function isEmailConfigured(): boolean {
 export async function verifyTransport(): Promise<boolean> {
   if (!isEmailConfigured()) return false;
   try {
-    return await getTransporter().verify();
+    return await withDeadline(
+      getTransporter().verify(),
+      SMTP_VERIFY_DEADLINE_MS,
+      "SMTP verify deadline exceeded",
+    );
   } catch {
     return false;
   }

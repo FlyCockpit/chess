@@ -18,10 +18,12 @@ vi.mock("@cockpit-chess/mailer", async () => ({
     .renderDataDeleted,
   isEmailConfigured: () => isEmailConfigured(),
   sendEmail: (args: unknown) => sendEmail(args),
+  SmtpDeadlineError: class SmtpDeadlineError extends Error {},
 }));
 
 const { default: prisma } = await import("@cockpit-chess/db");
 const { sendOperationalAlert, sendDataDeletedAlert } = await import("./operational-alerts.js");
+const { SmtpDeadlineError } = await import("@cockpit-chess/mailer");
 
 const db = prisma as unknown as { user: { findMany: ReturnType<typeof vi.fn> } };
 
@@ -145,6 +147,20 @@ describe("delivered-only alerts", () => {
     expect(redisEval).toHaveBeenCalledTimes(2);
     expect(redisEval.mock.calls[0]?.slice(2)).toEqual(redisSet.mock.calls[0]?.slice(0, 2));
     expect(redisEval.mock.calls[0]?.[0]).toContain("== ARGV[1]");
+  });
+
+  it("keeps the cooldown when a send was abandoned at the mailer deadline (delivery unknown)", async () => {
+    db.user.findMany.mockResolvedValueOnce([
+      { id: "a", email: "a@example.com", role: "admin", locale: "en-US" },
+      { id: "b", email: "b@example.com", role: "admin", locale: "en-US" },
+    ]);
+    sendEmail
+      .mockRejectedValueOnce(new Error("SMTP refused"))
+      .mockRejectedValueOnce(new SmtpDeadlineError("SMTP send deadline exceeded"));
+    // Not confirmed: the deletion notice stays unmarked for a later run...
+    await expect(sendDataDeletedAlert(deletion)).rejects.toThrow(/no admin was emailed/);
+    // ...but the message may still arrive, so no immediate duplicate.
+    expect(redisEval).not.toHaveBeenCalled();
   });
 
   it("keeps the cooldown when the recipient query fails before any sends", async () => {

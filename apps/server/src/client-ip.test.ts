@@ -10,11 +10,13 @@ vi.mock("@hono/node-server/conninfo", () => ({ getConnInfo: mockGetConnInfo }));
 
 const { resolveClientIp } = await import("./client-ip.js");
 
-function ctx(opts: { socket?: string; xff?: string }): Context {
+function ctx(opts: { socket?: string; xff?: string; headers?: Record<string, string> }): Context {
   mockGetConnInfo.mockReturnValue({ remote: { address: opts.socket ?? "" } });
+  const headers: Record<string, string | undefined> = { ...opts.headers };
+  if (opts.xff !== undefined) headers["x-forwarded-for"] = opts.xff;
   return {
     req: {
-      header: (name: string) => (name.toLowerCase() === "x-forwarded-for" ? opts.xff : undefined),
+      header: (name: string) => headers[name.toLowerCase()],
     },
   } as unknown as Context;
 }
@@ -164,5 +166,57 @@ describe("resolveClientIp (TRUST_PROXY_HOPS = 1, one reverse proxy)", () => {
     expect(
       resolveClientIp(ctx({ socket: "10.0.0.2", xff: "8.8.8.8, 198.51.100.7, 104.16.0.1" })),
     ).toBe("198.51.100.7");
+  });
+});
+
+// The Cloudflare edge appends the visitor's address to any X-Forwarded-For the
+// visitor sent and cloudflared forwards that header unchanged, so cloudflared
+// counts as the one hop that wrote the trusted entry; a proxy behind it adds a
+// second. Documented in:
+// docs/deployment.md § Home server behind a Cloudflare Tunnel
+describe("resolveClientIp behind a Cloudflare Tunnel", () => {
+  it("cloudflared -> server: 1 hop keys on the visitor the edge appended", () => {
+    mockEnv.TRUST_PROXY_HOPS = 1;
+    // cloudflared as a Compose service (bridge peer) or on the host (loopback).
+    for (const socket of ["172.18.0.5", "127.0.0.1", "::ffff:127.0.0.1"]) {
+      expect(resolveClientIp(ctx({ socket, xff: "198.51.100.7" })), socket).toBe("198.51.100.7");
+      expect(resolveClientIp(ctx({ socket, xff: "8.8.8.8, 198.51.100.7" })), socket).toBe(
+        "198.51.100.7",
+      );
+    }
+  });
+
+  it("ignores CF-Connecting-IP: only the counted X-Forwarded-For chain selects the key", () => {
+    mockEnv.TRUST_PROXY_HOPS = 1;
+    const headers = { "cf-connecting-ip": "203.0.113.200" };
+    expect(resolveClientIp(ctx({ socket: "172.18.0.5", xff: "198.51.100.7", headers }))).toBe(
+      "198.51.100.7",
+    );
+    // A direct caller (no tunnel) cannot pick its key with the Cloudflare header.
+    expect(resolveClientIp(ctx({ socket: "192.168.1.20", headers }))).toBe("192.168.1.20");
+  });
+
+  it("cloudflared -> Traefik -> server: 2 hops when Traefik trusts cloudflared", () => {
+    mockEnv.TRUST_PROXY_HOPS = 2;
+    // Traefik kept the edge's chain and appended cloudflared's address.
+    expect(
+      resolveClientIp(ctx({ socket: "10.0.1.3", xff: "8.8.8.8, 198.51.100.7, 10.0.1.9" })),
+    ).toBe("198.51.100.7");
+    // Traefik not trusting cloudflared replaces the chain with cloudflared's
+    // address: the chain is too short, so every visitor shares the socket key.
+    expect(resolveClientIp(ctx({ socket: "10.0.1.3", xff: "10.0.1.9" }))).toBe("10.0.1.3");
+  });
+
+  it("left at 0, keys every visitor on cloudflared and warns once", async () => {
+    mockEnv.TRUST_PROXY_HOPS = 0;
+    vi.resetModules();
+    const fresh = await import("./client-ip.js");
+    expect(fresh.resolveClientIp(ctx({ socket: "127.0.0.1", xff: "198.51.100.7" }))).toBe(
+      "127.0.0.1",
+    );
+    expect(fresh.resolveClientIp(ctx({ socket: "127.0.0.1", xff: "198.51.100.8" }))).toBe(
+      "127.0.0.1",
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });

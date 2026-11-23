@@ -2,7 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { isAdminRole } from "@cockpit-chess/auth/roles";
 import prisma from "@cockpit-chess/db";
 import type { DataDeletionNotice } from "@cockpit-chess/db/data-deletion-notices";
-import { isEmailConfigured, renderDataDeleted, sendEmail } from "@cockpit-chess/mailer";
+import {
+  isEmailConfigured,
+  renderDataDeleted,
+  SmtpDeadlineError,
+  sendEmail,
+} from "@cockpit-chess/mailer";
 import { createRedisConnection } from "@cockpit-chess/queue";
 
 type AlertArgs = {
@@ -62,6 +67,12 @@ type OperationalAlert = {
  * Email every admin who opted into operational alerts. Deduplicated in Redis
  * so a failure that repeats every minute produces one email per cooldown
  * window. Safe to call when SMTP is unconfigured (no-op).
+ *
+ * Returns the confirmed deliveries. When every attempted send failed, the
+ * cooldown is released so the next failure can alert again, unless a send was
+ * abandoned at the mailer's deadline (`SmtpDeadlineError`): that message may
+ * still arrive, so the cooldown is kept rather than risk a duplicate. A
+ * deletion notice in that state is retried after the cooldown (at least once).
  */
 export async function sendOperationalAlert(alert: OperationalAlert): Promise<number> {
   if (!isEmailConfigured()) return 0;
@@ -69,6 +80,7 @@ export async function sendOperationalAlert(alert: OperationalAlert): Promise<num
   if (!slot) return 0;
   let delivered = 0;
   let attempted = 0;
+  let uncertain = 0;
   try {
     let afterId: string | undefined;
     for (;;) {
@@ -92,12 +104,17 @@ export async function sendOperationalAlert(alert: OperationalAlert): Promise<num
             await sendEmail({ to: admin.email, subject: content.subject, html: content.html });
           }),
         );
-        delivered += results.filter((result) => result.status === "fulfilled").length;
+        for (const result of results) {
+          if (result.status === "fulfilled") delivered += 1;
+          else if (result.reason instanceof SmtpDeadlineError) uncertain += 1;
+        }
       }
       if (admins.length < ADMIN_PAGE_SIZE || !afterId) break;
     }
   } finally {
-    if (attempted > 0 && delivered === 0) await releaseAlertSlot(slot, alert.source);
+    if (attempted > 0 && delivered === 0 && uncertain === 0) {
+      await releaseAlertSlot(slot, alert.source);
+    }
   }
   return delivered;
 }
