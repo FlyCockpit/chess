@@ -4,17 +4,17 @@
 
 ## How it works
 
-This repo uses **Prisma Migrate** with committed SQL files.
+This repo uses **Prisma Migrate** with committed SQL files. Every change after `0_init` is a new migration folder from `pnpm db:migrate <name>`, one per PR; at each release, the folders added since the last release tag are squashed into one release migration ([§ Releases](#releases)), so an upgrade from one release to the next runs exactly one migration.
 
 - `packages/db/prisma/schema/*.prisma` describes what the database should look like.
-- `packages/db/prisma/migrations/<YYYYMMDDHHMMSS>_<name>/migration.sql` is the exact SQL that gets it there, one folder per change. When the change deletes something, the same folder also holds a `contract.sql` that the deploy runner applies about 7 days later ([§ Expand and contract](#expand-and-contract)). Fresh Cockpit Chess databases start from `0_init`, generated from the current auth, chess and CLI schemas: nine application tables, with `pg_trgm` created before trigram indexes. It preserves the existing timestamp and BigInt cost types.
+- `packages/db/prisma/migrations/<YYYYMMDDHHMMSS>_<name>/migration.sql` is the exact SQL that gets it there, one folder per change. When the change deletes something, the same folder also holds a `contract.sql` that the deploy runner applies about 7 days later ([§ Expand and contract](#expand-and-contract)). Fresh Cockpit Chess databases start from `0_init`, generated from the current auth, chess and CLI schemas: nine application tables, with `pg_trgm` created before trigram indexes. It preserves the existing timestamp and BigInt cost types. A release folder also holds `replaces.json` and a `replaced/` copy of what it squashed ([§ Releases](#releases)).
 - Each database records the migrations it has applied in its `_prisma_migrations` table. `prisma migrate deploy` applies only the ones not recorded yet, in folder order, so it is safe to run on every start: with nothing pending it does nothing.
 
 The SQL is committed and reviewed like code. That is what lets one PR backfill data: you edit the generated SQL before it is applied anywhere.
 
 Three rules never bend:
 
-1. **A migration on the default branch is immutable.** Never edit, rename, or delete it. Fix mistakes with a new migration. CI check 3 enforces this.
+1. **A migration on the default branch is immutable.** Never edit, rename, or delete it. Fix mistakes with a new migration. The one exception is the release squash (`pnpm db:release-squash`), which moves migrations added since the last release into the release folder byte for byte; a migration that is in a release tag never changes at all. CI check 3 enforces both.
 2. **Every schema change ships with its migration in the same PR.** A schema edit without SQL fails CI check 1.
 3. **Agents never run `prisma migrate dev` or `prisma migrate reset`.** Agents also never run `prisma migrate deploy` directly: use the wrappers below or the image runner. The local wrappers are guarded to touch only this checkout's own local database.
 
@@ -28,6 +28,9 @@ Three rules never bend:
 | `pnpm db:migrate:rebase` | After rebasing onto the default branch: if your unmerged migration folders no longer sort after the base's latest one, re-timestamps them (SQL unchanged, except generated enum-remove blocks, which are regenerated for the new folder name) and re-checks consistency on a scratch database. If your local database has diverged it prints the `db:reset:local` command instead of running it. |
 | `pnpm db:reset:local` | With owner approval, drops and recreates **this checkout's own local database** (exact name only, and only when it carries the disposable-local-database mark), applies all migrations and then every `contract.sql` and regenerates the client. Explicit; nothing calls it for you. `EXPECTED_DB` is refused for this command. |
 | `pnpm db:check-migrations --base <git-ref>` | Runs the CI migration checks locally (see [schema-changes-recipe.md § What CI checks](./schema-changes-recipe.md#what-ci-checks)). Needs `CHECK_DATABASE_URL` pointing at a disposable Postgres superuser URL. |
+| `pnpm db:release-squash <last-tag> <release-name>` | In the version-bump PR: squashes every migration added since `<last-tag>` into one release folder ([§ Releases](#releases)). Writes files only. |
+| `pnpm db:check-release <last-tag>` | The release PR's checks (Guards A and B) against `<last-tag>`. Needs `CHECK_DATABASE_URL`. |
+| `pnpm db:baseline` | For apps newly created from the template only: folds the inherited template history into the app's own `0_init`. This repo's history already starts at its own `0_init`, so it refuses here (no `packages/db/prisma/template-history.json`). |
 | `pnpm db:studio` / `pnpm db:generate` / `pnpm db:validate` | Browse, regenerate the client, validate the schema. |
 
 The everyday loop for an agent:
@@ -66,7 +69,8 @@ The generated templates carry a version token (`v1`); CI regenerates each block 
 CI check 4 applies migrations on top of realistic rows, not an empty database. Fixtures live in `packages/db/prisma/fixtures/`:
 
 - `<migration_folder>.sql` — rows written against the schema **as of that migration**. It is loaded right after that migration is applied, so an old fixture never needs rewriting when later migrations change the table.
-- `<migration_folder>.check.sql` — assertions run after all migrations. Each statement must return **zero rows** (write it as "select the rows that are wrong").
+- `<migration_folder>.check.sql` — assertions run after all migrations. Each statement must return **zero rows** (write it as "select the rows that are wrong"). Never assert that a fixture row exists: CI also runs every check on databases that never had your fixture rows (a release applied to the last release's data, [§ Releases](#releases) Guard B), and a check that requires them fails there.
+- `<release_folder>/<migration_folder>.sql` — a data fixture of a migration a release squashed (`pnpm db:release-squash` moves it there). CI replays the release section by section and loads it right after its section, so it keeps working for every later PR.
 
 When you add a migration that changes a table with data (a type change via [schema-changes-recipe.md](./schema-changes-recipe.md) Recipe 5, a backfill, a new constraint, a deletion), add a fixture with edge cases for that table (nulls, near-duplicates, values that are hard to convert) and a `.check.sql` that proves the data survived.
 
@@ -87,6 +91,8 @@ The runner (`scripts/db/migrate-runtime.mjs`) reads the database's migration his
 | `failed` | A migration is recorded as failed. | Tries [automatic recovery](#automatic-recovery); otherwise refuses. If another session is still applying it (Prisma's lock is held), waits, then refuses without touching it. | Waits while a runner is working on it; otherwise refuses. |
 | `no-history-nonempty` | The application catalog is populated but has no valid applied migration history. | Refuses and points at [A database with tables but no migration history](#a-database-with-tables-but-no-migration-history). Never adopts an existing schema automatically. | Refuses. |
 | `unreachable` | Cannot connect. | Refuses (the platform retries). | Keeps waiting until timeout. |
+
+**Release migrations.** Before it classifies the database, the leader reconciles migrations that a release folder replaced ([§ Releases](#releases)): a database that applied some or all of them one by one is moved onto the release in one transaction, instead of being treated as `db-ahead`. Followers keep waiting while it does.
 
 **Followers** are containers with `MIGRATE_ON_START=false`, including the dedicated worker in the supported `app-worker` topology. They run the runner in `wait` mode: read-only apart from registering in the instance registry, polling until the state is `up-to-date`, with a fixed 300-second timeout. Wait mode never runs scheduled deletions. On timeout or a persistent `failed` migration that no runner is working on, they refuse to start. A `db-ahead` follower must pass the same rollback proof as a leader. With the default embedded worker on Dokploy there is no second container.
 
@@ -222,6 +228,66 @@ Dokploy's database Restore button and the `restore` command are detected automat
 `pnpm db:migrate:apply` applies `migration.sql` only and prints how many scheduled deletions it skipped. `pnpm db:reset:local` applies every `contract.sql` right after the migrations (no 7-day wait), and so do the CI scratch databases. `pnpm db:test-migrations` runs the whole flow against a disposable Postgres 18, and runs nightly.
 
 **Raw SQL is invisible to every check.** A `$queryRaw` that names a deleted column breaks when the deletion runs; grep for the name before merging a removal.
+
+## Releases
+
+One migration per release. Every PR that changes the schema ships its own migration; the version-bump PR squashes every migration added since the last release tag into **one** release migration. A self-hoster upgrading from one release to the next runs exactly one migration, and nothing a per-PR migration said is lost, because the squash **concatenates** their SQL instead of regenerating it from a schema diff (which turns a rename into drop + add and loses backfills). Release tags are `v*` (`RELEASE_TAG_PATTERN` overrides that for the tooling).
+
+### In every PR
+
+- **Renames are never drop + add.** Keep the database name with `@map` / `@@map` (no SQL), or, when the column must change, add the new column, copy the data in the same migration (`UPDATE … SET "new" = "old" WHERE "new" IS NULL`), and remove the old field so `contract.sql` deletes it later (mark the drop `-- intentional: drop and recreate`). The data moves in reviewed SQL, which the squash keeps verbatim.
+- **Backfills live in the migration**, next to the schema change ([schema-changes-recipe.md § Recipe 5](./schema-changes-recipe.md#recipe-5--backfill-or-change-a-type)).
+- **Every data change gets an upgrade test**: fixture rows and a `.check.sql` in `packages/db/prisma/fixtures/` ([§ Test fixtures for migrations](#test-fixtures-for-migrations)). The release check re-runs them from the last release.
+- **Dev and test databases always run real migrations** (`pnpm db:migrate:apply`, the deploy runner), never `db push`.
+- A non-transactional migration or an enum-value removal cannot be squashed (below): keep migrations transactional, and avoid removing an enum value late in a release cycle where you can.
+
+### The release procedure
+
+**The first release has no previous tag, so there is nothing to squash**: it ships the existing migration folders unchanged and its tag becomes the base. Every later release squashes the folders added since that tag.
+
+In the version-bump PR, on a clean tree:
+
+```bash
+pnpm db:release-squash v1.1.0 1.2.0   # last release tag, new release name
+git diff                               # review: one release folder, the per-PR folders gone
+CHECK_DATABASE_URL=<disposable superuser URL> pnpm db:check-release v1.1.0
+pnpm db:migrate:apply                  # your local database is reconciled onto the release
+```
+
+`db:release-squash` refuses unless the tag's migrations are untouched. It writes `<timestamp>_release_1_2_0/`:
+
+| File | What it is |
+|---|---|
+| `migration.sql` | The replaced bodies in folder order, inside one generated transactional wrapper, each section headed `-- cockpit-chess:from <folder>`. |
+| `contract.sql` | The replaced `contract.sql` files in order, same headers (only when one had a contract). |
+| `replaces.json` | The replaced folder names and the sha256 of each file. |
+| `replaced/<folder>/` | Byte-exact copies of each replaced folder. |
+
+It deletes the per-PR folders and removes the **previous** release's `replaced/` and `replaces.json` (one release later; by then every test deployment has passed through it). Data fixtures keep their place in history: each moves to `fixtures/<release>/<folder>.sql` for good, and CI loads it right after its migration, or, once the release is in the base, replays the release section by section and loads it right after its `-- cockpit-chess:from` section; the checks are concatenated into `fixtures/<release>.check.sql`. It refuses uncommitted, untracked or ignored files under `migrations/` and `fixtures/`, and any file it would delete without recognizing it. Never edit a release folder by hand; CI regenerates it from `replaced/` and requires an exact match.
+
+**If another migration merges before the release PR does** and sorts after the release folder, check 2 fails: redo the squash on the rebased branch (restore the per-PR folders from the base, run `pnpm db:release-squash` again). `pnpm db:migrate:rebase` refuses to re-timestamp a release folder.
+
+It refuses, writing nothing, a migration without the transactional wrapper (it cannot join the release's transaction) and an enum-remove block (its object names hash the folder name). Then release **without** a squash this time: the per-PR migrations ship as they are, which is always valid.
+
+`pnpm db:check-release <last-tag>` runs the CI checks against the tag (CI runs it on every PR that adds a release folder):
+
+- **Guard A, equivalence.** The head's migrations reproduce the Prisma schema from empty and from the tag (check 1); the release folder is exactly the replaced SQL concatenated in `replaces.json` order, nothing else; and a database built from **every prefix** of the replaced chain one by one (each fixture loaded right after its migration; with and without its scheduled deletions already run), reconciled by the runner's own code, ends with exactly the fresh database's schema and passes every fixture check (check 6).
+- **Guard B, upgrade test.** A database at the tag with its fixture data, then the release: every row survives and every `.check.sql` returns no rows (check 4).
+- **Immutability** against the tag (check 3).
+
+### Deploying from releases or from the default branch
+
+Both work. The runner (and `pnpm db:migrate:apply`) looks at each release folder's `replaces.json` before `prisma migrate deploy`:
+
+| The database applied … | What happens |
+|---|---|
+| none of the replaced migrations (a fresh database, or a self-hoster on the last release) | The release migration applies normally. |
+| all of them (a test deployment tracking the default branch) | One transaction: the release is recorded as applied and the replaced rows are removed. No schema SQL runs. |
+| some of them (a test deployment between two PRs) | One transaction: the missing ones run from `replaced/` in order, then the same as above. The pre-migration backup runs first when backups are on. |
+
+Scheduled deletions follow: if every replaced `contract.sql` already ran, the release's `contract.sql` is recorded as applied; if some did, only the remaining sections run, after the usual soak ([§ When a deletion runs](#when-a-deletion-runs)). Either way the release is then recorded as not rollback-safe: the data an older release needs is gone. A replaced deletion that ran with a different `contract.sql` than `replaces.json` records is refused.
+
+It **refuses to start**, changing nothing, when a `replaced/` copy does not match `replaces.json` (tampered or edited: rebuild the image from the released commit), when an applied replaced migration has other contents than `replaces.json` records, when one is recorded as failed, or when the database has an applied migration that is neither in the image nor replaced (another branch's database). The reconciliation re-reads the whole history under Prisma's migration lock before it runs anything, and stops if it changed since it was planned. A database that skipped a whole release with only some replaced migrations applied, after `replaced/` was removed, is refused as `db-ahead`: deploy that release's image first.
 
 ## Getting told when data is deleted
 
