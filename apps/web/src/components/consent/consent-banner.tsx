@@ -3,12 +3,17 @@ import { useTranslation } from "react-i18next";
 
 import { useConsent } from "@/hooks/use-consent";
 
+import { reserveConsentInset } from "./consent-inset";
+
 /**
  * First-visit cookie banner. Mounted once from `__root.tsx` inside
  * `<ClientOnly>` so it is never server-rendered (no hydration mismatch, and
  * nothing in the SSR HTML depends on a per-visitor decision).
  *
- * Non-modal on purpose: it does not trap focus or block the page. What
+ * Non-modal on purpose: it does not trap focus or block the page. Nor does it
+ * cover it: it publishes its height (`reserveConsentInset`) and the shells
+ * reserve that much at the bottom, so `<main>` ends where the banner starts and
+ * nothing on the page (the auth pages' links above all) sits behind it. What
  * actually stops analytics from loading is the gate — `useAnalyticsConsent()`
  * calls `loadAnalytics()` only after a positive decision — not this UI.
  *
@@ -24,6 +29,7 @@ export function ConsentBanner() {
 
   return (
     <section
+      ref={reserveConsentInset}
       aria-label={t("banner.title")}
       // Sits above the mobile BottomNav (z-50) and clears its 3.5rem height
       // plus the home-indicator inset; on md+ it floats as a card and the nav

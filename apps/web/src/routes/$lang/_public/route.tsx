@@ -17,7 +17,15 @@ function PublicLayout() {
         {t("nav:skipToContent")}
       </a>
       <header className="cc-header">
-        <Link to="/$lang" params={{ lang }} search={{ tab: "arena" }} className="cc-brand">
+        {/* The first thing in the row to give way, down to its icon (`.cc-brand`
+            in index.css, the same rule as the app header's AppNameLink). */}
+        <Link
+          to="/$lang"
+          params={{ lang }}
+          search={{ tab: "arena" }}
+          className="cc-brand"
+          title={t("chess:brand")}
+        >
           <img
             src="/pwa-192x192.png"
             alt=""
@@ -26,7 +34,7 @@ function PublicLayout() {
             decoding="async"
             className="size-9 shrink-0"
           />
-          {t("chess:brand")}
+          <span className="cc-brand-name">{t("chess:brand")}</span>
         </Link>
         <nav className="cc-nav" aria-label={t("nav:mainNav.ariaLabel")}>
           {(["arena", "leaderboard", "lab", "methodology"] as const).map((tab) => (
@@ -41,7 +49,7 @@ function PublicLayout() {
             </Link>
           ))}
         </nav>
-        <div className="flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           <LanguageSwitcher />
           <Link to="/$lang" params={{ lang }} search={{ tab: "studio" }} className="cc-signin">
             {t("chess:nav.studio")}
