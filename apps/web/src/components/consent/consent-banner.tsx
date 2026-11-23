@@ -42,16 +42,32 @@ export function ConsentBanner() {
         paddingRight: "var(--safe-area-right)",
       }}
     >
-      <div className="mx-auto flex max-w-3xl flex-col gap-3 p-4">
-        <div className="space-y-1">
+      {/* Below `sm` the banner is one short line over two side-by-side
+          buttons (~92px above the BottomNav at 320px), so a first visit on a
+          phone still shows the page it opened; the full title and message
+          return from `sm` up. The section's aria-label carries the title at
+          every width. */}
+      <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-2.5 sm:gap-3 sm:p-4">
+        <p className="text-foreground text-xs/relaxed sm:hidden">{t("banner.short")}</p>
+        <div className="hidden space-y-1 sm:block">
           <p className="font-medium text-foreground text-sm">{t("banner.title")}</p>
           <p className="text-muted-foreground text-xs/relaxed">{t("banner.message")}</p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-          <Button variant="outline" size="touch" className="sm:min-w-40" onClick={reject}>
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+          <Button
+            variant="outline"
+            size="touch"
+            className="min-w-0 max-sm:px-2 sm:min-w-40"
+            onClick={reject}
+          >
             {t("banner.reject")}
           </Button>
-          <Button variant="outline" size="touch" className="sm:min-w-40" onClick={accept}>
+          <Button
+            variant="outline"
+            size="touch"
+            className="min-w-0 max-sm:px-2 sm:min-w-40"
+            onClick={accept}
+          >
             {t("banner.accept")}
           </Button>
         </div>

@@ -42,8 +42,18 @@ describe("ConsentBanner", () => {
     const markup = html();
     expect(markup).toContain(enConsent.banner.title);
     expect(markup).toContain(enConsent.banner.message);
+    expect(markup).toContain(enConsent.banner.short);
     expect(markup).toContain(enConsent.banner.accept);
     expect(markup).toContain(enConsent.banner.reject);
+  });
+
+  // Phones get one short line over the two buttons; the title and full
+  // message are for `sm` and up. Both are in the markup, so exactly one of
+  // them is visible at any width.
+  it("shows the short line only below sm and the full text only from sm", () => {
+    const markup = html();
+    expect(markup).toContain(`sm:hidden">${enConsent.banner.short}</p>`);
+    expect(markup).toMatch(/<div class="hidden [^"]*sm:block[^"]*"><p[^>]*>Cookies on this site</);
   });
 
   it("gives Reject and Accept identical visual weight", () => {
