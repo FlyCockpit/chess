@@ -20,6 +20,7 @@ const BASE_ENV: EnvMap = {
   // Every optional key the startup guards read starts explicitly undefined,
   // so a value exported in the developer's shell cannot skew a case.
   ADMIN_EMAILS: undefined,
+  SETUP_KEY: undefined,
   SIGNUP_ENABLED: undefined,
   SSO_ENABLED: undefined,
   SSO_CLIENT_ID: undefined,
@@ -188,6 +189,72 @@ describe("server env startup guards — admin lockout", () => {
     });
     expect(mod.ADMIN_EMAILS).toEqual(new Set(["admin@example.com", "bob@example.com"]));
     expect(warn.mock.calls.some((call) => call.join(" ").includes("ADMIN_EMAILS"))).toBe(false);
+  });
+});
+
+describe("server env — SETUP_KEY", () => {
+  const STRONG_KEY = "Qm7vT2xK9pL4wN8rB3cZ6hJ1dF5sG0yU";
+
+  it("is unset by default, and an empty string counts as unset", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect((await importServerEnv()).env.SETUP_KEY).toBeUndefined();
+    vi.resetModules();
+    expect((await importServerEnv({ SETUP_KEY: "" })).env.SETUP_KEY).toBeUndefined();
+  });
+
+  it("rejects a key shorter than 32 characters", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(importServerEnv({ SETUP_KEY: STRONG_KEY.slice(0, 31) })).rejects.toThrow();
+  });
+
+  it("rejects a key longer than 512 characters, so every valid key fits the route's body", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const long = STRONG_KEY.repeat(17).slice(0, 513);
+    await expect(importServerEnv({ SETUP_KEY: long })).rejects.toThrow();
+    vi.resetModules();
+    expect((await importServerEnv({ SETUP_KEY: long.slice(0, 512) })).env.SETUP_KEY).toHaveLength(
+      512,
+    );
+  });
+
+  it("accepts a 32-character key and tells the operator to remove it", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mod = await importServerEnv({ NODE_ENV: "production", SETUP_KEY: STRONG_KEY });
+    expect(mod.env.SETUP_KEY).toBe(STRONG_KEY);
+    expect(warn.mock.calls.some((call) => call.join(" ").includes("Remove SETUP_KEY"))).toBe(true);
+  });
+
+  it("refuses a weak key in production and only warns in dev", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const weak = "a".repeat(40);
+    await expect(importServerEnv({ NODE_ENV: "production", SETUP_KEY: weak })).rejects.toThrow(
+      "SETUP_KEY is weak",
+    );
+    vi.resetModules();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await importServerEnv({ NODE_ENV: "development", SETUP_KEY: weak });
+    expect(warn.mock.calls.some((call) => call.join(" ").includes("SETUP_KEY is weak"))).toBe(true);
+  });
+
+  it("counts as a bootstrap path, so the admin-lockout warning stays quiet", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await importServerEnv({ NODE_ENV: "production", SETUP_KEY: STRONG_KEY });
+    expect(lockoutMessage(warn)).toBe(false);
+    expect(
+      warn.mock.calls.some((call) =>
+        call.join(" ").includes("no users will have admin privileges"),
+      ),
+    ).toBe(false);
+  });
+
+  it("warns that FORCE_SSO makes the bootstrap useless", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await importServerEnv({ FORCE_SSO: "true", SETUP_KEY: STRONG_KEY });
+    expect(
+      warn.mock.calls.some((call) => call.join(" ").includes("SETUP_KEY is set but FORCE_SSO")),
+    ).toBe(true);
   });
 });
 

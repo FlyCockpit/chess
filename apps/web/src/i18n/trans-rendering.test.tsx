@@ -37,7 +37,7 @@ describe("<Trans> components-prop rendering", () => {
     return renderToStaticMarkup(<I18nextProvider i18n={i18n}>{node}</I18nextProvider>);
   }
 
-  it("renders setupBanner.message with <code> wrapping ADMIN_EMAILS", () => {
+  it("renders setupBanner.message with <code> around each variable and command", () => {
     const html = renderTrans(
       <Trans
         i18nKey="setupBanner.message"
@@ -47,7 +47,21 @@ describe("<Trans> components-prop rendering", () => {
     );
 
     expect(html).toBe(
-      'Set <code class="font-mono">ADMIN_EMAILS</code> in your environment and restart the server to enable admin features. See your deployment&#x27;s production hardening docs for details.',
+      'Nobody can become an admin on this deploy. Set <code class="font-mono">SETUP_KEY</code> and run <code class="font-mono">pnpm deploy:generate-admin</code> to create the first admin, or set <code class="font-mono">ADMIN_EMAILS</code>, then restart the server. See your deployment docs for details.',
+    );
+  });
+
+  it("renders setupKeyBanner.message with <code> wrapping SETUP_KEY", () => {
+    const html = renderTrans(
+      <Trans
+        i18nKey="setupKeyBanner.message"
+        ns="admin"
+        components={[<code key="0" className="font-mono" />]}
+      />,
+    );
+
+    expect(html).toBe(
+      '<code class="font-mono">SETUP_KEY</code> is still set on the server. It is only needed to create the first admin — remove it from the environment and redeploy.',
     );
   });
 });

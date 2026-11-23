@@ -14,6 +14,7 @@ vi.mock("@cockpit-chess/env/load-dotenv", () => ({}));
 vi.mock("@cockpit-chess/env/server", () => ({
   env: { NODE_ENV: "development", CORS_ORIGIN: undefined },
   ADMIN_EMAILS: new Set(),
+  FORCE_SSO: false,
 }));
 vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
@@ -53,6 +54,7 @@ vi.mock("./rate-limit.js", () => ({
   readyLimiter: {},
   rpcLimiter: {},
   signinRecipientLimiter: {},
+  setupLimiter: {},
   signupLimiter: {},
   signupRecipientLimiter: {},
   ssrLimiter: {},

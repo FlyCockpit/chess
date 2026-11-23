@@ -132,19 +132,22 @@ if (env.SSO_CLIENT_SECRET) {
 // not refuse the boot here — that would brick every provisioned install
 // that drops the allowlist. Warn in every environment so a fresh deploy
 // still notices; the deploy stays up so existing admins can sign in.
-// Fresh install with no admin yet: set ADMIN_EMAILS to a comma-separated
-// list of operator emails, or set SIGNUP_ENABLED=true (requires SMTP).
-if (ADMIN_EMAILS.size === 0 && !SIGNUP_ENABLED) {
+// Fresh install with no admin yet: set SETUP_KEY and run `pnpm
+// deploy:generate-admin` (no email needed), set ADMIN_EMAILS to a
+// comma-separated list of operator emails, or set SIGNUP_ENABLED=true
+// (requires SMTP). A set SETUP_KEY is a bootstrap path, so it silences this.
+if (ADMIN_EMAILS.size === 0 && !SIGNUP_ENABLED && !env.SETUP_KEY) {
   console.warn(
     "[env] SIGNUP_ENABLED=false and ADMIN_EMAILS is empty — no NEW admin can " +
       "be bootstrapped: with signup disabled no account can be created (email or SSO), and " +
       "the admin-bootstrap signup path requires an address in ADMIN_EMAILS " +
       "(SSO users are never auto-promoted). If this is a fresh install with no admin " +
-      "yet, set ADMIN_EMAILS to a comma-separated list of operator emails, or set " +
+      "yet, set SETUP_KEY and run `pnpm deploy:generate-admin` (no email needed), set " +
+      "ADMIN_EMAILS to a comma-separated list of operator emails, or set " +
       "SIGNUP_ENABLED=true (requires SMTP) to allow public registration. If admins " +
       "already exist in the database, this warning is expected and safe to ignore.",
   );
-} else if (ADMIN_EMAILS.size === 0 && env.NODE_ENV === "production") {
+} else if (ADMIN_EMAILS.size === 0 && !env.SETUP_KEY && env.NODE_ENV === "production") {
   console.warn(
     "[env] ADMIN_EMAILS is empty — no users will have admin privileges. " +
       "Set ADMIN_EMAILS in your environment to grant admin access.",
@@ -163,6 +166,34 @@ if (FORCE_SSO && env.NODE_ENV === "production") {
         "Fix the SSO deployment secrets or unset FORCE_SSO before redeploying.",
     );
   }
+}
+// SETUP_KEY opens POST /api/setup/admin, the email-free first-admin bootstrap
+// (apps/server/src/setup-routes.ts). It is a credential: the same entropy bar
+// as the other secrets, and a standing reminder to remove it — the route
+// refuses once an admin exists, but an unused key is still one more secret
+// lying around. Under FORCE_SSO the bootstrapped admin could never sign in
+// with the password it sets, so the route refuses and this says why.
+if (env.SETUP_KEY) {
+  const setupKeyWeakReason = isWeakSecret(env.SETUP_KEY);
+  if (setupKeyWeakReason) {
+    const msg =
+      `[env] SETUP_KEY is weak: ${setupKeyWeakReason}. ` +
+      "Generate a strong key with: pnpm generate:secret";
+    if (env.NODE_ENV === "production") {
+      throw new Error(msg);
+    }
+    console.warn(msg);
+  }
+  if (FORCE_SSO) {
+    console.warn(
+      "[env] SETUP_KEY is set but FORCE_SSO=true turns password sign-in off, so a " +
+        "bootstrapped admin could never sign in. The setup route refuses; unset SETUP_KEY.",
+    );
+  }
+  console.warn(
+    "[env] SETUP_KEY is set: the first-admin setup route is open until an admin exists. " +
+      "Remove SETUP_KEY once the first admin has signed in.",
+  );
 }
 if (env.SMTP_HOST && !env.SMTP_FROM) {
   const msg =

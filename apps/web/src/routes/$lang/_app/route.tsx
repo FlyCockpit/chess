@@ -9,6 +9,7 @@ import { AdminSetupBanner } from "@/components/admin-setup-banner";
 import BottomNav from "@/components/bottom-nav";
 import Header from "@/components/header";
 import PullToRefresh from "@/components/pull-to-refresh";
+import { SetupKeyBanner } from "@/components/setup-key-banner";
 import { useDocumentLang } from "@/hooks/use-document-lang";
 import { useMobileKeyboard } from "@/hooks/use-mobile-keyboard";
 import { useUserLocaleSync } from "@/hooks/use-user-locale-sync";
@@ -58,6 +59,7 @@ function AppShellLayout() {
         <div>
           <Header />
           <AdminSetupBanner />
+          <SetupKeyBanner />
         </div>
         <main
           id="main-content"

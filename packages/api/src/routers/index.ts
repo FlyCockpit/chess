@@ -14,6 +14,7 @@ import { chessRouter } from "./chess";
 import { cliAccessRouter } from "./cli-access";
 import { queueRouter } from "./queue";
 import { settingsRouter } from "./settings";
+import { setupRouter } from "./setup";
 import { usersRouter } from "./users";
 
 export const appRouter = {
@@ -48,6 +49,8 @@ export const appRouter = {
   }),
   auth: authRouter,
   settings: settingsRouter,
+  // First-admin setup link (SETUP_KEY) — lib/admin-bootstrap.ts.
+  setup: setupRouter,
   queue: queueRouter,
   chess: chessRouter,
   users: usersRouter,

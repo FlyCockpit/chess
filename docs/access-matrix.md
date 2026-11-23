@@ -20,6 +20,8 @@ registered access levels; handler tests verify ownership and custom role rules.
 | Stop a hosted match | implemented | none | none | full | `chess.stop` | No further inference after cancellation |
 | Inspect own private archive | implemented | none | none | full | `chess.inspect` | Owner-scoped admin |
 | Browse private studio | implemented | none | none | full | `chess.studio` | Includes drafts |
+| Spend the first-admin setup link | implemented | write | write | write | `setup.claimFirstAdmin` | The link token is the credential; 404 unless `SETUP_KEY` is set; refused once any admin exists; per-IP budget and secret-free audit line |
+| See that `SETUP_KEY` is still set | implemented | none | none | read | `settings.setupKeyStatus` | Hidden (404) from non-admins; drives the "Remove SETUP_KEY" banner |
 | Play and simulate locally | implemented | full | full | full | — | Public random baseline and local-process provider lab; no hosted spending |
 | Connect community inference | planned | none | own | full | — | Future match-scoped credential; provider keys remain local |
 | Purchase hosted play | planned | none | none | none | — | Deferred pending pricing and spend controls |

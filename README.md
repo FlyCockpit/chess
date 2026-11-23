@@ -341,7 +341,7 @@ Read [the deployment guide](./docs/deployment.md) and [SECURITY.md](./SECURITY.m
 
 #### Required environment variables
 
-Both runtimes need the intended `DATABASE_URL` and `REDIS_URL`. The server additionally needs `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL`. Configure `ADMIN_EMAILS` for the first admin and `SMTP_*` for verification; the selected worker runtime also needs SMTP for operational alerts. Signup stays disabled by default. Enable hosted inference deliberately with `CHESS_HOSTED_ENABLED` and an OpenRouter key on the runtime that runs matches.
+Both runtimes need the intended `DATABASE_URL` and `REDIS_URL`. The server additionally needs `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL`. Configure `ADMIN_EMAILS` for the first admin and `SMTP_*` for verification (or, with no email provider yet, set `SETUP_KEY` and run `pnpm deploy:generate-admin`, then remove the key; [docs/deployment.md § First admin user](./docs/deployment.md#first-admin-user)); the selected worker runtime also needs SMTP for operational alerts. Signup stays disabled by default. Enable hosted inference deliberately with `CHESS_HOSTED_ENABLED` and an OpenRouter key on the runtime that runs matches.
 
 #### Backups and restore
 
@@ -354,7 +354,8 @@ With `BACKUP_ENABLED=true`, a missing destination or a failed backup blocks migr
 #### Quick sanity checks
 
 - [ ] The selected server/worker roles use the same immutable Git ref and intended database/cache.
-- [ ] `ADMIN_EMAILS`, verified sign-in, forced admin 2FA and SMTP work; the auth secret is unique.
+- [ ] A first admin exists (`ADMIN_EMAILS` with SMTP, or `SETUP_KEY` + `pnpm deploy:generate-admin`), verified sign-in, forced admin 2FA and SMTP work; the auth secret is unique.
+- [ ] `SETUP_KEY` is unset once that admin has signed in.
 - [ ] Schema admission passed and `/ready` reports database, cache and consumer availability.
 - [ ] `pnpm deploy:check <origin> --commit <full-commit-sha>` passes for the expected release; an optional `pnpm dokploy:verify` checks runtime tasks on the host.
 - [ ] A new off-site backup or provider recovery point exists, retention/alerts are configured, and a restore drill passed.

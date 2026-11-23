@@ -28,6 +28,9 @@
     "./lib/auth-token-retention": {
       "default": "./src/lib/auth-token-retention.ts"
     },
+    "./lib/admin-bootstrap": {
+      "default": "./src/lib/admin-bootstrap.ts"
+    },
     "./lib/two-factor-policy": {
       "default": "./src/lib/two-factor-policy.ts"
     },

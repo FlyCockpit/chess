@@ -9,7 +9,7 @@ import { auth, type Session } from "@cockpit-chess/auth";
 import { ORPC_BATCH_MAX_SIZE } from "@cockpit-chess/config/orpc-batch";
 import { THEME_INIT_SCRIPT } from "@cockpit-chess/config/theme-init";
 import prisma from "@cockpit-chess/db";
-import { ADMIN_EMAILS, env } from "@cockpit-chess/env/server";
+import { ADMIN_EMAILS, env, FORCE_SSO } from "@cockpit-chess/env/server";
 import { QUEUE_NAMES, redisConnection } from "@cockpit-chess/queue";
 import { hasExternalConsumer } from "@cockpit-chess/queue/consumer-health";
 import { serve } from "@hono/node-server";
@@ -59,6 +59,7 @@ import { requestLog, sanitizedRequestPath } from "./request-log.js";
 import { mountSecurityHeaders } from "./security-headers.js";
 import { registerSeoRoutes } from "./seo.js";
 import { sessionMiddleware } from "./session-middleware.js";
+import { mountSetupRoutes } from "./setup-routes.js";
 import { SIGNIN_FAILURE_PATH, signinFailureLimit } from "./signin-failure-limit.js";
 import { adminBootstrapMarker } from "./signup-gate.js";
 import { handleSsrRequest } from "./ssr-cache.js";
@@ -117,17 +118,6 @@ const cspConnectSrc = ["'self'", ...(env.CORS_ORIGIN ? [env.CORS_ORIGIN] : [])];
 const themeInitCspHash = `'sha256-${createHash("sha256").update(THEME_INIT_SCRIPT).digest("base64")}'`;
 mountSecurityHeaders(app, { cspConnectSrc, themeInitCspHash });
 
-// Body-limit — reject oversized payloads early (before JSON parsing) to
-// prevent memory exhaustion. 10 MB covers archive imports and large form
-// payloads; individual routes can override with a tighter limit if needed.
-app.use(
-  "/*",
-  bodyLimit({
-    maxSize: 10 * 1024 * 1024, // 10 MB
-    onError: (c) => c.json({ error: "Request is too large. Try sending a smaller payload." }, 413),
-  }),
-);
-
 // Request-ID — attach a short random ID to every request for log correlation.
 // The ID is stored in `c.var.requestId` and included in the logger output.
 app.use("/*", async (c, next) => {
@@ -149,6 +139,25 @@ app.onError((err, c) => {
   );
   return c.json({ error: "Something didn't work on our end. Try again in a moment." }, 500);
 });
+
+// SETUP_KEY first-admin bootstrap (`pnpm deploy:generate-admin`). 404 unless
+// SETUP_KEY is set; refuses once an admin exists; the key is the only
+// credential it reads. Mounted here — after request id + logging, before the
+// global body limit and CORS — so neither can answer for it: an unset key
+// 404s every method (preflights included), and every request is limited and
+// audited by the route itself. See setup-routes.ts.
+mountSetupRoutes(app, { setupKey: env.SETUP_KEY, passwordSignInEnabled: !FORCE_SSO });
+
+// Body-limit — reject oversized payloads early (before JSON parsing) to
+// prevent memory exhaustion. 10 MB covers archive imports and large form
+// payloads; individual routes can override with a tighter limit if needed.
+app.use(
+  "/*",
+  bodyLimit({
+    maxSize: 10 * 1024 * 1024, // 10 MB
+    onError: (c) => c.json({ error: "Request is too large. Try sending a smaller payload." }, 413),
+  }),
+);
 
 // Shared oRPC error logger. Skips expected client errors (4xx ORPCErrors like
 // UNAUTHORIZED / NOT_FOUND / METHOD_NOT_SUPPORTED) so logs only contain real

@@ -36,7 +36,7 @@ The generated file includes:
 - No backup storage or sidecar by default. Generate with `--backups true` to include a node-writable `/backups` volume and optional daily service.
 - An explicit backup prefix such as `cockpit-chess/production/chess.example.com/database` shared by the writer and selected monitor runtime.
 
-A minimal deployment needs only `POSTGRES_PASSWORD`, `REDIS_PASSWORD` and `BETTER_AUTH_SECRET`; the generated origin and role settings are already filled. Set `ADMIN_EMAILS` to bootstrap the first admin. SMTP is needed for email flows. No backup settings are required: migrations and health checks work with backups off, and startup logs one notice explaining how to enable them.
+A minimal deployment needs only `POSTGRES_PASSWORD`, `REDIS_PASSWORD` and `BETTER_AUTH_SECRET`; the generated origin and role settings are already filled. Set `ADMIN_EMAILS` to bootstrap the first admin (needs SMTP), or, with no email provider yet, set `SETUP_KEY` and run `pnpm deploy:generate-admin` ([First admin user](#first-admin-user)). SMTP is needed for email flows. The generated Compose passes `SETUP_KEY` through to the server but leaves it off the fill-in checklist: unset is its correct production value. No backup settings are required: migrations and health checks work with backups off, and startup logs one notice explaining how to enable them.
 
 Backups are optional. Generate with `--backups true`, then enable the **`backup` Compose profile** and `BACKUP_SCHEDULE=daily` for one daily service. Set `BACKUP_ENABLED=true` for migration snapshots and off-site freshness monitoring; see [Backups before real data](#backups-before-real-data).
 
@@ -48,6 +48,7 @@ For Dokploy-managed PostgreSQL or Valkey, use the native Application checklist w
 |---|---|
 | `DATABASE_URL`, `REDIS_URL` | Server and external worker; the same environment-specific targets |
 | `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `ADMIN_EMAILS` | Server only; unique strong auth secret and exact public origin |
+| `SETUP_KEY` | Server only, optional, 32–512 characters: lets `pnpm deploy:generate-admin` create the first admin without email. Remove it once that admin has signed in ([First admin user](#first-admin-user)) |
 | `SMTP_*` | Server for verification; selected worker runtime for operational alerts |
 | `MIGRATE_ON_START` | Server `true`; external worker `false`; app replicas `false` when using a prior one-shot migration job |
 | `WORKER_MODE` | Server: `embedded` or `external` according to topology |
@@ -158,6 +159,25 @@ pnpm dokploy:verify --mode applications --server <actual-server-service> --worke
 It inspects the current Swarm task generation of each service. A rollback, changed service generation, failed task, missing healthcheck, selected container built from another commit, or readiness mismatch fails verification.
 
 Both modes read only container labels and state, Swarm service and task state, and the commit file; never environment or logs. Dokploy's build-success notification cannot replace these checks.
+
+## First admin user
+
+Two ways to get the first admin. Use the setup key when the deploy has no email provider yet; use `ADMIN_EMAILS` when SMTP works.
+
+### With a setup key (no email needed)
+
+1. Generate a key on your computer (`pnpm generate:secret`; at least 32 characters) and set `SETUP_KEY=<key>` on the server: in the generated Compose's **Environment** tab, or in the server Application's environment. Deploy.
+2. From a checkout of the repo, run `pnpm deploy:generate-admin`. It asks for the app's URL, the key (not shown as you type) and your email, and prints a one-time link to set your password. The link expires after an hour and works once; no password is sent anywhere.
+3. Open the link, choose a password, sign in, and set up two-factor authentication when asked (admins must enroll). Use the link before you remove the key: without the key it stops working.
+4. **Remove `SETUP_KEY` from the environment and redeploy.** Admins see a warning until you do. Without the key the setup route does not exist at all.
+
+The setup route (`POST /api/setup/admin`, `apps/server/src/setup-routes.ts`) only exists while `SETUP_KEY` is set, and only works while no admin exists. Issuing a link creates no user: it stores only the link's hash (`packages/api/src/lib/admin-bootstrap.ts`), and the public `setup.claimFirstAdmin` procedure spends it in one transaction under the bootstrap lock that re-checks that no admin exists and the address is free, then creates the admin (email verified) with its credential account. Because no user row exists before the claim, nothing in Better-Auth can race the bootstrap. From then on the route refuses every call, and any other unused link stops working too. If the link expired or got lost before you used it, run `pnpm deploy:generate-admin` again for a fresh one (only the newest link works). It never promotes an existing account: an email that already belongs to a user is refused. Each issue attempt is rate limited per IP (`setupLimiter`, 5 per 15 minutes, fail-closed) and each claim has its own per-IP budget (`rl:setup-claim`); every attempt writes one `[audit]` line to the app log (`"event":"setup.first_admin"` / `"setup.first_admin_claim"`), never containing the key, the email or the link. Under `FORCE_SSO` both refuse, because the admin could never sign in with a password. The key is for this bootstrap only; nothing else accepts it. Weak keys are refused in production.
+
+For scripts and CI, pass `--url` and `--email` and pipe the key on stdin: `printf '%s\n' "$KEY" | pnpm deploy:generate-admin --url https://chess.example.com --email you@example.com`. The key is never accepted as an argument.
+
+### With `ADMIN_EMAILS` (needs SMTP)
+
+Set `ADMIN_EMAILS` on the server, sign up with that exact address, and click the verification link; the account carries the admin role. SSO-created users are never promoted from `ADMIN_EMAILS`.
 
 ## Backups before real data
 

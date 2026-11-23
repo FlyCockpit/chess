@@ -1,9 +1,10 @@
 import prisma from "@cockpit-chess/db";
-import { ADMIN_EMAILS } from "@cockpit-chess/env/server";
+import { ADMIN_EMAILS, env } from "@cockpit-chess/env/server";
 import { ORPCError } from "@orpc/server";
 import { z } from "zod";
 
 import { adminOr404Procedure, authenticatedProcedure } from "../index";
+import { adminUserExists } from "../lib/admin-presence";
 import {
   FORCE_2FA_SETTING_KEYS,
   invalidateForceTwoFactorSettingsCache,
@@ -26,14 +27,23 @@ export const settingsRouter = {
 
   /**
    * Returns admin-setup status so the client can render a prominent warning
-   * banner when ADMIN_EMAILS is empty (no users will ever be granted admin
-   * privileges). Authenticated so the banner only shows to logged-in users.
+   * banner when no administrator exists and nothing is configured that could
+   * create one: ADMIN_EMAILS is empty and SETUP_KEY is unset. Once any admin
+   * exists the answer is false without regard to either variable — clearing
+   * both after setup is the expected state. Authenticated so the banner only
+   * shows to logged-in users.
    */
-  adminSetupStatus: authenticatedProcedure.handler(() => {
-    return {
-      adminEmailsEmpty: ADMIN_EMAILS.size === 0,
-    };
+  adminSetupStatus: authenticatedProcedure.handler(async () => {
+    if (ADMIN_EMAILS.size > 0 || env.SETUP_KEY) return { adminMissing: false };
+    return { adminMissing: !(await adminUserExists()) };
   }),
+
+  /**
+   * Whether SETUP_KEY is still set, so admins see a warning to remove it once
+   * the first admin exists (apps/server/src/setup-routes.ts). Admin-only: to
+   * anyone else it would only advertise an open bootstrap route.
+   */
+  setupKeyStatus: adminOr404Procedure.handler(() => ({ setupKeySet: Boolean(env.SETUP_KEY) })),
 
   myNotificationPreferences: authenticatedProcedure.handler(async ({ context }) => {
     const user = await prisma.user.findUnique({

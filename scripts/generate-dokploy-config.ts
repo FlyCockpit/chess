@@ -289,6 +289,9 @@ function composeEnvironments(options: Options): Record<string, Record<string, st
         "SMTP_FROM",
       ]),
       SMTP_PORT: composeVar("SMTP_PORT", "587"),
+      // Optional (COMPOSE_OPTIONAL_VARIABLES): passed through so the email-free
+      // first-admin bootstrap works on the compose path; unset = route absent.
+      SETUP_KEY: composeVar("SETUP_KEY"),
       BETTER_AUTH_URL: new URL(options.url).origin,
       WORKER_MODE: worker ? "external" : "embedded",
       MIGRATE_ON_START: "true",
@@ -321,6 +324,13 @@ function composeEnvironments(options: Options): Record<string, Record<string, st
   };
 }
 
+/**
+ * Compose pass-throughs that are meant to stay unset: empty is their correct
+ * production value, so they are not on the checklist of variables to fill.
+ * SETUP_KEY is set only for the first-admin bootstrap, then removed.
+ */
+const COMPOSE_OPTIONAL_VARIABLES = new Set(["SETUP_KEY"]);
+
 function composeChecklist(options: Options) {
   return {
     file: "docker-compose.dokploy.yml",
@@ -342,7 +352,9 @@ function composeChecklist(options: Options) {
                 [...value.matchAll(/\$\{([A-Z0-9_]+):-\}/g)].map((match) => match[1]!),
               ),
             ),
-          ].sort(),
+          ]
+            .filter((name) => !COMPOSE_OPTIONAL_VARIABLES.has(name))
+            .sort(),
         ]),
     ),
     manualMigration: "docker compose run --rm server migrate",

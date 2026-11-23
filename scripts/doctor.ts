@@ -397,8 +397,9 @@ function checkSmtp(): Promise<void> {
             "so the allowlisted owner cannot complete first-admin bootstrap without SMTP",
           hint:
             "Set SMTP_HOST/SMTP_PORT/SMTP_FROM (and SMTP_USER/SMTP_PASS if your provider " +
-            "requires auth) so verification emails deliver, or grant the admin role through " +
-            "your approved admin/provisioning path instead.",
+            "requires auth) so verification emails deliver, or bootstrap the first admin " +
+            "without email: set SETUP_KEY (pnpm generate:secret) and run " +
+            "`pnpm deploy:generate-admin`.",
           required: false,
         });
       }

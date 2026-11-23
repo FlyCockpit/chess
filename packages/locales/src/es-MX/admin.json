@@ -100,11 +100,15 @@
     "updateFailed": "No se pudo actualizar esa configuración. Intenta de nuevo."
   },
   "setupBanner": {
-    "title": "Sin administradores configurados",
-    "message": "Establece <0>ADMIN_EMAILS</0> en tu entorno y reinicia el servidor para habilitar funciones de administrador. Consulta la documentación de endurecimiento de producción de tu implementación para más detalles.",
+    "title": "Aún no hay cuenta de administrador",
+    "message": "Nadie puede convertirse en administrador en esta implementación. Establece <0>SETUP_KEY</0> y ejecuta <0>pnpm deploy:generate-admin</0> para crear el primer administrador, o establece <0>ADMIN_EMAILS</0>, y luego reinicia el servidor. Consulta la documentación de tu implementación para más detalles.",
     "errorTitle": "No se pudo verificar la configuración de administradores",
     "errorMessage": "La app no pudo comprobar si hay administradores configurados. Revisa los registros del servidor antes de publicar.",
     "retry": "Reintentar"
+  },
+  "setupKeyBanner": {
+    "title": "Elimina SETUP_KEY",
+    "message": "<0>SETUP_KEY</0> sigue configurada en el servidor. Solo se necesita para crear el primer administrador: elimínala del entorno y vuelve a implementar."
   },
   "twoFactorNudge": {
     "title": "La autenticación de dos factores no está configurada",

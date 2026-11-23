@@ -17,7 +17,7 @@ vi.mock("@cockpit-chess/db", async () => {
 // Mock @cockpit-chess/env/server so settings.ts (ADMIN_EMAILS) and adminOr404Procedure
 // (via index.ts) can load without a real .env.
 vi.mock("@cockpit-chess/env/server", () => ({
-  env: {},
+  env: {} as { SETUP_KEY?: string },
   ADMIN_EMAILS: new Set<string>(),
 }));
 
@@ -26,12 +26,16 @@ const { default: prisma } = await import("@cockpit-chess/db");
 
 // Re-import the mocked ADMIN_EMAILS Set so tests can mutate it. Both settings.ts
 // and this file receive the same Set instance from the vi.mock factory above.
-const { ADMIN_EMAILS: mockAdminEmails } = (await import("@cockpit-chess/env/server")) as {
+const { ADMIN_EMAILS: mockAdminEmails, env: mockEnv } = (await import(
+  "@cockpit-chess/env/server"
+)) as {
   ADMIN_EMAILS: Set<string>;
+  env: { SETUP_KEY?: string };
 };
 
 // Type-safe handle to the mocked Prisma methods
 const db = prisma as unknown as {
+  $queryRaw: MockInstance;
   appSetting: {
     findMany: MockInstance;
     upsert: MockInstance;
@@ -87,6 +91,7 @@ describe("settingsRouter", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAdminEmails.clear();
+    delete mockEnv.SETUP_KEY;
   });
 
   describe("getAll", () => {
@@ -191,24 +196,34 @@ describe("settingsRouter", () => {
   });
 
   describe("adminSetupStatus", () => {
-    it("returns adminEmailsEmpty: true when ADMIN_EMAILS is empty", async () => {
-      const ctx = buildContext();
-      const client = createRouterClient(settingsRouter, { context: ctx });
+    it("reports adminMissing when no admin exists and neither bootstrap path is set", async () => {
+      db.$queryRaw.mockResolvedValueOnce([{ exists: false }]);
+      const client = createRouterClient(settingsRouter, { context: buildContext() });
 
-      const result = await client.adminSetupStatus();
-
-      expect(result).toEqual({ adminEmailsEmpty: true });
+      expect(await client.adminSetupStatus()).toEqual({ adminMissing: true });
     });
 
-    it("returns adminEmailsEmpty: false when ADMIN_EMAILS has entries", async () => {
+    it("is quiet once an admin exists, even with ADMIN_EMAILS and SETUP_KEY cleared", async () => {
+      db.$queryRaw.mockResolvedValueOnce([{ exists: true }]);
+      const client = createRouterClient(settingsRouter, { context: buildContext() });
+
+      expect(await client.adminSetupStatus()).toEqual({ adminMissing: false });
+    });
+
+    it("is quiet without a DB read while ADMIN_EMAILS has entries", async () => {
       mockAdminEmails.add("admin@example.com");
+      const client = createRouterClient(settingsRouter, { context: buildContext() });
 
-      const ctx = buildContext();
-      const client = createRouterClient(settingsRouter, { context: ctx });
+      expect(await client.adminSetupStatus()).toEqual({ adminMissing: false });
+      expect(db.$queryRaw).not.toHaveBeenCalled();
+    });
 
-      const result = await client.adminSetupStatus();
+    it("is quiet without a DB read while SETUP_KEY is set", async () => {
+      mockEnv.SETUP_KEY = "k".repeat(32);
+      const client = createRouterClient(settingsRouter, { context: buildContext() });
 
-      expect(result).toEqual({ adminEmailsEmpty: false });
+      expect(await client.adminSetupStatus()).toEqual({ adminMissing: false });
+      expect(db.$queryRaw).not.toHaveBeenCalled();
     });
 
     it("throws UNAUTHORIZED for unauthenticated requests", async () => {
@@ -220,6 +235,37 @@ describe("settingsRouter", () => {
         expect(error.code).toBe("UNAUTHORIZED");
         return true;
       });
+    });
+  });
+
+  describe("setupKeyStatus", () => {
+    it("tells an admin that SETUP_KEY is still set", async () => {
+      mockEnv.SETUP_KEY = "k".repeat(32);
+      const client = createRouterClient(settingsRouter, {
+        context: buildContext({ user: { role: "admin", twoFactorEnabled: true } }),
+      });
+
+      expect(await client.setupKeyStatus()).toEqual({ setupKeySet: true });
+    });
+
+    it("reports false once SETUP_KEY is removed", async () => {
+      const client = createRouterClient(settingsRouter, {
+        context: buildContext({ user: { role: "admin", twoFactorEnabled: true } }),
+      });
+
+      expect(await client.setupKeyStatus()).toEqual({ setupKeySet: false });
+    });
+
+    it("is hidden (NOT_FOUND) from non-admins", async () => {
+      mockEnv.SETUP_KEY = "k".repeat(32);
+      const client = createRouterClient(settingsRouter, { context: buildContext() });
+
+      await expect(client.setupKeyStatus()).rejects.toSatisfy(
+        (error: ORPCError<string, unknown>) => {
+          expect(error.code).toBe("NOT_FOUND");
+          return true;
+        },
+      );
     });
   });
 

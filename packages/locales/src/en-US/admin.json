@@ -80,11 +80,15 @@
     }
   },
   "setupBanner": {
-    "title": "No administrators configured",
-    "message": "Set <0>ADMIN_EMAILS</0> in your environment and restart the server to enable admin features. See your deployment's production hardening docs for details.",
+    "title": "No administrator account yet",
+    "message": "Nobody can become an admin on this deploy. Set <0>SETUP_KEY</0> and run <0>pnpm deploy:generate-admin</0> to create the first admin, or set <0>ADMIN_EMAILS</0>, then restart the server. See your deployment docs for details.",
     "errorTitle": "Could not verify admin setup",
     "errorMessage": "The app could not check whether administrators are configured. Review the server logs before publishing.",
     "retry": "Retry"
+  },
+  "setupKeyBanner": {
+    "title": "Remove SETUP_KEY",
+    "message": "<0>SETUP_KEY</0> is still set on the server. It is only needed to create the first admin — remove it from the environment and redeploy."
   },
   "settings": {
     "title": "Admin Settings",

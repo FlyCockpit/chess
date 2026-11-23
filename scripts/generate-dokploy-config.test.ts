@@ -239,6 +239,21 @@ test("checklist includes the actual compose roles and optional backup setup", ()
   assert.match(config.compose.manualMigration, /server migrate/);
 });
 
+test("SETUP_KEY is a server-only pass-through that stays off the fill-in checklists", () => {
+  for (const topology of ["app", "app-worker"] as const) {
+    const config = generateDokployConfig({ ...defaults, topology });
+    const compose = generateDokployCompose({ ...defaults, topology });
+    assert.match(block(compose, "server"), /^ {6}SETUP_KEY: "\$\{SETUP_KEY:-\}"$/m);
+    assert.equal(config.compose.environmentVariables.server?.includes("SETUP_KEY"), false);
+    assert.equal("SETUP_KEY" in config.environmentVariablesToSetOnce, false);
+    assert.ok(config.optionalEnvironmentKeys.server.includes("SETUP_KEY"));
+    if (topology === "app-worker") {
+      assert.doesNotMatch(block(compose, "worker"), /SETUP_KEY/);
+      assert.equal(config.optionalEnvironmentKeys.worker?.includes("SETUP_KEY"), false);
+    }
+  }
+});
+
 test("new deployments require no backup settings, volume or sidecar", () => {
   for (const topology of ["app", "app-worker"] as const) {
     const config = generateDokployConfig({ ...defaults, topology });

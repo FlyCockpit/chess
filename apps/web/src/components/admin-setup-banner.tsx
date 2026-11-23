@@ -7,10 +7,11 @@ import { useAuthSession } from "@/hooks/use-auth-session";
 import { orpc } from "@/utils/orpc";
 
 /**
- * Renders a prominent warning when ADMIN_EMAILS is unset on the server. A
- * fresh deploy with no admins configured cannot grant admin privileges to
- * anyone, and the existing console-level warning is easy for nontechnical
- * owners to miss. This banner surfaces that condition in the UI itself.
+ * Renders a prominent warning when no administrator exists and the server has
+ * no way to create one (ADMIN_EMAILS empty, SETUP_KEY unset). Such a deploy
+ * cannot grant admin privileges to anyone, and the console-level warning is
+ * easy for nontechnical owners to miss. This banner surfaces that condition in
+ * the UI itself.
  *
  * Renders nothing while loading so it never flashes during pending state.
  * Query errors render a conservative warning because this check protects the
@@ -26,8 +27,9 @@ export function AdminSetupBanner() {
   const authSession = useAuthSession();
   const canCheckSetup =
     authSession.state.status === "authenticated" && !authSession.meta.isDegraded;
-  // ADMIN_EMAILS is a server-restart-time constant, so refetching on every
-  // route transition is wasteful. 5-minute staleTime avoids hammering the API.
+  // The answer changes only on a redeploy or when the first admin appears, so
+  // refetching on every route transition is wasteful. 5-minute staleTime
+  // avoids hammering the API.
   const { data, isPending, isError, refetch } = useQuery({
     ...orpc.settings.adminSetupStatus.queryOptions(),
     enabled: canCheckSetup,
@@ -57,7 +59,7 @@ export function AdminSetupBanner() {
       </div>
     );
   }
-  if (!data?.adminEmailsEmpty) return null;
+  if (!data?.adminMissing) return null;
 
   return (
     <div

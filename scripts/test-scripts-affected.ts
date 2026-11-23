@@ -17,9 +17,9 @@
  * .env (IGNORED_INPUTS: loaded by that Prisma config) for db;
  * scripts/backup/**, scripts/db/lib/** and the root package.json for backup
  * (and, off Linux, the Dockerfile's base image: scripts/backup/linux-only.mjs);
- * the build-commit and deploy-check scripts for deploy; plus node_modules (the
- * lockfile) and scripts/lib/ (bounded-child, run by db). When a suite starts
- * reading something new, add it to its rule. The test
+ * the build-commit, deploy-check and deploy-generate-admin scripts for deploy;
+ * plus node_modules (the lockfile) and scripts/lib/ (bounded-child, run by
+ * db). When a suite starts reading something new, add it to its rule. The test
  * (`pnpm test:scripts:affected:test`, in `pnpm verify:tooling`) fails while
  * any tracked file is unclassified or a suite's own test files would not
  * select it.
@@ -83,7 +83,10 @@ export const RULES: readonly Rule[] = [
   // Dockerfile's first FROM image (scripts/backup/linux-only.mjs), a branch
   // a trace on Linux cannot see.
   { paths: ["scripts/backup/", "Dockerfile"], suites: ["backup"] },
-  { paths: ["scripts/build-commit.", "scripts/deploy-check."], suites: ["deploy"] },
+  {
+    paths: ["scripts/build-commit.", "scripts/deploy-check.", "scripts/deploy-generate-admin."],
+    suites: ["deploy"],
+  },
   // Never read by the three suites. Files under scripts/ are named one by
   // one, so a new script is unclassified (runs everything) until it is added.
   {
