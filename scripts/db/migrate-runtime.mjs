@@ -542,7 +542,9 @@ async function applyLocked(ctx, lock, deadline, pollMs) {
   let backup = null;
   if (needsReconcile(state, ctx.releases)) {
     refuseMismatch(state);
-    backup = await reconcileReleases(ctx, lock, state);
+    const reconciled = await reconcileReleases(ctx, lock, state, deadline);
+    if (reconciled.restart) return applyLocked(ctx, lock, deadline, pollMs);
+    backup = reconciled.backup;
     state = await ctx.state();
     refuseCommon(state);
     refuseAhead(state);
@@ -715,9 +717,11 @@ async function applyLocked(ctx, lock, deadline, pollMs) {
  * Reconcile replaced migrations onto their release (scripts/db/lib/replaces.mjs),
  * before anything else touches the history. Runs on the lock session, so
  * losing the lock aborts the transaction. Returns the pre-migration backup
- * when missing replaced migrations had to be applied (null otherwise).
+ * when missing replaced migrations had to be applied (null otherwise), or
+ * `restart` when the database changed during that backup: the gates' verdict
+ * no longer holds, so classification, gates and backup start over.
  */
-async function reconcileReleases(ctx, lock, state) {
+async function reconcileReleases(ctx, lock, state, deadline) {
   if (state.inProgress)
     throw new Refusal(
       "another session holds Prisma's migration lock (a `prisma migrate deploy` is running), so the release " +
@@ -739,9 +743,18 @@ async function reconcileReleases(ctx, lock, state) {
         },
       ]),
     );
+    const facts = await readMutationFacts(ctx, lock.client);
     await preDeployGates(ctx, { toApply: [...byName.keys()], freshDatabase: false, byName });
     lock.assertHeld("the pre-migration backup");
     backup = await preMigrateBackup(ctx);
+    if (JSON.stringify(await readMutationFacts(ctx, lock.client)) !== JSON.stringify(facts)) {
+      log(
+        "database/history/contract state changed during backup; restarting classification and backup.",
+      );
+      if (Date.now() >= deadline)
+        throw new Refusal("Database kept changing during backup; retry on the next start.");
+      return { backup: null, restart: true };
+    }
   }
   for (const step of plan.steps) {
     lock.assertHeld(`reconciling ${step.release.name}`);
@@ -774,7 +787,7 @@ async function reconcileReleases(ctx, lock, state) {
         `release ${step.release.name}: some replaced scheduled deletions already ran; only the rest of its contract.sql will run.`,
       );
   }
-  return backup;
+  return { backup, restart: false };
 }
 
 /**

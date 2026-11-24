@@ -16,7 +16,8 @@
  */
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -153,6 +154,7 @@ export async function releaseScenarios({ step, serverUrl, repo, pg }) {
         env: {
           DATABASE_URL: url,
           ...(options.id ? { COCKPIT_CHESS_INSTANCE_ID: options.id } : {}),
+          ...options.env,
         },
         migrationsDir: dir,
         runPrisma: (args, opts) =>
@@ -160,7 +162,7 @@ export async function releaseScenarios({ step, serverUrl, repo, pg }) {
             if (r.code !== 0) lines.push(r.stdout, r.stderr);
             return r;
           }),
-        backupHook: path.join(work, "no-hook.sh"),
+        backupHook: options.backupHook ?? path.join(work, "no-hook.sh"),
         connectRetryMs: 0,
         pollMs: 100,
         waitTimeoutMs: options.waitTimeoutMs ?? 20_000,
@@ -293,6 +295,73 @@ export async function releaseScenarios({ step, serverUrl, repo, pg }) {
         assert.equal(r.code, 1, r.out);
         assert.match(r.out, /is not the one .*replaces\.json records \(checksum mismatch\)/);
         assert.deepEqual(await history(db), [F0, P1, P2]);
+      },
+    );
+
+    await step(
+      "release: a replaced deletion still pending with another contract.sql is refused",
+      async () => {
+        // Not fresh at P2, so P2's contract is recorded but has not run (soaking).
+        const db = await createDb();
+        ok(await deploy(db, image(at(1))));
+        ok(await deploy(db, image(at(2))));
+        const [row] = await q(
+          db,
+          `SELECT contract_applied_at FROM "_cockpit_chess_migration" WHERE name = $1`,
+          [P2],
+        );
+        assert.equal(row.contract_applied_at, null);
+        await q(
+          db,
+          `UPDATE "_cockpit_chess_migration" SET contract_checksum = $2 WHERE name = $1`,
+          [P2, "0".repeat(64)],
+        );
+        const r = await deploy(db, image(RELEASE));
+        assert.equal(r.code, 1, r.out);
+        assert.match(r.out, /is not the one .*replaces\.json records \(checksum mismatch\)/);
+        assert.deepEqual(await history(db), [F0, P1, P2]);
+      },
+    );
+
+    await step(
+      "release: a catalog change during the reconcile's backup restarts its gates and backup",
+      async () => {
+        const db = await createDb();
+        ok(await deploy(db, image(at(1))));
+        // The hook gets only the runner's env (no PATH): absolute node and pg paths.
+        const pgPath = createRequire(path.join(repo, "scripts/db/test-migrations.mjs")).resolve(
+          "pg",
+        );
+        const runs = path.join(work, "backup-runs");
+        const mutate = path.join(work, "mutate-during-backup.cjs");
+        writeFileSync(
+          mutate,
+          `const { Client } = require(${JSON.stringify(pgPath)});
+(async () => {
+  const c = new Client({ connectionString: process.env.DATABASE_URL });
+  await c.connect();
+  await c.query('CREATE INDEX "t_a_idx" ON "t"("a")');
+  await c.end();
+})().catch((e) => { console.error(e); process.exit(1); });
+`,
+        );
+        const hook = path.join(work, "mutating-backup.sh");
+        writeFileSync(
+          hook,
+          `echo run >> ${JSON.stringify(runs)}
+if [ "$(wc -l < ${JSON.stringify(runs)})" -eq 1 ]; then ${JSON.stringify(process.execPath)} ${JSON.stringify(mutate)} || exit 1; fi
+exit 0
+`,
+        );
+        const r = await deploy(db, image(RELEASE), {
+          env: { BACKUP_ENABLED: "true" },
+          backupHook: hook,
+        });
+        ok(r);
+        assert.match(r.out, /state changed during backup; restarting classification and backup/);
+        assert.equal(readFileSync(runs, "utf8").trim().split("\n").length, 2);
+        assert.match(r.out, /had 1 of the 3 migration\(s\)/);
+        assert.deepEqual(await history(db), [F0, R]);
       },
     );
 
