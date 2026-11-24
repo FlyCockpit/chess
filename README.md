@@ -57,11 +57,11 @@ If pnpm fails with a path like `mkdir '/Users'` on Linux/WSL, your shell has a s
 npm install -g corepack@0.36.0
 corepack enable
 pnpm install
-pnpm run setup
+pnpm setup:app
 pnpm dev
 ```
 
-`pnpm run setup` is the one-command path from a fresh clone to runnable, and is idempotent (re-run any time without harm). Use the explicit `run` form — `setup` is also a pnpm builtin, and on some pnpm versions the bare `pnpm setup` invokes the builtin (which edits your shell profile) instead of this script. It:
+`pnpm setup:app` is the one-command path from a fresh clone to runnable, and is idempotent (re-run any time without harm). It is `setup:app`, not `setup`, because `setup` is a pnpm builtin (it edits your shell profile) that wins over a same-named script. It:
 
 - creates the root `.env` from `.env.example` if missing,
 - creates `apps/web/.env` from `apps/web/.env.example` if missing,
@@ -74,13 +74,13 @@ pnpm dev
 
 For separate linked worktrees, use the [manual setup](#manual-setup) sequence to provision that checkout’s local/shadow databases before applying migrations.
 
-If something looks wrong, run `pnpm doctor` to validate environment, database, Valkey/Redis, and (optionally) SMTP connectivity. It exits non-zero with actionable hints if any required check fails.
+If something looks wrong, run `pnpm doctor:app` to validate environment, database, Valkey/Redis, and (optionally) SMTP connectivity. It exits non-zero with actionable hints if any required check fails.
 
 Run the test suite with `pnpm test`.
 
 ### First login
 
-Signup is disabled by default (`SIGNUP_ENABLED=false`) and no admin user exists yet, but `pnpm run setup` already did the two things first login needs: it wrote your email to `ADMIN_EMAILS` (the signup allowlist) and pointed `SMTP_*` at the mailpit sink. So with `pnpm dev` running:
+Signup is disabled by default (`SIGNUP_ENABLED=false`) and no admin user exists yet, but `pnpm setup:app` already did the two things first login needs: it wrote your email to `ADMIN_EMAILS` (the signup allowlist) and pointed `SMTP_*` at the mailpit sink. So with `pnpm dev` running:
 
 1. Open [https://cockpit-chess.localhost](https://cockpit-chess.localhost) and sign up with the exact email from `ADMIN_EMAILS` — that address is the only one signup accepts, and the account it creates carries the admin role.
 2. Open [http://localhost:8025](http://localhost:8025) (the mailpit sink), find the "Verify your email" message, and click the link. You're in — email verification is enforced, so this step can't be skipped.
@@ -91,7 +91,7 @@ In production the mail sink is replaced by a real SMTP provider; see [Deployment
 
 ### Manual setup
 
-To set up by hand instead of with `pnpm run setup`:
+To set up by hand instead of with `pnpm setup:app`:
 
 ```bash
 pnpm install
@@ -374,8 +374,8 @@ Never put provider credentials in a committed configuration, archive or browser 
 
 The scripts most sessions need:
 
-- `pnpm run setup`: First-run onboarding — see [Installation](#installation) (idempotent; creates `.env`, generates secret, starts local services, applies committed migrations)
-- `pnpm doctor`: Validate environment variables and test database, Valkey/Redis, and SMTP connectivity
+- `pnpm setup:app`: First-run onboarding — see [Installation](#installation) (idempotent; creates `.env`, generates secret, starts local services, applies committed migrations)
+- `pnpm doctor:app`: Validate environment variables and test database, Valkey/Redis, and SMTP connectivity
 - `pnpm dev`: Start all applications through portless at `https://*.localhost`
 - `pnpm dev:services`: Start Postgres, Valkey, and the mailpit mail sink via Docker Compose
 - `pnpm test`: Run the full test suite (Vitest, server-side unit tests)

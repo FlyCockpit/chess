@@ -34,7 +34,7 @@ Use the managed database's automated backups and point-in-time recovery (Azure D
 
 - **`BACKUP_ENABLED` unset/`false`** → no backup hook runs and migrations run without one. The entrypoint prints one startup notice saying backups are off (and a warning when a destination is configured anyway). Nothing refuses.
 - **`BACKUP_ENABLED=true`, no usable destination** (no writable mounted `/backups`, no valid `BACKUP_S3_*`) → a container that migrates (`MIGRATE_ON_START=true`, or the `migrate` job) fails at startup with `BACKUP_ENABLED=true but no backup destination is configured`, before migrating, on a brand-new database too (no exemption: the first start reports the missing destination before any data exists). A server that only waits (`MIGRATE_ON_START=false`) starts normally.
-- **`BACKUP_ENABLED=true`, `BACKUP_S3_BUCKET` set, but no writer key** (`BACKUP_S3_ACCESS_KEY_ID` / `BACKUP_S3_SECRET_ACCESS_KEY` missing, for example only the `BACKUP_MONITOR_S3_*` pair was given) → a migrating start fails the same way, before migrating. Add the writer key to the server or `migrate` job, or set `BACKUP_ENABLED=false` on it. `pnpm doctor` warns about this.
+- **`BACKUP_ENABLED=true`, `BACKUP_S3_BUCKET` set, but no writer key** (`BACKUP_S3_ACCESS_KEY_ID` / `BACKUP_S3_SECRET_ACCESS_KEY` missing, for example only the `BACKUP_MONITOR_S3_*` pair was given) → a migrating start fails the same way, before migrating. Add the writer key to the server or `migrate` job, or set `BACKUP_ENABLED=false` on it. `pnpm doctor:app` warns about this.
 - **`BACKUP_ENABLED=true` but the image has no backup hook** (`scripts/backup/pre-migrate.sh` missing) → the migration is refused (`refusing to migrate without a backup`); a due scheduled deletion is skipped for that start instead.
 - **`BACKUP_ENABLED=true` and the dump fails** → the migration does **not** run and the deploy stops. Fix the backup (disk full, bad S3 key) and redeploy, or set `BACKUP_ENABLED=false` deliberately.
 
@@ -46,7 +46,7 @@ Explicit operations work whatever the switch says: the `backup` command, the dai
 
 **Container platforms:** the infra workflow takes a provider snapshot before the `migrate` job (RDS manual snapshot; Azure on-demand backup where the service supports it). `BACKUP_ENABLED` is normally left `false` there; set it (with `BACKUP_S3_*`) on the `migrate` job only if that job should dump too.
 
-`pnpm doctor` reports the switch and recommends turning it on with a destination. It is strongly encouraged before any migration that drops or rewrites data.
+`pnpm doctor:app` reports the switch and recommends turning it on with a destination. It is strongly encouraged before any migration that drops or rewrites data.
 
 **Pre-drop backup.** With `BACKUP_ENABLED=true`, the same hook also runs right before a scheduled deletion (`contract.sql`, [schema-migrations.md § Expand and contract](./schema-migrations.md#expand-and-contract)), labelled `pre-drop`, when a deletion is due and that run took no pre-migration backup. The runner passes `--keep 5` explicitly for `pre-drop`. Direct invocations with another label default to `--keep 0` (no local pruning). The runner passes `--required` here too: a dump that fails → no deletion runs that start (the app starts normally) and the next start tries again. (With no destination at all, a migrating start already stops at the entrypoint's startup check; a start that only waits never runs deletions.) The `[migrate] DATA DELETED:` log line names the backup it took.
 

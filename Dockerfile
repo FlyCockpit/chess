@@ -223,7 +223,7 @@ ENV NODE_ENV=production
 ENV NODE_OPTIONS="--max-old-space-size=512"
 WORKDIR /app
 
-# Copy workspace config (needed for pnpm --filter at runtime)
+# Copy workspace config (pnpm --filter reads it at runtime)
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY apps/server/package.json apps/server/
 COPY apps/web/package.json apps/web/
