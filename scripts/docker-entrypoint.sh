@@ -305,8 +305,9 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 
-# Server only: the worker never reads ADMIN_EMAILS or SIGNUP_ENABLED.
-if [ "$is_server" = true ] && [ "$NODE_ENV" = "production" ] && [ -z "$ADMIN_EMAILS" ]; then
+# Server only: the worker never reads ADMIN_EMAILS or SIGNUP_ENABLED. A set
+# SETUP_KEY is a first-admin path too, so it silences both, as in server.ts.
+if [ "$is_server" = true ] && [ "$NODE_ENV" = "production" ] && [ -z "$ADMIN_EMAILS" ] && [ -z "$SETUP_KEY" ]; then
   if [ "$SIGNUP_ENABLED" = "true" ]; then
     echo "WARNING: ADMIN_EMAILS is empty. No users will be granted admin privileges." >&2
     echo "         Set ADMIN_EMAILS to a comma-separated list of email addresses." >&2
@@ -318,7 +319,8 @@ if [ "$is_server" = true ] && [ "$NODE_ENV" = "production" ] && [ -z "$ADMIN_EMA
     # case. If no admin exists yet, set ADMIN_EMAILS before the first signup.
     echo "WARNING: ADMIN_EMAILS is empty and SIGNUP_ENABLED is not \"true\" —" >&2
     echo "         no new admin can be bootstrapped. If no admin exists yet," >&2
-    echo "         set ADMIN_EMAILS to a comma-separated list of operator emails." >&2
+    echo "         set SETUP_KEY and run pnpm deploy:generate-admin, or set" >&2
+    echo "         ADMIN_EMAILS to a comma-separated list of operator emails." >&2
   fi
 fi
 
