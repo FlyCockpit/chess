@@ -158,7 +158,8 @@ function ResetPasswordForm({
     } catch (err) {
       console.error("[reset-password.setup]", err);
       if (isSetupLinkInvalid(err)) {
-        toast.error(t("auth:resetPassword.failed"));
+        // Setup links are re-issued from the deploy, never "requested": match the card.
+        toast.error(t("auth:resetPassword.setup.invalidTitle"));
         onTokenRejected();
         return false;
       }
