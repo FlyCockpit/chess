@@ -20,9 +20,10 @@ import type { Context, Next } from "hono";
 //     Better-Auth would otherwise return identical 400s for every address.
 //   - With pass-through, every input class yields identical responses for
 //     member and non-member addresses: same 400s for invalid input, same
-//     generic 200 for already-registered emails, same 422 for a blocked
-//     signup (both pay the password-hash cost before the hook rejects, so
-//     timing is normalized too). The only divergence is a VALID new-admin
+//     answer for already-registered emails, admin-listed or not (the auth
+//     package's after-hook, packages/auth/src/signup-response.ts), same 422 for a
+//     blocked signup (both pay the password-hash cost before the hook
+//     rejects, so timing is normalized too). The only divergence is a VALID new-admin
 //     signup succeeding — which inherently creates an account and emails the
 //     owner, and whose pre-claim window is mitigated by
 //     requireEmailVerification + password reset (unchanged).

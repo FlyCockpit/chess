@@ -20,6 +20,8 @@ const MEMBER_SET = new Set([ADMIN]);
 // The stub below replays exactly that order, using the REAL block-reason
 // function the hook delegates to, so the suite pins the wiring contract:
 // every rejection must be identical for member and non-member addresses.
+// It stops at Better-Auth's handler: the auth package's after-hook then makes
+// every response address-independent (pinned in packages/auth/src/index.test.ts).
 function buildApp(opts: { signupEnabled: boolean; existingEmails?: Set<string> }) {
   const app = new Hono();
   const seenModes: Array<string | undefined> = [];

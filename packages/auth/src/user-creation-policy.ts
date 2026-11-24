@@ -2,7 +2,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 type UserCreationMode = "admin-bootstrap" | "admin-invite";
 
-const userCreationModeStorage = new AsyncLocalStorage<UserCreationMode>();
+// One grant per wrapped call. `created` is set by the user.create database
+// hook once a user row really exists, so the sign-up after-hook can tell a
+// real bootstrap from Better-Auth's duplicate answer without a lookup whose
+// cost would differ by address (signup-response.ts).
+type UserCreationGrant = { mode: UserCreationMode; created: boolean };
+
+const userCreationModeStorage = new AsyncLocalStorage<UserCreationGrant>();
 
 // Single source of truth for the signup-disabled rejection message. The
 // Better-Auth database hook throws it, the admin-invite error translation in
@@ -22,12 +28,21 @@ export function getUserCreationBlockReason(opts: { signupEnabled: boolean }): st
 }
 
 export function getAllowedUserCreationMode(): UserCreationMode | undefined {
-  return userCreationModeStorage.getStore();
+  return userCreationModeStorage.getStore()?.mode;
 }
 
 export function runWithAllowedUserCreation<T>(
   mode: UserCreationMode,
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
-  return userCreationModeStorage.run(mode, fn);
+  return userCreationModeStorage.run({ mode, created: false }, fn);
+}
+
+export function markUserCreatedUnderGrant(): void {
+  const grant = userCreationModeStorage.getStore();
+  if (grant) grant.created = true;
+}
+
+export function wasUserCreatedUnderGrant(): boolean {
+  return userCreationModeStorage.getStore()?.created === true;
 }

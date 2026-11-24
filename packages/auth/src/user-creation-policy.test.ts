@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   getAllowedUserCreationMode,
   getUserCreationBlockReason,
+  markUserCreatedUnderGrant,
   runWithAllowedUserCreation,
   SIGNUP_DISABLED_MESSAGE,
+  wasUserCreatedUnderGrant,
 } from "./user-creation-policy";
 
 describe("user creation policy context", () => {
@@ -18,6 +20,21 @@ describe("user creation policy context", () => {
       expect(getAllowedUserCreationMode()).toBe("admin-bootstrap");
     });
     expect(getAllowedUserCreationMode()).toBeUndefined();
+  });
+
+  it("records a creation only inside its own grant", async () => {
+    markUserCreatedUnderGrant();
+    expect(wasUserCreatedUnderGrant()).toBe(false);
+    await runWithAllowedUserCreation("admin-bootstrap", async () => {
+      expect(wasUserCreatedUnderGrant()).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      markUserCreatedUnderGrant();
+      expect(wasUserCreatedUnderGrant()).toBe(true);
+    });
+    await runWithAllowedUserCreation("admin-bootstrap", () => {
+      expect(wasUserCreatedUnderGrant()).toBe(false);
+    });
+    expect(wasUserCreatedUnderGrant()).toBe(false);
   });
 });
 

@@ -17,11 +17,17 @@ import {
 } from "@cockpit-chess/mailer";
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
+import { createAuthMiddleware } from "better-auth/api";
 import { admin, deviceAuthorization, genericOAuth, twoFactor } from "better-auth/plugins";
 import { deviceFlowSessionData } from "./device-session-origin.js";
 import { resolveSignupLocale } from "./signup-locale.js";
+import { neutralizeSignUpResponse, SIGN_UP_EMAIL_PATH } from "./signup-response.js";
 import { TWO_FACTOR_ALLOW_PASSWORDLESS_ENROLLMENT } from "./two-factor-policy.js";
-import { getAllowedUserCreationMode, getUserCreationBlockReason } from "./user-creation-policy.js";
+import {
+  getAllowedUserCreationMode,
+  getUserCreationBlockReason,
+  markUserCreatedUnderGrant,
+} from "./user-creation-policy.js";
 import { withVerificationCallback } from "./verification-callback.js";
 
 const ssoEnabled = SSO_ENABLED;
@@ -200,6 +206,15 @@ export const auth = betterAuth({
   // If you re-enable this, configure `advanced.ipAddress.trustedProxies` AND
   // a `secondaryStorage` first — the defaults are not safe behind a proxy.
   rateLimit: { enabled: false },
+  hooks: {
+    // Sign-up answers byte-identically for a free and a registered address,
+    // so it is no account-existence oracle (signup-response.ts).
+    after: createAuthMiddleware(async (ctx) => {
+      if (ctx.path === SIGN_UP_EMAIL_PATH) {
+        return neutralizeSignUpResponse(ctx, { signupEnabled: SIGNUP_ENABLED });
+      }
+    }),
+  },
   plugins: [
     admin({
       defaultRole: "user",
@@ -345,6 +360,9 @@ export const auth = betterAuth({
           }
           return { data: { ...user, locale } };
         },
+        // While sign-up is disabled, the sign-up after-hook lets a 200 stand
+        // only when this fired (signup-response.ts).
+        after: async () => markUserCreatedUnderGrant(),
       },
     },
   },
