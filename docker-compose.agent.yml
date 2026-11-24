@@ -43,7 +43,7 @@ services:
 
   # Valkey (Redis-compatible); service name and REDIS_URL stay `redis`.
   redis:
-    image: valkey/valkey:9.1-alpine
+    image: valkey/valkey:9.2-alpine
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
