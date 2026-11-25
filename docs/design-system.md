@@ -53,3 +53,22 @@ The arena is its own broadcast surface in plain CSS. Its lines step down at two 
 | Decision-log timeline rows (`.cc-timeline button`) | The row box is on the panel's text line. The move number and text sit 8px inside it (`padding: 10px 8px`). | Same | Same |
 
 At viewports wider than 1360px, the arena header (40px inside its 1440px frame) and the page content (40px inside its 1360px column) do not share a leading line. At 1440px the content line is 73px from the viewport's left edge and the header's is 40px. The two maximum widths are a page-width decision, not a padding one.
+
+## Layer scale
+
+The app keeps the template's layer scale (`patterns/design-system.md` in the template repo). It is recorded here because the cookie banner once sat at `z-[60]`, above the overlays, and covered a row-actions menu opened near the bottom of `/admin/users`. The banner, the BottomNav and every portal sit on the root stacking context, so these numbers compete directly. That holds only while none of them has an ancestor that opens its own stacking context (`isolate`, a `z-*` on a positioned element, `transform`, `filter`, `backdrop-filter`, `opacity` below 1, `will-change`, `contain`), so fixed chrome mounts at the shell or root level. A portaled popup competes through its outermost part (Positioner, Backdrop/Overlay, Viewport):
+
+| Layer | Who |
+|---|---|
+| `z-10`, `z-20` (and `-z-1`), small CSS values (the board's `.cc-*` cells and badges at 1–4) | Inside a component; never used to beat app chrome |
+| `z-30` | Sticky page chrome |
+| `z-40` | Non-modal fixed chrome over the page: the cookie banner. Below every overlay, so an open menu, select, popover, combobox, dialog, sheet, drawer or toast is never covered; below the BottomNav, which paints over the banner's bottom padding |
+| `z-50` | The overlay layer: the `packages/ui` portals (dropdown menu, select, popover, dialog, alert dialog, sheet, drawer), the sileo toast viewport, the mobile BottomNav and the focused skip links |
+
+Nothing goes above `z-50`. Utilities use only the steps above (`-z-1`, `z-10`, `z-20`, `z-30`, `z-40`, `z-50`): no arbitrary `z-[…]` / `z-(…)` values and no other numbers. Every overlay root carries an unconditional `z-50` (a responsive-only `md:z-50` leaves phones without a layer). A new banner, tray or floating button is `z-40` or lower and reserves its own space, as the banner does with `--consent-inset`.
+
+What checks it:
+
+- `apps/web/src/components/consent/consent-layers.test.tsx` is the safety net. It renders the banner and checks its layer against every portaled overlay in `packages/ui/src` (read from the components, so a new overlay is covered), the sileo toast viewport and the BottomNav, and that no overlay is lowered below `z-50` through the `className` it is given (in app code or a shared wrapper such as `CommandDialog`).
+- `pnpm policy:checks` is a line grep for the obvious cases: an off-scale `z-…` utility in `apps/web/src` or `packages/ui/src` (markup, class strings, `@apply`).
+- Neither catches: custom CSS classes and stylesheets (`.my-sheet { z-index: 30 }`, a `[data-slot=…]` rule, however its selector is spaced, nested `@media` blocks), CSS `z-index` declarations and inline `style` / `zIndex`, class names built at runtime (`` `z-${n}` ``) or held in a constant, layers set through pseudo-element or descendant variants (`before:`, `*:`, `[&…]:`, which the test skips), and an ancestor that opens its own stacking context. Those are review items; real hit-testing needs a browser.

@@ -12,7 +12,7 @@ function PublicLayout() {
     <div className="cc-public-shell">
       <a
         href="#main-content"
-        className="sr-only fixed top-2 left-2 z-[100] rounded-md bg-background px-4 py-3 text-foreground shadow-md focus:not-sr-only focus-visible:outline-2 focus-visible:outline-ring"
+        className="sr-only fixed top-2 left-2 z-50 rounded-md bg-background px-4 py-3 text-foreground shadow-md focus:not-sr-only focus-visible:outline-2 focus-visible:outline-ring"
       >
         {t("nav:skipToContent")}
       </a>
