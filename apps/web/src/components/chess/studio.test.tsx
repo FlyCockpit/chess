@@ -17,7 +17,7 @@ const fixture = vi.hoisted(() => ({
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQuery: ({ surface }: { surface: string }) =>
-    surface === "info" ? { data: { hostedEnabled: false, models: [] } } : fixture.detail,
+    surface === "info" ? { data: { hostedEnabled: false } } : fixture.detail,
   useInfiniteQuery: () => ({
     data: { pages: [{ items: [] }] },
     isPending: false,
@@ -52,6 +52,7 @@ vi.mock("react", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react")>()),
   useState: (initial: unknown) => [initial === "" ? "selected" : initial, vi.fn()],
 }));
+vi.mock("./create-match-dialog", () => ({ CreateMatchDialog: () => null }));
 vi.mock("./replay", () => ({
   MatchReplay: ({ match }: { match: { config: { title: string } } }) => (
     <div>{match.config.title}</div>

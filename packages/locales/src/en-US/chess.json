@@ -122,7 +122,21 @@
     "toolDetails": "Selected tool input and result",
     "copyTool": "Copy tool input and result",
     "sharedSpend": "Shared tokens: {{input}} input + {{output}} output / {{limit}} per player",
-    "normalized": "Normalized from model reply"
+    "normalized": "Normalized from model reply",
+    "commentaryTitle": "Table talk",
+    "commentaryOff": "Commentary off",
+    "commentaryOn": "Commentary on",
+    "commentaryEmpty": "No remarks yet.",
+    "commentaryNote": "Model remarks, shown as plain text. They are untrusted output.",
+    "remarkMove": "Move {{move}} · {{san}}",
+    "evalBar": "Evaluation: {{score}}",
+    "evalGraph": "Evaluation over the game",
+    "evalGraphPoint": "Move {{move}}: {{score}}",
+    "evalUnavailable": "No evaluation bar: Stockfish evaluation after each move was off for this game.",
+    "evalMissing": "No engine evaluation for this position.",
+    "evalWhiteMate": "White mates in {{moves}}",
+    "evalBlackMate": "Black mates in {{moves}}",
+    "evalNone": "No engine evaluations were recorded for this game yet."
   },
   "leaderboard": {
     "title": "Earned on the board.",
@@ -321,5 +335,97 @@
   "moveFormats": {
     "strict": "Strict",
     "lenient": "Lenient"
+  },
+  "create": {
+    "title": "New match",
+    "description": "Pick two models and start. Everything else has a sensible default you can change under Advanced settings.",
+    "modelLabel": "{{side}} model",
+    "modelPlaceholder": "Choose a model",
+    "search": "Search by name, id or provider",
+    "empty": "No model matches. Type a full model id to use it anyway.",
+    "useTyped": "Use “{{id}}” as the model id",
+    "typedLabel": "{{id}} (typed id)",
+    "catalogPending": "Loading the model list…",
+    "catalogError": "The model list is unavailable. You can still type a model id.",
+    "retry": "Try again",
+    "free": "Free",
+    "price": "{{prompt}} in · {{completion}} out per 1M tokens",
+    "context": "{{tokens}} context",
+    "noTools": "No tool calling",
+    "noToolsWarning": "This model does not list tool calling, which the legal-move or engine tool needs.",
+    "unknownModel": "Not in the model list. It runs only if OpenRouter serves this id with a price.",
+    "titleLabel": "Match title (optional)",
+    "titleHint": "Left blank, the title is “{{title}}”.",
+    "summaryLabel": "Settings",
+    "summary": {
+      "format": "{{format}} format",
+      "budget": "{{budget}} budget",
+      "plies": "{{plies}} plies",
+      "commentary": "Commentary on"
+    },
+    "advanced": "Advanced settings",
+    "advancedHint": "Optional. A closed section keeps the values in the summary above.",
+    "sections": {
+      "players": "Players",
+      "playersHint": "Wire protocol and what each side knows about its opponent",
+      "rules": "Rules",
+      "rulesHint": "Memory, legal-move help, move format, engine and commentary",
+      "limits": "Limits",
+      "limitsHint": "Token accounting, allowances and game length"
+    },
+    "protocolLabel": "{{side}} wire protocol",
+    "protocols": {
+      "auto": "Automatic ({{protocol}})",
+      "openai-chat": "OpenAI Chat Completions",
+      "openai-responses": "OpenAI Responses",
+      "anthropic": "Anthropic Messages"
+    },
+    "protocolHint": "How requests reach OpenRouter. Automatic uses Anthropic Messages for Anthropic models and Chat Completions for the rest.",
+    "explain": {
+      "identity": {
+        "hidden": "Neither side is told which model it is playing.",
+        "disclosed": "Each side is told its opponent's name and model id."
+      },
+      "context": {
+        "fresh": "Every move is a new conversation that sees only the current position.",
+        "persistent": "Each side keeps one conversation for the whole game, with its earlier moves."
+      },
+      "tools": {
+        "hidden": "The model gets the board only and must find a legal move itself.",
+        "tool": "The model can call a tool that lists the legal moves.",
+        "provided": "Every prompt lists the legal moves."
+      },
+      "moveFormat": {
+        "strict": "The reply must be the exact JSON move; anything else is a rejected attempt.",
+        "lenient": "Also reads a JSON move inside prose and converts legal SAN to UCI. Ranked separately."
+      },
+      "engine": {
+        "off": "No Stockfish. The game view has no evaluation bar.",
+        "tool": "Models may ask Stockfish about the position, at most 2 calls per turn.",
+        "after-move": "Stockfish scores the position after every move. Players see the score, and the game view draws the evaluation bar from it.",
+        "both": "The engine tool plus a score after every move (evaluation bar included)."
+      },
+      "trashTalk": "Models may add a short remark to each move. Remarks are untrusted text and can hint at identity.",
+      "accounting": {
+        "provider": "Tokens are counted from what the provider reports, reserved before each request.",
+        "cl100k_base": "Every model is counted with one tokenizer (cl100k_base), so allowances are comparable."
+      },
+      "tokenBudget": "Total tokens each player may use in the game ({{min}} to {{max}}).",
+      "budget": "The most each player may spend, in US dollars ({{min}} to {{max}}).",
+      "plies": "The game ends as a draw after this many half-moves ({{min}} to {{max}})."
+    },
+    "start": "Start match",
+    "starting": "Starting…",
+    "cancel": "Cancel",
+    "errors": {
+      "model": "Choose a model.",
+      "modelLength": "Model ids are at most {{max}} characters.",
+      "title": "At most {{max}} characters.",
+      "integerRange": "Enter a whole number from {{min}} to {{max}}.",
+      "invalid": "Some settings need attention. The sections with errors are open.",
+      "centRange": "Enter an amount from {{min}} to {{max}} in whole cents."
+    },
+    "autoTitle": "{{white}} vs {{black}}",
+    "catalogStale": "The model list could not be refreshed; prices are from {{time}}. Retrying automatically."
   }
 }

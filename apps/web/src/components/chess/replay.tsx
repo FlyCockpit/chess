@@ -3,7 +3,6 @@ import {
   Chess,
   type Color,
   type EngineEvaluation,
-  evaluationSchema,
   exportPgn,
   type MatchArchive,
   type MatchEvent,
@@ -25,14 +24,57 @@ import { memo, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useReplayClock } from "@/hooks/use-replay-clock";
 import { ChessBoard } from "./chess-board";
+import { EvalBar, EvalGraph } from "./eval-bar";
+import {
+  evaluationSeries,
+  graphCursor,
+  graphSeries,
+  moveNumber,
+  pointForPosition,
+  toolEvaluation,
+} from "./evaluation";
 
-function toolEvaluation(output: string): EngineEvaluation | undefined {
-  try {
-    const result = evaluationSchema.safeParse(JSON.parse(output));
-    return result.success ? result.data : undefined;
-  } catch {
-    return undefined;
+/** The second line under a player's name: the model id, only when it says something new. */
+function modelLine(player: { name: string; model: string }) {
+  return player.model.trim() && player.model !== player.name ? player.model : null;
+}
+
+function PlayerRow({ player, side }: { player: { name: string; model: string }; side: Color }) {
+  const { t } = useTranslation("chess");
+  const detail = modelLine(player);
+  return (
+    <div className="cc-player">
+      <span className={side === "w" ? "cc-avatar cc-avatar-light" : "cc-avatar"}>
+        {side === "w" ? "♔" : "♚"}
+      </span>
+      <div>
+        <strong>{player.name}</strong>
+        {detail && <span>{detail}</span>}
+      </div>
+      <span className="cc-side-label">{t(`colors.${side}`)}</span>
+    </div>
+  );
+}
+
+type Remark = { index: number; side: Color; move: number; label: string; comment: string };
+/** Every non-empty remark, tied to the attempt it came with. Rendered as text only. */
+function remarksOf(match: MatchArchive): Remark[] {
+  const remarks: Remark[] = [];
+  let plies = 0;
+  for (const [index, event] of match.events.entries()) {
+    if (event.type !== "attempt") continue;
+    const move = moveNumber(match.config.initialFen, plies);
+    if (event.comment.trim())
+      remarks.push({
+        index,
+        side: event.side,
+        move,
+        label: event.accepted && event.san ? event.san : event.move,
+        comment: event.comment,
+      });
+    if (event.accepted) plies += 1;
   }
+  return remarks;
 }
 
 type ReplayFrame = { fen: string; turn: Color; lastMove: string | undefined };
@@ -174,6 +216,9 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
   }, []);
   const replay = useMemo(() => buildReplayIndex(match), [match]);
   const stats = useMemo(() => matchStats(match), [match]);
+  const series = useMemo(() => evaluationSeries(match), [match]);
+  const graph = useMemo(() => graphSeries(series), [series]);
+  const remarks = useMemo(() => remarksOf(match), [match]);
   const sideStats = useMemo(
     () =>
       match.config.rules.tokenAccounting === "cl100k_base"
@@ -207,6 +252,15 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
     [i18n.language],
   );
   const frame = frameAt(replay, index);
+  // The bar shows only an evaluation of the very position on the board; the
+  // graph cursor marks the latest evaluation reached so far.
+  const evalPoint = pointForPosition(series, index, frame.fen);
+  const graphPoint = graphCursor(graph, evalPoint, index);
+  const showEval = series.length > 0;
+  const commentary = match.config.rules.trashTalk;
+  const currentRemark = commentary
+    ? remarks.filter((remark) => remark.index <= index).at(-1)
+    : undefined;
   const event = match.events[index];
   const evaluation = evaluationAt(replay, frame.fen, index);
   const score = evaluation
@@ -217,23 +271,35 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
   return (
     <div className="cc-replay-grid">
       <section className="cc-board-panel">
-        <div className="cc-player">
-          <span className="cc-avatar">{flipped ? "♔" : "♚"}</span>
-          <div>
-            <strong>{flipped ? match.config.white.name : match.config.black.name}</strong>
-            <span>{flipped ? match.config.white.model : match.config.black.model}</span>
+        <PlayerRow
+          player={flipped ? match.config.white : match.config.black}
+          side={flipped ? "w" : "b"}
+        />
+        <div className={showEval ? "cc-board-row" : undefined}>
+          {showEval && <EvalBar point={evalPoint} flipped={flipped} />}
+          <div className="cc-board-cell">
+            <ChessBoard fen={frame.fen} flipped={flipped} lastMove={frame.lastMove} />
           </div>
-          <span className="cc-side-label">{t(flipped ? "colors.w" : "colors.b")}</span>
         </div>
-        <ChessBoard fen={frame.fen} flipped={flipped} lastMove={frame.lastMove} />
-        <div className="cc-player">
-          <span className="cc-avatar cc-avatar-light">{flipped ? "♚" : "♔"}</span>
-          <div>
-            <strong>{flipped ? match.config.black.name : match.config.white.name}</strong>
-            <span>{flipped ? match.config.black.model : match.config.white.model}</span>
-          </div>
-          <span className="cc-side-label">{t(flipped ? "colors.b" : "colors.w")}</span>
-        </div>
+        <PlayerRow
+          player={flipped ? match.config.black : match.config.white}
+          side={flipped ? "b" : "w"}
+        />
+        {currentRemark && (
+          <button
+            type="button"
+            className={`cc-remark-bubble cc-remark-${currentRemark.side}`}
+            onClick={() =>
+              selectEvent(currentRemark.index === lastIndex ? null : currentRemark.index)
+            }
+          >
+            <span className="cc-remark-meta">
+              {t(`colors.${currentRemark.side}`)} ·{" "}
+              {t("replay.remarkMove", { move: currentRemark.move, san: currentRemark.label })}
+            </span>
+            <span className="cc-remark-text">{currentRemark.comment}</span>
+          </button>
+        )}
         <div className="cc-replay-controls">
           <button
             type="button"
@@ -306,6 +372,21 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
             setPlaying(false);
           }}
         />
+        {series.length > 0 ? (
+          <EvalGraph
+            series={graph}
+            current={graphPoint}
+            onSelect={(target) => selectEvent(target >= lastIndex ? null : target)}
+          />
+        ) : (
+          <p className="cc-muted cc-eval-note">
+            {t(
+              match.config.rules.engineEvaluation === "off"
+                ? "replay.evalUnavailable"
+                : "replay.evalNone",
+            )}
+          </p>
+        )}
       </section>
       <aside className="cc-match-sidebar">
         <div className="cc-section-heading">
@@ -321,6 +402,7 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
           <span>{t(`tools.${match.config.rules.legalMoves}`)}</span>
           <span>{t(`accounting.${match.config.rules.tokenAccounting}`)}</span>
           <span>{t(`engineModes.${match.config.rules.engineEvaluation}`)}</span>
+          <span>{t(commentary ? "replay.commentaryOn" : "replay.commentaryOff")}</span>
         </div>
         {evaluation && (
           <div className="cc-engine-summary">
@@ -377,6 +459,34 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
               copyLabel={t("replay.copyTool")}
             />
           </details>
+        )}
+        {commentary && (
+          <section className="cc-commentary" aria-labelledby={`${match.id}-talk`}>
+            <h3 id={`${match.id}-talk`}>{t("replay.commentaryTitle")}</h3>
+            <p className="cc-muted text-xs">{t("replay.commentaryNote")}</p>
+            {remarks.length === 0 ? (
+              <p className="cc-muted text-xs">{t("replay.commentaryEmpty")}</p>
+            ) : (
+              <ol>
+                {remarks.map((remark) => (
+                  <li key={remark.index}>
+                    <button
+                      type="button"
+                      className={`cc-remark cc-remark-${remark.side} ${remark === currentRemark ? "cc-current-remark" : ""}`}
+                      onClick={() => selectEvent(remark.index === lastIndex ? null : remark.index)}
+                    >
+                      <span className="cc-remark-meta">
+                        <span aria-hidden="true" className={`cc-swatch cc-swatch-${remark.side}`} />
+                        {t(`colors.${remark.side}`)} ·{" "}
+                        {t("replay.remarkMove", { move: remark.move, san: remark.label })}
+                      </span>
+                      <span className="cc-remark-text">{remark.comment}</span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
         )}
         <div className="cc-event-caption" aria-live="polite">
           {event?.type === "attempt"

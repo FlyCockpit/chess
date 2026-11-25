@@ -15,6 +15,7 @@ registered access levels; handler tests verify ownership and custom role rules.
 | View a published game and replay | implemented | read | read | read | `chess.get` | Drafts never public |
 | Read official results | implemented | read | read | read | `chess.leaderboard` | Controlled runs only |
 | Create a hosted match | implemented | none | none | full | `chess.create` | Paid work admin-only |
+| List hosted models for the create form | implemented | none | none | full | `chess.models` | Server-side OpenRouter catalog, cached 1 h; no key sent |
 | Import a local archive as draft | implemented | none | none | full | `chess.importGame` | Validate full move sequence; no credential fields |
 | Publish a draft | implemented | none | none | full | `chess.publish` | Explicit admin action |
 | Stop a hosted match | implemented | none | none | full | `chess.stop` | No further inference after cancellation |

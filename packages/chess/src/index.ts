@@ -14,11 +14,24 @@ function isLoadableFen(fen: string): boolean {
   }
 }
 
+/** The wire protocols a hosted model is reached on (all through OpenRouter). */
+export const MODEL_PROTOCOLS = ["openai-chat", "openai-responses", "anthropic"] as const;
+export type ModelProtocol = (typeof MODEL_PROTOCOLS)[number];
+/**
+ * The wire protocol a model speaks unless the operator overrides it: Anthropic
+ * models (`anthropic/…`, or a `~anthropic/…` alias) use Anthropic Messages, and
+ * every other model uses OpenAI Chat Completions, which OpenRouter serves for
+ * all of them. The one derivation shared by the server's model catalog and the
+ * create form (which also needs it for a typed model id).
+ */
+export function protocolForModel(model: string): ModelProtocol {
+  return /^~?anthropic\//.test(model.trim()) ? "anthropic" : "openai-chat";
+}
 export const playerSchema = z
   .object({
     name: z.string().min(1).max(80),
     model: z.string().min(1).max(160),
-    protocol: z.enum(["openai-chat", "openai-responses", "anthropic", "random", "human"]),
+    protocol: z.enum([...MODEL_PROTOCOLS, "random", "human"]),
   })
   .strict();
 export const rulesSchema = z

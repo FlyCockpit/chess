@@ -217,7 +217,21 @@
     "toolDetails": "Entrada y resultado de la herramienta seleccionada",
     "copyTool": "Copiar entrada y resultado de la herramienta",
     "sharedSpend": "Tokens compartidos: {{input}} de entrada + {{output}} de salida / {{limit}} por jugador",
-    "normalized": "Normalizado a partir de la respuesta del modelo"
+    "normalized": "Normalizado a partir de la respuesta del modelo",
+    "commentaryTitle": "Charla en la mesa",
+    "commentaryOff": "Comentarios desactivados",
+    "commentaryOn": "Comentarios activados",
+    "commentaryEmpty": "Aún no hay comentarios.",
+    "commentaryNote": "Comentarios de los modelos, mostrados como texto plano. Son salida no confiable.",
+    "remarkMove": "Jugada {{move}} · {{san}}",
+    "evalBar": "Evaluación: {{score}}",
+    "evalGraph": "Evaluación a lo largo de la partida",
+    "evalGraphPoint": "Jugada {{move}}: {{score}}",
+    "evalUnavailable": "Sin barra de evaluación: la evaluación de Stockfish después de cada jugada estaba desactivada en esta partida.",
+    "evalMissing": "No hay evaluación del motor para esta posición.",
+    "evalWhiteMate": "Las blancas dan mate en {{moves}}",
+    "evalBlackMate": "Las negras dan mate en {{moves}}",
+    "evalNone": "Aún no se registraron evaluaciones del motor en esta partida."
   },
   "stats": {
     "plies": "Movimientos legales",
@@ -321,5 +335,97 @@
   "moveFormats": {
     "strict": "Estricto",
     "lenient": "Flexible"
+  },
+  "create": {
+    "title": "Nueva partida",
+    "description": "Elige dos modelos y empieza. Todo lo demás tiene un valor predeterminado sensato que puedes cambiar en Configuración avanzada.",
+    "modelLabel": "Modelo de {{side}}",
+    "modelPlaceholder": "Elige un modelo",
+    "search": "Busca por nombre, id o proveedor",
+    "empty": "Ningún modelo coincide. Escribe un id de modelo completo para usarlo de todos modos.",
+    "useTyped": "Usar “{{id}}” como id de modelo",
+    "typedLabel": "{{id}} (id escrito)",
+    "catalogPending": "Cargando la lista de modelos…",
+    "catalogError": "La lista de modelos no está disponible. Aún puedes escribir un id de modelo.",
+    "retry": "Intentar de nuevo",
+    "free": "Gratis",
+    "price": "{{prompt}} entrada · {{completion}} salida por 1M de tokens",
+    "context": "contexto de {{tokens}}",
+    "noTools": "Sin llamadas a herramientas",
+    "noToolsWarning": "Este modelo no indica soporte para llamadas a herramientas, que la herramienta de movimientos legales o del motor necesita.",
+    "unknownModel": "No está en la lista de modelos. Solo funciona si OpenRouter ofrece este id con un precio.",
+    "titleLabel": "Título de la partida (opcional)",
+    "titleHint": "Si lo dejas vacío, el título es “{{title}}”.",
+    "summaryLabel": "Configuración",
+    "summary": {
+      "format": "Formato {{format}}",
+      "budget": "Presupuesto de {{budget}}",
+      "plies": "{{plies}} medias jugadas",
+      "commentary": "Comentarios activados"
+    },
+    "advanced": "Configuración avanzada",
+    "advancedHint": "Opcional. Una sección cerrada conserva los valores del resumen de arriba.",
+    "sections": {
+      "players": "Jugadores",
+      "playersHint": "Protocolo de conexión y lo que cada lado sabe de su oponente",
+      "rules": "Reglas",
+      "rulesHint": "Memoria, ayuda con movimientos legales, formato, motor y comentarios",
+      "limits": "Límites",
+      "limitsHint": "Conteo de tokens, asignaciones y duración de la partida"
+    },
+    "protocolLabel": "Protocolo de conexión de {{side}}",
+    "protocols": {
+      "auto": "Automático ({{protocol}})",
+      "openai-chat": "OpenAI Chat Completions",
+      "openai-responses": "OpenAI Responses",
+      "anthropic": "Anthropic Messages"
+    },
+    "protocolHint": "Cómo llegan las solicitudes a OpenRouter. Automático usa Anthropic Messages para los modelos de Anthropic y Chat Completions para los demás.",
+    "explain": {
+      "identity": {
+        "hidden": "A ningún lado se le dice contra qué modelo juega.",
+        "disclosed": "A cada lado se le dice el nombre y el id del modelo oponente."
+      },
+      "context": {
+        "fresh": "Cada jugada es una conversación nueva que solo ve la posición actual.",
+        "persistent": "Cada lado mantiene una conversación durante toda la partida, con sus jugadas anteriores."
+      },
+      "tools": {
+        "hidden": "El modelo solo recibe el tablero y debe encontrar una jugada legal por sí mismo.",
+        "tool": "El modelo puede llamar a una herramienta que lista las jugadas legales.",
+        "provided": "Cada solicitud incluye la lista de jugadas legales."
+      },
+      "moveFormat": {
+        "strict": "La respuesta debe ser exactamente la jugada en JSON; cualquier otra cosa es un intento rechazado.",
+        "lenient": "También lee una jugada JSON dentro de prosa y convierte SAN legal a UCI. Se clasifica por separado."
+      },
+      "engine": {
+        "off": "Sin Stockfish. La vista de la partida no tiene barra de evaluación.",
+        "tool": "Los modelos pueden consultar a Stockfish sobre la posición, como máximo 2 llamadas por turno.",
+        "after-move": "Stockfish evalúa la posición después de cada jugada. Los jugadores ven la evaluación y la vista de la partida dibuja con ella la barra de evaluación.",
+        "both": "La herramienta del motor más una evaluación después de cada jugada (incluye la barra de evaluación)."
+      },
+      "trashTalk": "Los modelos pueden añadir un comentario breve a cada jugada. Los comentarios son texto no confiable y pueden dar pistas sobre la identidad.",
+      "accounting": {
+        "provider": "Los tokens se cuentan con lo que informa el proveedor y se reservan antes de cada solicitud.",
+        "cl100k_base": "Todos los modelos se cuentan con un mismo tokenizador (cl100k_base), así que las asignaciones son comparables."
+      },
+      "tokenBudget": "Tokens totales que cada jugador puede usar en la partida ({{min}} a {{max}}).",
+      "budget": "Lo máximo que puede gastar cada jugador, en dólares estadounidenses ({{min}} a {{max}}).",
+      "plies": "La partida termina en tablas tras este número de medias jugadas ({{min}} a {{max}})."
+    },
+    "start": "Iniciar partida",
+    "starting": "Iniciando…",
+    "cancel": "Cancelar",
+    "errors": {
+      "model": "Elige un modelo.",
+      "modelLength": "Los ids de modelo tienen como máximo {{max}} caracteres.",
+      "title": "Como máximo {{max}} caracteres.",
+      "integerRange": "Escribe un número entero de {{min}} a {{max}}.",
+      "invalid": "Algunas opciones necesitan atención. Las secciones con errores están abiertas.",
+      "centRange": "Escribe un monto de {{min}} a {{max}} en centavos enteros."
+    },
+    "autoTitle": "{{white}} vs. {{black}}",
+    "catalogStale": "No se pudo actualizar la lista de modelos; los precios son del {{time}}. Se reintenta automáticamente."
   }
 }

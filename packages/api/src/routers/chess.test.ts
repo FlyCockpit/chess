@@ -522,3 +522,31 @@ describe("chess public projection and operator boundaries", () => {
     });
   });
 });
+
+describe("chess.models", () => {
+  it("is admin-only and maps a catalog outage to SERVICE_UNAVAILABLE", async () => {
+    const { resetModelCatalogCache } = await import("../lib/chess-models");
+    resetModelCatalogCache();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("down", { status: 503 }));
+    try {
+      await expect(client("user").models()).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(client(null).models()).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      await expect(client().models()).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+      fetchSpy.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            data: [{ id: "openai/gpt-4.1-nano", pricing: { prompt: "0", completion: "0" } }],
+          }),
+        ),
+      );
+      const catalog = await client().models();
+      expect(catalog.models.map((model) => model.id)).toEqual(["openai/gpt-4.1-nano"]);
+    } finally {
+      fetchSpy.mockRestore();
+      resetModelCatalogCache();
+    }
+  });
+});

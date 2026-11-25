@@ -37,6 +37,14 @@ interface AsyncComboboxProps<T> {
   className?: string;
   /** Whether the combobox is disabled. */
   disabled?: boolean;
+  /** Id of the trigger button, for a `<label htmlFor>` or an `aria-labelledby` chain. */
+  id?: string;
+  /** Names the trigger; list the visible label's id, then the trigger's own id to keep its value. */
+  "aria-labelledby"?: string;
+  /** Extra description for the trigger (a hint or an error message id). */
+  "aria-describedby"?: string;
+  /** Marks the trigger invalid for assistive technology. */
+  "aria-invalid"?: boolean;
 }
 
 function AsyncCombobox<T>({
@@ -51,6 +59,10 @@ function AsyncCombobox<T>({
   getLabel,
   className,
   disabled = false,
+  id,
+  "aria-labelledby": ariaLabelledBy,
+  "aria-describedby": ariaDescribedBy,
+  "aria-invalid": ariaInvalid,
 }: AsyncComboboxProps<T>) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
@@ -87,6 +99,10 @@ function AsyncCombobox<T>({
             variant="outline"
             role="combobox"
             aria-expanded={open}
+            id={id}
+            aria-labelledby={ariaLabelledBy}
+            aria-describedby={ariaDescribedBy}
+            aria-invalid={ariaInvalid || undefined}
             disabled={disabled}
             className={cn(
               "w-full justify-between font-normal",

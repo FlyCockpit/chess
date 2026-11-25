@@ -1,6 +1,7 @@
 import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { LanguageSwitcher } from "@/components/language-switcher";
+import { ModeToggle } from "@/components/mode-toggle";
 import { useMobileKeyboard } from "@/hooks/use-mobile-keyboard";
 import { MAIN_SCROLLER_ID } from "@/lib/main-scroller";
 export const Route = createFileRoute("/$lang/_public")({ component: PublicLayout });
@@ -51,6 +52,7 @@ function PublicLayout() {
         </nav>
         <div className="ml-auto flex shrink-0 items-center gap-2">
           <LanguageSwitcher />
+          <ModeToggle />
           <Link to="/$lang" params={{ lang }} search={{ tab: "studio" }} className="cc-signin">
             {t("chess:nav.studio")}
           </Link>

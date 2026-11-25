@@ -14,6 +14,7 @@ import { chessRunQueue, ensureRunnableJob } from "@cockpit-chess/queue";
 import { ORPCError } from "@orpc/server";
 import { z } from "zod";
 import { adminOr404Procedure, publicProcedure } from "../index";
+import { getModelCatalog } from "../lib/chess-models";
 import { chessStatsColumns } from "../lib/chess-stats";
 import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagination";
 import { createProcedureBudget } from "../lib/procedure-budget";
@@ -124,9 +125,19 @@ const isP2002 = (error: unknown) =>
 export const chessRouter = {
   info: publicProcedure.handler(() => ({
     hostedEnabled: env.CHESS_HOSTED_ENABLED,
-    models: ["openai/gpt-4.1-nano", "openai/gpt-4.1-mini", "anthropic/claude-haiku-4.5"],
     format: "cockpit-chess/v1",
   })),
+  /** The models a hosted match can use, for the create form's picker (cached; see chess-models). */
+  models: adminOr404Procedure.handler(async () => {
+    try {
+      return await getModelCatalog();
+    } catch (error) {
+      console.error("[chess] Model catalog unavailable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new ORPCError("SERVICE_UNAVAILABLE", { message: "Model catalog unavailable" });
+    }
+  }),
   list: publicProcedure.input(cursorPageInput).handler(async ({ input }) => {
     const rows = await prisma.chessMatch.findMany({
       where: withCursor({ published: true }, "createdAt", input.cursor, "desc"),

@@ -128,7 +128,7 @@ export function LocalModelLab() {
             </button>
           )}
           {isPending ? (
-            <Skeleton className="h-96 bg-white/5" />
+            <Skeleton className="h-96" />
           ) : !data || !match || !chess ? (
             <button type="button" className="cc-error" onClick={() => void refetch()}>
               {t("arena.retry")}

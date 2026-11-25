@@ -27,7 +27,7 @@ import { MatchReplay } from "./replay";
 // Studio reads the Better Auth session; lazy + ClientOnly keeps the auth client
 // out of the public landing chunk. The fallback mirrors Studio's pending skeleton.
 const Studio = lazy(() => import("./studio").then((module) => ({ default: module.Studio })));
-const studioFallback = <Skeleton className="mt-12 h-96 bg-white/5" />;
+const studioFallback = <Skeleton className="mt-12 h-96" />;
 export type ArenaTab = "arena" | "leaderboard" | "lab" | "methodology" | "studio";
 
 function demoGame(white: string, black: string, model: string, title: string) {
@@ -202,7 +202,7 @@ function Arena({
       {isPending ? (
         <div className="cc-card-grid">
           {[1, 2, 3].map((key) => (
-            <Skeleton key={key} className="h-28 bg-white/5" />
+            <Skeleton key={key} className="h-28" />
           ))}
         </div>
       ) : (
@@ -240,7 +240,7 @@ function Arena({
         </button>
       )}
       {slug && pendingGame ? (
-        <Skeleton className="h-96 bg-white/5" />
+        <Skeleton className="h-96" />
       ) : slug && (!selected || isQueryAccessError(selectedError)) ? (
         <button className="cc-error" type="button" onClick={() => void retryGame()}>
           {t("arena.retry")}
@@ -274,7 +274,7 @@ function Leaderboard() {
       <Intro title={t("leaderboard.title")} description={t("leaderboard.description")} />
       <QueryBoundary
         query={{ data, error, isPending, isError, refetch }}
-        skeleton={<Skeleton className="h-64 bg-white/5" />}
+        skeleton={<Skeleton className="h-64" />}
         isEmpty={(result) => result.items.length === 0}
         empty={
           <div className="cc-empty">
@@ -306,7 +306,13 @@ function Leaderboard() {
                     <tr key={`${row.model}:${row.protocol}:${row.rulesKey}`}>
                       <td>
                         <strong>{row.model}</strong>
-                        <p className="cc-muted">{row.protocol}</p>
+                        <p className="cc-muted">
+                          {row.protocol === "openai-chat" ||
+                          row.protocol === "openai-responses" ||
+                          row.protocol === "anthropic"
+                            ? t(`create.protocols.${row.protocol}`)
+                            : row.protocol}
+                        </p>
                       </td>
                       <td>
                         {row.rulesKey}

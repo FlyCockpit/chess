@@ -1,11 +1,5 @@
 import { hasRole } from "@cockpit-chess/auth/roles";
-import {
-  boardAt,
-  MAX_ARCHIVE_BYTES,
-  type MatchArchive,
-  matchConfigSchema,
-  matchStats,
-} from "@cockpit-chess/chess";
+import { MAX_ARCHIVE_BYTES, type MatchArchive } from "@cockpit-chess/chess";
 import { Button } from "@cockpit-chess/ui/components/button";
 import {
   Dialog,
@@ -17,11 +11,11 @@ import {
 } from "@cockpit-chess/ui/components/dialog";
 import { toast } from "@cockpit-chess/ui/components/sileo";
 import { Skeleton } from "@cockpit-chess/ui/components/skeleton";
-import { TextareaField, TextField } from "@cockpit-chess/ui/components/text-field";
+import { TextareaField } from "@cockpit-chess/ui/components/text-field";
 import { useForm } from "@tanstack/react-form";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Download, Plus, Upload } from "lucide-react";
+import { Download, Upload } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
@@ -32,7 +26,9 @@ import { useAuthSession } from "@/hooks/use-auth-session";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { orpc } from "@/utils/orpc";
+import { CreateMatchDialog } from "./create-match-dialog";
 import { MatchReplay } from "./replay";
+import { drawShareCard, SHARE_HEIGHT, SHARE_WIDTH } from "./share-card";
 
 export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
   const { t, i18n } = useTranslation("chess");
@@ -85,7 +81,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
   const stop = useEntityMutation(orpc.chess.stop.mutationOptions(), {
     invalidateKey: orpc.chess.key(),
   });
-  if (state.status === "pending") return <Skeleton className="mt-12 h-96 bg-white/5" />;
+  if (state.status === "pending") return <Skeleton className="mt-12 h-96" />;
   return (
     <>
       <div className="cc-page-intro">
@@ -108,16 +104,12 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
         <>
           {!info?.hostedEnabled && <p className="cc-muted mb-6">{t("studio.disabled")}</p>}
           <div className="cc-hero-actions mb-8">
-            <CreateMatchDialog
-              disabled={!info?.hostedEnabled}
-              models={info?.models ?? []}
-              onCreated={setSelected}
-            />
+            <CreateMatchDialog disabled={!info?.hostedEnabled} onCreated={setSelected} />
             <ImportDialog onImported={setSelected} />
           </div>
           <QueryBoundary
             query={{ data, error, isPending, isError, refetch }}
-            skeleton={<Skeleton className="h-32 bg-white/5" />}
+            skeleton={<Skeleton className="h-32" />}
             isEmpty={(result) => !result.pages.some((page) => page.items.length)}
             empty={
               <div className="cc-empty">
@@ -184,7 +176,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
           {selected && detailError && (
             <InlineRetry onRetry={() => void retryDetail()} message={t("studio.error")} />
           )}
-          {selected && detailPending && <Skeleton className="h-96 bg-white/5" />}
+          {selected && detailPending && <Skeleton className="h-96" />}
           {selected && detail && (
             <>
               <div className="cc-section-bar">
@@ -291,340 +283,6 @@ function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
     </Dialog>
   );
 }
-function CreateMatchDialog({
-  disabled,
-  models,
-  onCreated,
-}: {
-  disabled: boolean;
-  models: string[];
-  onCreated: (slug: string) => void;
-}) {
-  const { t } = useTranslation("chess");
-  const [open, setOpen] = useState(false);
-  const [invalid, setInvalid] = useState(false);
-  const mutation = useEntityMutation(
-    orpc.chess.create.mutationOptions({
-      onSuccess: (result) => {
-        setOpen(false);
-        onCreated(result.slug);
-      },
-    }),
-    { invalidateKey: orpc.chess.key() },
-  );
-  const form = useForm({
-    defaultValues: {
-      title: "",
-      white: "openai/gpt-4.1-nano",
-      black: "openai/gpt-4.1-mini",
-      whiteProtocol: "openai-chat",
-      blackProtocol: "openai-chat",
-      context: "fresh",
-      identity: "hidden",
-      tools: "tool",
-      maxPlies: 80,
-      budget: 0.1,
-      tokenAccounting: "provider",
-      tokenBudget: 1000000,
-      engineEvaluation: "off",
-      trashTalk: false,
-      moveFormat: "strict",
-    },
-    onSubmit: ({ value }) => {
-      const config = matchConfigSchema.safeParse({
-        title: value.title,
-        white: { name: value.white, model: value.white, protocol: value.whiteProtocol },
-        black: { name: value.black, model: value.black, protocol: value.blackProtocol },
-        rules: {
-          context: value.context,
-          opponentIdentity: value.identity,
-          legalMoves: value.tools,
-          maxPlies: value.maxPlies,
-          costBudgetMicros: Math.round(value.budget * 1000000),
-          tokenBudget: value.tokenBudget,
-          tokenAccounting: value.tokenAccounting,
-          engineEvaluation: value.engineEvaluation,
-          trashTalk: value.trashTalk,
-          moveFormat: value.moveFormat,
-        },
-      });
-      setInvalid(!config.success);
-      if (config.success) mutation.mutate(config.data);
-    },
-  });
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (mutation.isPending) return;
-        setOpen(next);
-        setInvalid(false);
-      }}
-    >
-      <DialogTrigger
-        render={
-          <Button className="cc-button" disabled={disabled}>
-            <Plus size={16} />
-            {t("studio.create")}
-          </Button>
-        }
-      />
-      <DialogContent className="cc-dialog-content sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>{t("studio.createTitle")}</DialogTitle>
-          <DialogDescription>{t("studio.description")}</DialogDescription>
-        </DialogHeader>
-        <form
-          className="cc-form-grid"
-          onSubmit={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            void form.handleSubmit();
-          }}
-        >
-          <form.Field name="title">
-            {(field) => (
-              <TextField
-                field={field}
-                label={t("studio.titleLabel")}
-                autoComplete="off"
-                inputMode="text"
-                maxLength={140}
-                required
-              />
-            )}
-          </form.Field>
-          {(["white", "black"] as const).map((name) => (
-            <form.Field key={name} name={name}>
-              {(field) => (
-                <label>
-                  {t(name === "white" ? "studio.whiteModel" : "studio.blackModel")}
-                  <input
-                    autoComplete="off"
-                    inputMode="text"
-                    list="chess-models"
-                    value={field.state.value}
-                    onChange={(event) => field.handleChange(event.target.value)}
-                    required
-                    maxLength={160}
-                  />
-                </label>
-              )}
-            </form.Field>
-          ))}
-          <datalist id="chess-models">
-            {models.map((model) => (
-              <option key={model} value={model} />
-            ))}
-          </datalist>
-          {(["whiteProtocol", "blackProtocol"] as const).map((name) => (
-            <form.Field key={name} name={name}>
-              {(field) => (
-                <label>
-                  {t(name === "whiteProtocol" ? "studio.whiteProtocol" : "studio.blackProtocol")}
-                  <select
-                    value={field.state.value}
-                    onChange={(event) => field.handleChange(event.target.value)}
-                  >
-                    {["openai-chat", "openai-responses", "anthropic"].map((protocol) => (
-                      <option key={protocol} value={protocol}>
-                        {protocol}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-            </form.Field>
-          ))}
-          <form.Field name="context">
-            {(field) => (
-              <label>
-                {t("studio.contextLabel")}
-                <select
-                  value={field.state.value}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                >
-                  {["fresh", "persistent"].map((value) => (
-                    <option key={value} value={value}>
-                      {t(`context.${value}`)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-          </form.Field>
-          <form.Field name="identity">
-            {(field) => (
-              <label>
-                {t("studio.identityLabel")}
-                <select
-                  value={field.state.value}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                >
-                  {["hidden", "disclosed"].map((value) => (
-                    <option key={value} value={value}>
-                      {t(`identity.${value}`)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-          </form.Field>
-          <form.Field name="tools">
-            {(field) => (
-              <label>
-                {t("studio.toolsLabel")}
-                <select
-                  value={field.state.value}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                >
-                  {["hidden", "tool", "provided"].map((value) => (
-                    <option key={value} value={value}>
-                      {t(`tools.${value}`)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-          </form.Field>
-
-          <form.Field name="moveFormat">
-            {(field) => (
-              <label>
-                {t("settings.moveFormat")}
-                <select
-                  value={field.state.value}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                >
-                  {["strict", "lenient"].map((value) => (
-                    <option key={value} value={value}>
-                      {t(`moveFormats.${value}`)}
-                    </option>
-                  ))}
-                </select>
-                <small>{t("settings.moveFormatNote")}</small>
-              </label>
-            )}
-          </form.Field>
-          <form.Field name="tokenAccounting">
-            {(field) => (
-              <label>
-                {t("settings.tokenAccounting")}
-                <select
-                  value={field.state.value}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                >
-                  {["provider", "cl100k_base"].map((value) => (
-                    <option key={value} value={value}>
-                      {t(`accounting.${value}`)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-          </form.Field>
-          <form.Field name="tokenBudget">
-            {(field) => (
-              <label>
-                {t("settings.tokenBudget")}
-                <input
-                  type="number"
-                  autoComplete="off"
-                  min={256}
-                  max={1000000}
-                  required
-                  value={field.state.value}
-                  onChange={(event) => {
-                    const value = event.currentTarget.valueAsNumber;
-                    if (Number.isFinite(value)) field.handleChange(value);
-                  }}
-                />
-              </label>
-            )}
-          </form.Field>
-          <form.Field name="engineEvaluation">
-            {(field) => (
-              <label>
-                {t("settings.engineEvaluation")}
-                <select
-                  value={field.state.value}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                >
-                  {["off", "tool", "after-move", "both"].map((value) => (
-                    <option key={value} value={value}>
-                      {t(`engineModes.${value}`)}
-                    </option>
-                  ))}
-                </select>
-                <small>{t("settings.engineLimits")}</small>
-              </label>
-            )}
-          </form.Field>
-          <form.Field name="trashTalk">
-            {(field) => (
-              <label className="cc-check">
-                <input
-                  type="checkbox"
-                  checked={field.state.value}
-                  onChange={(event) => field.handleChange(event.target.checked)}
-                />
-                {t("settings.trashTalk")}
-              </label>
-            )}
-          </form.Field>
-          <p className="cc-muted text-xs">{t("settings.anonymousCommentary")}</p>
-          <form.Field name="maxPlies">
-            {(field) => (
-              <label>
-                {t("studio.plies")}
-                <input
-                  type="number"
-                  autoComplete="off"
-                  min={2}
-                  max={200}
-                  required
-                  value={field.state.value}
-                  onChange={(event) => {
-                    const value = event.currentTarget.valueAsNumber;
-                    if (Number.isFinite(value)) field.handleChange(value);
-                  }}
-                />
-              </label>
-            )}
-          </form.Field>
-          <form.Field name="budget">
-            {(field) => (
-              <label>
-                {t("studio.budget")}
-                <input
-                  type="number"
-                  autoComplete="off"
-                  min={0.01}
-                  max={1}
-                  step={0.01}
-                  required
-                  value={field.state.value}
-                  onChange={(event) => {
-                    const value = event.currentTarget.valueAsNumber;
-                    if (Number.isFinite(value)) field.handleChange(value);
-                  }}
-                />
-              </label>
-            )}
-          </form.Field>
-          {(invalid || mutation.isError) && (
-            <p role="alert" className="cc-error">
-              {t("studio.error")}
-            </p>
-          )}
-          <Button className="min-h-11 md:min-h-0" type="submit" disabled={mutation.isPending}>
-            {t(mutation.isPending ? "studio.pending" : "studio.create")}
-          </Button>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
 function ShareCard({
   match,
   slug,
@@ -637,89 +295,14 @@ function ShareCard({
   const { t } = useTranslation("chess");
   function download() {
     const canvas = document.createElement("canvas");
-    canvas.width = 1200;
-    canvas.height = 675;
+    canvas.width = SHARE_WIDTH;
+    canvas.height = SHARE_HEIGHT;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.fillStyle = "#101b1a";
-    ctx.fillRect(0, 0, 1200, 675);
-    ctx.fillStyle = "#a2e5b4";
-    ctx.fillRect(0, 0, 1200, 8);
-    ctx.font = "bold 22px sans-serif";
-    ctx.fillText(t("brand").toUpperCase(), 56, 65);
-    ctx.fillStyle = "#f2f1e8";
-    ctx.font = "bold 44px sans-serif";
-    const titleWords = match.config.title.split(/\s+/);
-    let titleLine = "";
-    let titleY = 130;
-    for (const word of titleWords) {
-      if (ctx.measureText(`${titleLine} ${word}`).width > 620 && titleLine) {
-        ctx.fillText(titleLine, 56, titleY, 620);
-        titleY += 48;
-        titleLine = "";
-        if (titleY > 178) break;
-      }
-      titleLine = titleLine ? `${titleLine} ${word}` : word;
-    }
-    if (titleY <= 178) ctx.fillText(titleLine, 56, titleY, 620);
-    ctx.font = "24px sans-serif";
-    ctx.fillText(match.config.white.name, 56, 230, 620);
-    ctx.fillText(match.config.black.name, 56, 266, 620);
-    ctx.font = "bold 100px monospace";
-    ctx.fillStyle = "#a2e5b4";
-    ctx.fillText(match.result, 56, 378);
-    const stats = matchStats(match);
-    ctx.fillStyle = "#bbc9c1";
-    ctx.font = "20px sans-serif";
-    ctx.fillText(
-      `${stats.moves} ${t("stats.plies")} · ${stats.illegalAttempts} ${t("stats.rejected")}`,
-      56,
-      420,
-      620,
-    );
-    ctx.fillText(
-      `${t(`context.${match.config.rules.context}`)} · ${t(`identity.${match.config.rules.opponentIdentity}`)}`,
-      56,
-      456,
-      620,
-    );
-    ctx.fillText(t(`termination.${match.termination}`), 56, 490, 620);
-    ctx.font = "16px sans-serif";
-    ctx.fillText(
-      `${t("studio.noSamples")} · ${match.source} · ${match.config.rules.version}`,
-      56,
-      548,
-      620,
-    );
-    ctx.fillText(`${match.config.white.protocol} / ${match.config.black.protocol}`, 56, 574, 620);
-    ctx.fillText(
-      `${t(`accounting.${match.config.rules.tokenAccounting}`)} · ${t(`engineModes.${match.config.rules.engineEvaluation}`)}`,
-      56,
-      600,
-      620,
-    );
     const replayUrl = new URL(window.location.href);
     replayUrl.search = new URLSearchParams({ game: slug }).toString();
     replayUrl.hash = "";
-    ctx.fillText(published ? replayUrl.toString() : t("studio.privateGraphic"), 56, 628, 1080);
-    const chess = boardAt(match);
-    const glyphs = { p: "♟", n: "♞", b: "♝", r: "♜", q: "♛", k: "♚" };
-    chess.board().forEach((row, rank) => {
-      row.forEach((piece, file) => {
-        const x = 735 + file * 50;
-        const y = 150 + rank * 50;
-        ctx.fillStyle = (rank + file) % 2 ? "#5a7d69" : "#dfe4cd";
-        ctx.fillRect(x, y, 50, 50);
-        if (piece) {
-          ctx.font = "42px Georgia";
-          ctx.fillStyle = piece.color === "w" ? "#fffdf3" : "#182520";
-          ctx.strokeStyle = "#182520";
-          ctx.lineWidth = 1;
-          ctx.strokeText(glyphs[piece.type], x + 4, y + 40);
-          ctx.fillText(glyphs[piece.type], x + 4, y + 40);
-        }
-      });
-    });
+    drawShareCard(ctx, match, t, published ? replayUrl.toString() : null);
     const anchor = document.createElement("a");
     anchor.download = `cockpit-${match.id}.png`;
     anchor.href = canvas.toDataURL("image/png");
