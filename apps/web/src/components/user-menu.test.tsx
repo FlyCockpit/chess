@@ -103,6 +103,16 @@ describe("signed out", () => {
     fixture.config = { signupEnabled: false, adminBootstrapSignupEnabled: false };
     expect(links(render()).map((link) => link.to)).toEqual(["/$lang/login"]);
   });
+
+  it("offers no Sign Up under forced SSO, even with open sign-up or the admin bootstrap", () => {
+    for (const config of [
+      { forceSso: true, signupEnabled: true, adminBootstrapSignupEnabled: false },
+      { forceSso: true, signupEnabled: false, adminBootstrapSignupEnabled: true },
+    ]) {
+      fixture.config = config;
+      expect(links(render()).map((link) => link.to)).toEqual(["/$lang/login"]);
+    }
+  });
 });
 
 describe("signed in", () => {

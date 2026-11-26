@@ -62,9 +62,11 @@ export default function UserMenu() {
     // Default to NOT showing Sign Up until the flag is known, so it never
     // flashes when signup is disabled. The admin bootstrap counts: it is on
     // only until an administrator exists (appConfig), and then the operator
-    // needs this way in.
+    // needs this way in. Forced SSO never offers it: the sign-up page refuses
+    // it and the identity provider is the only way in.
     const showSignUp =
       !configPending &&
+      configData?.forceSso !== true &&
       (configData?.signupEnabled === true || configData?.adminBootstrapSignupEnabled === true);
     return (
       <div className="flex items-center gap-2">
