@@ -22,6 +22,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
     options,
     useParams: () => ({ lang: "en-US" }),
   }),
+  useParams: () => ({ lang: "en-US" }),
   Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
   Outlet: () => null,
 }));
@@ -39,6 +40,9 @@ vi.mock("@/components/pull-to-refresh", () => ({
 vi.mock("@/components/language-switcher", () => ({ LanguageSwitcher: () => null }));
 vi.mock("@/hooks/use-document-lang", () => ({ useDocumentLang: () => {} }));
 vi.mock("@/hooks/use-user-locale-sync", () => ({ useUserLocaleSync: () => {} }));
+vi.mock("@/components/consent/consent-preferences-button", () => ({
+  ConsentPreferencesButton: () => null,
+}));
 vi.mock("@/hooks/use-mobile-keyboard", () => ({ useMobileKeyboard: () => keyboard.open }));
 
 const { Route: AppRoute } = await import("@/routes/$lang/_app/route");

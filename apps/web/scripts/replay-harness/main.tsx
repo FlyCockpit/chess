@@ -44,7 +44,7 @@ async function mount(kind: "plain" | "finished" | "live") {
   root.render(
     <I18nextProvider i18n={i18n}>
       <div className="cc-public-shell">
-        <main className="relative min-h-0 min-w-0 overflow-y-auto overflow-x-clip overscroll-contain [scrollbar-gutter:stable]">
+        <main className="relative min-h-0 min-w-0 overflow-y-auto overflow-x-clip overscroll-contain">
           <div className="cc-app">
             <MatchReplay key={`${match.id}-${kind}`} match={match} live={kind === "live"} />
           </div>

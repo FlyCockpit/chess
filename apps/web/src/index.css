@@ -8,70 +8,10 @@
   --consent-clearance: max(0px, calc(var(--consent-inset, 0px) - var(--keyboard-inset, 0px)));
 }
 
-/* The arena palette. It follows the one theme rule (the stored choice, else the
- * system preference, applied before first paint by THEME_INIT_SCRIPT): light
- * values on :root, dark values on .dark. The board squares, pieces and share
- * graphic keep fixed colours in both themes. */
-:root {
-  --cc-bg: oklch(0.975 0.005 95);
-  --cc-surface: oklch(0.995 0.003 95);
-  --cc-raised: oklch(1 0 0);
-  --cc-sunken: oklch(0.93 0.008 190);
-  --cc-chip: oklch(0.94 0.018 170);
-  --cc-hover: oklch(0.93 0.03 165);
-  --cc-tint: oklch(0.95 0.03 160);
-  --cc-line: oklch(0.88 0.01 190);
-  --cc-line-strong: oklch(0.78 0.015 190);
-  --cc-line-soft: oklch(0.92 0.008 190);
-  --cc-pill-line: oklch(0.84 0.03 175);
-  --cc-pill-fg: oklch(0.4 0.05 170);
-  --cc-accent-line: oklch(0.62 0.1 155);
-  --cc-text: oklch(0.22 0.015 190);
-  --cc-text-soft: oklch(0.35 0.015 190);
-  --cc-muted: oklch(0.46 0.015 190);
-  --cc-subtle: oklch(0.52 0.015 190);
-  --cc-accent: oklch(0.81 0.13 155);
-  --cc-accent-hover: oklch(0.76 0.13 155);
-  --cc-accent-fg: oklch(0.18 0.025 185);
-  --cc-accent-text: oklch(0.48 0.12 155);
-  --cc-warn-text: oklch(0.52 0.15 50);
-  --cc-error-text: oklch(0.52 0.18 30);
-  --cc-hero-shadow: oklch(0.3 0.02 180 / 0.25);
-}
-.dark {
-  --cc-bg: oklch(0.16 0.012 195);
-  --cc-surface: oklch(0.19 0.012 195);
-  --cc-raised: oklch(0.2 0.015 190);
-  --cc-sunken: oklch(0.13 0.01 190);
-  --cc-chip: oklch(0.26 0.02 185);
-  --cc-hover: oklch(0.29 0.025 175);
-  --cc-tint: oklch(0.24 0.025 165);
-  --cc-line: oklch(0.31 0.01 190);
-  --cc-line-strong: oklch(0.37 0.015 190);
-  --cc-line-soft: oklch(0.27 0.01 190);
-  --cc-pill-line: oklch(0.35 0.02 180);
-  --cc-pill-fg: oklch(0.78 0.04 170);
-  --cc-accent-line: oklch(0.57 0.07 155);
-  --cc-text: oklch(0.94 0.012 85);
-  --cc-text-soft: oklch(0.8 0.01 190);
-  --cc-muted: oklch(0.67 0.015 190);
-  --cc-subtle: oklch(0.6 0.015 190);
-  --cc-accent: oklch(0.81 0.13 155);
-  --cc-accent-hover: oklch(0.87 0.13 155);
-  --cc-accent-fg: oklch(0.18 0.025 185);
-  --cc-accent-text: oklch(0.82 0.11 155);
-  --cc-warn-text: oklch(0.78 0.13 55);
-  --cc-error-text: oklch(0.8 0.13 45);
-  --cc-hero-shadow: oklch(0.05 0.02 180 / 0.6);
-}
-/* The dark arena keeps its teal-tinted shadcn tokens; light uses globals.css. */
-.dark .cc-public-shell {
-  --muted: oklch(0.21 0.012 195);
-  --muted-foreground: oklch(0.72 0.015 190);
-  --border: oklch(0.3 0.01 190);
-  --accent: oklch(0.28 0.025 180);
-  --accent-foreground: oklch(0.94 0.012 85);
-}
+/* The arena palette (--cc-*) and the dark arena's shadcn overrides are theme
+   tokens, so they live with the others in packages/ui/src/styles/globals.css.
+   The only literal colours here are the fixed depictions (board, pieces,
+   White/Black), each marked `theme-exempt` (docs/design-system.md § Shell rules). */
 
 /* Cockpit's arena is a self-contained broadcast surface. */
 .cc-public-shell {
@@ -101,16 +41,21 @@
   padding-bottom: var(--keyboard-inset, 0px);
   scroll-padding-bottom: var(--keyboard-inset, 0px);
 }
+/* The header's rule is full-bleed: the border sits on the full-width header,
+ * and the row inside keeps the 1440px maximum. */
 .cc-header {
+  min-width: 0;
+  border-bottom: 1px solid var(--cc-line);
+}
+.cc-header-row {
   width: 100%;
   min-width: 0;
   max-width: 1440px;
-  margin: auto;
+  margin: 0 auto;
   display: flex;
   align-items: center;
   gap: 32px;
   padding: 22px 40px;
-  border-bottom: 1px solid var(--cc-line);
 }
 .cc-brand {
   display: inline-flex;
@@ -167,10 +112,13 @@
   border-radius: 7px;
   font-size: 13px;
 }
+/* `width: 100%`: in the public shell this is a flex item of the scroller's
+ * column, where auto margins alone would shrink it to its content. */
 .cc-app {
+  width: 100%;
   max-width: 1360px;
   margin: 0 auto;
-  padding: 0 40px 40px;
+  padding: 0 40px;
 }
 .cc-hero {
   display: grid;
@@ -262,6 +210,7 @@
   width: 100%;
   transform: rotate(-4deg);
   box-shadow: 0 20px 100px var(--cc-hero-shadow);
+  /* theme-exempt: the hero board art, the same in both themes */
   border: 6px solid oklch(0.26 0.014 185);
   border-radius: 9px;
   position: relative;
@@ -275,12 +224,15 @@
   justify-self: end;
   transform: rotate(2deg);
   padding: 12px 18px;
+  /* theme-exempt: the hero board art, the same in both themes */
   background: oklch(0.83 0.12 85);
+  /* theme-exempt: the hero board art, the same in both themes */
   color: oklch(0.22 0.03 100);
   font:
     700 10px ui-monospace,
     monospace;
   letter-spacing: 1px;
+  /* theme-exempt: the hero board art, the same in both themes */
   box-shadow: 0 8px 30px oklch(0.05 0 0 / 0.3);
   border-radius: 3px;
 }
@@ -388,23 +340,30 @@
   opacity: 1;
 }
 .cc-square:focus-visible {
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   outline: 3px solid oklch(0.75 0.2 80);
   outline-offset: -3px;
   z-index: 2;
 }
 .cc-light {
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   background: oklch(0.86 0.026 100);
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   color: oklch(0.38 0.03 160);
 }
 .cc-dark {
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   background: oklch(0.49 0.055 160);
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   color: oklch(0.85 0.025 100);
 }
 .cc-selected,
 .cc-last {
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   box-shadow: inset 0 0 0 100px oklch(0.82 0.15 95 / 0.35);
 }
 .cc-selected {
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   box-shadow: inset 0 0 0 100px oklch(0.84 0.18 90 / 0.65);
 }
 .cc-piece {
@@ -416,13 +375,19 @@
   z-index: 1;
 }
 .cc-white-piece {
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   color: oklch(0.98 0.008 95);
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   -webkit-text-stroke: 1px oklch(0.27 0.02 170);
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   text-shadow: 0 2px 2px oklch(0.2 0.01 190 / 0.3);
 }
 .cc-black-piece {
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   color: oklch(0.22 0.012 180);
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   -webkit-text-stroke: 0.7px oklch(0.1 0.01 180);
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   text-shadow: 0 1px 1px oklch(0.8 0.01 190 / 0.3);
 }
 .cc-hero-board .cc-piece {
@@ -461,6 +426,7 @@
 .cc-target {
   width: 24%;
   aspect-ratio: 1;
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   background: oklch(0.2 0.04 170 / 0.35);
   border-radius: 50%;
   position: absolute;
@@ -468,6 +434,7 @@
 .cc-capture-target {
   position: absolute;
   inset: 2px;
+  /* theme-exempt: board squares and pieces keep one palette in both themes */
   border: 4px solid oklch(0.7 0.2 80 / 0.8);
   border-radius: 50%;
 }
@@ -520,7 +487,9 @@
   font-size: 24px;
 }
 .cc-avatar-light {
+  /* theme-exempt: the White player's piece token */
   background: oklch(0.88 0.02 95);
+  /* theme-exempt: the White player's piece token */
   color: oklch(0.25 0.01 190);
 }
 .cc-side-label {
@@ -597,7 +566,7 @@
   flex-shrink: 0;
 }
 .cc-dot {
-  background: oklch(0.7 0.06 85);
+  background: var(--cc-dot);
 }
 .cc-match-sidebar h2 {
   font-size: 22px;
@@ -774,16 +743,23 @@
   color: var(--cc-muted);
   line-height: 1.9;
 }
+/* The public footer (components/public-footer.tsx): the last box in the
+ * scroller's column, so it ends at the scroller's bottom on a short page. Its
+ * rule is full-bleed; its row keeps the page content's column and lines. */
 .cc-footer {
   border-top: 1px solid var(--cc-line);
-  padding: 28px 0 8px;
   margin-top: 54px;
+  font-size: 11px;
+  color: var(--cc-subtle);
+}
+.cc-footer-row {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 28px 40px 48px;
   display: flex;
   gap: 16px;
   flex-wrap: wrap;
   justify-content: space-between;
-  font-size: 11px;
-  color: var(--cc-subtle);
 }
 .cc-footer p {
   max-width: 550px;
@@ -876,14 +852,15 @@
   .cc-public-shell {
     --cc-panel-inset: 14px;
   }
-  .cc-header {
+  .cc-header-row {
     gap: 20px;
     padding: 16px 24px;
   }
   .cc-nav {
     gap: 16px;
   }
-  .cc-app {
+  .cc-app,
+  .cc-footer-row {
     padding-inline: 24px;
   }
   .cc-hero {
@@ -911,7 +888,7 @@
   }
 }
 @media (max-width: 650px) {
-  .cc-header {
+  .cc-header-row {
     gap: 12px;
     flex-wrap: wrap;
     padding: 14px 16px 0;
@@ -930,7 +907,8 @@
     gap: 10px;
     font-size: 12px;
   }
-  .cc-app {
+  .cc-app,
+  .cc-footer-row {
     padding-inline: 16px;
   }
   .cc-hero {
@@ -1135,9 +1113,11 @@
   flex: none;
 }
 .cc-swatch-w {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   background: oklch(0.97 0.01 95);
 }
 .cc-swatch-b {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   background: oklch(0.22 0.012 180);
 }
 .cc-create-summary {
@@ -1308,6 +1288,7 @@
   flex-direction: column-reverse;
   overflow: hidden;
   border-radius: 4px;
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   background: oklch(0.3 0.01 180);
   border: 1px solid var(--cc-line-strong);
 }
@@ -1315,6 +1296,7 @@
   flex-direction: column;
 }
 .cc-eval-white {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   background: oklch(0.97 0.008 95);
   transition: block-size 250ms ease;
 }
@@ -1330,10 +1312,12 @@
 }
 .cc-eval-score-white {
   bottom: 4px;
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   color: oklch(0.25 0.01 190);
 }
 .cc-eval-score-black {
   top: 4px;
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   color: oklch(0.92 0.01 95);
 }
 .cc-eval-flipped .cc-eval-score-white {
@@ -1358,12 +1342,15 @@
   block-size: 100%;
 }
 .cc-eval-graph-black {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   fill: oklch(0.3 0.01 180);
 }
 .cc-eval-graph-white {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   fill: oklch(0.95 0.008 95);
 }
 .cc-eval-graph-mid {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   stroke: oklch(0.6 0.02 170);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
@@ -1383,7 +1370,7 @@
   cursor: pointer;
 }
 .cc-eval-graph:has(input:focus-visible) {
-  outline: 3px solid oklch(0.75 0.2 80);
+  outline: 3px solid var(--cc-focus);
   outline-offset: 2px;
 }
 .cc-eval-note {
@@ -1443,19 +1430,27 @@
   white-space: nowrap;
 }
 .cc-remark-bubble.cc-remark-w {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   background: oklch(0.97 0.01 95);
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   color: oklch(0.22 0.015 190);
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   border-color: oklch(0.82 0.02 95);
 }
 .cc-remark-bubble.cc-remark-b {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   background: oklch(0.27 0.015 190);
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   color: oklch(0.95 0.01 95);
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   border-color: oklch(0.4 0.015 190);
 }
 .cc-remark-bubble.cc-remark-w .cc-remark-meta {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   color: oklch(0.42 0.015 190);
 }
 .cc-remark-bubble.cc-remark-b .cc-remark-meta {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   color: oklch(0.8 0.01 190);
 }
 /* The tail points at the speaking player's row. */
@@ -1541,9 +1536,11 @@
     monospace;
 }
 .cc-result-w {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   border-inline-start-color: oklch(0.88 0.03 95);
 }
 .cc-result-b {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   border-inline-start-color: oklch(0.32 0.02 190);
 }
 .cc-result-draw {
@@ -1572,9 +1569,11 @@
   font-weight: 600;
 }
 .cc-remark-b {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   border-inline-start: 3px solid oklch(0.35 0.02 180);
 }
 .cc-remark-w {
+  /* theme-exempt: a White/Black depiction, fixed in both themes */
   border-inline-start: 3px solid oklch(0.9 0.02 95);
 }
 .cc-remark-meta {

@@ -41,6 +41,9 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useParams: () => ({ lang: "en-US" }),
 }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("@/components/consent/consent-preferences-button", () => ({
+  ConsentPreferencesButton: () => null,
+}));
 vi.mock("@/hooks/use-mobile-keyboard", () => ({ useMobileKeyboard: () => false }));
 vi.mock("@/hooks/use-auth-session", () => ({
   useAuthSession: () => ({ state: { status: authState.status } }),

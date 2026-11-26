@@ -26,12 +26,12 @@
   --state-success: oklch(0.52 0.17 152);
   --state-success-foreground: oklch(0.985 0 0);
   --state-success-bg: color-mix(in oklch, oklch(0.52 0.17 152) 12%, transparent);
-  --state-warning: oklch(0.75 0.18 85);
-  --state-warning-foreground: oklch(0.3 0.07 70);
-  --state-warning-bg: color-mix(in oklch, oklch(0.75 0.18 85) 12%, transparent);
-  --state-info: oklch(0.58 0.16 250);
+  --state-warning: oklch(0.555 0.14 70);
+  --state-warning-foreground: oklch(0.985 0 0);
+  --state-warning-bg: color-mix(in oklch, oklch(0.555 0.14 70) 12%, transparent);
+  --state-info: oklch(0.55 0.16 250);
   --state-info-foreground: oklch(0.985 0 0);
-  --state-info-bg: color-mix(in oklch, oklch(0.58 0.16 250) 12%, transparent);
+  --state-info-bg: color-mix(in oklch, oklch(0.55 0.16 250) 12%, transparent);
   --state-action: var(--accent);
   --state-action-foreground: var(--accent-foreground);
   --state-action-bg: color-mix(in oklch, var(--accent) 12%, transparent);
@@ -152,6 +152,77 @@
   --sidebar-accent-foreground: oklch(0.987 0.002 197.1);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.56 0.021 213.5);
+}
+
+/* Cockpit Chess's arena palette (apps/web/src/index.css `.cc-*`). It follows
+ * the one theme rule (the stored choice, else the system preference, applied
+ * before first paint by THEME_INIT_SCRIPT): light values on :root, dark values
+ * on .dark. The board squares, pieces and share graphic keep fixed colours in
+ * both themes; those stay in index.css, marked `theme-exempt`. */
+:root {
+  --cc-bg: oklch(0.975 0.005 95);
+  --cc-surface: oklch(0.995 0.003 95);
+  --cc-raised: oklch(1 0 0);
+  --cc-sunken: oklch(0.93 0.008 190);
+  --cc-chip: oklch(0.94 0.018 170);
+  --cc-hover: oklch(0.93 0.03 165);
+  --cc-tint: oklch(0.95 0.03 160);
+  --cc-line: oklch(0.88 0.01 190);
+  --cc-line-strong: oklch(0.78 0.015 190);
+  --cc-line-soft: oklch(0.92 0.008 190);
+  --cc-pill-line: oklch(0.84 0.03 175);
+  --cc-pill-fg: oklch(0.4 0.05 170);
+  --cc-accent-line: oklch(0.62 0.1 155);
+  --cc-text: oklch(0.22 0.015 190);
+  --cc-text-soft: oklch(0.35 0.015 190);
+  --cc-muted: oklch(0.46 0.015 190);
+  --cc-subtle: oklch(0.52 0.015 190);
+  --cc-accent: oklch(0.81 0.13 155);
+  --cc-accent-hover: oklch(0.76 0.13 155);
+  --cc-accent-fg: oklch(0.18 0.025 185);
+  --cc-accent-text: oklch(0.48 0.12 155);
+  --cc-warn-text: oklch(0.52 0.15 50);
+  --cc-error-text: oklch(0.52 0.18 30);
+  --cc-hero-shadow: oklch(0.3 0.02 180 / 0.25);
+  /* An idle status dot, and a focus ring drawn on the page (3:1 or more on --cc-bg). */
+  --cc-dot: oklch(0.6 0.06 85);
+  --cc-focus: oklch(0.55 0.15 70);
+}
+.dark {
+  --cc-bg: oklch(0.16 0.012 195);
+  --cc-surface: oklch(0.19 0.012 195);
+  --cc-raised: oklch(0.2 0.015 190);
+  --cc-sunken: oklch(0.13 0.01 190);
+  --cc-chip: oklch(0.26 0.02 185);
+  --cc-hover: oklch(0.29 0.025 175);
+  --cc-tint: oklch(0.24 0.025 165);
+  --cc-line: oklch(0.31 0.01 190);
+  --cc-line-strong: oklch(0.37 0.015 190);
+  --cc-line-soft: oklch(0.27 0.01 190);
+  --cc-pill-line: oklch(0.35 0.02 180);
+  --cc-pill-fg: oklch(0.78 0.04 170);
+  --cc-accent-line: oklch(0.57 0.07 155);
+  --cc-text: oklch(0.94 0.012 85);
+  --cc-text-soft: oklch(0.8 0.01 190);
+  --cc-muted: oklch(0.67 0.015 190);
+  --cc-subtle: oklch(0.6 0.015 190);
+  --cc-accent: oklch(0.81 0.13 155);
+  --cc-accent-hover: oklch(0.87 0.13 155);
+  --cc-accent-fg: oklch(0.18 0.025 185);
+  --cc-accent-text: oklch(0.82 0.11 155);
+  --cc-warn-text: oklch(0.78 0.13 55);
+  --cc-error-text: oklch(0.8 0.13 45);
+  --cc-hero-shadow: oklch(0.05 0.02 180 / 0.6);
+  --cc-dot: oklch(0.7 0.06 85);
+  --cc-focus: oklch(0.75 0.2 80);
+}
+/* The dark arena keeps its teal-tinted shadcn tokens; light keeps the defaults above. */
+.dark .cc-public-shell {
+  --muted: oklch(0.21 0.012 195);
+  --muted-foreground: oklch(0.72 0.015 190);
+  --border: oklch(0.3 0.01 190);
+  --accent: oklch(0.28 0.025 180);
+  --accent-foreground: oklch(0.94 0.012 85);
 }
 
 @theme inline {
@@ -323,4 +394,52 @@
     animation: skeleton-shimmer calc(var(--duration-slow) * 2) var(--ease-in-out) infinite;
     will-change: background-position;
   }
+}
+
+/* Toasts are a surface like a popover, so they take the theme's tokens and
+   follow `.dark` like everything else. sileo's own palette inverts the theme
+   on purpose (a #f2f2f2 pill on a dark page, ~2:1 for its green title), so the
+   Toaster gets no `theme` (components/sileo.tsx) and these rules paint it.
+   Unlayered, and at least one attribute more specific than the sileo rule each
+   one overrides, because sileo's stylesheet loads after this one. */
+:root [data-sileo-viewport] {
+  /* State inks: every one reaches 4.5:1 on --popover in both themes
+     (apps/web/src/lib/theme-contrast.test.ts). They colour the badge icon; the
+     title, description and action stay --popover-foreground. The action ink is
+     the info blue: this palette's dark --primary is tuned for filled buttons
+     (white text on it) and is too dark for text on the dark popover. */
+  --sileo-state-success: var(--state-success);
+  --sileo-state-loading: var(--state-loading);
+  --sileo-state-error: var(--destructive);
+  --sileo-state-warning: var(--state-warning);
+  --sileo-state-info: var(--state-info);
+  --sileo-state-action: var(--state-info);
+  color: var(--popover-foreground);
+}
+/* The pill and its expanded body are SVG rects filled through a presentation
+   attribute, which any CSS `fill` overrides. A hairline in the foreground
+   colour and the popovers' black drop shadow lift it off a page that is close
+   to --popover (dark mode). */
+:root [data-sileo-viewport] :is([data-sileo-pill], [data-sileo-body]) {
+  fill: var(--popover);
+}
+:root [data-sileo-viewport] [data-sileo-canvas] {
+  filter: drop-shadow(0 0 0.5px color-mix(in oklch, var(--foreground) 35%, transparent))
+    drop-shadow(0 4px 12px oklch(0 0 0 / 0.15));
+}
+/* The badge icon sits on the pill itself, not on sileo's 20% state tint,
+   so the ink's contrast is the one measured against --popover. */
+:root [data-sileo-viewport] [data-sileo-badge][data-state] {
+  --sileo-tone-bg: transparent;
+}
+:root [data-sileo-viewport] [data-sileo-title][data-state] {
+  color: var(--popover-foreground);
+}
+:root [data-sileo-viewport] [data-sileo-description] {
+  color: var(--popover-foreground);
+}
+:root [data-sileo-viewport] [data-sileo-button][data-state] {
+  --sileo-btn-color: var(--popover-foreground);
+  --sileo-btn-bg: color-mix(in oklch, var(--popover-foreground) 8%, transparent);
+  --sileo-btn-bg-hover: color-mix(in oklch, var(--popover-foreground) 14%, transparent);
 }

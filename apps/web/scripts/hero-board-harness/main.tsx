@@ -55,21 +55,28 @@ async function measure(fen: keyof typeof FENS, dark: boolean) {
   document.documentElement.classList.toggle("dark", dark);
   root.render(
     <I18nextProvider i18n={i18n}>
-      {/* The hosted landing page's ancestors (src/routes/$lang/_public/route.tsx): the
-          shell, its header and the bounded main scroller with its overflow rules, so any
-          clipping they introduce reaches the corner hit-tests. Keep in step with it. */}
+      {/* The hosted landing page's ancestors (src/components/public-shell.tsx): the
+          shell, its header and the bounded main scroller with its overflow rules and
+          content column, so any clipping they introduce reaches the corner hit-tests.
+          Keep in step with it. */}
       <div className="cc-public-shell">
         <header className="cc-header">
-          <span className="cc-brand">Cockpit Chess</span>
+          <div className="cc-header-row">
+            <span className="cc-brand">Cockpit Chess</span>
+          </div>
         </header>
-        <main className="relative min-h-0 min-w-0 overflow-y-auto overflow-x-clip overscroll-contain [scrollbar-gutter:stable]">
-          <div className="cc-app">
-            <section className="cc-hero">
-              <div>
-                <h1>The board doesn't bluff</h1>
+        <main className="relative min-h-0 min-w-0 overflow-y-auto overflow-x-clip overscroll-contain">
+          <div className="flex min-h-full min-w-0 flex-col">
+            <div className="flex min-w-0 flex-1 flex-col">
+              <div className="cc-app">
+                <section className="cc-hero">
+                  <div>
+                    <h1>The board doesn't bluff</h1>
+                  </div>
+                  <HeroBoard fen={FENS[fen]} />
+                </section>
               </div>
-              <HeroBoard fen={FENS[fen]} />
-            </section>
+            </div>
           </div>
         </main>
       </div>

@@ -52,27 +52,31 @@ describe("theme rule", () => {
   });
 });
 
-const css = readFileSync(new URL("./index.css", import.meta.url), "utf8").replace(
-  /\/\*[\s\S]*?\*\//g,
-  "",
+const strip = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "");
+const css = strip(readFileSync(new URL("./index.css", import.meta.url), "utf8"));
+// The arena's theme tokens live with the others in the token file
+// (docs/design-system.md § Shell rules).
+const globals = strip(
+  readFileSync(new URL("../../../packages/ui/src/styles/globals.css", import.meta.url), "utf8"),
 );
 /** Every top-level block with exactly this selector, merged. */
-function block(selector: string) {
+function block(selector: string, source = css) {
   const escaped = selector.replace(".", "\\.");
-  return [...css.matchAll(new RegExp(`(?:^|\\n)${escaped} \\{([^}]*)\\}`, "g"))]
+  return [...source.matchAll(new RegExp(`(?:^|\\n)${escaped} \\{([^}]*)\\}`, "g"))]
     .map((match) => match[1])
     .join("\n");
 }
 const tokens = (body: string) => new Set([...body.matchAll(/(--cc-[a-z-]+):/g)].map((m) => m[1]));
 
 describe("arena palette", () => {
-  it("defines every token for light (:root) and dark (.dark)", () => {
-    const light = tokens(block(":root"));
-    const dark = tokens(block(".dark"));
+  it("defines every token for light (:root) and dark (.dark) in the token file", () => {
+    const light = tokens(block(":root", globals));
+    const dark = tokens(block(".dark", globals));
     expect(light.size).toBeGreaterThan(10);
     expect([...light].sort()).toEqual([...dark].sort());
     const used = new Set([...css.matchAll(/var\((--cc-[a-z-]+)\)/g)].map((m) => m[1]));
     for (const token of used) if (token !== "--cc-panel-inset") expect(light).toContain(token);
+    expect(tokens(block(":root"))).toEqual(new Set());
   });
   it("takes the shell's colours from the tokens, not a fixed dark palette", () => {
     const shell = block(".cc-public-shell");
@@ -82,13 +86,13 @@ describe("arena palette", () => {
   });
   it("keeps literal colours only on the board, pieces and White/Black depictions", () => {
     const fixed =
-      /^\.cc-(hero-board|hero-sticker|square|light|dark|last|selected|white-piece|black-piece|target|capture-target|avatar-light|dot|swatch-[wb]|eval-[a-z-]+|remark-[wb]|remark-bubble\.cc-remark-[wb]|result-[wb])\b/;
+      /^\.cc-(hero-board|hero-sticker|square|light|dark|last|selected|white-piece|black-piece|target|capture-target|avatar-light|swatch-[wb]|eval-[a-z-]+|remark-[wb]|remark-bubble\.cc-remark-[wb]|result-[wb])\b/;
     for (const [, selector = "", body = ""] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
       const literal = body
         .split(";")
         .some((line) => line.includes("oklch(") && !line.trim().startsWith("--"));
       const name = selector.trim().split("\n").at(-1)?.trim() ?? "";
-      if (literal && name.startsWith(".cc-")) expect(name).toMatch(fixed);
+      if (literal) expect(name).toMatch(fixed);
     }
   });
 });

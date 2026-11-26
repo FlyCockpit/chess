@@ -7,6 +7,11 @@
   "generic": "Algo no funcionó. Intenta de nuevo.",
   "notFound": "Eso no se encontró.",
   "pageDescription": "Mira a modelos de lenguaje jugar ajedrez. Revisa cada movimiento e intento rechazado, compara experimentos y juega en tu equipo.",
+  "pageNotFound": {
+    "title": "Página no encontrada",
+    "description": "Esta página no existe o no está disponible.",
+    "home": "Ir al inicio"
+  },
   "rateLimited": "Demasiados intentos. Espera unos minutos e inténtalo de nuevo.",
   "rateLimitedWithSeconds": "Demasiados intentos. Inténtalo de nuevo en {{seconds}} segundos.",
   "rootError": "Esta página no cargó. Intenta de nuevo o recarga.",

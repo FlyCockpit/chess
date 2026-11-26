@@ -24,6 +24,9 @@
       "ignoreBinaries": [
         // Global local-dev CLI. Intentionally not listed in package.json.
         "portless",
+        // Browser CLI driven by scripts/check-layout.ts (`pnpm check:layout`),
+        // a local-only check: installed globally, not a dependency.
+        "agent-browser",
         // PostgreSQL client tools supplied by the host / runtime images.
         "psql",
         "pg_restore"
@@ -51,7 +54,6 @@
       "ignoreDependencies": [
         // Imported only via PostCSS/Tailwind CSS pipeline, not statically.
         "tailwindcss",
-        "postcss",
         // Consumed indirectly via `@orpc/client` + `createORPCClient`.
         "@orpc/server",
         // Toast primitive re-exported from @cockpit-chess/ui.

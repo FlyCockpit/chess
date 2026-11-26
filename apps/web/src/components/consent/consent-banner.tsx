@@ -37,13 +37,15 @@ export function ConsentBanner() {
       // opened near the bottom lands where the banner floats and must win the
       // click; an open dialog makes the page inert, so a banner layered above
       // it would cover the dialog's buttons while refusing clicks itself.
-      // consent-layers.test.tsx pins this. Its
-      // bottom padding clears the BottomNav's 3.5rem plus the home-indicator
-      // inset, so the nav paints over that padding; on md+ it floats as a card
-      // and only the inset matters. Entrance animation is disabled
+      // consent-layers.test.tsx pins this. Its bottom padding is the
+      // home-indicator inset, plus, on phones while the BottomNav is mounted
+      // (`data-bottom-nav`, the app shell only), the nav's 3.5rem, so the nav
+      // paints over that padding. Public pages and the 404 have no BottomNav,
+      // so they reserve nothing for it. On md+ it floats as a card and only the
+      // inset matters. Entrance animation is disabled
       // automatically under `prefers-reduced-motion` by the global rule in
       // packages/ui/src/styles/globals.css.
-      className="fixed inset-x-0 bottom-0 z-40 animate-in border-t bg-background/95 fade-in-0 pb-[calc(3.5rem_+_var(--safe-area-bottom))] backdrop-blur-lg slide-in-from-bottom-2 md:inset-x-auto md:right-4 md:bottom-4 md:max-w-md md:border md:pb-[var(--safe-area-bottom)] md:ring-1 md:ring-foreground/10"
+      className="fixed inset-x-0 bottom-0 z-40 animate-in border-t bg-background/95 fade-in-0 pb-[var(--safe-area-bottom)] backdrop-blur-lg slide-in-from-bottom-2 max-md:[:root:has([data-bottom-nav])_&]:pb-[calc(3.5rem_+_var(--safe-area-bottom))] md:inset-x-auto md:right-4 md:bottom-4 md:max-w-md md:border md:ring-1 md:ring-foreground/10"
       style={{
         paddingLeft: "var(--safe-area-left)",
         paddingRight: "var(--safe-area-right)",

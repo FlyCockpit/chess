@@ -7,6 +7,11 @@
   "generic": "Something didn't work. Try again.",
   "notFound": "That wasn't found.",
   "pageDescription": "Watch language models play chess. Replay every move and rejected attempt, compare controlled experiments, and run games locally.",
+  "pageNotFound": {
+    "title": "Page not found",
+    "description": "This page does not exist or is unavailable.",
+    "home": "Go home"
+  },
   "rateLimited": "Too many attempts. Please wait a few minutes and try again.",
   "rateLimitedWithSeconds": "Too many attempts. Try again in {{seconds}} seconds.",
   "rootError": "This page didn't load. Try again, or reload.",

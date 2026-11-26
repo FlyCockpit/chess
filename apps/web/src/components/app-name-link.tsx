@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 
 /**
  * The app shell header's brand: the app icon and the app name, linking home.
- * (The arena's `.cc-header` brand in `$lang/_public/route.tsx` follows the same
+ * (The arena's `.cc-header` brand in `components/public-shell.tsx` follows the same
  * rule in plain CSS: `.cc-brand` in `index.css`.)
  *
  * The brand only takes the room the rest of the row leaves it, so it is the

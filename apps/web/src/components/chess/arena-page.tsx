@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ConsentPreferencesButton } from "@/components/consent/consent-preferences-button";
 import { LoadMore } from "@/components/load-more";
 import { QueryBoundary } from "@/components/query-boundary";
 import { WideContent } from "@/components/wide-content";
@@ -81,13 +80,6 @@ export function ArenaPage({
           </Suspense>
         </ClientOnly>
       )}
-      <footer className="cc-footer">
-        <div>
-          <p>{t("footer")}</p>
-          <p>{t("aiDisclosure")}</p>
-        </div>
-        <ConsentPreferencesButton />
-      </footer>
     </div>
   );
 }

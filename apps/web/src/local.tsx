@@ -9,6 +9,7 @@ import "./index.css";
 
 // The lab has no theme toggle: it follows the OS setting, live. Module code, not an
 // inline script, so the lab's strict CSP holds.
+// theme-exempt: no toggle means no stored choice, so the OS is the whole rule here.
 followSystemScheme(document.documentElement, matchMedia("(prefers-color-scheme: dark)"));
 if (!i18n.isInitialized)
   await new Promise<void>((resolve) => i18n.once("initialized", () => resolve()));

@@ -8,6 +8,7 @@ import { getRequestHeader } from "@tanstack/react-start/server";
 
 import ErrorState from "./components/error-state";
 import Loader from "./components/loader";
+import { NotFoundPage } from "./components/not-found-page";
 import i18n, { createRequestI18n } from "./i18n";
 import { MAIN_SCROLLER_SELECTOR } from "./lib/main-scroller";
 import { routeTree } from "./routeTree.gen";
@@ -107,6 +108,9 @@ export function getRouter() {
     // Pending UI replaces the outlet; page snapshots must never overlap routes.
     defaultPendingComponent: () => <Loader />,
     defaultErrorComponent: ErrorState,
+    // The page body, for a not-found boundary inside a shell. An unknown URL
+    // gets the public shell around it from `$lang`'s notFoundComponent.
+    defaultNotFoundComponent: NotFoundPage,
     context: {
       orpc,
       queryClient,
