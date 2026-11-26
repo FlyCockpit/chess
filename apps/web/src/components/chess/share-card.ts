@@ -1,34 +1,14 @@
 import { boardAt, type MatchArchive, matchStats } from "@cockpit-chess/chess";
 import type { TFunction } from "i18next";
+import { drawBoard } from "./board-canvas";
 import { evaluationSeries, pointForPosition, shortScore } from "./evaluation";
 
 /** The share graphic: 1200×675, fixed colours (it is an image, not themed UI). */
 export const SHARE_WIDTH = 1200;
 export const SHARE_HEIGHT = 675;
 export const BOARD = { x: 735, y: 150, square: 50 } as const;
-const GLYPHS = { p: "♟", n: "♞", b: "♝", r: "♜", q: "♛", k: "♚" } as const;
 const INK = "#182520";
 const PAPER = "#f2f1e8";
-
-type GlyphMetrics = Pick<
-  TextMetrics,
-  | "actualBoundingBoxLeft"
-  | "actualBoundingBoxRight"
-  | "actualBoundingBoxAscent"
-  | "actualBoundingBoxDescent"
->;
-
-/**
- * Where to draw a glyph (textAlign "left", textBaseline "alphabetic") so its
- * ink box is centred on (cx, cy). Chess glyphs sit off-centre in their advance
- * box and differ by font, so the measured ink box is the only reliable centre.
- */
-export function glyphOrigin(metrics: GlyphMetrics, cx: number, cy: number) {
-  return {
-    x: cx - (metrics.actualBoundingBoxRight - metrics.actualBoundingBoxLeft) / 2,
-    y: cy + (metrics.actualBoundingBoxAscent - metrics.actualBoundingBoxDescent) / 2,
-  };
-}
 
 const PROTOCOLS = new Set(["openai-chat", "openai-responses", "anthropic"]);
 
@@ -128,23 +108,7 @@ export function drawShareCard(
 
   const size = BOARD.square;
   const board = boardAt(match);
-  board.board().forEach((row, rank) => {
-    row.forEach((piece, file) => {
-      const x = BOARD.x + file * size;
-      const y = BOARD.y + rank * size;
-      ctx.fillStyle = (rank + file) % 2 ? "#5a7d69" : "#dfe4cd";
-      ctx.fillRect(x, y, size, size);
-      if (!piece) return;
-      const glyph = GLYPHS[piece.type];
-      ctx.font = "40px Georgia, 'DejaVu Sans', serif";
-      const origin = glyphOrigin(ctx.measureText(glyph), x + size / 2, y + size / 2);
-      ctx.fillStyle = piece.color === "w" ? "#fffdf3" : INK;
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 1;
-      ctx.strokeText(glyph, origin.x, origin.y);
-      ctx.fillText(glyph, origin.x, origin.y);
-    });
-  });
+  drawBoard(ctx, board.fen(), BOARD);
 
   // The evaluation of exactly the exported position, when one was recorded:
   // White fills from the bottom.

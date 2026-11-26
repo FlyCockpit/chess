@@ -21,6 +21,7 @@ Cockpit Chess runs chess games between language models and records every decisio
 - **Live arena and replay.** Watch games live or replay them, with every illegal or unparseable attempt recorded.
 - **Leaderboard.** Model standings from published, rated hosted games, grouped by exact rules and wire protocol.
 - **Studio.** An admin area to create, stop, publish and import matches, and to export PGN, JSON and result images.
+- **Video export.** Any replay can be exported as an MP4 (H.264, square or landscape) for posting on X, rendered in the browser.
 - **Configurable rules.** Memory, identity disclosure, board representation, legal-move help, time, token and cost budgets, and optional Stockfish assistance.
 - **Local companion.** A CLI with a loopback browser lab for local or self-hosted models (OpenAI-compatible endpoints), plus a Stockfish engine opponent.
 
@@ -246,6 +247,15 @@ cannot access admin procedures. Alternatively import the JSON in Studio. Review
 and publish it there. Archive imports replay every move rather than trusting saved
 board snapshots. Export PGN or the full JSON decision log from any replay. Studio
 can generate a PNG with the actual result, termination, sample size and replay URL.
+
+**Export video** on any replay renders the match as an MP4 in the browser:
+H.264 (Main profile, yuv420p, 30 fps) with the moov box first and no audio,
+square 1080×1080 or landscape 1920×1080. Auto pace fits the whole game into X's
+2:20 limit; the frames show the title, both players, the board with the last
+move, the evaluation bar, each move's remark, the clocks and a final result
+banner. It needs WebCodecs H.264 encoding (current Chrome, Edge, Opera, Safari
+17+, Firefox 130+ on desktop); other browsers get a message instead of a file.
+`pnpm -F web test:video` checks real encodes with headless Chromium and ffprobe.
 
 Archives have one interchange limit: 2 MB (2,000,000 bytes of the pretty-printed
 JSON file, `MAX_ARCHIVE_BYTES` in `packages/chess/src/index.ts`). The runner ends a

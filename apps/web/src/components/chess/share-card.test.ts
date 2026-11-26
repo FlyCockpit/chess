@@ -2,8 +2,9 @@ import { createMatch } from "@cockpit-chess/chess";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import { createInstance, type TFunction } from "i18next";
 import { beforeAll, describe, expect, it } from "vitest";
+import { glyphOrigin } from "./board-canvas";
 import { fixtureGame } from "./fixture-game";
-import { BOARD, drawShareCard, glyphOrigin } from "./share-card";
+import { BOARD, drawShareCard } from "./share-card";
 
 let t: TFunction<"chess">;
 beforeAll(async () => {

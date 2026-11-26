@@ -33,6 +33,7 @@ import {
   pointForPosition,
   toolEvaluation,
 } from "./evaluation";
+import { VideoExportDialog } from "./video/video-export-dialog";
 
 /** The second line under a player's name: the model id, only when it says something new. */
 function modelLine(player: { name: string; model: string }) {
@@ -517,6 +518,7 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
           <button type="button" onClick={() => downloadGame(match, "pgn")}>
             {t("replay.pgn")}
           </button>
+          <VideoExportDialog match={match} />
         </div>
         <CopyField value={frame.fen} copyLabel={t("replay.fen")} />
       </aside>

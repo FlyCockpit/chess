@@ -427,5 +427,49 @@
     },
     "autoTitle": "{{white}} vs. {{black}}",
     "catalogStale": "No se pudo actualizar la lista de modelos; los precios son del {{time}}. Se reintenta automáticamente."
+  },
+  "video": {
+    "open": "Exportar video",
+    "title": "Exportar video",
+    "description": "Genera esta partida como MP4 (H.264) en tu navegador, lista para publicar en X.",
+    "probing": "Comprobando que este navegador puede codificar video H.264…",
+    "unsupported": "Este navegador no puede codificar video H.264 en {{size}}, así que no se creó ningún archivo. Prueba el otro formato o usa una versión actual de Chrome, Edge u Opera (escritorio o Android), Safari 17 o posterior (macOS o iOS), o Firefox 130 o posterior en escritorio.",
+    "aspect": "Formato",
+    "aspects": {
+      "square": "Cuadrado 1080×1080",
+      "landscape": "Horizontal 1920×1080"
+    },
+    "pace": "Ritmo",
+    "paceAuto": "Automático",
+    "paceSeconds": "{{seconds}} s/jugada",
+    "toggles": {
+      "evalBar": "Barra de evaluación",
+      "remarks": "Burbujas de chat",
+      "clocks": "Relojes"
+    },
+    "summary": "Duración {{duration}} · {{size}} · MP4 H.264, 30 fps",
+    "tooLong": "Supera el límite de 2:20 de X. Elige Automático o un ritmo más rápido para publicarlo en X.",
+    "start": "Exportar MP4",
+    "retry": "Reintentar",
+    "failed": "No se pudo codificar el video. Reinténtalo o elige otro formato.",
+    "progress": "Progreso de la exportación de video",
+    "encoding": "Codificando… {{percent}}%",
+    "cancel": "Cancelar",
+    "done": "Se guardó {{file}} ({{size}} MB).",
+    "downloadAgain": "Descargar de nuevo",
+    "versus": "vs.",
+    "outcome": {
+      "whiteWins": "Ganan las blancas",
+      "blackWins": "Ganan las negras",
+      "draw": "Tablas",
+      "unfinished": "Sin resultado"
+    },
+    "banner": {
+      "checkmate": "Jaque mate: {{result}}",
+      "forfeit": "Derrota por incumplimiento de {{side}}: {{result}}",
+      "resigned": "Abandono de {{side}}: {{result}}",
+      "other": "{{reason}}: {{result}}",
+      "illegalMoves": "{{reason}}: {{moves}}"
+    }
   }
 }

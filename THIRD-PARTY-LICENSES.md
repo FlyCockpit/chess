@@ -4,7 +4,7 @@ This project bundles or depends on third-party components whose licenses
 require attribution or carry obligations worth knowing about. Everything else
 in the dependency tree is used unmodified under permissive licenses (MIT,
 Apache-2.0, ISC, BSD, 0BSD, BlueOak-1.0.0, Unlicense, CC0-1.0, CC-BY-4.0,
-Python-2.0, MIT-0) or file-level weak copyleft (MPL-2.0: `lightningcss`; EPL-2.0: `elkjs`, via Prisma). Full license texts ship inside
+Python-2.0, MIT-0) or file-level weak copyleft (MPL-2.0: `lightningcss`, `mediabunny`; EPL-2.0: `elkjs`, via Prisma). Full license texts ship inside
 each package in `node_modules/`.
 
 ## Roboto (webfont) — SIL Open Font License 1.1
@@ -26,6 +26,24 @@ the font files may not be sold on their own, and this notice must accompany
 redistributions of the font. Keep this file (or an equivalent notice) if you
 ship the bundled font; it does not apply if you swap Roboto for another font
 during rebranding.
+
+## Mediabunny — Mozilla Public License 2.0
+
+The web app's MP4 export (`apps/web/src/components/chess/video/`) muxes H.264
+video with [`mediabunny`](https://www.npmjs.com/package/mediabunny)
+(exact version pinned in `apps/web/package.json`). It is loaded only inside the
+export's Web Worker, on the first export, and ships in the client build as its
+own JavaScript chunk.
+
+> Mediabunny, by Vanilagy (https://github.com/Vanilagy/mediabunny), is licensed
+> under the Mozilla Public License, Version 2.0; the full text ships with the
+> package at `node_modules/mediabunny/LICENSE` and at https://mozilla.org/MPL/2.0/.
+
+MPL-2.0 is file-level copyleft: this project uses the files unmodified, and
+their Source Code Form is available from the npm package and from
+https://github.com/Vanilagy/mediabunny. If you modify Mediabunny's own files,
+those modified files must stay under MPL-2.0 and their source must be offered
+to recipients of the built app. It places no obligation on the rest of the app.
 
 ## web-tree-sitter and tree-sitter-bash — MIT
 

@@ -37,7 +37,13 @@
       ]
     },
     "apps/web": {
-      "entry": ["src/routes/**/*.tsx!"],
+      "entry": [
+        "src/routes/**/*.tsx!",
+        // Browser page of the MP4 integration test, built by scripts/video-export-integration.ts.
+        "scripts/video-export-harness/main.ts"
+      ],
+      // Host tool the MP4 integration test (scripts/video-export-integration.ts) checks files with.
+      "ignoreBinaries": ["ffprobe"],
       "ignoreDependencies": [
         // Imported only via PostCSS/Tailwind CSS pipeline, not statically.
         "tailwindcss",

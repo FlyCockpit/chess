@@ -427,5 +427,49 @@
     },
     "autoTitle": "{{white}} vs {{black}}",
     "catalogStale": "The model list could not be refreshed; prices are from {{time}}. Retrying automatically."
+  },
+  "video": {
+    "open": "Export video",
+    "title": "Export video",
+    "description": "Render this match as an MP4 (H.264) in your browser, ready to post on X.",
+    "probing": "Checking that this browser can encode H.264 video…",
+    "unsupported": "This browser cannot encode H.264 video at {{size}}, so no file was made. Try the other shape, or use a current Chrome, Edge or Opera (desktop or Android), Safari 17 or later (macOS or iOS), or Firefox 130 or later on desktop.",
+    "aspect": "Shape",
+    "aspects": {
+      "square": "Square 1080×1080",
+      "landscape": "Landscape 1920×1080"
+    },
+    "pace": "Pace",
+    "paceAuto": "Auto",
+    "paceSeconds": "{{seconds}} s/move",
+    "toggles": {
+      "evalBar": "Evaluation bar",
+      "remarks": "Chat bubbles",
+      "clocks": "Clocks"
+    },
+    "summary": "Length {{duration}} · {{size}} · H.264 MP4, 30 fps",
+    "tooLong": "Longer than X's 2:20 limit. Choose Auto or a faster pace to post it on X.",
+    "start": "Export MP4",
+    "retry": "Try again",
+    "failed": "The video could not be encoded. Try again, or choose another shape.",
+    "progress": "Video export progress",
+    "encoding": "Encoding… {{percent}}%",
+    "cancel": "Cancel",
+    "done": "Saved {{file}} ({{size}} MB).",
+    "downloadAgain": "Download again",
+    "versus": "vs",
+    "outcome": {
+      "whiteWins": "White wins",
+      "blackWins": "Black wins",
+      "draw": "Draw",
+      "unfinished": "No result"
+    },
+    "banner": {
+      "checkmate": "Checkmate: {{result}}",
+      "forfeit": "{{side}} forfeited: {{result}}",
+      "resigned": "{{side}} resigned: {{result}}",
+      "other": "{{reason}}: {{result}}",
+      "illegalMoves": "{{reason}}: {{moves}}"
+    }
   }
 }

@@ -11,6 +11,7 @@ import react from "@vitejs/plugin-react";
 import { loadEnv, type Plugin } from "vite";
 import { type VitePluginPWAAPI, VitePWA } from "vite-plugin-pwa";
 import { defineConfig } from "vitest/config";
+import { videoWorkerOptions } from "./vite.video-worker";
 
 // Hydrate the repo-root `.env` into process.env for TanStack Start server
 // functions during `vite dev` — they run in THIS Vite process, not in
@@ -207,6 +208,9 @@ export default defineConfig(({ mode }) => {
     devOptions: { enabled: true, type: "module" },
     injectManifest: {
       globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
+      // The MP4 export's worker and its Mediabunny chunk load only when someone
+      // exports a video; precaching them would download them on every install.
+      globIgnores: ["**/video-worker-*.js", "**/mediabunny-*.js"],
       maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
     },
   });
@@ -250,6 +254,7 @@ export default defineConfig(({ mode }) => {
     test: {
       setupFiles: [path.resolve(__dirname, "../../scripts/test-io-guard.ts")],
     },
+    worker: videoWorkerOptions,
     build: {
       // Client Vite manifest (dist/client/.vite/manifest.json) maps source paths
       // to content-hashed assets. The API server reads it at startup to emit an
