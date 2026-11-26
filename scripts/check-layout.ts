@@ -55,6 +55,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { signInStep } from "./browser-checks.config.ts";
 
 // One session per run: two checks running at once (two checkouts, two agents) must not share a browser.
 const SESSION = `check-layout-${process.pid}`;
@@ -527,16 +528,6 @@ function fillScript(selector: string, value: string): string {
   return `(() => { const el = document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, ${JSON.stringify(value)}); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`;
 }
 
-/** After the sign-in submit: "app" once the app opens, "code" at the second-factor step. */
-const SIGN_IN_STEP = `(async () => {
-  // 20s: under agent-browser's own 25s limit for one evaluation.
-  for (let i = 0; i < 40; i++) {
-    if (location.pathname.endsWith("/settings")) return "app";
-    if (document.getElementById("totp-code")) return "code";
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return "still on " + location.pathname + " after 20s";
-})()`;
 /** Clicks Verify once React has enabled it for the typed code (the button after the code field). */
 const VERIFY_CODE = `(async () => {
   const button = document.getElementById("totp-code").closest("div").nextElementSibling;
@@ -579,7 +570,7 @@ async function signIn(base: string, email: string, password: string): Promise<vo
   // banner on a short viewport).
   await browser(["eval", 'document.querySelector("form").requestSubmit(); true']);
   // Either the app opens, or an account with a second factor gets the code step.
-  const step: unknown = JSON.parse(await browser(["eval", "--stdin"], SIGN_IN_STEP));
+  const step = await signInStep((commandArgs) => browser(commandArgs));
   if (step === "code") {
     const code = process.env.CHECK_LAYOUT_TOTP;
     if (!code)

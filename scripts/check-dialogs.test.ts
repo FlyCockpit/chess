@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { DIALOGS, SHELL_PAGES } from "./browser-checks.config.ts";
+import { DIALOGS, SHELL_PAGES, signInStep } from "./browser-checks.config.ts";
 import { type DialogProbe, judgeDialog, stepScript } from "./check-dialogs.ts";
 
 const fits: DialogProbe = {
@@ -71,5 +71,74 @@ describe("browser-checks.config", () => {
     assert.match(stepScript({ click: "#a" }), /querySelector\("#a"\)/);
     assert.match(stepScript({ clickText: "New project" }), /"New project"/);
     assert.match(stepScript({ clickText: "x" }), /throw new Error/);
+  });
+});
+
+describe("signInStep", () => {
+  const noPause = async () => {};
+  /** A fake agent-browser: each eval answers with the next scripted reply (an Error is thrown). */
+  const scripted = (replies: (string | Error)[]) => {
+    const calls: string[][] = [];
+    const run = async (args: string[]) => {
+      calls.push(args);
+      const reply = replies.shift();
+      if (reply instanceof Error) throw reply;
+      return reply ?? "null";
+    };
+    return { run, calls };
+  };
+
+  it("keeps polling across the full page load a redirectTo sign-in ends in", async () => {
+    const navigated = new Error(
+      "agent-browser eval exited 1: ✗ CDP error (Runtime.evaluate): Inspected target navigated or closed",
+    );
+    const { run } = scripted(["null", '"/en-US/login"', navigated, '"app"']);
+    assert.equal(await signInStep(run, noPause), "app");
+  });
+
+  it("reports the second-factor step", async () => {
+    const { run } = scripted(['"code"']);
+    assert.equal(await signInStep(run, noPause), "code");
+  });
+
+  it("gives up after 20s with the page it is stuck on", async () => {
+    const replies: string[] = [];
+    for (let i = 0; i < 40; i++) replies.push("null", '"/en-US/login"');
+    const { run } = scripted(replies);
+    assert.equal(await signInStep(run, noPause), "still on /en-US/login after 20s");
+  });
+
+  it("also looks again after a destroyed execution context", async () => {
+    const destroyed = new Error(
+      "agent-browser eval exited 1: ✗ CDP error (Runtime.evaluate): Execution context was destroyed.",
+    );
+    const { run } = scripted([destroyed, '"code"']);
+    assert.equal(await signInStep(run, noPause), "code");
+  });
+
+  it("passes a closed browser or any other failure on at once", async () => {
+    const closed = new Error(
+      "agent-browser eval exited 1: Target page, context or browser has been closed",
+    );
+    const first = scripted([closed, '"app"']);
+    await assert.rejects(signInStep(first.run, noPause), /has been closed/);
+    assert.equal(first.calls.length, 1);
+    const { run } = scripted([new Error("agent-browser eval exited 1: daemon not running")]);
+    await assert.rejects(signInStep(run, noPause), /daemon not running/);
+  });
+
+  it("reports the navigation error, not a page, when every attempt was cut off", async () => {
+    const navigated = new Error(
+      "CDP error (Runtime.evaluate): Inspected target navigated or closed",
+    );
+    const { run } = scripted(Array.from({ length: 40 }, () => navigated));
+    await assert.rejects(signInStep(run, noPause), /Inspected target navigated/);
+  });
+
+  it("never sends the probe over stdin or with a page script that outlives a navigation", async () => {
+    const { run, calls } = scripted(['"app"']);
+    await signInStep(run, noPause);
+    assert.equal(calls[0]?.[0], "eval");
+    assert.doesNotMatch(calls[0]?.[1] ?? "", /await|setTimeout/);
   });
 });

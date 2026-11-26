@@ -51,15 +51,40 @@ const FORM_HYDRATED = `(async () => {
   return false;
 })()`;
 
-/** After the sign-in submit: "app" once the app opens, "code" at the second-factor step. */
-const SIGN_IN_STEP = `(async () => {
+/** After the sign-in submit: "app" once the app opens, "code" at the second-factor step, else null. */
+const SIGN_IN_STEP = `location.pathname.endsWith("/settings") ? "app" : document.getElementById("totp-code") ? "code" : null`;
+
+/** CDP's errors for an evaluation cut off by a page load (not a closed browser or session). */
+const PAGE_NAVIGATED =
+  /Inspected target navigated|Execution context was destroyed|Cannot find context with specified id/;
+
+/**
+ * Where the sign-in went (20s at most), polled with one short evaluation at a time: a sign-in with
+ * `redirectTo` ends in a full page load (login.tsx), which aborts any evaluation still running in
+ * the old page ("Inspected target navigated or closed"), so a navigation means "look again".
+ */
+export async function signInStep(
+  run: (args: string[]) => Promise<string>,
+  pause = (ms: number) => new Promise((done) => setTimeout(done, ms)),
+): Promise<string> {
+  let last = "an unknown page";
+  let navigating: unknown;
   for (let i = 0; i < 40; i++) {
-    if (location.pathname.endsWith("/settings")) return "app";
-    if (document.getElementById("totp-code")) return "code";
-    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const step: unknown = JSON.parse(await run(["eval", SIGN_IN_STEP]));
+      if (step === "app" || step === "code") return step;
+      last = JSON.parse(await run(["eval", "location.pathname"])) as string;
+      navigating = undefined;
+    } catch (error) {
+      if (!PAGE_NAVIGATED.test(String(error))) throw error;
+      navigating = error;
+    }
+    await pause(500);
   }
-  return "still on " + location.pathname + " after 20s";
-})()`;
+  // Still mid-navigation after 20s: that error says more than the last page seen.
+  if (navigating) throw navigating;
+  return `still on ${last} after 20s`;
+}
 
 /** Clicks Verify once React has enabled it for the typed code (the button after the code field). */
 const VERIFY_CODE = `(async () => {
@@ -118,7 +143,7 @@ export async function signIn(
   }
   // Submitted in the page, not clicked: a click lands on whatever covers the button.
   await browser.run(["eval", 'document.querySelector("form").requestSubmit(); true']);
-  const step: unknown = JSON.parse(await browser.run(["eval", "--stdin"], SIGN_IN_STEP));
+  const step = await signInStep((commandArgs) => browser.run(commandArgs));
   if (step === "code") {
     const code = process.env.CHECK_LAYOUT_TOTP;
     if (!code)
@@ -129,7 +154,7 @@ export async function signIn(
       throw new Error("could not submit the verification code");
     }
   } else if (step !== "app") {
-    throw new Error(`sign-in did not open the app (${String(step)})`);
+    throw new Error(`sign-in did not open the app (${step})`);
   }
   await browser.run(["wait", "--url", "**/settings"]);
   await browser.run([
