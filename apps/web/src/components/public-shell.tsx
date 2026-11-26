@@ -21,7 +21,8 @@ export function PublicShell({ children }: { children: ReactNode }) {
   const { t } = useTranslation("nav");
   return (
     // `.cc-public-shell` (index.css) is the frame: pinned to the viewport, the
-    // header row over <main>, the bottom padded by the cookie banner's clearance.
+    // header row over <main>, the bottom padded by the home-indicator inset
+    // only. A cookie banner's reserve is <main>'s (`#main-content`, index.css).
     <div className="cc-public-shell">
       <a
         href="#main-content"

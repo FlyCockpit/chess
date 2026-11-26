@@ -5,13 +5,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * While the cookie banner shows, both shells end `<main>` where the banner
- * starts: their frame pads its bottom by `--consent-clearance` (index.css,
- * from the `--consent-inset` the banner publishes). The app shell is rendered,
- * so a comment or a stray string cannot stand in for the real class; the
- * arena's frame is plain CSS (`.cc-public-shell`), so its rule is read from
- * index.css and the rendered frame must carry that class. The geometry itself
- * is checked in a browser.
+ * While a cookie banner shows (only in an app with analytics), both shells
+ * keep it off the page through `#main-content`, their scroller: its bottom
+ * padding (index.css) adds `--consent-clearance` (from the `--consent-inset`
+ * the banner publishes) minus `--frame-reserve`, what the frame already
+ * reserves. The frames are never padded for the banner, so the shell chrome
+ * (header, BottomNav) always spans the full viewport height. The app shell is
+ * rendered, so a comment or a stray string cannot stand in for the real class;
+ * the arena's frame and `#main-content` are plain CSS, read from index.css.
+ * The geometry itself is checked in a browser (`pnpm check:layout`).
  */
 const keyboard = vi.hoisted(() => ({ open: false }));
 
@@ -67,31 +69,43 @@ beforeEach(() => {
   keyboard.open = false;
 });
 
-describe("the shells reserve the cookie banner's height", () => {
-  it("arena shell: the larger of the home-indicator inset and the banner's clearance", () => {
-    expect(frameClasses(PublicShell)).toEqual(["cc-public-shell"]);
-    const css = readFileSync(resolve(import.meta.dirname, "../../index.css"), "utf8");
-    const start = css.indexOf("\n.cc-public-shell {");
-    const rule = css.slice(start, css.indexOf("\n}", start)).replace(/\s+/g, " ");
-    expect(rule).toContain(
-      "padding: var(--safe-area-top) var(--safe-area-right) max(var(--safe-area-bottom), var(--consent-clearance)) var(--safe-area-left);",
+const css = readFileSync(resolve(import.meta.dirname, "../../index.css"), "utf8");
+function cssRule(selector: string): string {
+  const start = css.indexOf(`\n${selector} {`);
+  expect(start, selector).toBeGreaterThanOrEqual(0);
+  return css.slice(start, css.indexOf("\n}", start)).replace(/\s+/g, " ");
+}
+
+describe("the shell frames span the viewport; only <main> reserves the banner", () => {
+  it("#main-content pads the banner's clearance beyond what its frame reserves, plus the keyboard", () => {
+    expect(cssRule("#main-content")).toContain(
+      "padding-bottom: calc( var(--keyboard-inset, 0px) + max(0px, var(--consent-clearance) - var(--frame-reserve, 0px)) );",
     );
   });
 
-  it("app shell, no keyboard: the larger of the BottomNav's and the banner's; from md: the banner's", () => {
+  it("arena shell: the frame reserves the home-indicator inset only", () => {
+    expect(frameClasses(PublicShell)).toEqual(["cc-public-shell"]);
+    const rule = cssRule(".cc-public-shell");
+    expect(rule).toContain(
+      "padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);",
+    );
+    expect(rule).toContain("--frame-reserve: var(--safe-area-bottom);");
+    expect(rule).not.toContain("consent");
+  });
+
+  it("app shell, no keyboard: the frame reserves the BottomNav only, and tells <main> so", () => {
     const classes = frameClasses(AppShell);
     expect(classes).toContain("grid");
-    expect(classes).toContain(
-      "pb-[max(calc(3.5rem_+_var(--safe-area-bottom)),var(--consent-clearance))]",
-    );
-    expect(classes).toContain("md:pb-(--consent-clearance)");
-    expect(classes).not.toContain("md:pb-0");
+    expect(classes).toContain("pb-[calc(3.5rem_+_var(--safe-area-bottom))]");
+    expect(classes).toContain("[--frame-reserve:calc(3.5rem_+_var(--safe-area-bottom))]");
+    expect(classes).toContain("md:pb-0");
+    expect(classes).toContain("md:[--frame-reserve:0px]");
+    expect(classes.filter((c) => c.includes("consent"))).toEqual([]);
   });
 
-  it("app shell, software keyboard up: the banner's part the keyboard does not cover", () => {
+  it("app shell, software keyboard up: no frame padding, so <main> pads the whole clearance", () => {
     keyboard.open = true;
     const classes = frameClasses(AppShell);
-    expect(classes).toContain("pb-(--consent-clearance)");
-    expect(classes.filter((c) => c.includes("3.5rem"))).toEqual([]);
+    expect(classes.filter((c) => /pb-|frame-reserve|consent/.test(c))).toEqual([]);
   });
 });

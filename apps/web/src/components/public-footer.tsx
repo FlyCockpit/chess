@@ -9,8 +9,10 @@ import { ConsentPreferencesButton } from "@/components/consent/consent-preferenc
  * Its rule is full-bleed (`.cc-footer`); its text keeps the arena's content
  * line (`.cc-footer-row`, the `.cc-app` column).
  *
- * Anonymous visitors must be able to withdraw consent as easily as they gave
- * it, and every public page, the 404 included, renders this footer.
+ * In an app with analytics it also carries Cookie preferences: anonymous
+ * visitors must be able to withdraw consent as easily as they gave it, and
+ * every public page, the 404 included, renders this footer. Without analytics
+ * (the default, lib/analytics.ts) that button renders nothing.
  */
 export function PublicFooter() {
   const { t } = useTranslation("chess");

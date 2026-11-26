@@ -49,7 +49,7 @@ audience (`public`, `authenticated`, `admin`) plus placement (`desktop`, `mobile
 - **Desktop**: Header main nav shows Home to everyone. Signed-in users also see Dashboard and Settings. Admins also see Admin.
 - **Mobile**: Bottom tab bar stays compact and task-focused, and renders the same set as desktop — Home for everyone, plus Dashboard and Settings when signed in, plus Admin for admins.
 - **User menu**: Signed-out visitors get Sign In / Sign Up actions. Signed-in users get Settings; Admin appears only for admins.
-- **Cookie banner**: global UI, not a page. Mounted once in `__root.tsx`, so it appears on every route (public and authenticated) until the visitor allows or rejects analytics. It never covers the page: the shells reserve its height at the bottom. "Cookie preferences" brings it back — from the landing-page footer for anonymous visitors and from `/{lang}/settings` for signed-in users. See [apps/web/src/lib/analytics.ts](./apps/web/src/lib/analytics.ts).
+- **Cookie banner**: global UI, not a page, and off: it appears only when analytics is configured (`ANALYTICS_PROVIDER`), and the app ships none; strictly necessary cookies need no consent. When on, it is mounted once in `__root.tsx`, so it appears on every route (public and authenticated) until the visitor allows or rejects analytics. It never covers the page: `#main-content` reserves its height at the bottom. "Cookie preferences" brings it back — from the public footer for anonymous visitors and from `/{lang}/settings` for signed-in users. See [apps/web/src/lib/analytics.ts](./apps/web/src/lib/analytics.ts).
 
 ## Notes
 

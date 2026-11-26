@@ -5,12 +5,12 @@
  * The banner is fixed to the bottom of the viewport, so without this it would
  * lie over the page: on a phone it covered the login page's "Sign Up" link.
  * `index.css` turns it into `--consent-clearance` (what the banner covers that
- * the software keyboard does not), and both shells pad their bottom by that
- * (the app shell's frame, and `.cc-public-shell` for the arena), so `<main>`
- * ends where the banner starts and every link can be scrolled into view above
- * it. Each shell takes the larger of that and what it already reserves: the
- * BottomNav's clearance (app shell) or the home-indicator inset (arena). On a
- * phone the banner already covers both: it reaches down over the BottomNav.
+ * the software keyboard does not), and `#main-content` (both shells'
+ * scroller) pads its bottom by the part of that its frame does not already
+ * reserve (`--frame-reserve`: the BottomNav on phones in the app shell, the
+ * home-indicator inset in the arena), so every link can be scrolled into view
+ * above it. The shell frames are never padded for the banner, so their chrome
+ * (header, BottomNav) keeps the full viewport height.
  */
 export const CONSENT_INSET_VAR = "--consent-inset";
 

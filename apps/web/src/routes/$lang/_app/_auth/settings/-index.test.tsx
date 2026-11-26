@@ -38,8 +38,8 @@ vi.mock("@/utils/orpc", () => ({
     },
   },
 }));
-vi.mock("@/components/consent/consent-preferences-button", () => ({
-  ConsentPreferencesButton: () => null,
+vi.mock("@/components/consent/consent-preferences-section", () => ({
+  ConsentPreferencesSection: () => null,
 }));
 
 import { Route } from "./index";

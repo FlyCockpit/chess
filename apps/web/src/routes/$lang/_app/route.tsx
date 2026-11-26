@@ -47,14 +47,14 @@ function AppShellLayout() {
       </a>
       <div
         className={cn(
-          "grid h-svh min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] md:grid-rows-[auto_1fr] md:pb-(--consent-clearance)",
-          // The bottom reserve: the cookie banner's clearance (index.css; 0
-          // without a banner) and, on phones with no keyboard up, at least the
-          // BottomNav's. The banner reaches down over the BottomNav, so it is
-          // the larger while it shows.
-          mobileKeyboardOpen
-            ? "pb-(--consent-clearance)"
-            : "pb-[max(calc(3.5rem_+_var(--safe-area-bottom)),var(--consent-clearance))]",
+          "grid h-svh min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] md:grid-rows-[auto_1fr]",
+          // The frame reserves the BottomNav (phones, no keyboard up) and
+          // nothing else: the shell chrome always reaches the bottom of the
+          // viewport. `--frame-reserve` tells #main-content (index.css) how
+          // much of a cookie banner's clearance that already covers; <main>
+          // pads the rest.
+          !mobileKeyboardOpen &&
+            "pb-[calc(3.5rem_+_var(--safe-area-bottom))] [--frame-reserve:calc(3.5rem_+_var(--safe-area-bottom))] md:pb-0 md:[--frame-reserve:0px]",
         )}
         style={{
           paddingTop: "var(--safe-area-top)",
@@ -69,7 +69,7 @@ function AppShellLayout() {
         </div>
         {/* No `scrollbar-gutter: stable`: the banners and sticky sub-navs
             inside the scroller are full-bleed. This shell has no footer:
-            phones get the BottomNav, and Cookie preferences sits in Settings.
+            phones get the BottomNav, and Cookie preferences (with analytics) sits in Settings.
             See docs/design-system.md § Shell rules */}
         <main
           id="main-content"

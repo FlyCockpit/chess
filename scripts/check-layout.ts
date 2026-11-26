@@ -32,6 +32,11 @@
  *   `border-t`, the admin sub-nav's and the setup banners' `border-b`) reaches
  *   from 0 to the viewport's right edge (inside a scrolling `<main>`, its
  *   visible scrollbar);
+ * - with a cookie banner's reserve applied (`--consent-inset` set as the
+ *   banner sets it; the banner itself shows only in an app with analytics),
+ *   the shell frame, `<main>`'s box and anything beside it keep their full
+ *   height to the bottom of the viewport, and the page's content, scrolled to
+ *   its end, ends above where the banner starts;
  * - a toast (the file-drop notice), stored theme light then dark with the OS
  *   set to the other one, renders in the stored theme and is filled with its
  *   popover colour (not inverted) and its title and badge reach 4.5:1 on it.
@@ -134,6 +139,100 @@ export function judgeLayout(page: string, probe: Probe, expect: Expect): string[
   }
   return bad;
 }
+
+/** The banner-reserve probe: the same boxes measured without and with the reserve. */
+export interface ReserveProbe {
+  vh: number;
+  inset: number;
+  /** `<main>` and its ancestors (the outermost is the frame), each followed by what sits beside it. */
+  before: { name: string; bottom: number }[];
+  after: { name: string; bottom: number }[];
+  /** With the reserve, scrolled to the end: the bottom of `<main>`'s rendered content. */
+  contentEnd: number;
+  /** The public footer's bottom at that point, or null (the app shell has none). */
+  footer: number | null;
+}
+
+/** One message per broken reserve rule (docs/design-system.md § Shell rules). */
+export function judgeReserve(page: string, probe: ReserveProbe | null): string[] {
+  if (!probe) return [`${page}: no <main id="main-content"> scroller`];
+  const bad: string[] = [];
+  const frame = probe.before.filter((box) => !box.name.startsWith("beside ")).at(-1);
+  if (frame && Math.abs(frame.bottom - probe.vh) > 1)
+    bad.push(
+      `${page}: the shell frame ends at ${frame.bottom}px, not the viewport bottom (${probe.vh}px)`,
+    );
+  probe.before.forEach((box, i) => {
+    const moved = probe.after[i];
+    if (!moved || moved.name !== box.name || Math.abs(moved.bottom - box.bottom) > 1)
+      bad.push(
+        `${page}: with a cookie banner's reserve, ${box.name} ends at ${moved?.bottom ?? "?"}px instead of ${box.bottom}px; the shell chrome keeps the full height, only <main>'s padding makes room`,
+      );
+  });
+  const bannerTop = probe.vh - probe.inset;
+  if (probe.contentEnd > bannerTop + 1)
+    bad.push(
+      `${page}: scrolled to the end, the page ends at ${probe.contentEnd}px, under a banner starting at ${bannerTop}px`,
+    );
+  // A short public page's footer sits right on top of the banner, as it sits on the viewport bottom without one.
+  if (probe.footer !== null && Math.abs(probe.footer - bannerTop) > 1)
+    bad.push(
+      `${page}: scrolled to the end, the footer ends at ${probe.footer}px, not where the banner starts (${bannerTop}px)`,
+    );
+  return bad;
+}
+
+/** The height the reserve probe pretends a banner covers. Taller than the BottomNav. */
+const RESERVE_INSET = 200;
+
+// Runs in the page (agent-browser eval). Self-contained: no closures.
+const RESERVE_PROBE = `(async () => {
+  const html = document.documentElement;
+  const main = document.getElementById("main-content");
+  if (!main) return JSON.stringify(null);
+  const settle = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const label = (el) => el === main ? "<main>" : el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (el.dataset.slot ? "[data-slot=" + el.dataset.slot + "]" : "");
+  const boxes = () => {
+    const out = [];
+    for (let el = main; el && el !== document.body; el = el.parentElement) {
+      const r = el.getBoundingClientRect();
+      out.push({ name: label(el), bottom: Math.round(r.bottom) });
+      for (const sib of el.parentElement ? el.parentElement.children : []) {
+        if (sib === el || ["absolute", "fixed"].includes(getComputedStyle(sib).position)) continue;
+        const s = sib.getBoundingClientRect();
+        // Beside, not above: a sidebar starts no lower than this box and sits left or right of it.
+        if (s.width && s.height && s.top <= r.top + 1 && (s.right <= r.left + 1 || s.left >= r.right - 1))
+          out.push({ name: "beside " + label(el) + ": " + label(sib), bottom: Math.round(s.bottom) });
+      }
+    }
+    return out;
+  };
+  const before = boxes();
+  // A real banner's reservation (an app with analytics) is put back afterwards.
+  const previous = html.style.getPropertyValue("--consent-inset");
+  html.style.setProperty("--consent-inset", "${RESERVE_INSET}px");
+  await settle();
+  const after = boxes();
+  // Where the content would be scrolled to the end, computed rather than
+  // scrolled: a late scroll reset (hydration, restoration) cannot skew it.
+  const toEnd = main.scrollHeight - main.clientHeight - main.scrollTop;
+  // Through \`display: contents\` wrappers (pull-to-refresh), which have no box of their own.
+  const end = (el) => {
+    let bottom = 0;
+    for (const child of el.children) {
+      const style = getComputedStyle(child);
+      if (["absolute", "fixed"].includes(style.position) || style.display === "none") continue;
+      bottom = Math.max(bottom, style.display === "contents" ? end(child) : Math.round(child.getBoundingClientRect().bottom));
+    }
+    return bottom;
+  };
+  const contentEnd = end(main) - toEnd;
+  const footer = main.querySelector("footer[data-public-footer]");
+  const footerEnd = footer ? Math.round(footer.getBoundingClientRect().bottom) - toEnd : null;
+  if (previous) html.style.setProperty("--consent-inset", previous);
+  else html.style.removeProperty("--consent-inset");
+  return JSON.stringify({ vh: window.innerHeight, inset: ${RESERVE_INSET}, before, after, contentEnd, footer: footerEnd });
+})()`;
 
 // Runs in the page (agent-browser eval). Self-contained: no closures.
 const PROBE = `(async () => {
@@ -412,6 +511,13 @@ async function main(): Promise<number> {
       ...(args.includes("--no-sandbox") ? ["--args", "--no-sandbox"] : []),
     ]);
     await browser(["cookies", "clear"]);
+    // A decided consent, so an app with analytics shows no banner while the
+    // shell is measured; the banner's reserve is probed on its own (judgeReserve).
+    await browser(["open", `${base}/en-US/login`]);
+    await browser([
+      "eval",
+      "localStorage.setItem('cockpit-chess.consent.v1', JSON.stringify({ v: 1, analytics: false, decidedAt: Date.now() })); true",
+    ]);
     const pages = PAGES.filter((page) => !page.signedIn || email);
     if (pages.length < PAGES.length)
       console.log("check:layout: no --login, so the signed-in pages are skipped");
@@ -426,6 +532,7 @@ async function main(): Promise<number> {
           const label = `${page.name} ${w}×${h}`;
           const probe = await evalJson<Probe>(PROBE);
           failures.push(...judgeLayout(label, probe, page.expect));
+          failures.push(...judgeReserve(label, await evalJson<ReserveProbe | null>(RESERVE_PROBE)));
           console.log(
             `check:layout: ${label} measured (${probe.main?.scrollable ? "long" : "short"} page)`,
           );

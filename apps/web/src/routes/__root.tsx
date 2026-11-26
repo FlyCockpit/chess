@@ -178,9 +178,10 @@ function RootComponent() {
   // registration there it would neither precache nor ever pick up new builds.
   // Effect-only — it never runs during SSR.
   useAppUpdate();
-  // The analytics gate. Renders nothing; loads the (currently empty) analytics
-  // seam once, and only once the visitor has allowed it. Root-level so public
-  // pages are gated too. See apps/web/src/lib/analytics.ts.
+  // The analytics gate. Renders nothing; loads the analytics provider once,
+  // and only once the visitor has allowed it. With no provider configured
+  // (the default) it loads nothing and the banner below renders nothing.
+  // Root-level so public pages are gated too. See apps/web/src/lib/analytics.ts.
   useAnalyticsConsent();
   return (
     <I18nextProvider i18n={i18nInstance}>
@@ -219,7 +220,8 @@ function RootComponent() {
               {/* ClientOnly for the same reason: the decision lives in the
                 visitor's localStorage, so server-rendering the banner would
                 either leak a wrong first frame or mismatch on hydration. It
-                renders nothing once a choice exists. */}
+                renders nothing once a choice exists, and always without
+                analytics (`analyticsConfigured`). */}
               <ConsentBanner />
             </ClientOnly>
           </ThemeProvider>

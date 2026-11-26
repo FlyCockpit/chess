@@ -1,9 +1,11 @@
 @import "@cockpit-chess/ui/globals.css";
 
 /* What the first-visit cookie banner covers that the software keyboard does
-   not (the keyboard's part already pads #main-content below). Both shells pad
-   their bottom by it, so the banner never lies over the page. The banner
-   publishes --consent-inset on <html> (components/consent/consent-inset.ts). */
+   not (the keyboard's part already pads #main-content below). The banner
+   publishes --consent-inset on <html> (components/consent/consent-inset.ts);
+   it shows only in an app with analytics (lib/analytics.ts), so this is 0
+   otherwise. #main-content pads its bottom by it, never the shell frames, so
+   the banner never lies over the page while the chrome spans the viewport. */
 :root {
   --consent-clearance: max(0px, calc(var(--consent-inset, 0px) - var(--keyboard-inset, 0px)));
 }
@@ -30,15 +32,22 @@
   grid-template-rows: auto minmax(0, 1fr);
   /* viewport-fit=cover (__root.tsx): keep content out of the notch and home
    * indicator, using the same globals.css vars as the _app shell. */
-  /* The bottom reserve: the home-indicator inset, or while the cookie banner
-   * shows, its clearance (the banner covers the inset too), so <main> ends
-   * where the banner starts. */
-  padding: var(--safe-area-top) var(--safe-area-right)
-    max(var(--safe-area-bottom), var(--consent-clearance)) var(--safe-area-left);
+  /* The bottom reserve: the home-indicator inset, never the cookie banner's
+   * (the frame keeps the full viewport height). <main> pads the part of the
+   * banner's clearance beyond this inset (--frame-reserve, below). */
+  padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);
+  --frame-reserve: var(--safe-area-bottom);
 }
-/* All page scrollers leave room to reveal the last field above an overlay keyboard. */
+/* All page scrollers leave room to reveal the last field above an overlay
+   keyboard, and, while a cookie banner shows, the part of its clearance the
+   frame does not already reserve (--frame-reserve: the arena's home-indicator
+   inset; the app shell's BottomNav on phones), so every line scrolls into view
+   above the banner. */
 #main-content {
-  padding-bottom: var(--keyboard-inset, 0px);
+  padding-bottom: calc(
+    var(--keyboard-inset, 0px) +
+    max(0px, var(--consent-clearance) - var(--frame-reserve, 0px))
+  );
   scroll-padding-bottom: var(--keyboard-inset, 0px);
 }
 /* The header's rule is full-bleed: the border sits on the full-width header,

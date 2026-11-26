@@ -26,7 +26,9 @@ it("mounts keyboard tracking and shares inset spacing with the hosted main scrol
   expect(html).toContain("overflow-y-auto overflow-x-clip");
   // CSS is the shared shell contract; server rendering does not compute layout.
   const css = readFileSync(new URL("../../index.css", import.meta.url), "utf8");
-  const mainRule = css.match(/#main-content\s*\{([^}]+)\}/)?.[1];
-  expect(mainRule).toContain("padding-bottom: var(--keyboard-inset, 0px)");
+  const mainRule = css.match(/#main-content\s*\{([^}]+)\}/)?.[1]?.replace(/\s+/g, " ");
+  // The keyboard inset, plus a cookie banner's clearance beyond --frame-reserve
+  // (0 here: the lab's frame reserves nothing, and it mounts no banner).
+  expect(mainRule).toContain("padding-bottom: calc( var(--keyboard-inset, 0px) +");
   expect(mainRule).toContain("scroll-padding-bottom: var(--keyboard-inset, 0px)");
 });
