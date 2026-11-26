@@ -89,6 +89,56 @@ describe("theme contrast (WCAG AA)", () => {
     }
   });
 
+  it.each(scopes)("%s the brand accent is one green, readable as a fill and as ink", (scope) => {
+    // The signed-in shell and the arena share one accent: the arena's --cc-accent*
+    // alias the shadcn tokens instead of carrying their own values.
+    const declared = (name: string) =>
+      postcss
+        .parse(css)
+        .nodes.filter((node) => node.type === "rule" && node.selector === scope)
+        .flatMap((block) => (block.type === "rule" ? block.nodes : []))
+        .findLast((node) => node.type === "decl" && node.prop === `--${name}`);
+    const value = (name: string) => {
+      const decl = declared(name);
+      return decl?.type === "decl" ? decl.value : "";
+    };
+    expect(value("cc-accent")).toBe("var(--primary)");
+    expect(value("cc-accent-fg")).toBe("var(--primary-foreground)");
+    expect(value("cc-accent-text")).toBe("var(--primary-ink)");
+    expect(value("ring")).toBe("var(--primary-ink)");
+    expect(value("sidebar-primary")).toBe("var(--primary)");
+    // A green, not the old blue: the hue sits in the green band.
+    const hue = Number(/^oklch\([\d.]+ [\d.]+ ([\d.]+)\)$/.exec(value("primary"))?.[1]);
+    expect(hue).toBeGreaterThan(130);
+    expect(hue).toBeLessThan(170);
+    // Text on a filled accent (buttons, a checked checkbox's mark).
+    expect(
+      contrast(token(scope, "primary-foreground"), token(scope, "primary")),
+      `${scope} primary-foreground on primary`,
+    ).toBeGreaterThanOrEqual(4.5);
+    // The accent on its own (links, the active tab, switch and slider fills,
+    // focus rings) is text-grade on every surface it sits on.
+    const surfaces = ["background", "card", "popover", "muted", "cc-bg", "cc-surface", "cc-raised"];
+    for (const surface of surfaces) {
+      expect(
+        contrast(token(scope, "primary-ink"), token(scope, surface)),
+        `${scope} primary-ink on ${surface}`,
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+    if (scope === ".dark")
+      expect(
+        contrast(token(scope, "primary-ink"), token(".dark .cc-public-shell", "muted")),
+        ".dark primary-ink on arena muted",
+      ).toBeGreaterThanOrEqual(4.5);
+    // A checked switch's thumb on its accent track: bg-background in light,
+    // bg-primary-foreground in dark (components/switch.tsx).
+    const thumb = token(scope, scope === ".dark" ? "primary-foreground" : "background");
+    expect(
+      contrast(thumb, token(scope, "primary-ink")),
+      `${scope} switch thumb`,
+    ).toBeGreaterThanOrEqual(3);
+  });
+
   it.each(scopes)(
     "%s field outlines (--input) reach 3:1 on every surface a field sits on",
     (scope) => {
@@ -131,6 +181,69 @@ describe("theme contrast (WCAG AA)", () => {
     expect(contrast(oklchToSrgb(0.925, 0.005, 214.3), token(":root", "background"))).toBeLessThan(
       3,
     );
+  });
+
+  it("draws the accent on the page in --primary-ink, never the light --primary fill", () => {
+    // --primary (the arena's light green) is a fill under dark text, about 1.7:1
+    // on a white page; a track, thumb outline or text in it would not read.
+    const read = (path: string) => readFileSync(resolve(ui, path), "utf8");
+    const web = (path: string) => readFileSync(resolve(import.meta.dirname, "..", path), "utf8");
+    expect(read("components/switch.tsx")).toContain("data-checked:bg-primary-ink ");
+    const range = read("components/range-field.tsx");
+    expect(range).toContain('Indicator className="h-full bg-primary-ink"');
+    expect(range).toContain("border-2 border-primary-ink ");
+    expect(read("components/button.tsx")).toContain('link: "text-primary-ink ');
+    expect(web("components/bottom-nav.tsx")).toContain(" text-primary-ink ");
+    expect(web("components/chess/video/video-export-dialog.tsx")).toContain("bg-primary-ink ");
+    for (const source of [read("components/button.tsx"), web("components/bottom-nav.tsx")])
+      expect(source).not.toMatch(/(?<![\w-])text-primary(?![\w-])/);
+  });
+
+  it.each(["switch.tsx", "checkbox.tsx", "toggle.tsx"])(
+    "%s draws an opaque --ring when focused (a half-opacity ring is about 2.2:1 on white)",
+    (file) => {
+      // These have no border of their own that turns --ring on focus (a checked
+      // switch's border would match its --primary-ink track), so the ring is the
+      // whole indicator; opaque --ring is --primary-ink, checked at 4.5:1 above.
+      const source = readFileSync(resolve(ui, "components", file), "utf8");
+      expect(source).toContain("focus-visible:ring-2 ");
+      expect(source).toMatch(/focus-visible:ring-ring(?![\w/-])/);
+      expect(source).not.toMatch(/focus-visible:ring-ring\/\d+/);
+    },
+  );
+
+  it("the global focus outline is the opaque --ring", () => {
+    // Links and nav items show only the browser outline; at 50% it was ~2.2:1 on white.
+    expect(css).toContain("@apply border-border outline-ring;");
+    expect(css).not.toMatch(/outline-ring\/\d+/);
+  });
+
+  it.each(scopes)("%s the eval-graph cursor has a dark edge on the light graph fill", (scope) => {
+    // The mint cursor is ~1.5:1 on the fixed White fill; an opaque --cc-accent-fg
+    // line 1px wider on each side is drawn under it (components/chess/eval-bar.tsx).
+    const arena = readFileSync(resolve(import.meta.dirname, "../index.css"), "utf8");
+    const rule = (name: string) => new RegExp(`\\.${name} \\{([^}]*)\\}`).exec(arena)?.[1] ?? "";
+    const width = (body: string) => Number(/stroke-width: (\d+);/.exec(body)?.[1]);
+    const cursor = rule("cc-eval-graph-cursor");
+    const edge = rule("cc-eval-graph-cursor-edge");
+    expect(cursor).toContain("stroke: var(--cc-accent);");
+    expect(edge).toContain("stroke: var(--cc-accent-fg);");
+    for (const body of [cursor, edge]) expect(body).toContain("vector-effect: non-scaling-stroke;");
+    expect(width(edge) - width(cursor)).toBeGreaterThanOrEqual(2);
+    const svg = readFileSync(
+      resolve(import.meta.dirname, "../components/chess/eval-bar.tsx"),
+      "utf8",
+    );
+    expect(svg.indexOf('className="cc-eval-graph-cursor-edge"')).toBeGreaterThan(-1);
+    expect(svg.indexOf('className="cc-eval-graph-cursor-edge"')).toBeLessThan(
+      svg.indexOf('className="cc-eval-graph-cursor"'),
+    );
+    const fill = /\.cc-eval-graph-white \{[^}]*fill: oklch\(([\d.]+) ([\d.]+) ([\d.]+)\)/.exec(
+      arena,
+    );
+    expect(fill).not.toBeNull();
+    const whiteFill = oklchToSrgb(Number(fill?.[1]), Number(fill?.[2]), Number(fill?.[3]));
+    expect(contrast(token(scope, "cc-accent-fg"), whiteFill)).toBeGreaterThanOrEqual(3);
   });
 
   it("an Off switch fills its track with the opaque --input, which the 3:1 checks cover", () => {

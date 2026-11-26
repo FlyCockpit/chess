@@ -481,7 +481,7 @@ export function RangeField({
                 style={{ width: percent(allowedFraction) }}
               >
                 <SliderPrimitive.Track className="relative h-2 w-full bg-muted">
-                  <SliderPrimitive.Indicator className="h-full bg-primary" />
+                  <SliderPrimitive.Indicator className="h-full bg-primary-ink" />
                   <SliderPrimitive.Thumb
                     aria-labelledby={labelId}
                     aria-describedby={describedBy}
@@ -507,7 +507,7 @@ export function RangeField({
                     }}
                     // The visible thumb is 20px; the ::before ring pads the hit
                     // area to 44px below `md:` (touch) and 28px above it.
-                    className="z-10 size-5 border-2 border-primary bg-background shadow-sm transition-[box-shadow] outline-none before:absolute before:-inset-3 has-focus-visible:ring-2 has-focus-visible:ring-ring has-focus-visible:ring-offset-2 has-focus-visible:ring-offset-background data-disabled:border-muted-foreground md:before:-inset-1"
+                    className="z-10 size-5 border-2 border-primary-ink bg-background shadow-sm transition-[box-shadow] outline-none before:absolute before:-inset-3 has-focus-visible:ring-2 has-focus-visible:ring-ring has-focus-visible:ring-offset-2 has-focus-visible:ring-offset-background data-disabled:border-muted-foreground md:before:-inset-1"
                   />
                 </SliderPrimitive.Track>
               </SliderPrimitive.Control>

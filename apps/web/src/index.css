@@ -378,7 +378,7 @@
   /* A floor, not a size: px, so a large browser font size can't push it past a phone. */
   min-width: 352px;
 }
-/* One arena focus ring (the global outline-ring/50 is about 1.4:1 on the light page):
+/* One arena focus ring, wider and offset (the global outline-ring is the fallback):
    2px in the accent text colour, outside the box; inside it where an inner scroller or
    tab strip would clip it (design-system.md, "focus ring inside its box"). The board
    squares draw their own ring below. */
@@ -1061,6 +1061,8 @@
   font-size: 0.8125rem;
   color: var(--cc-muted);
   line-height: 1.9;
+  /* A readable measure (max-w-prose): a half-width card at 4K was ~100ch. */
+  max-width: 65ch;
 }
 /* The public footer (components/public-footer.tsx): the last box in the
  * scroller's column, so it ends at the scroller's bottom on a short page. Its
@@ -1830,6 +1832,13 @@
 .cc-eval-graph-cursor {
   stroke: var(--cc-accent);
   stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+/* Drawn first, 1px wider on each side: an opaque dark edge, since the mint
+ * cursor alone is about 1.5:1 on the graph's light (White) fill. */
+.cc-eval-graph-cursor-edge {
+  stroke: var(--cc-accent-fg);
+  stroke-width: 4;
   vector-effect: non-scaling-stroke;
 }
 .cc-eval-graph input[type="range"] {

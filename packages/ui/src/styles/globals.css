@@ -14,8 +14,13 @@
   --card-foreground: oklch(0.148 0.004 228.8);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.148 0.004 228.8);
-  --primary: oklch(0.5 0.134 242.749);
-  --primary-foreground: oklch(0.977 0.013 236.62);
+  /* The one brand accent, the arena's green, in both shells (the arena's
+     --cc-accent* alias these). --primary is a fill with dark text on it in
+     both themes; --primary-ink is the accent as text, lines and focus rings on
+     the page, 4.5:1 on every surface (apps/web/src/lib/theme-contrast.test.ts). */
+  --primary: oklch(0.81 0.13 155);
+  --primary-foreground: oklch(0.18 0.025 185);
+  --primary-ink: oklch(0.48 0.12 155);
   --secondary: oklch(0.967 0.001 286.375);
   --secondary-foreground: oklch(0.21 0.006 285.885);
   --muted: oklch(0.963 0.002 197.1);
@@ -44,7 +49,7 @@
      panels included (WCAG 1.4.11, apps/web/src/lib/theme-contrast.test.ts).
      --border stays decorative and light. */
   --input: oklch(0.62 0.012 214.3);
-  --ring: oklch(0.723 0.014 214.4);
+  --ring: var(--primary-ink);
   --grey-50: oklch(0.985 0.002 228);
   --grey-100: oklch(0.96 0.004 228);
   --grey-200: oklch(0.92 0.005 228);
@@ -55,16 +60,16 @@
   --grey-700: oklch(0.35 0.012 228);
   --grey-800: oklch(0.27 0.009 228);
   --grey-900: oklch(0.2 0.006 228);
-  --primary-50: oklch(0.97 0.015 242);
-  --primary-100: oklch(0.93 0.035 242);
-  --primary-200: oklch(0.87 0.065 242);
-  --primary-300: oklch(0.78 0.1 242);
-  --primary-400: oklch(0.67 0.13 242);
-  --primary-500: oklch(0.56 0.145 242);
-  --primary-600: oklch(0.5 0.134 242);
-  --primary-700: oklch(0.42 0.11 242);
-  --primary-800: oklch(0.35 0.09 242);
-  --primary-900: oklch(0.28 0.07 242);
+  --primary-50: oklch(0.97 0.015 155);
+  --primary-100: oklch(0.93 0.035 155);
+  --primary-200: oklch(0.87 0.065 155);
+  --primary-300: oklch(0.78 0.1 155);
+  --primary-400: oklch(0.67 0.13 155);
+  --primary-500: oklch(0.56 0.145 155);
+  --primary-600: oklch(0.5 0.134 155);
+  --primary-700: oklch(0.42 0.11 155);
+  --primary-800: oklch(0.35 0.09 155);
+  --primary-900: oklch(0.28 0.07 155);
   --chart-1: oklch(0.65 0.2 25);
   --chart-2: oklch(0.65 0.2 55);
   --chart-3: oklch(0.65 0.2 90);
@@ -81,12 +86,12 @@
   --radius: 0.45rem;
   --sidebar: oklch(0.987 0.002 197.1);
   --sidebar-foreground: oklch(0.148 0.004 228.8);
-  --sidebar-primary: oklch(0.588 0.158 241.966);
-  --sidebar-primary-foreground: oklch(0.977 0.013 236.62);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
   --sidebar-accent: oklch(0.963 0.002 197.1);
   --sidebar-accent-foreground: oklch(0.218 0.008 223.9);
   --sidebar-border: oklch(0.925 0.005 214.3);
-  --sidebar-ring: oklch(0.723 0.014 214.4);
+  --sidebar-ring: var(--ring);
 }
 
 .dark {
@@ -96,8 +101,9 @@
   --card-foreground: oklch(0.987 0.002 197.1);
   --popover: oklch(0.218 0.008 223.9);
   --popover-foreground: oklch(0.987 0.002 197.1);
-  --primary: oklch(0.443 0.11 240.79);
-  --primary-foreground: oklch(0.977 0.013 236.62);
+  --primary: oklch(0.81 0.13 155);
+  --primary-foreground: oklch(0.18 0.025 185);
+  --primary-ink: oklch(0.82 0.11 155);
   --secondary: oklch(0.274 0.006 286.033);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.275 0.011 216.9);
@@ -122,7 +128,7 @@
   --state-loading-bg: color-mix(in oklch, var(--muted-foreground) 15%, transparent);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(0.56 0.012 220);
-  --ring: oklch(0.56 0.021 213.5);
+  --ring: var(--primary-ink);
   --grey-50: oklch(0.25 0.004 228);
   --grey-100: oklch(0.3 0.006 228);
   --grey-200: oklch(0.35 0.008 228);
@@ -133,16 +139,16 @@
   --grey-700: oklch(0.84 0.009 228);
   --grey-800: oklch(0.92 0.006 228);
   --grey-900: oklch(0.96 0.003 228);
-  --primary-50: oklch(0.25 0.04 242);
-  --primary-100: oklch(0.3 0.06 242);
-  --primary-200: oklch(0.35 0.08 242);
-  --primary-300: oklch(0.42 0.1 242);
-  --primary-400: oklch(0.5 0.12 242);
-  --primary-500: oklch(0.58 0.14 242);
-  --primary-600: oklch(0.65 0.15 242);
-  --primary-700: oklch(0.74 0.12 242);
-  --primary-800: oklch(0.84 0.08 242);
-  --primary-900: oklch(0.93 0.04 242);
+  --primary-50: oklch(0.25 0.04 155);
+  --primary-100: oklch(0.3 0.06 155);
+  --primary-200: oklch(0.35 0.08 155);
+  --primary-300: oklch(0.42 0.1 155);
+  --primary-400: oklch(0.5 0.12 155);
+  --primary-500: oklch(0.58 0.14 155);
+  --primary-600: oklch(0.65 0.15 155);
+  --primary-700: oklch(0.74 0.12 155);
+  --primary-800: oklch(0.84 0.08 155);
+  --primary-900: oklch(0.93 0.04 155);
   --chart-1: oklch(0.75 0.18 25);
   --chart-2: oklch(0.75 0.18 55);
   --chart-3: oklch(0.75 0.18 90);
@@ -150,12 +156,12 @@
   --chart-5: oklch(0.75 0.18 250);
   --sidebar: oklch(0.218 0.008 223.9);
   --sidebar-foreground: oklch(0.987 0.002 197.1);
-  --sidebar-primary: oklch(0.685 0.169 237.323);
-  --sidebar-primary-foreground: oklch(0.293 0.066 243.157);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
   --sidebar-accent: oklch(0.275 0.011 216.9);
   --sidebar-accent-foreground: oklch(0.987 0.002 197.1);
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.56 0.021 213.5);
+  --sidebar-ring: var(--ring);
 }
 
 /* Cockpit Chess's arena palette (apps/web/src/index.css `.cc-*`). It follows
@@ -181,10 +187,10 @@
   --cc-text-soft: oklch(0.35 0.015 190);
   --cc-muted: oklch(0.46 0.015 190);
   --cc-subtle: oklch(0.52 0.015 190);
-  --cc-accent: oklch(0.81 0.13 155);
+  --cc-accent: var(--primary);
   --cc-accent-hover: oklch(0.76 0.13 155);
-  --cc-accent-fg: oklch(0.18 0.025 185);
-  --cc-accent-text: oklch(0.48 0.12 155);
+  --cc-accent-fg: var(--primary-foreground);
+  --cc-accent-text: var(--primary-ink);
   --cc-warn-text: oklch(0.52 0.15 50);
   --cc-error-text: oklch(0.52 0.18 30);
   --cc-hero-shadow: oklch(0.3 0.02 180 / 0.25);
@@ -222,10 +228,10 @@
   --cc-text-soft: oklch(0.8 0.01 190);
   --cc-muted: oklch(0.67 0.015 190);
   --cc-subtle: oklch(0.6 0.015 190);
-  --cc-accent: oklch(0.81 0.13 155);
+  --cc-accent: var(--primary);
   --cc-accent-hover: oklch(0.87 0.13 155);
-  --cc-accent-fg: oklch(0.18 0.025 185);
-  --cc-accent-text: oklch(0.82 0.11 155);
+  --cc-accent-fg: var(--primary-foreground);
+  --cc-accent-text: var(--primary-ink);
   --cc-warn-text: oklch(0.78 0.13 55);
   --cc-error-text: oklch(0.8 0.13 45);
   --cc-hero-shadow: oklch(0.05 0.02 180 / 0.6);
@@ -311,6 +317,7 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-secondary: var(--secondary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-ink: var(--primary-ink);
   --color-primary: var(--primary);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
@@ -334,7 +341,9 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    /* Opaque: a browser-drawn focus outline (links, nav items) is the whole
+       indicator, and --ring at 50% is about 2.2:1 on white. */
+    @apply border-border outline-ring;
     -webkit-tap-highlight-color: transparent;
   }
   html {
@@ -473,8 +482,7 @@
   /* State inks: every one reaches 4.5:1 on --popover in both themes
      (apps/web/src/lib/theme-contrast.test.ts). They colour the badge icon; the
      title, description and action stay --popover-foreground. The action ink is
-     the info blue: this palette's dark --primary is tuned for filled buttons
-     (white text on it) and is too dark for text on the dark popover. */
+     the info blue, a state colour like the others, not the brand accent. */
   --sileo-state-success: var(--state-success);
   --sileo-state-loading: var(--state-loading);
   --sileo-state-error: var(--destructive);

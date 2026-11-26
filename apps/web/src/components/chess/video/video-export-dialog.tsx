@@ -277,7 +277,7 @@ export function VideoExportDialog({
               className="h-3 w-full overflow-hidden rounded-full bg-muted"
             >
               <div
-                className="h-full bg-primary transition-[width] duration-200 motion-reduce:transition-none"
+                className="h-full bg-primary-ink transition-[width] duration-200 motion-reduce:transition-none"
                 style={{ width: `${percent}%` }}
               />
             </div>

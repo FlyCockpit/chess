@@ -57,7 +57,7 @@ export default function BottomNav({ hidden }: { hidden?: boolean }) {
             className="flex flex-col items-center justify-center gap-0.5 px-1 py-1.5 text-muted-foreground transition-colors min-w-[44px] shrink min-h-[44px]"
             activeProps={{
               className:
-                "flex flex-col items-center justify-center gap-0.5 px-1 py-1.5 text-primary transition-colors dark:text-state-info min-w-[44px] shrink min-h-[44px]",
+                "flex flex-col items-center justify-center gap-0.5 px-1 py-1.5 text-primary-ink transition-colors min-w-[44px] shrink min-h-[44px]",
             }}
           >
             <item.icon className="size-5" />

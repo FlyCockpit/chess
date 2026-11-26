@@ -71,7 +71,17 @@ export function EvalGraph({
         <polygon points={area} className="cc-eval-graph-white" />
         <line x1="0" x2={width} y1="50" y2="50" className="cc-eval-graph-mid" />
         {position >= 0 && (
-          <line x1={position} x2={position} y1="0" y2="100" className="cc-eval-graph-cursor" />
+          <>
+            {/* A dark edge under the mint cursor, which alone is ~1.5:1 on the White fill. */}
+            <line
+              x1={position}
+              x2={position}
+              y1="0"
+              y2="100"
+              className="cc-eval-graph-cursor-edge"
+            />
+            <line x1={position} x2={position} y1="0" y2="100" className="cc-eval-graph-cursor" />
+          </>
         )}
       </svg>
       <input

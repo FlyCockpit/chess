@@ -16,9 +16,9 @@ const buttonVariants = cva(
           "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50",
         destructive:
           "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
-        // Dark --primary is a fill colour (2.3:1 as text on the dark card); links use the
-        // lighter info step there (about 6:1 on the background and on cards).
-        link: "text-primary underline-offset-4 hover:underline dark:text-state-info",
+        // --primary is the light green fill (about 1.7:1 as text on a white page); links
+        // use --primary-ink, the accent as text, 4.5:1 on every surface in both themes.
+        link: "text-primary-ink underline-offset-4 hover:underline",
       },
       size: {
         default:
