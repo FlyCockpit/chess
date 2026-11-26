@@ -1,7 +1,14 @@
-import { finishMatch, type MatchArchive } from "@cockpit-chess/chess";
+import {
+  boardAt,
+  finishMatch,
+  legalMoves,
+  type MatchArchive,
+  submitMove,
+} from "@cockpit-chess/chess";
 import { gamePositions, type SpectatorEvaluations } from "@cockpit-chess/chess/spectator";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
+import esChess from "@cockpit-chess/locales/src/es-MX/chess.json";
 import { createInstance } from "i18next";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider } from "react-i18next";
@@ -13,7 +20,7 @@ const i18n = createInstance();
 beforeAll(async () => {
   await i18n.init({
     lng: "en-US",
-    resources: { "en-US": { chess: enChess, common: enCommon } },
+    resources: { "en-US": { chess: enChess, common: enCommon }, "es-MX": { chess: esChess } },
     defaultNS: "chess",
     react: { useSuspense: false },
   });
@@ -152,5 +159,105 @@ describe("MatchReplay", () => {
     expect(html).toContain("<strong>GPT-4.1 Nano</strong><span>openai/gpt-4.1-nano</span>");
     expect(html).toContain("<strong>openai/gpt-4.1-mini</strong></div>");
     expect(html.match(/openai\/gpt-4\.1-mini/g)).toHaveLength(1);
+  });
+  it("paints the latest lookup on the board and names it in the timeline", () => {
+    const match = fixtureGame({ evaluations: false, remarks: "off" });
+    const lookup = (square: string | undefined) => {
+      const chess = boardAt(match);
+      match.events.push({
+        type: "tool",
+        name: "legal_moves",
+        seq: match.events.length,
+        at: new Date().toISOString(),
+        side: chess.turn(),
+        ply: 4,
+        input: JSON.stringify({ square }),
+        output: legalMoves(chess, square).join(" "),
+      });
+    };
+    lookup(undefined);
+    lookup("f3");
+    // Bookkeeping after the lookup keeps the board marks and the caption.
+    match.events.push({
+      type: "timing",
+      seq: match.events.length,
+      at: new Date().toISOString(),
+      side: "w",
+      ply: 4,
+      elapsedMs: 10,
+    });
+    const html = render(match);
+    // White's knight on f3 (after 1.e4 e5 2.Nf3 Nc6): a ring on e5, dots elsewhere.
+    expect(html.match(/class="cc-lookup-from"/g)).toHaveLength(1);
+    expect(html.match(/class="cc-lookup-capture"/g)).toHaveLength(1);
+    expect(html.match(/class="cc-lookup-target"/g)).toHaveLength(4);
+    expect(html).toMatch(/aria-label="White knight on f3"[^>]*>(?:(?!<\/button>).)*cc-lookup-from/);
+    expect(html).toMatch(
+      /aria-label="Black pawn on e5"[^>]*>(?:(?!<\/button>).)*cc-lookup-capture/,
+    );
+    expect(html).toContain("Checked moves for the knight on f3: Nd4, Nxe5, Ng5, Nh4, Ng1");
+    expect(html).toContain("Checked all legal moves (27 moves)");
+    expect(html).toMatch(/class="cc-event-caption"[^>]*>Checked moves for the knight on f3: Nd4/);
+    // Under the board too, whichever sidebar tab is open (a reserved line otherwise).
+    expect(html).toMatch(
+      /<p class="cc-lookup-note"[^>]*><span aria-hidden="true" class="cc-lookup-key"><\/span><span class="cc-lookup-text">White · Checked moves for the knight on f3: Nd4/,
+    );
+    expect(html).toMatch(
+      /Selected tool input and result[\s\S]*\{&quot;square&quot;:&quot;f3&quot;\}/,
+    );
+    expect(
+      html.match(/aria-hidden="true" class="cc-lookup-(?:from|target|capture)"/g),
+    ).toHaveLength(6);
+    // Spanish names the piece with its article.
+    void i18n.changeLanguage("es-MX");
+    expect(render(match)).toContain("Revisó las jugadas para el caballo en f3: Nd4, Nxe5");
+    void i18n.changeLanguage("en-US");
+    // The move ends it; so does the end of the game.
+    const chess = boardAt(match);
+    submitMove(match, chess, "f3e5", "");
+    expect(render(match)).not.toContain('class="cc-lookup-from"');
+    match.events.pop();
+    finishMatch(match, "*", "cancelled", "stopped");
+    expect(render(match)).not.toContain('class="cc-lookup-from"');
+    expect(render(match)).toMatch(/<p class="cc-lookup-note"[^>]*><\/p>/);
+    match.config.rules = { ...match.config.rules, legalMoves: "provided" };
+    expect(render(match)).not.toContain("cc-lookup-note");
+  });
+  it("keeps naming a lookup without board marks over the bookkeeping after it", () => {
+    const allMoves = (remarks: "commentary" | "off") => {
+      const match = fixtureGame({ evaluations: false, remarks });
+      const chess = boardAt(match);
+      const base = { at: new Date().toISOString(), side: "w" as const, ply: 4 };
+      match.events.push(
+        {
+          ...base,
+          type: "tool",
+          name: "legal_moves",
+          seq: match.events.length,
+          input: "{}",
+          output: legalMoves(chess).join(" "),
+        },
+        {
+          ...base,
+          type: "usage",
+          seq: match.events.length + 1,
+          dispatch: 0,
+          inputTokens: 1,
+          outputTokens: 1,
+          costMicros: 0,
+        },
+      );
+      return match;
+    };
+    const match = allMoves("commentary");
+    const html = render(match);
+    expect(html).not.toContain('class="cc-lookup-from"');
+    expect(html).not.toContain("cc-lookup-key");
+    expect(html).toMatch(/class="cc-event-caption"[^>]*>Checked all legal moves \(27 moves\)/);
+    // Chat is the open tab, so the note under the board is the one that announces.
+    expect(html).toMatch(
+      /<p class="cc-lookup-note" aria-live="polite"><span class="cc-lookup-text">White · Checked all legal moves \(27 moves\)/,
+    );
+    expect(render(allMoves("off"))).toContain('<p class="cc-lookup-note" aria-live="off">');
   });
 });

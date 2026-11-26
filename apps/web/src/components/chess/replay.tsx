@@ -45,6 +45,8 @@ import {
   pointForPosition,
   toolEvaluation,
 } from "./evaluation";
+import { describeLookup, type LegalLookup, overlayAt, turnAction } from "./legal-lookup";
+import { LookupNote, lookupLabel } from "./lookup-note";
 import { VideoExportDialog } from "./video/video-export-dialog";
 
 /** The second line under a player's name: the model id, only when it says something new. */
@@ -177,6 +179,8 @@ type ReplayIndex = {
   initial: ReplayFrame;
   frames: ReplayFrame[];
   evaluationsByFen: Map<string, IndexedEvaluation[]>;
+  /** Each `legal_moves` call, read from the position it was made in. */
+  lookups: Map<number, LegalLookup>;
   failure: { index: number; error: unknown } | undefined;
 };
 
@@ -191,6 +195,7 @@ function buildReplayIndex(match: MatchArchive): ReplayIndex {
   const initial: ReplayFrame = { fen: chess.fen(), turn: chess.turn(), lastMove: undefined };
   const frames: ReplayFrame[] = [];
   const evaluationsByFen = new Map<string, IndexedEvaluation[]>();
+  const lookups = new Map<number, LegalLookup>();
   let lastMove: string | undefined;
   let failure: ReplayIndex["failure"];
   for (const [index, entry] of match.events.entries()) {
@@ -204,6 +209,8 @@ function buildReplayIndex(match: MatchArchive): ReplayIndex {
       lastMove = entry.move;
     }
     frames.push({ fen: chess.fen(), turn: chess.turn(), lastMove });
+    const lookup = describeLookup(chess, entry);
+    if (lookup) lookups.set(index, lookup);
     const value =
       entry.type === "evaluation"
         ? entry.evaluation
@@ -216,7 +223,7 @@ function buildReplayIndex(match: MatchArchive): ReplayIndex {
       else evaluationsByFen.set(value.fen, [{ index, value }]);
     }
   }
-  return { initial, frames, evaluationsByFen, failure };
+  return { initial, frames, evaluationsByFen, lookups, failure };
 }
 
 function frameAt(replay: ReplayIndex, index: number): ReplayFrame {
@@ -236,12 +243,14 @@ function evaluationAt(replay: ReplayIndex, fen: string, index: number) {
 
 const TimelineRow = memo(function TimelineRow({
   entry,
+  lookup,
   index,
   current,
   last,
   onSelect,
 }: {
   entry: MatchEvent;
+  lookup: LegalLookup | undefined;
   index: number;
   current: boolean;
   last: boolean;
@@ -265,6 +274,8 @@ const TimelineRow = memo(function TimelineRow({
                 <small title={entry.normalizedFrom}>{t("replay.normalized")}</small>
               )}
             </>
+          ) : lookup ? (
+            lookupLabel(t, lookup)
           ) : entry.type === "tool" ? (
             t("replay.tool", { name: entry.name })
           ) : (
@@ -395,6 +406,7 @@ export function MatchReplay({
   const showEval = series.length > 0;
   const tone = remarkTone(match.config.rules);
   const commentary = tone !== "off";
+  const movesHidden = commentary && tab !== "moves";
   const describeEnding = useCallback(
     (ending: MatchEnding) => endingLabel(t, i18n.language, ending),
     [t, i18n.language],
@@ -439,6 +451,13 @@ export function MatchReplay({
     />
   );
   const event = match.events[index];
+  // Gone once the game is over: the final position shows without a stale lookup.
+  const overlay = finished ? undefined : overlayAt(match.events, replay.lookups, index);
+  // The turn's latest action: the caption, the note under the board and the tool
+  // details keep naming a lookup over the bookkeeping recorded after it.
+  const action = finished ? index : (turnAction(match.events, index) ?? index);
+  const lookup = replay.lookups.get(action);
+  const toolEvent = match.events[action];
   const evaluation = evaluationAt(replay, frame.fen, index);
   const score = evaluation
     ? evaluation.mate !== null
@@ -462,10 +481,25 @@ export function MatchReplay({
         <div className={showEval ? "cc-board-row" : undefined}>
           {showEval && <EvalBar point={evalPoint} flipped={flipped} />}
           <div className="cc-board-cell">
-            <ChessBoard fen={frame.fen} flipped={flipped} lastMove={frame.lastMove} />
+            <ChessBoard
+              fen={frame.fen}
+              flipped={flipped}
+              lastMove={frame.lastMove}
+              lookup={overlay}
+            />
           </div>
         </div>
         {row(bottom, "bottom")}
+        {/* The board's lookup in words, right under the board (whichever sidebar tab is
+            open). Announced only while the Moves panel, whose caption announces it, is hidden. */}
+        {match.config.rules.legalMoves === "tool" && (
+          <LookupNote
+            lookup={lookup}
+            side={toolEvent?.side ?? frame.turn}
+            marks={!!overlay}
+            live={movesHidden}
+          />
+        )}
         <div className="cc-replay-controls">
           <button
             type="button"
@@ -619,11 +653,11 @@ export function MatchReplay({
             <span>{t("stats.tokens")}</span>
           </div>
         </div>
-        {event?.type === "tool" && (
+        {toolEvent?.type === "tool" && (
           <details className="cc-muted mb-4 text-xs">
             <summary className="cursor-pointer py-3">{t("replay.toolDetails")}</summary>
             <CodeSnippet
-              code={`${event.input}\n${event.output}`}
+              code={`${toolEvent.input}\n${toolEvent.output}`}
               copyLabel={t("replay.copyTool")}
             />
           </details>
@@ -693,22 +727,25 @@ export function MatchReplay({
             role={commentary ? "tabpanel" : undefined}
             id={`${match.id}-panel-moves`}
             aria-labelledby={commentary ? `${match.id}-tab-moves` : undefined}
-            hidden={commentary && tab !== "moves"}
+            hidden={movesHidden}
           >
             <div className="cc-event-caption" aria-live="polite">
               {event?.type === "attempt"
                 ? event.accepted
                   ? t("replay.accepted", { move: event.san })
                   : t("replay.rejected", { move: event.move })
-                : event
-                  ? t(`events.${event.type}`)
-                  : t("replay.initial")}
+                : lookup
+                  ? lookupLabel(t, lookup)
+                  : event
+                    ? t(`events.${event.type}`)
+                    : t("replay.initial")}
             </div>
             <ol className="cc-timeline">
               {match.events.map((entry, i) => (
                 <TimelineRow
                   key={entry.seq}
                   entry={entry}
+                  lookup={replay.lookups.get(i)}
                   index={i}
                   current={i === index}
                   last={i === lastIndex}

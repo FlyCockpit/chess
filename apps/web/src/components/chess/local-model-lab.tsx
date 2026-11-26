@@ -38,6 +38,8 @@ import {
   sectionsWithErrors,
   tokenBudgetValid,
 } from "./lab-form";
+import { describeLookup, latestOverlay } from "./legal-lookup";
+import { LookupNote } from "./lookup-note";
 import { MatchReplay } from "./replay";
 import { ChoiceField, SettingsSection } from "./settings-section";
 import { TimeControlField } from "./time-control-field";
@@ -103,6 +105,13 @@ export function LocalModelLab() {
   const data = isQueryAccessError(error) ? undefined : stateData;
   const match = data?.match;
   const chess = useMemo(() => (match ? boardAt(match) : undefined), [match]);
+  // The model's latest legal-move lookup, on the board the game is played on.
+  const lookup = useMemo(
+    () =>
+      match && chess && match.status === "running" ? latestOverlay(match.events, chess) : undefined,
+    [match, chess],
+  );
+  const lookupEvent = lookup && match ? match.events[lookup.index] : undefined;
   const currentPlayer =
     match && chess ? (chess.turn() === "w" ? match.config.white : match.config.black) : undefined;
   const pending = Boolean(data?.busy || create.isPending || move.isPending);
@@ -174,11 +183,22 @@ export function LocalModelLab() {
                     <ChessBoard
                       key={match.id}
                       fen={chess.fen()}
+                      lookup={lookup}
                       disabled={
                         pending || match.status !== "running" || currentPlayer?.protocol !== "human"
                       }
                       onMove={(uci) => move.mutate({ move: uci, expectedSeq: match.events.length })}
                     />
+                    {/* The play board's lookup in words. Not live: the decision log below
+                        announces it while it follows the game. */}
+                    {match.config.rules.legalMoves === "tool" && (
+                      <LookupNote
+                        lookup={lookupEvent && chess && describeLookup(chess, lookupEvent)}
+                        side={lookupEvent?.side ?? chess.turn()}
+                        marks={!!lookup}
+                        live={false}
+                      />
+                    )}
                     <div className="cc-player">
                       <span className="cc-avatar cc-avatar-light">♔</span>
                       <strong>{match.config.white.name}</strong>

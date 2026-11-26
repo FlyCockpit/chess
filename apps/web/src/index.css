@@ -467,6 +467,80 @@
   border: 4px solid oklch(0.7 0.2 80 / 0.8);
   border-radius: 50%;
 }
+/* A model's legal-move lookup (ChessBoard `lookup`): the looked-up piece's square,
+ * a dot on each target and a ring on each capture. Decorative (aria-hidden; the
+ * event text carries the meaning) and never in the way of a click. */
+.cc-lookup-from,
+.cc-lookup-target,
+.cc-lookup-capture {
+  position: absolute;
+  pointer-events: none;
+}
+.cc-lookup-from {
+  inset: 0;
+  background: var(--cc-lookup-fill);
+  box-shadow:
+    inset 0 0 0 2px var(--cc-lookup-halo),
+    inset 0 0 0 5px var(--cc-lookup-mark);
+}
+.cc-lookup-target {
+  width: 28%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--cc-lookup-mark);
+  box-shadow: 0 0 0 2px var(--cc-lookup-halo);
+}
+.cc-lookup-capture {
+  inset: 3px;
+  border-radius: 50%;
+  border: 4px solid var(--cc-lookup-mark);
+  box-shadow:
+    0 0 0 2px var(--cc-lookup-halo),
+    inset 0 0 0 2px var(--cc-lookup-halo);
+}
+/* The lookup in words under the board: exactly two lines, so nothing below moves. A
+ * longer list is cut with an ellipsis on screen (the whole text stays in the DOM for
+ * assistive tech, and in full in the Moves list). */
+.cc-lookup-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  height: calc(2 * 1.4em);
+  overflow: hidden;
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--cc-text-soft);
+}
+.cc-lookup-text {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.cc-lookup-key {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin-top: 0.3em;
+  border-radius: 50%;
+  background: var(--cc-lookup-mark);
+  box-shadow: 0 0 0 2px var(--cc-lookup-halo);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cc-lookup-from,
+  .cc-lookup-target,
+  .cc-lookup-capture {
+    animation: cc-lookup-in 160ms ease-out;
+  }
+}
+@keyframes cc-lookup-in {
+  from {
+    opacity: 0;
+  }
+}
 .cc-promotion {
   position: absolute;
   inset: 30% 10%;
@@ -1067,7 +1141,8 @@
   }
   .cc-player,
   .cc-bubble-slot,
-  .cc-result-banner {
+  .cc-result-banner,
+  .cc-lookup-note {
     margin-inline: 12px;
   }
   .cc-replay-controls {

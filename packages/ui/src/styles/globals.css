@@ -187,6 +187,12 @@
   /* An idle status dot, and a focus ring drawn on the page (3:1 or more on --cc-bg). */
   --cc-dot: oklch(0.6 0.06 85);
   --cc-focus: oklch(0.55 0.15 70);
+  /* A model's legal-move lookup on the board (.cc-lookup-*): the board keeps one
+   * palette in both themes, so these carry the same values in both. A dark mark
+   * with a light halo reads on the light and the dark squares alike. */
+  --cc-lookup-mark: oklch(0.34 0.14 262);
+  --cc-lookup-halo: oklch(0.98 0.01 95 / 0.92);
+  --cc-lookup-fill: oklch(0.66 0.15 255 / 0.5);
 }
 .dark {
   --cc-bg: oklch(0.16 0.012 195);
@@ -215,6 +221,9 @@
   --cc-hero-shadow: oklch(0.05 0.02 180 / 0.6);
   --cc-dot: oklch(0.7 0.06 85);
   --cc-focus: oklch(0.75 0.2 80);
+  --cc-lookup-mark: oklch(0.34 0.14 262);
+  --cc-lookup-halo: oklch(0.98 0.01 95 / 0.92);
+  --cc-lookup-fill: oklch(0.66 0.15 255 / 0.5);
 }
 /* The dark arena keeps its teal-tinted shadcn tokens; light keeps the defaults above. */
 .dark .cc-public-shell {

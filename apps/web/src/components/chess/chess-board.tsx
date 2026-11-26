@@ -2,6 +2,7 @@ import { Chess, type Square } from "@cockpit-chess/chess";
 import { memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { WideContent } from "@/components/wide-content";
+import type { LookupOverlay } from "./legal-lookup";
 
 const glyphs = {
   wk: "♚",
@@ -23,12 +24,15 @@ export const ChessBoard = memo(function ChessBoard({
   disabled = false,
   flipped = false,
   lastMove,
+  lookup,
 }: {
   fen: string;
   onMove?: (move: string) => void;
   disabled?: boolean;
   flipped?: boolean;
   lastMove?: string;
+  /** A model's legal-move lookup: decorative marks only; the event text carries the meaning. */
+  lookup?: LookupOverlay;
 }) {
   const { t } = useTranslation("chess");
   const [selectedSquare, setSelected] = useState<Square | null>(null);
@@ -121,6 +125,17 @@ export const ChessBoard = memo(function ChessBoard({
                 >
                   {glyphs[`${piece.color}${piece.type}`]}
                 </span>
+              )}
+              {lookup?.from === square && <span aria-hidden="true" className="cc-lookup-from" />}
+              {lookup?.targets.map(
+                (target) =>
+                  target.square === square && (
+                    <span
+                      key={target.square}
+                      aria-hidden="true"
+                      className={target.capture ? "cc-lookup-capture" : "cc-lookup-target"}
+                    />
+                  ),
               )}
               {targets.includes(square) && (
                 <span aria-hidden="true" className={piece ? "cc-capture-target" : "cc-target"} />
