@@ -142,6 +142,14 @@ describe("frame plan", () => {
   const plan = buildVideoPlan(match, all, t);
   const states = plan.scenes.map((scene) => scene.state);
 
+  it("includes a reply cap in the title only when set", () => {
+    expect(states[0]?.titleCard?.rules).not.toMatch(/reply cap/i);
+    const capped = structuredClone(match);
+    capped.config.rules = { ...capped.config.rules, maxOutputTokens: 64 };
+    expect(buildVideoPlan(capped, all, t).scenes[0]?.state.titleCard?.rules).toContain(
+      "Reply cap 64 tokens",
+    );
+  });
   it("is a title card, every position in order, then the final hold", () => {
     expect(states.map((s) => s.kind)).toEqual(["title", ...Array(8).fill("position"), "final"]);
     expect(states.map((s) => s.moveLabel)).toEqual([

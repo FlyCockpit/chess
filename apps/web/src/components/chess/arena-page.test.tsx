@@ -44,7 +44,7 @@ vi.mock("@/utils/orpc", () => ({
 }));
 vi.mock("./replay", () => ({
   MatchReplay: ({ match }: { match: { config: { title: string } } }) => (
-    <div>{match.config.title}</div>
+    <div data-testid="match-replay">{match.config.title}</div>
   ),
 }));
 vi.mock("@/hooks/use-network-status", () => ({ useNetworkStatus: () => fixture.online }));
@@ -101,7 +101,7 @@ it("retains a selected replay during a failed poll and exposes retry", () => {
   loadedReplay();
   const html = render("arena", "published");
   expect(html).toContain("Loaded replay");
-  expect(html).toContain(enChess.arena.retry);
+  expect(html).toContain(enChess.arena.gameRetry);
 });
 it("hides a selected replay on not-found or access loss and says the game is not available", () => {
   loadedReplay();
@@ -184,8 +184,8 @@ it("puts a pending, failed or missing open game (skeleton, retry, notice) above 
   expect(html.indexOf("h-96")).toBeLessThan(html.indexOf("Card other"));
   fixture.query = { ...fixture.query, isPending: false, isError: true, error: new Error("down") };
   html = render("arena", "published");
-  expect(html.indexOf(enChess.arena.retry)).toBeGreaterThan(-1);
-  expect(html.indexOf(enChess.arena.retry)).toBeLessThan(html.indexOf("Card other"));
+  expect(html.indexOf(enChess.arena.gameRetry)).toBeGreaterThan(-1);
+  expect(html.indexOf(enChess.arena.gameRetry)).toBeLessThan(html.indexOf("Card other"));
   fixture.query = { ...fixture.query, error: { code: "NOT_FOUND" } };
   html = render("arena", "published");
   expect(html.indexOf(enChess.arena.gameNotFound)).toBeGreaterThan(-1);
@@ -230,4 +230,23 @@ it("offline: a paused first load of the game list says so instead of skeleton ca
   fixture.list = list;
   expect(html).not.toContain("h-28");
   expect(html).toContain(enChess.arena.offlineRetry);
+});
+
+it("renders an old-rules list card without a replay button", () => {
+  listWith("old");
+  fixture.list.data.pages[0]!.items[0]!.oldRules = true;
+  const html = render("arena");
+  expect(html).toMatch(/<article[^>]*>(?:(?!<\/article>).)*Card old/);
+  expect(html).toContain(enChess.arena.oldRules);
+  expect(html).not.toMatch(/<button[^>]*>(?:(?!<\/button>).)*Card old/);
+});
+it("shows an old-rules deep link without a replay", () => {
+  listWith();
+  fixture.query.data = { id: "old", title: "Old game", archive: null, oldRules: true };
+  const html = render("arena", "old");
+  expect(html).toContain("Old game");
+  expect(html).toContain(enChess.arena.oldRules);
+  expect(html).toContain(enChess.arena.oldRulesDescription);
+  expect(html).toContain(`>${enChess.arena.all}</button>`);
+  expect(html).not.toContain('data-testid="match-replay"');
 });

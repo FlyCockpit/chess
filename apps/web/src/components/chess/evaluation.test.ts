@@ -209,6 +209,13 @@ describe("spectator and archive scores together", () => {
       [...series.map((point) => point.index)].sort((a, b) => a - b),
     );
   });
+  it("does not poll an old-rules game without an archive", () => {
+    expect(
+      replayRefetch({
+        state: { data: { archive: null, spectatorEvaluations: null }, dataUpdateCount: 1 },
+      }),
+    ).toBe(false);
+  });
   it("counts the polling allowance from when the game was first seen finished", () => {
     const match = fixtureGame();
     const query = {

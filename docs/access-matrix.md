@@ -17,7 +17,7 @@ registered access levels; handler tests verify ownership and custom role rules.
 |---|---|---|---|---|---|---|
 | Read arena configuration | implemented | read | read | read | `chess.info` | No secrets; includes the per-side hosted budget limits, whether user matches are open, the per-user daily limit and the source-code link (operator config) |
 | Browse published matches | implemented | read | read | read | `chess.list` | Public projection only; cursor bounded |
-| View a published game and replay | implemented | read | read | read | `chess.get` | Drafts never public; includes spectator-only engine scores; a finished game missing some may enqueue one deduplicated background backfill (engine CPU only, no inference spend) |
+| View a published game and replay | implemented | read | read | read | `chess.get` | Drafts never public; an old-rules (`cockpit-v2`) game returns its card with no archive; includes spectator-only engine scores; a finished game missing some may enqueue one deduplicated background backfill (engine CPU only, no inference spend) |
 | Read official results | implemented | read | read | read | `chess.leaderboard` | Controlled runs only |
 | Create a hosted match | implemented | none | own | full | `chess.create` | `hostedPlayerProcedure` (verified email, no API key, 2FA policy). Users: only billed to their own connected OpenRouter key, only while `CHESS_USER_MATCHES_ENABLED`; one active match, `CHESS_USER_DAILY_MATCHES` per 24 h, never official. Admins: operator key (official) or their own key (user caps). Queue cap for everyone; counts under one advisory lock |
 | List hosted models for the create form | implemented | none | read | read | `chess.models` | Server-side OpenRouter catalog, cached 1 h; no key sent |

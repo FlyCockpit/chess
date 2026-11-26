@@ -398,6 +398,7 @@ export function summaryParts(
   currency: Intl.NumberFormat,
 ) {
   const budget = value.budget;
+  const replyCap = replyCapTokens(value.replyCap);
   const parts = [
     timeControlSummary(t, value.time),
     t(`context.${value.context}`),
@@ -407,14 +408,15 @@ export function summaryParts(
       budget: currency.format(budget),
     }),
   ];
+  // An invalid cap is the field's error to explain, not "No reply cap".
+  if (replyCap === null) parts.push(t("create.summary.noReplyCap"));
+  else if (replyCap !== undefined) parts.push(t("create.summary.replyCap", { count: replyCap }));
   if (value.engineEvaluation !== "off") parts.push(t(`engineModes.${value.engineEvaluation}`));
   if (value.remarks !== "off") parts.push(t(`remarkTones.${value.remarks}`));
   if (value.identity === "disclosed") parts.push(t("identity.disclosed"));
   if (value.illegalPolicy === "retry") parts.push(t("create.summary.retry"));
   else if (value.maxAttempts !== DEFAULT_VALUES.maxAttempts)
     parts.push(t("create.summary.forfeitAfter", { count: value.maxAttempts }));
-  const replyCap = replyCapTokens(value.replyCap);
-  if (typeof replyCap === "number") parts.push(t("create.summary.replyCap", { count: replyCap }));
   return parts;
 }
 

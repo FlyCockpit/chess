@@ -22,9 +22,11 @@ import esChess from "@cockpit-chess/locales/src/es-MX/chess.json";
 import { createInstance, type TFunction } from "i18next";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  endingDetailLabel,
   endingHeadlineLabel,
   endingLabel,
   remarkToneLabel,
+  replyCapLabel,
   sideSpendLabel,
   timeControlLabel,
 } from "./ending-label";
@@ -100,6 +102,7 @@ const fixtures = (): Array<[string, MatchArchive]> => [
     "mixed forfeit",
     play(game({ maxAttempts: 5 }), "g1f3", "e7e5", "g1h3", "e5e4", "a3a4", "f3f6", "hello"),
   ],
+  ["unreadable forfeit", play(game(), "e2e5", "[unparseable]", "[unparseable]")],
   ["single forfeit", play(game({ maxAttempts: 1 }), "e2e5")],
   ["cut-off forfeit", cutOff(game(), 3)],
   ["single cut-off forfeit", cutOff(game({ maxAttempts: 1 }), 1)],
@@ -206,9 +209,28 @@ describe("ending labels", () => {
     expect(endingLabel(es, "es-MX", matchEnding(match))).toBe(
       "Blanco perdió por 3 jugadas ilegales (d2d4, d2d3, d2d4; su peón de la columna d ya se había movido)",
     );
+    expect(
+      endingDetailLabel(
+        es,
+        "es-MX",
+        matchEnding(play(game(), "e2e5", "[unparseable]", "[unparseable]")),
+      ),
+    ).toContain("no se pudieron leer 2 respuestas");
     expect(endingHeadlineLabel(es, { kind: "illegal-forfeit", side: "b", illegal: 1 })).toBe(
       "Negro perdió por 1 jugada ilegal",
     );
+  });
+  it("labels capped and uncapped replies in both languages, including v1", () => {
+    const es = i18n.getFixedT("es-MX", "chess") as TFunction<"chess">;
+    expect(replyCapLabel(t, game().config.rules)).toBe("No reply cap");
+    expect(replyCapLabel(es, game().config.rules)).toBe("Sin límite de respuesta");
+    expect(replyCapLabel(t, game({ maxOutputTokens: 64 }).config.rules)).toBe(
+      "Reply cap 64 tokens",
+    );
+    expect(replyCapLabel(es, game({ maxOutputTokens: 64 }).config.rules)).toBe(
+      "Límite de respuesta de 64 tokens",
+    );
+    expect(replyCapLabel(t, asCockpitV1(game()).config.rules)).toBe("Reply cap 512 tokens");
   });
   it("labels the time control and the remark tone", () => {
     for (const rules of [

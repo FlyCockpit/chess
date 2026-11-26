@@ -98,7 +98,14 @@ const rejectedText = (attempts: AttemptEvent[], remarks: boolean) =>
   `${attempts[0]?.side === "w" ? "White" : "Black"} rejected: ${attempts
     .map((attempt) => {
       const remark = remarks ? pgnCommentText(attempt.comment) : "";
-      return `${attempt.move.slice(0, 32)} (${attempt.reason})${remark ? ` — ${remark}` : ""}`;
+      // A cut-off or unreadable reply was archived as a placeholder, never a move: say so.
+      const shown =
+        attempt.reason === "truncated"
+          ? "a reply that ran out of space"
+          : /^\[[a-z]+\]$/.test(attempt.move)
+            ? "an unreadable reply"
+            : `${attempt.move.slice(0, 32)} (${attempt.reason})`;
+      return `${shown}${remark ? ` — ${remark}` : ""}`;
     })
     .join(", ")}`;
 

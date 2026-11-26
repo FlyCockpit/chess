@@ -53,6 +53,16 @@ function recordingContext() {
 }
 
 describe("drawShareCard", () => {
+  it("includes a reply cap only when set", () => {
+    const match = fixtureGame();
+    const open = recordingContext();
+    drawShareCard(open.ctx, match, t, null);
+    expect(open.texts.find((entry) => entry.y === 476)?.text).not.toMatch(/reply cap/i);
+    match.config.rules = { ...match.config.rules, maxOutputTokens: 64 };
+    const capped = recordingContext();
+    drawShareCard(capped.ctx, match, t, null);
+    expect(capped.texts.find((entry) => entry.y === 476)?.text).toContain("Reply cap 64 tokens");
+  });
   it("draws every piece from its outline, centred on its square, light for White and dark for Black", () => {
     const { ctx, texts } = recordingContext();
     const { spy, pieces } = recordPieces(ctx);

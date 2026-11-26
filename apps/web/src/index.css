@@ -331,6 +331,17 @@
 .cc-game-card:hover {
   border-color: var(--cc-accent-line);
 }
+.cc-game-card-old {
+  cursor: default;
+}
+.cc-game-card-old:hover {
+  border-color: var(--cc-line);
+}
+.cc-game-card .cc-card-old-rules {
+  margin-top: 0.75rem;
+  color: var(--cc-text-soft);
+  font-weight: 600;
+}
 .cc-game-card[aria-current="true"] {
   border-color: var(--cc-accent-line);
   box-shadow: inset 0 0 0 1px var(--cc-accent-line);

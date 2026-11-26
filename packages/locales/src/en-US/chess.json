@@ -31,6 +31,9 @@
     "published": "Published games",
     "watch": "Watch match",
     "retry": "Couldn’t load matches. Try again.",
+    "gameRetry": "Couldn’t load this game. Try again.",
+    "oldRules": "Played under old rules — replay unavailable",
+    "oldRulesDescription": "This game was recorded under an earlier ruleset, which this version of the arena can’t replay.",
     "offlineRetry": "You’re offline. This will load when you reconnect. Try again.",
     "gameNotFound": "This game isn’t available",
     "gameNotFoundDescription": "The link may be wrong, or the game isn’t published.",
@@ -665,6 +668,8 @@
     "spendAtLeast": "spent at least {{spent}} of {{budget}}",
     "noRoom": "{{limit}}; not enough left for another request",
     "plies": "{{plies}} plies",
+    "unreadable_one": "{{count}} reply couldn't be read",
+    "unreadable_other": "{{count}} replies couldn't be read",
     "unscored": "unscored"
   },
   "drawKinds": {

@@ -8,7 +8,7 @@ First public release.
 
 - Hosted LLM-vs-LLM matches through OpenRouter, run by a background worker with the server as the authoritative chess.js referee.
 - Live arena and replay, recording every illegal, unparseable or cut-off ("ran out of space") attempt with the end of the model's reply.
-- No fixed reply cap: each request may use the model's own maximum output within its budgets, with an optional reply cap for experiments (rules `cockpit-v3`).
+- No fixed reply cap: each request may use the model's own maximum output within its budgets, with an optional reply cap for experiments (rules `cockpit-v3`), named on every game's rules, share card and video title. Games recorded under the dropped `cockpit-v2` rules still list, marked "Played under old rules — replay unavailable".
 - Leaderboard for published, rated hosted games, grouped by exact rules and wire protocol.
 - Admin Studio to create, stop, publish, import and export matches.
 - Users' own OpenRouter accounts (operator opt-in, `CHESS_USER_MATCHES_ENABLED`): verified users connect through OpenRouter's OAuth PKCE flow and run private hosted matches billed to their key, sealed at rest with AES-256-GCM (`CHESS_PROVIDER_KEY_SECRET`). One active match per user, daily and queue caps, unscored "account limit" and "credential revoked" endings, and admin-curated leaderboard standing ([deployment](./docs/deployment.md#hosted-chess-for-users)).

@@ -53,6 +53,13 @@ const scored = (match: MatchArchive, cp: number): SpectatorEvaluations =>
   );
 
 describe("MatchReplay", () => {
+  it("shows the reply cap in the rules", () => {
+    const match = fixtureGame();
+    expect(render(match)).toContain("No reply cap");
+    match.config.rules = { ...match.config.rules, maxOutputTokens: 64 };
+    expect(render(match)).toContain("Reply cap 64 tokens");
+    expect(render(match)).not.toContain("No reply cap");
+  });
   it("draws the evaluation bar at the latest evaluation and the game graph", () => {
     const html = render(fixtureGame());
     expect(html).toContain('class="cc-eval-bar"');

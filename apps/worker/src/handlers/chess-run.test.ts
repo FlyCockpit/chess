@@ -105,6 +105,7 @@ function row() {
     official: true,
     source: "hosted",
     rulesKey: "rules",
+    rulesVersion: "cockpit-v3",
     contextMode: "fresh",
     identityMode: "hidden",
     runToken: "token",

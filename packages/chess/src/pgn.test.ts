@@ -155,6 +155,23 @@ describe("PGN export", () => {
       `${"%a".repeat(60)}%end`,
     ]);
   });
+  it("names cut-off and unreadable replies in words, never their placeholders", () => {
+    const match = createMatch({ white, black, rules: { remarks: "trash-talk", maxAttempts: 3 } });
+    const chess = boardAt(match);
+    submitMove(match, chess, "[truncated]", "Thinking…", undefined, {
+      text: "Let me think",
+      stopReason: "output-truncated",
+    });
+    submitMove(match, chess, "[unparseable]", "Hmm.");
+    submitMove(match, chess, "e2e5", "There.");
+    expect(match.termination).toBe("illegal-forfeit");
+    const flat = exportPgn(match).replace(/\s+/g, " ");
+    expect(flat).toContain(
+      "White rejected: a reply that ran out of space — Thinking…, an unreadable reply — Hmm., e2e5 (illegal) — There.",
+    );
+    expect(flat).toContain("1 reply couldn't be read");
+    expect(flat).not.toMatch(/\[(truncated|unparseable)\]/);
+  });
   it("keeps the remarks of rejected attempts, including a forfeit's", () => {
     const match = createMatch({ white, black, rules: { remarks: "trash-talk", maxAttempts: 2 } });
     const chess = boardAt(match);

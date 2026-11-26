@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   archiveSchema,
   createMatch,
+  isOldRulesVersion,
   MAX_ARCHIVE_BYTES,
   type MatchArchive,
   matchConfigSchema,
@@ -46,15 +47,24 @@ const summary = {
   official: true,
   source: true,
   rulesKey: true,
+  rulesVersion: true,
   contextMode: true,
   identityMode: true,
   ending: true,
 } satisfies Prisma.ChessMatchSelect;
 /** The stored short ending; anything malformed reads as unknown rather than failing the list. */
 const cardEnding = endingSummarySchema.nullable().catch(null);
-const withEnding = <Row extends { ending: Prisma.JsonValue }>(row: Row) => ({
+/**
+ * A card: the stored short ending, and `oldRules` when the game was played under a
+ * ruleset this build no longer reads (it lists, but has no replay).
+ */
+const withEnding = <Row extends { ending: Prisma.JsonValue; rulesVersion: string | null }>({
+  rulesVersion,
+  ...row
+}: Row) => ({
   ...row,
   ending: cardEnding.parse(row.ending),
+  oldRules: isOldRulesVersion(rulesVersion),
 });
 const slugInput = z.object({
   slug: z
@@ -80,6 +90,7 @@ const metadata = (match: MatchArchive) => ({
   blackName: match.config.black.name,
   source: match.source,
   rulesKey: rulesKey(match),
+  rulesVersion: match.config.rules.version,
   contextMode: match.config.rules.context,
   identityMode: match.config.rules.opponentIdentity,
 });
@@ -120,11 +131,13 @@ const ownDraftSelect = {
 } satisfies Prisma.ChessMatchSelect;
 const ownInspectSelect = {
   ...ownDraftSelect,
+  rulesVersion: true,
   spectatorEvaluations: true,
   official: true,
   createdAt: true,
   credentialSource: true,
 } satisfies Prisma.ChessMatchSelect;
+const OLD_RULES_MESSAGE = "Played under old rules; this version can't replay it";
 const ownIdSelect = { id: true } satisfies Prisma.ChessMatchSelect;
 async function ownDraft<
   S extends typeof ownDraftSelect | typeof ownInspectSelect | typeof ownIdSelect,
@@ -200,6 +213,9 @@ const connectionGateSelect = {
 /** Inspect/stop/publish of the caller's own match, shared with the CLI's admin surface. */
 async function inspectOwnMatch(slug: string, ownerId: string) {
   const row = await ownDraft(slug, ownerId, ownInspectSelect);
+  // Studio offers no preview of an old-rules game; the CLI gets a reason, not "invalid".
+  if (isOldRulesVersion(row.rulesVersion))
+    throw new ORPCError("BAD_REQUEST", { message: OLD_RULES_MESSAGE });
   const archive = checkedArchive(row.archive, row.status);
   const queuePosition =
     row.status === "queued"
@@ -276,8 +292,11 @@ export const chessRouter = {
       select: { ...summary, archive: true, spectatorEvaluations: true },
     });
     if (!row) throw new ORPCError("NOT_FOUND");
-    const { spectatorEvaluations, ...rest } = row;
-    const archive = checkedArchive(row.archive, row.status);
+    const { spectatorEvaluations, archive: stored, ...rest } = row;
+    // An old-rules game has no replay: say so with its card instead of failing the read.
+    if (isOldRulesVersion(row.rulesVersion))
+      return { ...withEnding(rest), archive: null, spectatorEvaluations: null };
+    const archive = checkedArchive(stored, row.status);
     return {
       ...withEnding(rest),
       archive,

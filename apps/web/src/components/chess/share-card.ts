@@ -1,10 +1,15 @@
-import { boardAt, type MatchArchive, matchStats, remarkTone } from "@cockpit-chess/chess";
+import { boardAt, type MatchArchive, matchStats, remarkTone, replyCap } from "@cockpit-chess/chess";
 import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
 import type { SpectatorEvaluations } from "@cockpit-chess/chess/spectator";
 import type { TFunction } from "i18next";
 import { drawBoard } from "./board-canvas";
 import { illegalMark, markSquares } from "./board-motion";
-import { endingHeadlineLabel, remarkToneLabel, timeControlLabel } from "./ending-label";
+import {
+  endingHeadlineLabel,
+  remarkToneLabel,
+  replyCapLabel,
+  timeControlLabel,
+} from "./ending-label";
 import { evaluationSeries, pointForPosition, shortScore } from "./evaluation";
 import { gameSource } from "./use-board-playback";
 
@@ -105,7 +110,13 @@ export function drawShareCard(
     620,
   );
   ctx.fillText(
-    `${timeControlLabel(t, match.config.rules)} · ${t(`context.${match.config.rules.context}`)} · ${t(`identity.${match.config.rules.opponentIdentity}`)}`,
+    [
+      timeControlLabel(t, match.config.rules),
+      // A capped game names its cap early, so a long line ellipsizes the rest first.
+      ...(replyCap(match.config.rules) === null ? [] : [replyCapLabel(t, match.config.rules)]),
+      t(`context.${match.config.rules.context}`),
+      t(`identity.${match.config.rules.opponentIdentity}`),
+    ].join(" · "),
     56,
     476,
     620,

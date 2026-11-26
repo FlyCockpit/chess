@@ -14,6 +14,9 @@ model ChessMatch {
   official             Boolean   @default(false)
   source               String    @default("hosted")
   rulesKey             String
+  /// The archive's ruleset version (`config.rules.version`). Rows under a version this
+  /// build no longer reads list as "old rules" and are never parsed for replay.
+  rulesVersion         String?
   contextMode          String
   identityMode         String
   runToken             String?

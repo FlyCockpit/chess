@@ -164,6 +164,18 @@ export const rulesV3Schema = z
 export const rulesSchema = z.union([rulesV3Schema, rulesV1Schema]);
 export type RulesV1 = z.infer<typeof rulesV1Schema>;
 export type RulesV3 = z.infer<typeof rulesV3Schema>;
+/** The ruleset versions this build reads; an archive under any other one can't be replayed. */
+export const RULES_VERSIONS = [
+  "cockpit-v3",
+  "cockpit-v1",
+] as const satisfies readonly Rules["version"][];
+/**
+ * Whether a stored row's ruleset version is one this build no longer reads (cockpit-v2,
+ * dropped without a reader in f6d8550). Null (no version recorded) is never old.
+ */
+export function isOldRulesVersion(version: string | null | undefined): boolean {
+  return typeof version === "string" && !(RULES_VERSIONS as readonly string[]).includes(version);
+}
 /** The reply cap a ruleset sets in tokens, or null when it sets none (cockpit-v3 default). */
 export function replyCap(rules: Rules): number | null {
   return rules.maxOutputTokens ?? null;

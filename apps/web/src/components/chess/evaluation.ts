@@ -211,15 +211,17 @@ const finishedAtFetch = new WeakMap<object, number>();
  */
 export function replayRefetch(query: {
   state: {
-    data?: { archive: MatchArchive; spectatorEvaluations: SpectatorEvaluations | null };
+    /** A null archive is an old-rules game: nothing to poll. */
+    data?: { archive: MatchArchive | null; spectatorEvaluations: SpectatorEvaluations | null };
     dataUpdateCount: number;
   };
 }) {
   const { data, dataUpdateCount } = query.state;
-  if (data && data.archive.status !== "running" && !finishedAtFetch.has(query))
+  if (!data?.archive) return false;
+  if (data.archive.status !== "running" && !finishedAtFetch.has(query))
     finishedAtFetch.set(query, dataUpdateCount);
   return replayRefetchInterval(
-    data,
+    { archive: data.archive, spectatorEvaluations: data.spectatorEvaluations },
     dataUpdateCount - (finishedAtFetch.get(query) ?? dataUpdateCount),
   );
 }

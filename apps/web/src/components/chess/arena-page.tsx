@@ -156,13 +156,14 @@ function Arena({
     ? []
     : (list?.pages.flatMap((page) => page.items) ?? []);
   const current = selected?.archive ?? demo;
+  const oldRulesGame = selected && !selected.archive ? selected : undefined;
   // Offline, TanStack pauses a first load (`fetchStatus: "paused"`) instead of failing it: say
   // so where the skeleton would sit, with Try again. It loads by itself on reconnect.
   // docs/design-system.md § Offline and network failures
   const gamePaused = pendingGame && gameFetchStatus === "paused";
   const gameRetry = (
     <button className="cc-error" type="button" onClick={() => void retryGame()}>
-      {gamePaused || !online ? t("arena.offlineRetry") : t("arena.retry")}
+      {gamePaused || !online ? t("arena.offlineRetry") : t("arena.gameRetry")}
     </button>
   );
   const replay = (
@@ -180,6 +181,15 @@ function Arena({
         </div>
       ) : slug && (gamePaused || !selected) ? (
         gameRetry
+      ) : oldRulesGame ? (
+        <div className="cc-empty" role="status">
+          <h3>{oldRulesGame.title}</h3>
+          <p>{t("arena.oldRules")}</p>
+          <p>{t("arena.oldRulesDescription")}</p>
+          <button type="button" className="cc-button mt-5" onClick={() => onNavigate("arena")}>
+            {t("arena.all")}
+          </button>
+        </div>
       ) : (
         <MatchReplay
           key={selected?.id ?? "demonstration"}
@@ -258,28 +268,41 @@ function Arena({
       ) : (
         games.length > 0 && (
           <div className="cc-card-grid">
-            {games.map((game) => (
-              <button
-                type="button"
-                key={game.id}
-                className="cc-game-card"
-                aria-current={game.slug === slug ? "true" : undefined}
-                onClick={() => onNavigate("arena", game.slug)}
-              >
-                <span className="cc-pill">{t(`arena.status.${game.status}`)}</span>
-                <h3>{game.title}</h3>
-                <p>
-                  {game.whiteName} <span aria-hidden="true">×</span> {game.blackName}
-                </p>
-                {game.ending && (
-                  <p className="cc-card-ending">{endingHeadlineLabel(t, game.ending)}</p>
-                )}
-                <div className="cc-rule-tags mt-4">
-                  <span>{t(`context.${game.contextMode}`)}</span>
-                  <span>{t(game.official ? "arena.official" : "arena.local")}</span>
-                </div>
-              </button>
-            ))}
+            {games.map((game) => {
+              const body = (
+                <>
+                  <span className="cc-pill">{t(`arena.status.${game.status}`)}</span>
+                  <h3>{game.title}</h3>
+                  <p>
+                    {game.whiteName} <span aria-hidden="true">×</span> {game.blackName}
+                  </p>
+                  {game.ending && (
+                    <p className="cc-card-ending">{endingHeadlineLabel(t, game.ending)}</p>
+                  )}
+                  <div className="cc-rule-tags mt-4">
+                    <span>{t(`context.${game.contextMode}`)}</span>
+                    <span>{t(game.official ? "arena.official" : "arena.local")}</span>
+                  </div>
+                </>
+              );
+              // An old-rules game has no replay to open: a plain card that says so.
+              return game.oldRules ? (
+                <article key={game.id} className="cc-game-card cc-game-card-old">
+                  {body}
+                  <p className="cc-card-old-rules">{t("arena.oldRules")}</p>
+                </article>
+              ) : (
+                <button
+                  type="button"
+                  key={game.id}
+                  className="cc-game-card"
+                  aria-current={game.slug === slug ? "true" : undefined}
+                  onClick={() => onNavigate("arena", game.slug)}
+                >
+                  {body}
+                </button>
+              );
+            })}
           </div>
         )
       )}

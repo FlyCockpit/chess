@@ -293,10 +293,13 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                       {game.ending && (
                         <p className="cc-card-ending">{endingHeadlineLabel(t, game.ending)}</p>
                       )}
+                      {game.oldRules && <p className="cc-card-old-rules">{t("arena.oldRules")}</p>}
                       <div className="cc-export-row">
-                        <button type="button" onClick={() => setSelected(game.slug)}>
-                          {t("studio.preview")}
-                        </button>
+                        {!game.oldRules && (
+                          <button type="button" onClick={() => setSelected(game.slug)}>
+                            {t("studio.preview")}
+                          </button>
+                        )}
                         <button
                           type="button"
                           disabled={publish.isPending}
@@ -315,7 +318,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                             {t("studio.stop")}
                           </button>
                         )}
-                        {game.published && (
+                        {game.published && !game.oldRules && (
                           <button type="button" onClick={() => onWatch(game.slug)}>
                             {t("studio.view")}
                           </button>

@@ -9,6 +9,7 @@ import { beforeAll, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
   admitted: true,
+  items: [] as Record<string, unknown>[],
   enabled: [] as unknown[],
   auth: {
     state: { status: "authenticated", session: { user: { role: "admin" } } } as {
@@ -46,7 +47,7 @@ vi.mock("@tanstack/react-query", () => ({
   useInfiniteQuery: ({ enabled }: { enabled?: boolean }) => {
     fixture.enabled.push(enabled);
     return {
-      data: { pages: [{ items: [] }] },
+      data: { pages: [{ items: fixture.items }] },
       isPending: false,
       isError: false,
       refetch: vi.fn(),
@@ -339,4 +340,27 @@ it("shows a queued match's position and the next step after an account-limit end
   const html = render();
   expect(html).not.toContain("Queued · position");
   expect(html).toContain("add credits on OpenRouter, then start a new match");
+});
+it("keeps publishing controls but hides replay controls for old-rules cards", () => {
+  fixture.items = [false, true].map((published) => ({
+    id: String(published),
+    slug: String(published),
+    title: `Old ${published}`,
+    status: "completed",
+    whiteName: "W",
+    blackName: "B",
+    ending: null,
+    oldRules: true,
+    published,
+  }));
+  try {
+    const html = render();
+    expect(html).toContain(enChess.arena.oldRules);
+    expect(html).not.toContain(`>${enChess.studio.preview}</button>`);
+    expect(html).not.toContain(`>${enChess.studio.view}</button>`);
+    expect(html).toContain(`>${enChess.studio.publish}</button>`);
+    expect(html).toContain(`>${enChess.studio.unpublish}</button>`);
+  } finally {
+    fixture.items = [];
+  }
 });

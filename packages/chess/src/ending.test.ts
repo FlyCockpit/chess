@@ -65,9 +65,7 @@ describe("how a match ended, in plain words", () => {
       illegal: 3,
       truncated: 3,
     });
-    expect(text).toBe(
-      "White forfeited: 3 replies ran out of space ([truncated], [truncated], [truncated]; ran out of space before giving a move)",
-    );
+    expect(text).toBe("White forfeited: 3 replies ran out of space");
     const mixed = game();
     submitMove(mixed, boardAt(mixed), "[truncated]", "", undefined, cutOff);
     submitMove(mixed, boardAt(mixed), "e2e5");
@@ -78,8 +76,20 @@ describe("how a match ended, in plain words", () => {
       "illegal",
       "truncated",
     ]);
+    expect(describeMatch(mixed).text).toBe(
+      "White forfeited: 3 rejected moves (2 ran out of space) (e2e5; its pawn on e2 cannot legally move to e5)",
+    );
     expect(endingHeadline(endingSummary(describeMatch(mixed).ending))).toBe(
       "White forfeited: 3 rejected moves (2 ran out of space)",
+    );
+  });
+  it("counts unreadable placeholders while retaining real unparseable tokens", () => {
+    const match = play(game(), "e2e5", "[unparseable]", "[unparseable]");
+    expect(describeMatch(match).text).toBe(
+      "White forfeited: 3 illegal moves (e2e5; its pawn on e2 cannot legally move to e5; 2 replies couldn't be read)",
+    );
+    expect(describeMatch(play(game({ maxAttempts: 1 }), "hello")).text).toContain(
+      "hello; not a move in UCI notation",
     );
   });
   it("explains each kind of illegal attempt, listing reasons per move when they differ", () => {

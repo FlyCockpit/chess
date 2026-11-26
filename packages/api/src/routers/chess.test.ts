@@ -112,6 +112,7 @@ function row() {
     official: false,
     source: "local",
     rulesKey: "rules",
+    rulesVersion: null,
     contextMode: "fresh",
     identityMode: "hidden",
     runToken: null,
@@ -248,6 +249,39 @@ describe("chess public projection and operator boundaries", () => {
       }),
     );
   });
+  it("maps stored rules versions to public cards without exposing the version", async () => {
+    db.chessMatch.findMany.mockResolvedValue(
+      ["cockpit-v2", "cockpit-v3", null].map((rulesVersion, i) => ({
+        ...row(),
+        id: String(i),
+        rulesVersion,
+      })) as never,
+    );
+    const result = await client(null).list({ limit: 5 });
+    expect(result.items.map((item) => item.oldRules)).toEqual([true, false, false]);
+    for (const item of result.items) expect(item).not.toHaveProperty("rulesVersion");
+  });
+  it("returns an old-rules card without parsing its invalid archive", async () => {
+    db.chessMatch.findFirst.mockResolvedValue({
+      ...row(),
+      rulesVersion: "cockpit-v2",
+      archive: { invalid: true },
+    });
+    const game = await client(null).get({ slug: "test-game" });
+    expect(game).toMatchObject({ oldRules: true, archive: null, spectatorEvaluations: null });
+    expect(game).not.toHaveProperty("rulesVersion");
+  });
+  it("tells the owner an old-rules game can't be inspected instead of calling it invalid", async () => {
+    db.chessMatch.findFirst.mockResolvedValue({
+      ...row(),
+      rulesVersion: "cockpit-v2",
+      archive: { invalid: true },
+    });
+    await expect(client().inspect({ slug: "test-game" })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Played under old rules; this version can't replay it",
+    });
+  });
   it("keeps drafts indistinguishable from missing games", async () => {
     db.chessMatch.findFirst.mockResolvedValue(null);
     await expect(client(null).get({ slug: "private-game" })).rejects.toMatchObject({
@@ -336,6 +370,7 @@ describe("chess public projection and operator boundaries", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           ownerId: "owner",
+          rulesVersion: "cockpit-v3",
           status: "queued",
           official: true,
           published: false,
@@ -357,6 +392,7 @@ describe("chess public projection and operator boundaries", () => {
           published: false,
           official: false,
           source: "local",
+          rulesVersion: "cockpit-v3",
           archive: expect.objectContaining({ source: "local" }),
         }),
       }),

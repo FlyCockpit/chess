@@ -4,6 +4,7 @@ import {
   type Color,
   type EngineEvaluation,
   type MatchArchive,
+  replyCap,
   type Square,
   sideClockMs,
 } from "@cockpit-chess/chess";
@@ -22,7 +23,12 @@ import {
   moreAttemptsCaption,
   moveMotion,
 } from "../board-motion";
-import { endingDetailLabel, endingHeadlineLabel, timeControlLabel } from "../ending-label";
+import {
+  endingDetailLabel,
+  endingHeadlineLabel,
+  replyCapLabel,
+  timeControlLabel,
+} from "../ending-label";
 import { evaluationSeries, shortScore, toolEvaluation, whiteShare } from "../evaluation";
 import { describeLookup, type LookupTarget } from "../legal-lookup";
 
@@ -467,7 +473,15 @@ export function buildVideoPlan(
         white: name("w"),
         black: name("b"),
         versus: t("video.versus"),
-        rules: `${timeControlLabel(t as unknown as TFunction<"chess">, match.config.rules)} · ${t(`context.${match.config.rules.context}`)} · ${t(`identity.${match.config.rules.opponentIdentity}`)}`,
+        rules: [
+          timeControlLabel(t as unknown as TFunction<"chess">, match.config.rules),
+          // A capped game names its cap early, so the one-line title ellipsizes the rest first.
+          ...(replyCap(match.config.rules) === null
+            ? []
+            : [replyCapLabel(t as unknown as TFunction<"chess">, match.config.rules)]),
+          t(`context.${match.config.rules.context}`),
+          t(`identity.${match.config.rules.opponentIdentity}`),
+        ].join(" · "),
       },
     },
   });

@@ -37,6 +37,7 @@ import {
   endingHeadlineLabel,
   endingLabel,
   remarkToneLabel,
+  replyCapLabel,
   sideSpendLabel,
   timeControlLabel,
 } from "./ending-label";
@@ -699,6 +700,7 @@ export function MatchReplay({
           <span>{t(`accounting.${match.config.rules.tokenAccounting}`)}</span>
           <span>{t(`engineModes.${match.config.rules.engineEvaluation}`)}</span>
           <span>{timeControlLabel(t, match.config.rules)}</span>
+          <span>{replyCapLabel(t, match.config.rules)}</span>
           <span>{remarkToneLabel(t, tone)}</span>
           <span>
             {t(

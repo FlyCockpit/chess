@@ -14,6 +14,9 @@
     "published": "Juegos publicados",
     "watch": "Ver partida",
     "retry": "No se pudieron cargar los partidos. Inténtalo de nuevo.",
+    "gameRetry": "No se pudo cargar esta partida. Inténtalo de nuevo.",
+    "oldRules": "Jugada con reglas anteriores — repetición no disponible",
+    "oldRulesDescription": "Esta partida se registró con un reglamento anterior que esta versión de la arena no puede reproducir.",
     "offlineRetry": "No tienes conexión. Esto se cargará cuando te vuelvas a conectar. Inténtalo de nuevo.",
     "gameNotFound": "Esta partida no está disponible",
     "gameNotFoundDescription": "Puede que el enlace esté mal o que la partida no esté publicada.",
@@ -665,6 +668,8 @@
     "spendAtLeast": "gastó al menos {{spent}} de {{budget}}",
     "noRoom": "{{limit}}; no queda suficiente para otra solicitud",
     "plies": "{{plies}} medias jugadas",
+    "unreadable_one": "no se pudo leer {{count}} respuesta",
+    "unreadable_other": "no se pudieron leer {{count}} respuestas",
     "unscored": "sin puntuar"
   },
   "drawKinds": {

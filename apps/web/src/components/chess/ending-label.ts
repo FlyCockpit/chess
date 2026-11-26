@@ -3,6 +3,7 @@ import {
   type matchStats,
   type RemarkTone,
   type Rules,
+  replyCap,
   type Side,
   sideClockMs,
 } from "@cockpit-chess/chess";
@@ -10,6 +11,7 @@ import {
   displayMove,
   type EndingSummary,
   endingSummary,
+  forfeitAttempts,
   type IllegalWhy,
   type MatchEnding,
 } from "@cockpit-chess/chess/ending";
@@ -138,14 +140,18 @@ function illegalWhyLabel(t: ChessT, why: IllegalWhy) {
 export function endingDetailLabel(t: ChessT, locale: string, ending: MatchEnding): string | null {
   switch (ending.kind) {
     case "illegal-forfeit": {
-      const whys = ending.attempts.map((attempt) => illegalWhyLabel(t, attempt.why));
-      if (!whys.length) return null;
-      const moves = ending.attempts.map((attempt) => displayMove(attempt.move));
-      if (whys.every((why) => why === whys[0]))
-        return t("endingDetail.sameReason", { moves: moves.join(", "), why: whys[0] });
-      return moves
-        .map((move, index) => t("endingDetail.moveReason", { move, why: whys[index] }))
-        .join("; ");
+      const { listed, unreadable } = forfeitAttempts(ending.attempts);
+      const whys = listed.map((attempt) => illegalWhyLabel(t, attempt.why));
+      const moves = listed.map((attempt) => displayMove(attempt.move));
+      const parts: string[] = [];
+      if (whys.length && whys.every((why) => why === whys[0]))
+        parts.push(t("endingDetail.sameReason", { moves: moves.join(", "), why: whys[0] }));
+      else
+        parts.push(
+          ...moves.map((move, index) => t("endingDetail.moveReason", { move, why: whys[index] })),
+        );
+      if (unreadable) parts.push(t("endingDetail.unreadable", { count: unreadable }));
+      return parts.length ? parts.join("; ") : null;
     }
     case "timeout":
       return ending.clockMs === null
@@ -198,6 +204,14 @@ export function timeControlLabel(t: ChessT, rules: Rules) {
     white: durationLabel(t, white),
     black: durationLabel(t, black),
   });
+}
+
+/** "Reply cap 64 tokens" or "No reply cap": a cap is part of the rules, so every view names it. */
+export function replyCapLabel(t: ChessT, rules: Rules) {
+  const cap = replyCap(rules);
+  return cap === null
+    ? t("create.summary.noReplyCap")
+    : t("create.summary.replyCap", { count: cap });
 }
 
 export function remarkToneLabel(t: ChessT, tone: RemarkTone) {

@@ -165,7 +165,7 @@ describe("defaults", () => {
   });
   it("summarise in one line", () => {
     expect(summaryParts(DEFAULT_VALUES, t, usd).join(" · ")).toBe(
-      "Untimed · Fresh context · Legal-move tool · Strict format · $1.00 budget",
+      "Untimed · Fresh context · Legal-move tool · Strict format · $1.00 budget · No reply cap",
     );
     expect(summaryParts({ ...DEFAULT_VALUES, illegalPolicy: "retry" }, t, usd).at(-1)).toBe(
       "Keeps trying on illegal moves",
@@ -292,7 +292,10 @@ describe("validation keeps the hosted bounds", () => {
     expect(summaryParts({ ...DEFAULT_VALUES, replyCap: "2048" }, t, usd)).toContain(
       "Reply cap 2048 tokens",
     );
-    expect(summaryParts(DEFAULT_VALUES, t, usd).join(" · ")).not.toContain("Reply cap");
+    expect(summaryParts(DEFAULT_VALUES, t, usd)).toContain("No reply cap");
+    expect(summaryParts({ ...DEFAULT_VALUES, replyCap: "63" }, t, usd).join(" · ")).not.toMatch(
+      /reply cap/i,
+    );
     const schema = createMatchSchema(t);
     for (const replyCap of ["63", "131073", "1.5", "lots"]) {
       expect(toMatchConfig({ ...DEFAULT_VALUES, replyCap }, undefined, t).success).toBe(false);

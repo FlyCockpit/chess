@@ -275,6 +275,22 @@ export function displayMove(move: string) {
   const line = move.replace(/[\p{Cc}\s]+/gu, " ").trim();
   return line.length > 16 ? `${line.slice(0, 15)}…` : line;
 }
+/**
+ * A forfeit's attempts for its detail: the ones with a move token to show, and how many
+ * replies gave none (the runner archived a placeholder, never shown as a move). Cut-off
+ * replies are left out: the headline already counts them.
+ */
+export function forfeitAttempts(attempts: IllegalAttempt[]) {
+  const placeholder = (attempt: IllegalAttempt) =>
+    attempt.why.code === "truncated" ||
+    (attempt.why.code === "unparseable" && /^\[[a-z]+\]$/.test(attempt.move));
+  return {
+    listed: attempts.filter((attempt) => !placeholder(attempt)),
+    unreadable: attempts.filter(
+      (attempt) => attempt.why.code === "unparseable" && placeholder(attempt),
+    ).length,
+  };
+}
 export function illegalWhyText(why: IllegalWhy) {
   switch (why.code) {
     case "unparseable":
@@ -367,11 +383,16 @@ const NO_ROOM_TEXT = "not enough left for another request";
 export function endingDetail(ending: MatchEnding): string | null {
   switch (ending.kind) {
     case "illegal-forfeit": {
-      const whys = ending.attempts.map((attempt) => illegalWhyText(attempt.why));
-      if (!whys.length) return null;
-      const moves = ending.attempts.map((attempt) => displayMove(attempt.move));
-      if (whys.every((why) => why === whys[0])) return `${moves.join(", ")}; ${whys[0]}`;
-      return moves.map((move, index) => `${move}: ${whys[index]}`).join("; ");
+      const { listed, unreadable } = forfeitAttempts(ending.attempts);
+      const whys = listed.map((attempt) => illegalWhyText(attempt.why));
+      const moves = listed.map((attempt) => displayMove(attempt.move));
+      const parts: string[] = [];
+      if (whys.length && whys.every((why) => why === whys[0]))
+        parts.push(`${moves.join(", ")}; ${whys[0]}`);
+      else parts.push(...moves.map((move, index) => `${move}: ${whys[index]}`));
+      if (unreadable)
+        parts.push(`${unreadable} ${unreadable === 1 ? "reply" : "replies"} couldn't be read`);
+      return parts.length ? parts.join("; ") : null;
     }
     case "timeout":
       return ending.clockMs === null ? null : `${formatDuration(ending.clockMs)} clock`;
