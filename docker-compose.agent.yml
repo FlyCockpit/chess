@@ -62,7 +62,7 @@ services:
   # override the mailpit defaults. MP_SMTP_AUTH_ACCEPT_ANY +
   # MP_SMTP_AUTH_ALLOW_INSECURE let nodemailer connect without auth/TLS.
   mailpit:
-    image: axllent/mailpit:v1.33
+    image: axllent/mailpit:v1.34
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY: "true"
       MP_SMTP_AUTH_ALLOW_INSECURE: "true"

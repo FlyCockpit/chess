@@ -71,7 +71,7 @@ services:
   # SMTP_* values in .env to send through a provider instead — the app
   # switches over with no other change.
   mailpit:
-    image: axllent/mailpit:v1.33
+    image: axllent/mailpit:v1.34
     container_name: cockpit-chess-dev-mailpit
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY: "true"
