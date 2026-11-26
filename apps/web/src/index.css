@@ -1478,12 +1478,17 @@
 .cc-choice-wide {
   grid-column: 1 / -1;
 }
+.cc-choice select {
+  width: 100%;
+}
+/* No width for the inputs: the form's Input is already full width, and a
+ * RangeField's typed box sits beside its slider at its own width (w-24/w-28);
+ * a 100% here took the whole row and squeezed the slider to nothing. */
 .cc-choice select,
 .cc-create-body input[type="number"],
 .cc-create-body input[type="text"],
 .cc-create-body input:not([type]) {
   min-height: 44px;
-  width: 100%;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--cc-line-strong);
   border-radius: 5px;

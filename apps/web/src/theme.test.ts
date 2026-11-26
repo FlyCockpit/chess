@@ -104,3 +104,11 @@ describe("toasts", () => {
     );
   });
 });
+
+describe("create match sheet", () => {
+  it("gives its inputs no width, so a RangeField's typed box leaves room for the slider", () => {
+    const rule = /\.cc-create-body input\[type="text"\],[^{]*\{([^}]*)\}/.exec(css);
+    expect(rule?.[1]).toBeDefined();
+    expect(rule?.[1]).not.toMatch(/(^|[\s;])width\s*:/);
+  });
+});
