@@ -353,6 +353,29 @@ const RESERVE_PROBE = `(async () => {
   return JSON.stringify({ vh: window.innerHeight, inset, before, after, contentEnd, footer: footerEnd });
 })()`;
 
+/**
+ * Runs in the page before the probes: waits (8s at most) until `<main>`'s
+ * content stops growing for half a second. The footer is there before the
+ * cards, the leaderboard rows and the demonstration board, so a page measured
+ * as soon as it shows grows after the probe scrolled to its end, and the
+ * footer it measured is no longer the scroller's last box. True once settled,
+ * false if it still changes after 8s (the caller reports that page).
+ * Self-contained: no closures.
+ */
+export const SETTLED = `(async () => {
+  const main = document.querySelector('[data-scroll-restoration-id="app-main"]');
+  if (!main) return true;
+  let last = -1;
+  let still = 0;
+  for (let i = 0; i < 80 && still < 5; i++) {
+    const height = main.scrollHeight;
+    still = height === last ? still + 1 : 0;
+    last = height;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return still >= 5;
+})()`;
+
 // Runs in the page (agent-browser eval). Self-contained: no closures.
 const PROBE = `(async () => {
   const html = document.documentElement;
@@ -641,6 +664,10 @@ async function main(): Promise<number> {
           await browser(["open", `${base}${page.path}`]);
           await browser(["wait", page.ready]);
           const label = `${page.name} ${w}×${h}`;
+          if (!(await evalJson<boolean>(SETTLED))) {
+            failures.push(`${label}: the content kept changing for 8s, so it was not measured`);
+            continue;
+          }
           const probe = await evalJson<Probe>(PROBE);
           failures.push(...judgeLayout(label, probe, page.expect));
           failures.push(...judgeReserve(label, await evalJson<ReserveProbe | null>(RESERVE_PROBE)));

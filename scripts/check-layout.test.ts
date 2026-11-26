@@ -9,6 +9,7 @@ import {
   judgeReserve,
   type Probe,
   type ReserveProbe,
+  SETTLED,
   shippedLocales,
 } from "./check-layout.ts";
 
@@ -317,5 +318,44 @@ describe("judgeHeader", () => {
     assert.ok(locales.includes("en-US") && locales.includes("es-MX"), locales.join(","));
     for (const w of [320, 390, 640, 650, 651, 768, 1024, 1279, 1280, 1440, 1920, 3840])
       assert.ok((HEADER_WIDTHS as readonly number[]).includes(w), `${w}px`);
+  });
+});
+
+describe("SETTLED", () => {
+  /** Runs the page script against a fake <main> whose height follows `heights`, then stays at the last. */
+  const settle = async (heights: number[] | null) => {
+    let reads = 0;
+    const main = {
+      get scrollHeight() {
+        reads++;
+        return heights ? (heights[Math.min(reads - 1, heights.length - 1)] ?? 0) : 0;
+      },
+    };
+    // The page script reads the globals `document` and `setTimeout`; parameters stand in for
+    // them, and the timer fires at once, so the 8s limit costs no real time.
+    const run = new Function("document", "setTimeout", `return ${SETTLED};`) as (
+      doc: unknown,
+      timer: (done: () => void) => void,
+    ) => Promise<boolean>;
+    const settled = await run({ querySelector: () => (heights ? main : null) }, (done) => done());
+    return { settled, reads };
+  };
+
+  it("waits until the content stops growing (cards and rows arrive after the footer)", async () => {
+    const { settled, reads } = await settle([681, 681, 986, 1200]);
+    assert.equal(settled, true);
+    // Three changes, then five unchanged reads in a row.
+    assert.equal(reads, 9);
+  });
+
+  it("gives up after 8s on a page that keeps changing, so the caller can report it", async () => {
+    const growing = Array.from({ length: 100 }, (_, i) => 500 + i * 10);
+    const { settled, reads } = await settle(growing);
+    assert.equal(settled, false);
+    assert.equal(reads, 80);
+  });
+
+  it("does not wait on a page without the app's scroller", async () => {
+    assert.deepEqual(await settle(null), { settled: true, reads: 0 });
   });
 });
