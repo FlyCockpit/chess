@@ -1,16 +1,28 @@
-import { Chess, createMatch, type MatchArchive, submitMove } from "@cockpit-chess/chess";
+import {
+  Chess,
+  createMatch,
+  legalMoves,
+  type MatchArchive,
+  submitMove,
+  validateArchive,
+} from "@cockpit-chess/chess";
 import { gamePositions } from "@cockpit-chess/chess/spectator";
 import chessEn from "@locales/en-US/chess.json";
 import i18next from "i18next";
 import { describe, expect, it } from "vitest";
-import { videoFixtureGame } from "./video-fixture";
+import { ILLEGAL_MS } from "../board-motion";
+import { videoFixtureGame, videoIllegalFixtureGame } from "./video-fixture";
 import {
   AUTO_MAX_SECONDS_PER_MOVE,
   buildVideoPlan,
   cleanRemark,
   defaultVideoOptions,
   FINAL_HOLD_SECONDS,
+  FLASH_FRAMES,
+  ILLEGAL_HOLD_SECONDS,
+  LOOKUP_SECONDS,
   pacing,
+  STILL_ATTEMPT_SECONDS,
   TITLE_SECONDS,
   VIDEO_FPS,
   type VideoOptions,
@@ -51,6 +63,8 @@ const all: VideoOptions = {
   evalBar: true,
   remarks: true,
   clocks: true,
+  illegal: false,
+  lookups: false,
 };
 
 function seconds(positions: number, remarks: number, pace: VideoOptions["pace"]) {
@@ -103,13 +117,21 @@ describe("options", () => {
 
   it("turns off what the match does not have", () => {
     const match = plainMatch(["e2e4", "e7e5"]);
-    expect(videoFeatures(match)).toEqual({ evalBar: false, remarks: false, clocks: false });
+    expect(videoFeatures(match)).toEqual({
+      evalBar: false,
+      remarks: false,
+      clocks: false,
+      illegal: false,
+      lookups: false,
+    });
     expect(defaultVideoOptions(match)).toEqual({
       aspect: "square",
       pace: "auto",
       evalBar: false,
       remarks: false,
       clocks: false,
+      illegal: false,
+      lookups: false,
     });
   });
 });
@@ -194,7 +216,15 @@ describe("frame plan", () => {
   it("honours the toggles and the landscape size", () => {
     const off = buildVideoPlan(
       match,
-      { aspect: "landscape", pace: "1", evalBar: false, remarks: false, clocks: false },
+      {
+        aspect: "landscape",
+        pace: "1",
+        evalBar: false,
+        remarks: false,
+        clocks: false,
+        illegal: false,
+        lookups: false,
+      },
       t,
     );
     expect(off).toMatchObject({ width: 1920, height: 1080 });
@@ -329,6 +359,327 @@ describe("frame plan", () => {
     }
     const plan = buildVideoPlan(long, all, t);
     expect(plan.totalFrames / VIDEO_FPS).toBeLessThanOrEqual(X_MAX_SECONDS);
+  });
+});
+
+describe("illegal attempts and lookups", () => {
+  const match = videoIllegalFixtureGame();
+  const options = defaultVideoOptions(match);
+  const plan = buildVideoPlan(match, options, t);
+  const kinds = plan.scenes.map((scene) => scene.state.kind);
+  const frames = (seconds: number) => Math.round(seconds * VIDEO_FPS);
+
+  it("is a valid archive under the keep-trying rule (it imports as a game)", () => {
+    expect(() => validateArchive(JSON.parse(JSON.stringify(match)))).not.toThrow();
+  });
+
+  it("turns both on by default when the game has them", () => {
+    expect(videoFeatures(match)).toMatchObject({ illegal: true, lookups: true });
+    expect(options).toMatchObject({ illegal: true, lookups: true });
+  });
+
+  it("orders each turn: lookups, illegal attempts, then the move", () => {
+    // The 16-attempt turn: 3 played in full, then 13 flashes (on + off) and a hold.
+    expect(kinds).toEqual([
+      "title",
+      "position",
+      "lookup",
+      "attempt",
+      "position",
+      "attempt",
+      "position",
+      "attempt",
+      "position",
+      "attempt",
+      "attempt",
+      "attempt",
+      ...Array(13 * 2 + 1).fill("attempt"),
+      "position",
+      "final",
+    ]);
+  });
+
+  it("slides, shakes and holds an attempt with a piece, captioned with the model", () => {
+    const scene = plan.scenes[3];
+    expect(scene?.frames).toBe(frames(ILLEGAL_MS / 1000) + frames(ILLEGAL_HOLD_SECONDS));
+    expect(scene?.motion).toEqual({
+      frames: frames(ILLEGAL_MS / 1000),
+      ghosts: [{ piece: { type: "n", color: "w" }, from: "g1", to: "e5", effect: "illegal" }],
+      hide: ["g1"],
+    });
+    expect(scene?.state.illegal).toEqual({
+      squares: ["g1", "e5"],
+      caption: "White tried Ng1-e5: not a legal move",
+      speaker: "White · GPT-4.1 Nano",
+      flash: null,
+    });
+    // In the position it was tried in, before the move.
+    expect(scene?.state.fen).toBe(plan.scenes[1]?.state.fen);
+    expect(scene?.state.toMove).toBe("w");
+  });
+
+  it("shows a lookup's dots on the position it was asked in", () => {
+    const scene = plan.scenes[2];
+    expect(scene?.frames).toBe(frames(LOOKUP_SECONDS));
+    expect(scene?.state.lookup).toEqual({
+      from: "g1",
+      targets: [
+        { square: "f3", capture: false },
+        { square: "h3", capture: false },
+      ],
+    });
+    expect(scene?.motion).toBeUndefined();
+  });
+
+  it("shows a lookup of a piece with no legal move: its square, no dots", () => {
+    const blocked = videoIllegalFixtureGame();
+    blocked.events.splice(1, 0, {
+      ...blocked.events[0],
+      input: JSON.stringify({ square: "a1" }),
+    } as (typeof blocked.events)[number]);
+    const scenes = buildVideoPlan(blocked, defaultVideoOptions(blocked), t).scenes;
+    expect(scenes[3]?.state).toMatchObject({ kind: "lookup", lookup: { from: "a1", targets: [] } });
+  });
+
+  it("outlines an empty from-square without a slide, and flashes an unreadable reply's row", () => {
+    const empty = plan.scenes[5];
+    expect(empty?.motion).toBeUndefined();
+    expect(empty?.frames).toBe(frames(STILL_ATTEMPT_SECONDS));
+    expect(empty?.state.illegal).toMatchObject({
+      squares: ["f6"],
+      caption: "Black tried f6-e4: no Black piece on f6",
+      flash: null,
+    });
+    const unreadable = plan.scenes[7];
+    expect(unreadable?.motion).toBeUndefined();
+    expect(unreadable?.state.illegal).toMatchObject({
+      squares: [],
+      caption: "White's reply couldn't be read as a move: “Knight takes e5!!”",
+      flash: "w",
+    });
+  });
+
+  it("plays the first 3 of a long run, then flashes the rest under a counter", () => {
+    const run = plan.scenes.slice(9, 9 + 3 + 13 * 2 + 1);
+    // Rooks through their own pawns: each of the first three slides out and back.
+    expect(run.slice(0, 3).every((scene) => scene.motion?.ghosts.length === 1)).toBe(true);
+    expect(run[0]?.state.illegal?.caption).toBe("Black tried Ra8-a5: not a legal move");
+    expect(run[0]?.state.illegal?.squares).toEqual(["a8", "a5"]);
+    const flashes = run.slice(3, -1);
+    expect(new Set(flashes.map((scene) => scene.state.illegal?.caption))).toEqual(
+      new Set(["+13 more illegal attempts"]),
+    );
+    // On (outlined) and off (blank) in turn, quick.
+    expect(flashes.map((scene) => scene.frames)).toEqual(
+      Array.from({ length: 26 }, (_, i) => (i % 2 === 0 ? FLASH_FRAMES - 1 : 1)),
+    );
+    // The 4th attempt of the turn (h8-h5's sibling h8-h3) is the first flash.
+    expect(flashes[0]?.state.illegal?.squares).toEqual(["h8", "h3"]);
+    expect(flashes[1]?.state.illegal?.squares).toEqual([]);
+    expect(run.at(-1)?.state.illegal).toMatchObject({
+      squares: [],
+      caption: "+13 more illegal attempts",
+    });
+  });
+
+  it("slides each move in the first frames of its position", () => {
+    const move = plan.scenes[4];
+    expect(move?.state.lastMove).toBe("g1f3");
+    expect(move?.motion).toEqual({
+      frames: 7,
+      ghosts: [{ piece: { type: "n", color: "w" }, from: "g1", to: "f3", effect: "slide" }],
+      hide: ["f3"],
+    });
+    // The start position has no move to slide.
+    expect(plan.scenes[1]?.motion).toBeUndefined();
+  });
+
+  it("adds up to the plan's length and leaves the toggled-off extras out", () => {
+    expect(plan.totalFrames).toBe(plan.scenes.reduce((n, scene) => n + scene.frames, 0));
+    const off = buildVideoPlan(match, { ...options, illegal: false, lookups: false }, t);
+    expect(off.scenes.map((scene) => scene.state.kind)).toEqual([
+      "title",
+      ...Array(5).fill("position"),
+      "final",
+    ]);
+    expect(off.scenes.every((scene) => scene.state.illegal === null)).toBe(true);
+    expect(off.totalFrames).toBeLessThan(plan.totalFrames);
+  });
+
+  it("keeps a long struggling game inside 2:20 on auto, shortening the extras", () => {
+    const long = createMatch(
+      {
+        white: { name: "W", model: "w", protocol: "random" },
+        black: { name: "B", model: "b", protocol: "random" },
+        rules: { legalMoves: "tool" },
+      },
+      "hosted",
+    );
+    const chess = new Chess(long.config.initialFen);
+    // Every pawn one step, twice over: 32 plies that never repeat a position.
+    const pushes = [3, 4].flatMap((rank) =>
+      [..."abcdefgh"].flatMap((file) => [
+        `${file}${rank - 1}${file}${rank}`,
+        `${file}${10 - rank}${file}${9 - rank}`,
+      ]),
+    );
+    let rejected = 0;
+    for (const push of pushes) {
+      const i = long.events.filter((event) => event.type === "attempt" && event.accepted).length;
+      for (let k = 0; k < 5; k++) {
+        rejected++;
+        long.events.push({
+          type: "attempt",
+          seq: long.events.length,
+          at: new Date(0).toISOString(),
+          side: chess.turn(),
+          ply: i,
+          move: chess.turn() === "w" ? "a1a5" : "a8a4",
+          accepted: false,
+          before: chess.fen(),
+          fen: chess.fen(),
+          san: null,
+          reason: "illegal",
+          comment: "",
+        });
+      }
+      submitMove(long, chess, push);
+    }
+    expect(long.status).toBe("running");
+    const auto = buildVideoPlan(long, defaultVideoOptions(long), t);
+    expect(auto.totalFrames / VIDEO_FPS).toBeLessThanOrEqual(X_MAX_SECONDS);
+    // Five a turn is not a long run: every one plays (shortened), none is left out.
+    expect(auto.scenes.filter((scene) => scene.state.kind === "attempt").length).toBe(rejected);
+    expect(rejected).toBe(160);
+    // A fixed pace keeps every extra at full length.
+    const fixed = buildVideoPlan(long, { ...defaultVideoOptions(long), pace: "0.5" }, t);
+    expect(fixed.totalFrames).toBeGreaterThan(auto.totalFrames);
+  });
+});
+
+describe("auto pace with many illegal attempts", () => {
+  /** A seeded random game of `plies` plies, `attempts` rejected attempts before each move. */
+  function struggling(plies: number, attempts: number, lookups = 0) {
+    const match = createMatch(
+      {
+        white: { name: "W", model: "w", protocol: "random" },
+        black: { name: "B", model: "b", protocol: "random" },
+        rules: { legalMoves: "tool" },
+      },
+      "hosted",
+    );
+    const chess = new Chess(match.config.initialFen);
+    let seed = 7;
+    const random = () => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed / 2 ** 31;
+    };
+    for (let ply = 0; ply < plies && match.status === "running"; ply++) {
+      const base = { at: new Date(0).toISOString(), side: chess.turn(), ply };
+      for (let k = 0; k < lookups; k++)
+        match.events.push({
+          ...base,
+          type: "tool",
+          seq: match.events.length,
+          name: "legal_moves",
+          input: JSON.stringify({ square: chess.turn() === "w" ? "g1" : "g8" }),
+          output: "",
+        });
+      for (let k = 0; k < attempts; k++)
+        match.events.push({
+          ...base,
+          type: "attempt",
+          seq: match.events.length,
+          move: chess.turn() === "w" ? "a1a5" : "a8a4",
+          accepted: false,
+          before: chess.fen(),
+          fen: chess.fen(),
+          san: null,
+          reason: "illegal",
+          comment: "",
+        });
+      const moves = legalMoves(chess);
+      submitMove(match, chess, moves[Math.floor(random() * moves.length)] as string);
+    }
+    return match;
+  }
+
+  it.each([
+    [80, 5, 0],
+    [80, 5, 2],
+    [120, 12, 1],
+    [200, 3, 1],
+    [300, 30, 2],
+  ])(
+    "fits %i plies with %i attempts and %i lookups a turn inside 2:20",
+    (plies, attempts, lookups) => {
+      const match = struggling(plies, attempts, lookups);
+      const plan = buildVideoPlan(match, defaultVideoOptions(match), t);
+      expect(plan.totalFrames).toBe(plan.scenes.reduce((n, scene) => n + scene.frames, 0));
+      expect(plan.totalFrames / VIDEO_FPS).toBeLessThanOrEqual(X_MAX_SECONDS);
+      // The struggle still shows.
+      expect(plan.scenes.some((scene) => scene.state.kind === "attempt")).toBe(true);
+    },
+    // Building a 300-ply fixture event by event takes a few seconds on a busy machine.
+    30_000,
+  );
+
+  it("thins the extras of an 850-ply game so every position keeps a frame", () => {
+    const match = createMatch(
+      {
+        white: { name: "W", model: "w", protocol: "random" },
+        black: { name: "B", model: "b", protocol: "random" },
+        rules: {},
+      },
+      "hosted",
+    );
+    // Knights out and back forever; the plan replays moves, it does not end the game.
+    const shuffle = ["g1f3", "g8f6", "f3g1", "f6g8"];
+    const chess = new Chess(match.config.initialFen);
+    for (let ply = 0; ply < 850; ply++) {
+      const base = { at: new Date(0).toISOString(), side: chess.turn(), ply, comment: "" };
+      const fen = chess.fen();
+      match.events.push({
+        ...base,
+        type: "attempt",
+        seq: match.events.length,
+        move: chess.turn() === "w" ? "g1e5" : "g8e4",
+        accepted: false,
+        before: fen,
+        fen,
+        san: null,
+        reason: "illegal",
+      });
+      const move = shuffle[ply % 4] as string;
+      const san = chess.move({ from: move.slice(0, 2), to: move.slice(2, 4) }).san;
+      match.events.push({
+        ...base,
+        type: "attempt",
+        seq: match.events.length,
+        move,
+        accepted: true,
+        before: fen,
+        fen: chess.fen(),
+        san,
+        reason: null,
+      });
+    }
+    const plan = buildVideoPlan(match, defaultVideoOptions(match), t);
+    expect(plan.scenes.filter((scene) => scene.state.kind === "position").length).toBe(851);
+    expect(plan.totalFrames / VIDEO_FPS).toBeLessThanOrEqual(X_MAX_SECONDS);
+    // One flash (ringed) per kept turn: some turns, not all 850.
+    const flashes = plan.scenes.filter((scene) => scene.state.illegal?.squares.length).length;
+    expect(flashes).toBeGreaterThan(100);
+    expect(flashes).toBeLessThan(850);
+  }, 30_000);
+
+  it("keeps the normal compression while it fits", () => {
+    const match = struggling(10, 8, 1);
+    const plan = buildVideoPlan(match, defaultVideoOptions(match), t);
+    const full = plan.scenes.filter((scene) => scene.motion && scene.state.kind === "attempt");
+    // Three full attempts a turn, the rest under the counter, lookups kept.
+    expect(full.length).toBe(30);
+    expect(plan.scenes.filter((scene) => scene.state.kind === "lookup").length).toBe(10);
   });
 });
 

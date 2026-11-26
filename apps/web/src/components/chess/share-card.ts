@@ -3,8 +3,10 @@ import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
 import type { SpectatorEvaluations } from "@cockpit-chess/chess/spectator";
 import type { TFunction } from "i18next";
 import { drawBoard } from "./board-canvas";
+import { illegalMark, markSquares } from "./board-motion";
 import { endingHeadlineLabel, remarkToneLabel, timeControlLabel } from "./ending-label";
 import { evaluationSeries, pointForPosition, shortScore } from "./evaluation";
+import { gameSource } from "./use-board-playback";
 
 /** The share graphic: 1200×675, fixed colours (it is an image, not themed UI). */
 export const SHARE_WIDTH = 1200;
@@ -16,6 +18,19 @@ const PAPER = "#f2f1e8";
 const PROTOCOLS = new Set(["openai-chat", "openai-responses", "anthropic"]);
 
 /**
+ * The squares of the game's last rejected attempt that named squares (the from-square
+ * alone when the side had no piece there); empty when there is none.
+ */
+export function lastIllegalSquares(match: MatchArchive): string[] {
+  const source = gameSource(match);
+  for (let index = match.events.length - 1; index >= 0; index--) {
+    const mark = illegalMark(source.fenAt(index), match.events[index], index);
+    if (mark?.kind === "illegal") return markSquares(mark);
+  }
+  return [];
+}
+
+/**
  * Draws the whole card. `replayUrl` is null for a private draft; `spectator` is the
  * game's spectator evaluation (the bar shows the exported position's score).
  */
@@ -25,6 +40,8 @@ export function drawShareCard(
   t: TFunction<"chess">,
   replayUrl: string | null,
   spectator?: SpectatorEvaluations | null,
+  /** `illegal`: ring the last illegal attempt's squares on the board. */
+  { illegal = false }: { illegal?: boolean } = {},
 ) {
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
@@ -116,7 +133,7 @@ export function drawShareCard(
 
   const size = BOARD.square;
   const board = boardAt(match);
-  drawBoard(ctx, board.fen(), BOARD);
+  drawBoard(ctx, board.fen(), BOARD, { outline: illegal ? lastIllegalSquares(match) : [] });
 
   // The evaluation of exactly the exported position, when one was recorded:
   // White fills from the bottom.

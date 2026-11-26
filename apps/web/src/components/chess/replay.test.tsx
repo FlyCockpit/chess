@@ -13,6 +13,7 @@ import { createInstance } from "i18next";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider } from "react-i18next";
 import { beforeAll, describe, expect, it } from "vitest";
+import { ChessBoard } from "./chess-board";
 import { fixtureGame } from "./fixture-game";
 import { MatchReplay } from "./replay";
 
@@ -305,5 +306,83 @@ describe("MatchReplay", () => {
       /<p class="cc-lookup-note" aria-live="polite"><span class="cc-lookup-text">White · Checked all legal moves \(27 moves\)/,
     );
     expect(render(allMoves("off"))).toContain('<p class="cc-lookup-note" aria-live="off">');
+  });
+  it("outlines the latest illegal attempt and captions it over the board until the next action", () => {
+    const match = fixtureGame({ evaluations: false, remarks: "off" });
+    const chess = boardAt(match);
+    // After 1.e4 e5 2.Nf3 Nc6: White tries its f3 knight on e6.
+    submitMove(match, chess, "f3e6");
+    const html = render(match);
+    expect(html.match(/class="cc-illegal-ring"/g)).toHaveLength(2);
+    expect(html).toMatch(
+      /aria-label="White knight on f3"[^>]*>(?:(?!<\/button>).)*cc-illegal-ring/,
+    );
+    expect(html).toMatch(/aria-label="Empty square e6"[^>]*>(?:(?!<\/button>).)*cc-illegal-ring/);
+    expect(html).toContain('class="cc-illegal-caption ">White tried Nf3-e6: not a legal move</p>');
+    // The board announces each rejected attempt as it plays; the Moves caption, which
+    // follows the newest event, leaves rejected attempts to it.
+    expect(html).toMatch(
+      /<p class="sr-only" aria-live="polite"><span>White tried Nf3-e6: not a legal move<\/span><\/p>/,
+    );
+    expect(html).toContain('<div class="cc-event-caption" aria-live="off">');
+    // Still: no motion on a first render.
+    expect(html).not.toContain("cc-motion-layer");
+    void i18n.changeLanguage("es-MX");
+    expect(render(match)).toContain("Blanco intentó Nf3-e6: no es una jugada legal");
+    void i18n.changeLanguage("en-US");
+    // A reply that is not a move: the caption and a red flash on the side's row.
+    submitMove(match, chess, "Knight to e6, obviously");
+    const unreadable = render(match);
+    expect(unreadable).not.toContain('class="cc-illegal-ring"');
+    expect(unreadable).toContain(
+      "White&#x27;s reply couldn&#x27;t be read as a move: “Knight to e6, obviously”",
+    );
+    expect(unreadable.match(/class="cc-player-flash"/g)).toHaveLength(1);
+    // The accepted move ends it.
+    submitMove(match, chess, "f3e5");
+    const moved = render(match);
+    expect(moved).not.toContain("cc-illegal");
+    expect(moved).not.toContain("cc-player-flash");
+  });
+  it("keeps the caption off every outlined square", () => {
+    const caption = (squares: Array<"g1" | "e5" | "a8" | "h1">, flipped = false) =>
+      /class="cc-illegal-caption ?([a-z-]*)"/.exec(
+        renderToStaticMarkup(
+          <I18nextProvider i18n={i18n}>
+            <ChessBoard
+              fen="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+              flipped={flipped}
+              illegal={{ index: 0, squares, caption: "x" }}
+            />
+          </I18nextProvider>,
+        ),
+      )?.[1];
+    expect(caption(["e5"])).toBe("");
+    // g1 is on the bottom edge: the caption goes to the top one.
+    expect(caption(["g1", "e5"])).toBe("cc-illegal-caption-top");
+    // Flipped, g1 is on top: the bottom edge is free.
+    expect(caption(["g1", "e5"], true)).toBe("");
+    expect(caption(["a8", "h1"])).toBe("cc-illegal-caption-middle");
+  });
+  it("announces the attempt from the board in the chat tab too", () => {
+    const match = fixtureGame({ evaluations: false, remarks: "trash-talk" });
+    submitMove(match, boardAt(match), "f3e6");
+    expect(render(match)).toMatch(
+      /<p class="sr-only" aria-live="polite"><span>White tried Nf3-e6: not a legal move<\/span><\/p>/,
+    );
+  });
+  it("plays moves in the position to come while the board still shows an earlier one", () => {
+    const html = renderToStaticMarkup(
+      <I18nextProvider i18n={i18n}>
+        <ChessBoard
+          fen="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+          playFen="rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+          onMove={() => undefined}
+        />
+      </I18nextProvider>,
+    );
+    // The squares show the earlier position until the motion ends (or a click snaps it).
+    expect(html).toContain('aria-label="White pawn on e2"');
+    expect(html).toContain('aria-label="Empty square e4"');
   });
 });

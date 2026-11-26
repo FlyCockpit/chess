@@ -360,6 +360,8 @@
   /* Pieces and coordinates size from the square (container units), so the
    * board stays in proportion at every size, from a phone to 4K. */
   container-type: inline-size;
+  /* The motion layer and the illegal-attempt caption sit over the squares. */
+  position: relative;
 }
 .cc-square {
   position: relative;
@@ -565,6 +567,180 @@
 @keyframes cc-lookup-in {
   from {
     opacity: 0;
+  }
+}
+/* Moves in motion (ChessBoard `motion`, board-motion.ts): ghost pieces over the squares
+ * while the real ones are hidden. Decorative and never in the way of a click. The
+ * illegal keyframes follow ILLEGAL_PHASES in board-motion.ts (out, shake, back). With
+ * reduced motion the global rule ends each ghost at once in its final place; only the
+ * clock keeps its length, so outlines and captions stay up just as long. */
+.cc-piece-hidden {
+  visibility: hidden;
+}
+.cc-motion-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+.cc-ghost {
+  position: absolute;
+  left: calc(var(--x) * 12.5%);
+  top: calc(var(--y) * 12.5%);
+  width: 12.5%;
+  height: 12.5%;
+  display: grid;
+  place-items: center;
+  animation-duration: var(--motion-ms);
+  animation-fill-mode: both;
+  animation-timing-function: ease-in-out;
+}
+.cc-ghost-slide {
+  animation-name: cc-ghost-slide;
+}
+.cc-ghost-fade {
+  animation-name: cc-ghost-fade;
+}
+.cc-ghost-appear {
+  animation-name: cc-ghost-appear;
+}
+.cc-ghost-illegal {
+  animation-name: cc-ghost-illegal;
+  animation-timing-function: linear;
+}
+@keyframes cc-ghost-slide {
+  to {
+    transform: translate(calc(var(--dx) * 100%), calc(var(--dy) * 100%));
+  }
+}
+@keyframes cc-ghost-fade {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes cc-ghost-appear {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes cc-ghost-illegal {
+  0% {
+    transform: none;
+    animation-timing-function: ease-in-out;
+  }
+  22%,
+  30%,
+  62%,
+  76% {
+    transform: translate(calc(var(--dx) * 100%), calc(var(--dy) * 100%));
+  }
+  34%,
+  42%,
+  50%,
+  58% {
+    transform: translate(calc(var(--dx) * 100% + 9%), calc(var(--dy) * 100%));
+  }
+  38%,
+  46%,
+  54% {
+    transform: translate(calc(var(--dx) * 100% - 9%), calc(var(--dy) * 100%));
+  }
+  76% {
+    animation-timing-function: ease-in-out;
+  }
+  100% {
+    transform: none;
+  }
+}
+.cc-motion-clock {
+  position: absolute;
+  width: 0;
+  height: 0;
+  animation: cc-motion-clock var(--motion-ms) linear both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-motion-clock {
+    /* The motion's length is how long a still outline and caption stay up. */
+    animation-duration: var(--motion-ms) !important;
+  }
+}
+@keyframes cc-motion-clock {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0;
+  }
+}
+/* A rejected attempt: a red ring on its squares (a dark-red line inside a light halo,
+ * readable on light and dark squares; one value in both themes, like the lookup marks)
+ * and a caption on an edge rank that holds none of them. */
+.cc-illegal-ring {
+  position: absolute;
+  inset: 0;
+  box-shadow:
+    inset 0 0 0 2px var(--cc-illegal-halo),
+    inset 0 0 0 6px var(--cc-illegal-mark),
+    inset 0 0 0 8px var(--cc-illegal-halo);
+  pointer-events: none;
+  z-index: 2;
+}
+.cc-illegal-caption {
+  position: absolute;
+  inset-inline: 4%;
+  bottom: 3%;
+  z-index: 4;
+  margin: 0;
+  padding: 0.375rem 0.625rem;
+  border-radius: 6px;
+  background: var(--cc-illegal-mark);
+  color: var(--cc-illegal-fg);
+  box-shadow: 0 0 0 2px var(--cc-illegal-halo);
+  font-size: max(0.75rem, calc(100cqi / 8 * 0.2));
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: center;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+.cc-illegal-caption-top {
+  top: 3%;
+  bottom: auto;
+}
+.cc-illegal-caption-middle {
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cc-illegal-ring,
+  .cc-illegal-caption {
+    animation: cc-lookup-in 160ms ease-out;
+  }
+  .cc-player-flash {
+    animation: cc-player-flash 900ms ease-in-out both;
+  }
+}
+/* A reply that could not be read as a move: the side's row flashes red. */
+.cc-player {
+  position: relative;
+}
+.cc-player-flash {
+  position: absolute;
+  inset: -4px -6px 0.375rem;
+  border: 2px solid var(--cc-error-text);
+  border-radius: 8px;
+  pointer-events: none;
+}
+@keyframes cc-player-flash {
+  0%,
+  50%,
+  100% {
+    opacity: 1;
+  }
+  25%,
+  75% {
+    opacity: 0.15;
   }
 }
 .cc-promotion {
@@ -1507,6 +1683,26 @@
   font-size: 0.8125rem;
 }
 .cc-choice input[type="checkbox"] {
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
+  accent-color: var(--cc-accent);
+}
+/* The share graphic's download, with its option beside it (wraps under on a phone). */
+.cc-share-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+.cc-share-actions label.cc-check {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 44px;
+  font-size: 0.8125rem;
+  color: var(--cc-text-soft);
+}
+.cc-share-actions input[type="checkbox"] {
   inline-size: 1.25rem;
   block-size: 1.25rem;
   accent-color: var(--cc-accent);

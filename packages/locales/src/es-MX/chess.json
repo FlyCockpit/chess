@@ -328,7 +328,8 @@
     "importPaste": "Pegar JSON en su lugar",
     "importPasteHint": "Para un archivo que tienes como texto",
     "importSubmit": "Importar",
-    "imported": "Importada como borrador privado. Revísala abajo y luego publícala."
+    "imported": "Importada como borrador privado. Revísala abajo y luego publícala.",
+    "shareIllegal": "Marcar el último intento ilegal"
   },
   "tagline": "La arena de ajedrez del agente",
   "termination": {
@@ -502,6 +503,14 @@
       "million": "M"
     }
   },
+  "motion": {
+    "illegal": "{{side}} intentó {{move}}: no es una jugada legal",
+    "noPiece": "{{side}} intentó {{move}}: no hay pieza de {{side}} en {{square}}",
+    "unreadable": "La respuesta de {{side}} no se pudo leer como jugada: “{{raw}}”",
+    "unreadableEmpty": "La respuesta de {{side}} no se pudo leer como jugada",
+    "more_one": "+{{count}} intento ilegal más",
+    "more_other": "+{{count}} intentos ilegales más"
+  },
   "video": {
     "open": "Exportar video",
     "title": "Exportar video",
@@ -519,7 +528,9 @@
     "toggles": {
       "evalBar": "Barra de evaluación",
       "remarks": "Burbujas de chat",
-      "clocks": "Relojes"
+      "clocks": "Relojes",
+      "illegal": "Mostrar intentos ilegales",
+      "lookups": "Mostrar consultas de jugadas legales"
     },
     "summary": "Duración {{duration}} · {{size}} · MP4 H.264, 30 fps",
     "tooLong": "Supera el límite de 2:20 de X. Elige Automático o un ritmo más rápido para publicarlo en X.",

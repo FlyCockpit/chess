@@ -15,7 +15,6 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMobileKeyboard } from "@/hooks/use-mobile-keyboard";
 import { isQueryAccessError } from "@/lib/query-access-error";
-import { ChessBoard } from "./chess-board";
 import {
   CONTEXT_MODES,
   ENGINE_MODES,
@@ -29,6 +28,7 @@ import {
   TOKEN_ACCOUNTING,
 } from "./create-match-form";
 import { endingHeadlineLabel } from "./ending-label";
+import { GameBoard } from "./game-board";
 import {
   LAB_DEFAULTS,
   LAB_MODES,
@@ -180,10 +180,10 @@ export function LocalModelLab() {
                         </span>
                       </div>
                     </div>
-                    <ChessBoard
+                    <GameBoard
                       key={match.id}
-                      fen={chess.fen()}
-                      lookup={lookup}
+                      match={match}
+                      lookups
                       disabled={
                         pending || match.status !== "running" || currentPlayer?.protocol !== "human"
                       }

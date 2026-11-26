@@ -4,10 +4,12 @@
  * with the host's ffprobe: codec avc1/H.264, profile, yuv420p, frame size,
  * 30 fps, frame count and duration from the plan, size under X's limit, and
  * the moov box before mdat (fast start). Also checks that cancelling stops
- * the encode.
+ * the encode, and in a game with illegal attempts (the "struggle" run) that the
+ * frames at an attempt show its red rings.
  *
  *   pnpm -F web test:video
  *   pnpm -F web test:video -- --archive game.json --aspect square --out sample.mp4
+ *   pnpm -F web test:video -- --frames <dir>   (keeps the struggle run's key frames as PNG)
  *   (--dir <base> picks where the run's own temporary directory goes; --keep keeps it)
  *
  * Needs a Chromium (CHROME_PATH, or Playwright's headless shell in
@@ -29,12 +31,15 @@ const harness = path.join(webRoot, "scripts/video-export-harness");
 const X_MAX_BYTES = 512 * 1024 * 1024;
 
 const { values: args } = parseArgs({
+  // `pnpm test:video -- --flag` passes the "--" through.
+  args: process.argv.slice(2).filter((arg) => arg !== "--"),
   options: {
     archive: { type: "string" },
     aspect: { type: "string", default: "square" },
     out: { type: "string" },
     dir: { type: "string" },
     keep: { type: "boolean", default: false },
+    frames: { type: "string" },
   },
 });
 // Each run makes its own fresh directory (mkdtemp) inside the base and removes
@@ -188,7 +193,131 @@ type RunResult = {
   height: number;
   progressEvents: number;
   encodeMs: number;
+  marks: Array<{
+    label: string;
+    frame: number;
+    ringed: string[];
+    sequence?: number[];
+    crowned?: { square: string; pawnFrame: number };
+  }>;
+  board: { x: number; y: number; square: number };
 };
+
+/** One decoded frame as RGB bytes. */
+function frameRgb(file: string, frame: number, width: number, height: number): Buffer {
+  const raw = execFileSync(
+    "ffmpeg",
+    [
+      "-loglevel",
+      "error",
+      "-i",
+      file,
+      "-vf",
+      `select=eq(n\\,${frame})`,
+      "-frames:v",
+      "1",
+      "-f",
+      "rawvideo",
+      "-pix_fmt",
+      "rgb24",
+      "pipe:1",
+    ],
+    { maxBuffer: width * height * 4 },
+  );
+  if (raw.length !== width * height * 3) throw new Error(`frame ${frame}: ${raw.length} bytes`);
+  return raw;
+}
+
+/**
+ * The frames at the struggle game's key moments: each ringed square shows red on its
+ * left edge (the ring's line, through H.264), and with `--frames` each is kept as PNG.
+ */
+function checkFrames(file: string, result: RunResult, label: string) {
+  if (label.startsWith("struggle"))
+    check(`${label} key frames`, result.marks.length >= 5, result.marks.map((m) => m.label).join());
+  for (const mark of result.marks) {
+    const rgb = frameRgb(file, mark.frame, result.width, result.height);
+    for (const square of mark.ringed) {
+      const { x, y, square: size } = result.board;
+      const px = Math.round(x + (square.charCodeAt(0) - 97) * size + size * 0.06);
+      const top = y + (8 - Number(square[1])) * size;
+      // The left edge's middle third: a ring there is red throughout.
+      let red = 0;
+      const rows = Math.round(size / 3);
+      for (let row = 0; row < rows; row++) {
+        const offset = ((Math.round(top + size / 3) + row) * result.width + px) * 3;
+        const [r = 0, g = 0, b = 0] = rgb.subarray(offset, offset + 3);
+        if (r > 150 && g < 90 && b < 90) red++;
+      }
+      check(`${label} ${mark.label} ring on ${square}`, red > rows * 0.8, `${red}/${rows} red`);
+    }
+    if (mark.crowned) {
+      // After a promotion the square shows the new piece, not the pawn that slid there
+      // (whose last motion frame has it exactly on the square).
+      const pawn = frameRgb(file, mark.crowned.pawnFrame, result.width, result.height);
+      const { x, y, square: size } = result.board;
+      const left = x + (mark.crowned.square.charCodeAt(0) - 97) * size;
+      const top = y + (8 - Number(mark.crowned.square[1])) * size;
+      let changed = 0;
+      for (let row = top; row < top + size; row++)
+        for (let col = left; col < left + size; col++) {
+          const offset = (row * result.width + col) * 3;
+          const delta =
+            Math.abs((rgb[offset] ?? 0) - (pawn[offset] ?? 0)) +
+            Math.abs((rgb[offset + 1] ?? 0) - (pawn[offset + 1] ?? 0)) +
+            Math.abs((rgb[offset + 2] ?? 0) - (pawn[offset + 2] ?? 0));
+          if (delta > 90) changed++;
+        }
+      check(
+        `${label} ${mark.label} new piece on ${mark.crowned.square}`,
+        changed > size,
+        `${changed} pixels differ from the pawn in frame ${mark.crowned.pawnFrame}`,
+      );
+    }
+    if (mark.sequence) {
+      // Pieces in motion: each of ¼ ½ ¾ through the motion and the still frame after it
+      // differs from the one before on the board (a frozen picture would not).
+      const { x, y, square: size } = result.board;
+      const sampled = (size * 4) ** 2;
+      const pictures = mark.sequence.map((n) => frameRgb(file, n, result.width, result.height));
+      for (let i = 1; i < pictures.length; i++) {
+        const a = pictures[i - 1] as Buffer;
+        const b = pictures[i] as Buffer;
+        let changed = 0;
+        for (let row = y; row < y + size * 8; row += 2)
+          for (let col = x; col < x + size * 8; col += 2) {
+            const offset = (row * result.width + col) * 3;
+            const delta =
+              Math.abs((a[offset] ?? 0) - (b[offset] ?? 0)) +
+              Math.abs((a[offset + 1] ?? 0) - (b[offset + 1] ?? 0)) +
+              Math.abs((a[offset + 2] ?? 0) - (b[offset + 2] ?? 0));
+            if (delta > 90) changed++;
+          }
+        check(
+          `${label} ${mark.label} moves ${mark.sequence[i - 1]}→${mark.sequence[i]}`,
+          // A shake moves a piece by a few pixels; a frozen frame changes none (beyond
+          // codec noise, far under the per-pixel threshold).
+          changed > 50,
+          `${changed} of ${sampled} sampled board pixels differ`,
+        );
+      }
+    }
+    if (args.frames) {
+      execFileSync("ffmpeg", [
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        file,
+        "-vf",
+        `select=eq(n\\,${mark.frame})`,
+        "-frames:v",
+        "1",
+        path.join(path.resolve(args.frames), `${label}-${mark.label}-f${mark.frame}.png`),
+      ]);
+    }
+  }
+}
 
 const failures: string[] = [];
 function check(label: string, ok: boolean, detail: string) {
@@ -298,21 +427,26 @@ async function main() {
   try {
     const browser = await launch(findChrome(), `${origin}/`);
     child = browser.child;
-    const runs: Array<{ label: string; aspect: string; archive?: unknown }> = args.archive
-      ? [
-          {
-            label: "sample",
-            aspect: args.aspect ?? "square",
-            archive: JSON.parse(await readFile(args.archive, "utf8")),
-          },
-        ]
-      : [
-          { label: "square", aspect: "square" },
-          { label: "landscape", aspect: "landscape" },
-        ];
+    const runs: Array<{ label: string; aspect: string; archive?: unknown; fixture?: string }> =
+      args.archive
+        ? [
+            {
+              label: "sample",
+              aspect: args.aspect ?? "square",
+              archive: JSON.parse(await readFile(args.archive, "utf8")),
+            },
+          ]
+        : [
+            { label: "square", aspect: "square" },
+            { label: "landscape", aspect: "landscape" },
+            { label: "struggle", aspect: "square", fixture: "struggle" },
+            { label: "struggle-landscape", aspect: "landscape", fixture: "struggle" },
+            { label: "promotion", aspect: "square", fixture: "promotion" },
+          ];
+    if (args.frames) await mkdir(path.resolve(args.frames), { recursive: true });
     for (const run of runs) {
       const result = await browser.evaluate<RunResult>(
-        `window.videoExport.run(${JSON.stringify({ aspect: run.aspect, archive: run.archive, upload: `/upload/${run.label}` })})`,
+        `window.videoExport.run(${JSON.stringify({ aspect: run.aspect, archive: run.archive, fixture: run.fixture, upload: `/upload/${run.label}` })})`,
       );
       if (result.error) {
         check(run.label, false, result.error);
@@ -329,6 +463,13 @@ async function main() {
       writeFileSync(file, bytes);
       console.log(`${run.label}: ${result.fileName} → ${file} (encoded in ${result.encodeMs} ms)`);
       probe(file, result, run.label);
+      if (run.fixture) checkFrames(file, result, run.label);
+      if (run.fixture === "promotion")
+        check(
+          `${run.label} marks`,
+          result.marks.some((mark) => mark.crowned),
+          result.marks.map((mark) => mark.label).join(),
+        );
     }
     if (!args.archive) {
       const cancelled = await browser.evaluate<{

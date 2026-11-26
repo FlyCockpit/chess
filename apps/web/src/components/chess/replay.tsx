@@ -29,6 +29,7 @@ import { memo, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNow } from "@/hooks/use-now";
 import { useReplayClock } from "@/hooks/use-replay-clock";
+import { boardIllegal, ILLEGAL_MS, rejectedAt, UNREADABLE_MS } from "./board-motion";
 import { ChessBoard } from "./chess-board";
 import { clockAt, formatClock, liveClock } from "./clock";
 import {
@@ -55,6 +56,7 @@ import {
 } from "./evaluation";
 import { describeLookup, type LegalLookup, overlayAt, turnAction } from "./legal-lookup";
 import { LookupNote, lookupLabel } from "./lookup-note";
+import { type PlaybackSource, useBoardPlayback } from "./use-board-playback";
 import { VideoExportDialog } from "./video/video-export-dialog";
 
 /** The second line under a player's name: the model id, only when it says something new. */
@@ -108,6 +110,7 @@ function PlayerRow({
   bubbles,
   remark,
   onRemark,
+  flash,
 }: {
   player: { name: string; model: string };
   side: Color;
@@ -117,6 +120,8 @@ function PlayerRow({
   bubbles: boolean;
   remark: Remark | undefined;
   onRemark: (remark: Remark) => void;
+  /** The event of a reply from this side that could not be read: the row flashes red. */
+  flash?: number;
 }) {
   const { t } = useTranslation("chess");
   const detail = modelLine(player);
@@ -136,6 +141,7 @@ function PlayerRow({
     <div className={`cc-player-block cc-player-${position}`}>
       {position === "top" && slot}
       <div className="cc-player">
+        {flash !== undefined && <span key={flash} aria-hidden="true" className="cc-player-flash" />}
         <span className={side === "w" ? "cc-avatar cc-avatar-light" : "cc-avatar"}>
           {side === "w" ? "♔" : "♚"}
         </span>
@@ -358,15 +364,32 @@ export function MatchReplay({
   // Reaching the last event resumes live-follow (cursor === null) instead of
   // pinning a number that stops tracking new events.
   const seek = (target: number) => setCursor(target >= lastIndex ? null : target);
-  useReplayClock(playing, () => {
-    if (index >= lastIndex) setPlaying(false);
-    else seek(index + 1);
-  });
-  const selectEvent = useCallback((target: number | null) => {
-    setCursor(target);
-    setPlaying(false);
-  }, []);
+  const shownEvent = match.events[index];
+  // Autoplay leaves a rejected attempt on screen until its motion has played.
+  const autoplayDelay =
+    shownEvent?.type === "attempt" && !shownEvent.accepted
+      ? Math.max(700, (shownEvent.reason === "unparseable" ? UNREADABLE_MS : ILLEGAL_MS) + 400)
+      : 700;
+  useReplayClock(
+    playing,
+    () => {
+      if (index >= lastIndex) setPlaying(false);
+      else seek(index + 1);
+    },
+    autoplayDelay,
+  );
   const replay = useMemo(() => buildReplayIndex(match), [match]);
+  const source = useMemo<PlaybackSource>(
+    () => ({
+      events: match.events,
+      fenAt: (at) => frameAt(replay, at).fen,
+      holds: (at) => {
+        const lookup = replay.lookups.get(at);
+        return !!lookup?.square && !!lookup.piece;
+      },
+    }),
+    [match.events, replay],
+  );
   const stats = useMemo(() => matchStats(match), [match]);
   const series = useMemo(
     () => evaluationSeries(match, spectator?.evaluations),
@@ -405,10 +428,27 @@ export function MatchReplay({
     [i18n.language],
   );
   const frame = frameAt(replay, index);
+  // The board catches up with `index` one animated step at a time (single steps and
+  // autoplay; new events of a followed game play in order, the poll that ends it
+  // included); everything else follows `index` at once.
+  const playback = useBoardPlayback(index, cursor === null, source);
+  const finishPlayback = playback.finish;
+  const selectEvent = useCallback(
+    (target: number | null) => {
+      setCursor(target);
+      setPlaying(false);
+      // Asking for the latest event mid catch-up shows it now.
+      if (target === null) finishPlayback();
+    },
+    [finishPlayback],
+  );
+  const boardIndex = Math.min(playback.shown, lastIndex);
+  const boardFrame = frameAt(replay, boardIndex);
+  const boardFinished = match.termination !== "playing" && boardIndex === lastIndex;
   // The bar shows only an evaluation of the very position on the board; the
   // graph cursor marks the latest evaluation reached so far.
-  const evalPoint = pointForPosition(series, index, frame.fen);
-  const graphPoint = graphCursor(graph, evalPoint, index);
+  const evalPoint = pointForPosition(series, boardIndex, boardFrame.fen);
+  const graphPoint = graphCursor(graph, evalPoint, boardIndex);
   const showEval = series.length > 0;
   const tone = remarkTone(match.config.rules);
   const commentary = tone !== "off";
@@ -442,6 +482,16 @@ export function MatchReplay({
         : match.result === "0-1"
           ? "b"
           : "unscored";
+  const boardOverlay = boardFinished
+    ? undefined
+    : overlayAt(match.events, replay.lookups, boardIndex);
+  // A rejected attempt stays outlined until the side's next action (or the turn's end).
+  const rejected = useMemo(() => {
+    const mark = rejectedAt(match.events, source.fenAt, boardIndex);
+    return mark ? { mark, board: boardIllegal(t, mark) } : null;
+  }, [boardIndex, source, match.events, t]);
+  const mark = rejected?.mark;
+  const flashSide = mark?.kind === "unreadable" ? mark.side : undefined;
   const top: Color = flipped ? "w" : "b";
   const bottom: Color = flipped ? "b" : "w";
   const row = (side: Color, position: "top" | "bottom") => (
@@ -454,6 +504,7 @@ export function MatchReplay({
       bubbles={commentary}
       remark={currentRemark?.side === side ? currentRemark : undefined}
       onRemark={selectRemark}
+      flash={flashSide === side ? mark?.index : undefined}
     />
   );
   const event = match.events[index];
@@ -498,10 +549,17 @@ export function MatchReplay({
           {showEval && <EvalBar point={evalPoint} flipped={flipped} />}
           <div className="cc-board-cell">
             <ChessBoard
-              fen={frame.fen}
+              fen={boardFrame.fen}
               flipped={flipped}
-              lastMove={frame.lastMove}
-              lookup={overlay}
+              lastMove={boardFrame.lastMove}
+              lookup={boardOverlay}
+              motion={playback.motion}
+              motionMs={playback.ms}
+              onMotionEnd={playback.onMotionEnd}
+              illegal={rejected?.board ?? null}
+              // The board announces each rejected attempt as it plays (the Moves caption,
+              // which follows the newest event, leaves them to it).
+              announce
             />
           </div>
         </div>
@@ -559,14 +617,7 @@ export function MatchReplay({
           >
             <ChevronRight size={18} />
           </button>
-          <button
-            type="button"
-            aria-label={t("replay.latest")}
-            onClick={() => {
-              setCursor(null);
-              setPlaying(false);
-            }}
-          >
+          <button type="button" aria-label={t("replay.latest")} onClick={() => selectEvent(null)}>
             <ChevronLast size={18} />
           </button>
           <span className="cc-replay-counter">
@@ -761,7 +812,10 @@ export function MatchReplay({
             aria-labelledby={commentary ? `${match.id}-tab-moves` : undefined}
             hidden={movesHidden}
           >
-            <div className="cc-event-caption" aria-live="polite">
+            <div
+              className="cc-event-caption"
+              aria-live={event?.type === "attempt" && !event.accepted ? "off" : "polite"}
+            >
               {event?.type === "attempt"
                 ? event.accepted
                   ? t("replay.accepted", { move: event.san })

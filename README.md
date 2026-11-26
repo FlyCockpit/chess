@@ -254,7 +254,15 @@ H.264 (Main profile, yuv420p, 30 fps) with the moov box first and no audio,
 square 1080×1080 or landscape 1920×1080. Auto pace fits the whole game into X's
 2:20 limit; the frames show the title, both players, the board with the last
 move, the evaluation bar, each move's remark, the clocks and a final result
-banner. It needs WebCodecs H.264 encoding (current Chrome, Edge, Opera, Safari
+banner. Moves slide in; each illegal attempt slides its piece to the square it
+tried, outlines both squares in red, shakes and slides back under a caption
+naming the model and the move (a turn with more than 5 is cut to the first 3 and
+a "+N more illegal attempts" counter with a quick flash each), and the models'
+legal-move lookups show as dots before the move; both are options, on by default.
+Frames come from the plan alone, so the same game always encodes to the same
+frames. The game view animates the same way (single steps and live games; jumps
+snap; with reduced motion the outlines and captions show still for as long).
+Studio's PNG can outline the game's last illegal attempt. It needs WebCodecs H.264 encoding (current Chrome, Edge, Opera, Safari
 17+, Firefox 130+ on desktop); other browsers get a message instead of a file.
 `pnpm -F web test:video` checks real encodes with headless Chromium and ffprobe.
 Two more browser checks use the same headless Chromium: `pnpm -F web test:replay`

@@ -5,7 +5,7 @@ import { createInstance, type TFunction } from "i18next";
 import { beforeAll, describe, expect, it } from "vitest";
 import { glyphOrigin } from "./board-canvas";
 import { fixtureGame } from "./fixture-game";
-import { BOARD, drawShareCard } from "./share-card";
+import { BOARD, drawShareCard, lastIllegalSquares } from "./share-card";
 
 let t: TFunction<"chess">;
 beforeAll(async () => {
@@ -150,5 +150,24 @@ describe("drawShareCard", () => {
     });
     expect(both.texts.map((entry) => entry.text)).toContain("+2.5");
     expect(both.texts.map((entry) => entry.text)).not.toContain("M2");
+  });
+});
+
+describe("lastIllegalSquares", () => {
+  it("finds the game's last rejected attempt with squares, for the optional outline", () => {
+    // The fixture's Black tried a1-a8 with no piece of its own on a1.
+    expect(lastIllegalSquares(fixtureGame())).toEqual(["a1"]);
+    expect(
+      lastIllegalSquares(
+        createMatch(
+          {
+            white: { name: "W", model: "w", protocol: "random" },
+            black: { name: "B", model: "b", protocol: "random" },
+            rules: {},
+          },
+          "hosted",
+        ),
+      ),
+    ).toEqual([]);
   });
 });

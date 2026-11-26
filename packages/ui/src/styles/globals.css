@@ -197,6 +197,12 @@
   --cc-lookup-mark: oklch(0.34 0.14 262);
   --cc-lookup-halo: oklch(0.98 0.01 95 / 0.92);
   --cc-lookup-fill: oklch(0.66 0.15 255 / 0.5);
+  /* A rejected attempt on the board (.cc-illegal-*): the light theme's --destructive
+   * red, one value in both themes because it sits on the fixed board; the halo keeps
+   * it readable on dark squares, the light text reads 4.5:1 on it. */
+  --cc-illegal-mark: oklch(0.577 0.245 27.325);
+  --cc-illegal-halo: oklch(0.98 0.01 95 / 0.92);
+  --cc-illegal-fg: oklch(0.99 0.004 95);
 }
 .dark {
   --cc-bg: oklch(0.16 0.012 195);
@@ -228,6 +234,12 @@
   --cc-lookup-mark: oklch(0.34 0.14 262);
   --cc-lookup-halo: oklch(0.98 0.01 95 / 0.92);
   --cc-lookup-fill: oklch(0.66 0.15 255 / 0.5);
+  /* A rejected attempt on the board (.cc-illegal-*): the light theme's --destructive
+   * red, one value in both themes because it sits on the fixed board; the halo keeps
+   * it readable on dark squares, the light text reads 4.5:1 on it. */
+  --cc-illegal-mark: oklch(0.577 0.245 27.325);
+  --cc-illegal-halo: oklch(0.98 0.01 95 / 0.92);
+  --cc-illegal-fg: oklch(0.99 0.004 95);
 }
 /* The dark arena keeps its teal-tinted shadcn tokens; light keeps the defaults above. */
 .dark .cc-public-shell {

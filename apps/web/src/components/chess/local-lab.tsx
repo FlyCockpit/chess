@@ -10,8 +10,8 @@ import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
 import { Download, RotateCcw, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChessBoard } from "./chess-board";
 import { endingHeadlineLabel } from "./ending-label";
+import { GameBoard } from "./game-board";
 import { checkArchiveFile, landLatest, readThenClear } from "./import-archive";
 import { downloadGame, MatchReplay } from "./replay";
 
@@ -58,14 +58,11 @@ export function LocalLab() {
               <span>{t("lab.localOnly")}</span>
             </div>
           </div>
-          <ChessBoard
+          <GameBoard
             key={match.id}
-            fen={chess.fen()}
+            match={match}
             onMove={move}
             disabled={match.status !== "running"}
-            lastMove={match.events
-              .flatMap((event) => (event.type === "attempt" && event.accepted ? [event.move] : []))
-              .at(-1)}
           />
           <div className="cc-player">
             <span className="cc-avatar cc-avatar-light">♔</span>

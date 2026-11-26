@@ -20,7 +20,7 @@ import { useForm, useStore } from "@tanstack/react-form";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ChevronDown, Download, Upload } from "lucide-react";
-import { useReducer, useRef, useState } from "react";
+import { useMemo, useReducer, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { InlineRetry } from "@/components/inline-retry";
 import { LoadMore } from "@/components/load-more";
@@ -42,7 +42,7 @@ import {
   readThenClear,
 } from "./import-archive";
 import { MatchReplay } from "./replay";
-import { drawShareCard, SHARE_HEIGHT, SHARE_WIDTH } from "./share-card";
+import { drawShareCard, lastIllegalSquares, SHARE_HEIGHT, SHARE_WIDTH } from "./share-card";
 
 export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
   const { t, i18n } = useTranslation("chess");
@@ -466,6 +466,8 @@ function ShareCard({
   spectator: SpectatorEvaluations | null;
 }) {
   const { t } = useTranslation("chess");
+  const hasIllegal = useMemo(() => lastIllegalSquares(match).length > 0, [match]);
+  const [outlineIllegal, setOutlineIllegal] = useState(false);
   function download() {
     const canvas = document.createElement("canvas");
     canvas.width = SHARE_WIDTH;
@@ -475,16 +477,30 @@ function ShareCard({
     const replayUrl = new URL(window.location.href);
     replayUrl.search = new URLSearchParams({ game: slug }).toString();
     replayUrl.hash = "";
-    drawShareCard(ctx, match, t, published ? replayUrl.toString() : null, spectator);
+    drawShareCard(ctx, match, t, published ? replayUrl.toString() : null, spectator, {
+      illegal: hasIllegal && outlineIllegal,
+    });
     const anchor = document.createElement("a");
     anchor.download = `cockpit-${match.id}.png`;
     anchor.href = canvas.toDataURL("image/png");
     anchor.click();
   }
   return (
-    <button className="cc-button cc-button-secondary" type="button" onClick={download}>
-      <Download size={15} />
-      {t("studio.shareDownload")}
-    </button>
+    <div className="cc-share-actions">
+      {hasIllegal && (
+        <label className="cc-check">
+          <input
+            type="checkbox"
+            checked={outlineIllegal}
+            onChange={(event) => setOutlineIllegal(event.currentTarget.checked)}
+          />
+          {t("studio.shareIllegal")}
+        </label>
+      )}
+      <button className="cc-button cc-button-secondary" type="button" onClick={download}>
+        <Download size={15} />
+        {t("studio.shareDownload")}
+      </button>
+    </div>
   );
 }

@@ -64,3 +64,87 @@ export function videoFixtureGame(): MatchArchive {
   submitMove(match, chess, "h5f7", "Checkmate. Good game.");
   return match;
 }
+
+/**
+ * A game that shows where models struggle: a legal-move lookup, an illegal attempt
+ * with a piece (slide, shake, back), one from an empty square, a reply that is not a
+ * move, and a turn of 16 rejected attempts (the "keep trying" rule, `illegalPolicy:
+ * "retry"`, allows any number), which the video compresses. Built event by event.
+ */
+export function videoIllegalFixtureGame(): MatchArchive {
+  const match = createMatch(
+    {
+      title: "Fixture: where models struggle",
+      white: { name: "GPT-4.1 Nano", model: "openai/gpt-4.1-nano", protocol: "openai-chat" },
+      black: { name: "GPT-4.1 Mini", model: "openai/gpt-4.1-mini", protocol: "openai-chat" },
+      rules: { legalMoves: "tool", illegalPolicy: "retry" },
+    },
+    "hosted",
+  );
+  const chess = new Chess(match.config.initialFen);
+  const ply = () => match.events.filter((e) => e.type === "attempt" && e.accepted).length;
+  const reject = (move: string) => {
+    match.events.push({
+      type: "attempt",
+      seq: match.events.length,
+      at: new Date(0).toISOString(),
+      side: chess.turn(),
+      ply: ply(),
+      move,
+      accepted: false,
+      before: chess.fen(),
+      fen: chess.fen(),
+      san: null,
+      reason: /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move) ? "illegal" : "unparseable",
+      comment: "",
+    });
+  };
+  const lookup = (square: string) => {
+    match.events.push({
+      type: "tool",
+      seq: match.events.length,
+      at: new Date(0).toISOString(),
+      side: chess.turn(),
+      ply: ply(),
+      name: "legal_moves",
+      input: JSON.stringify({ square }),
+      output: "",
+    });
+  };
+  const play = (move: string) => {
+    match.status = "running";
+    submitMove(match, chess, move);
+  };
+  lookup("g1");
+  reject("g1e5");
+  play("g1f3");
+  reject("f6e4");
+  play("e7e5");
+  reject("Knight takes e5!!");
+  play("f3e5");
+  // Straight lines through their own pawns, or a knight moving like a rook: all illegal.
+  for (const from of ["a8", "h8", "e8", "c8", "b8", "g8", "d8", "f8"]) {
+    reject(`${from}${from[0]}5`);
+    reject(`${from}${from[0]}3`);
+  }
+  play("d7d6");
+  return match;
+}
+
+/** A promotion, for the encoded check that the new piece shows once the pawn lands. */
+export function videoPromotionFixtureGame(): MatchArchive {
+  const match = createMatch(
+    {
+      title: "Fixture: promotion",
+      initialFen: "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+      white: { name: "GPT-4.1 Nano", model: "openai/gpt-4.1-nano", protocol: "openai-chat" },
+      black: { name: "GPT-4.1 Mini", model: "openai/gpt-4.1-mini", protocol: "openai-chat" },
+      rules: {},
+    },
+    "hosted",
+  );
+  const chess = new Chess(match.config.initialFen);
+  submitMove(match, chess, "a7a8q");
+  submitMove(match, chess, "e8d7");
+  return match;
+}

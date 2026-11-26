@@ -64,11 +64,20 @@ async function encode(plan: VideoPlan, aspect: VideoAspect, codec: string) {
   await output.start();
   let frame = 0;
   let reported = 0;
+  const picture = () => rgbaToI420(ctx.getImageData(0, 0, width, height).data, width, height);
   for (const scene of plan.scenes) {
-    // Each scene is drawn and converted once; its frames reuse the same pixels.
-    drawFrame(ctx, layout, scene.state);
-    const pixels = rgbaToI420(ctx.getImageData(0, 0, width, height).data, width, height);
+    // A still scene is drawn and converted once and its frames reuse the pixels; a
+    // scene with motion draws each motion frame from its frame number, then the still.
+    const moving = scene.motion ? Math.min(scene.motion.frames, scene.frames) : 0;
+    let pixels: Uint8Array = new Uint8Array(0);
     for (let i = 0; i < scene.frames; i++) {
+      if (i < moving) {
+        drawFrame(ctx, layout, scene.state, scene.motion, i);
+        pixels = picture();
+      } else if (i === moving) {
+        drawFrame(ctx, layout, scene.state);
+        pixels = picture();
+      }
       const sample = new VideoSample(pixels, {
         format: "I420",
         codedWidth: width,

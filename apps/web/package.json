@@ -14,6 +14,7 @@
     "test:video": "node scripts/video-export-integration.ts",
     "test:hero": "tsx scripts/hero-board-check.ts",
     "test:replay": "tsx scripts/replay-check.ts",
+    "test:motion": "tsx scripts/motion-check.ts",
     "generate-pwa-assets": "node scripts/generate-pwa-assets.ts",
     "build:local": "vite build --config vite.local.config.ts"
   },

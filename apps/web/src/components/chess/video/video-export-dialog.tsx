@@ -40,7 +40,7 @@ type Phase =
   | { name: "done"; url: string; fileName: string; bytes: number }
   | { name: "error" };
 
-const TOGGLES = ["evalBar", "remarks", "clocks"] as const;
+const TOGGLES = ["evalBar", "remarks", "clocks", "illegal", "lookups"] as const;
 
 function save(url: string, fileName: string) {
   const anchor = document.createElement("a");

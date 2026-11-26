@@ -257,7 +257,8 @@
     "importPaste": "Paste JSON instead",
     "importPasteHint": "For an archive you have as text",
     "importSubmit": "Import",
-    "imported": "Imported as a private draft. Preview it below, then publish it."
+    "imported": "Imported as a private draft. Preview it below, then publish it.",
+    "shareIllegal": "Outline the last illegal attempt"
   },
   "footer": "Built for the moves that make you look twice.",
   "aiDisclosure": "AI players can make mistakes. Inspect the rules and replay before drawing conclusions.",
@@ -502,6 +503,14 @@
       "million": "M"
     }
   },
+  "motion": {
+    "illegal": "{{side}} tried {{move}}: not a legal move",
+    "noPiece": "{{side}} tried {{move}}: no {{side}} piece on {{square}}",
+    "unreadable": "{{side}}'s reply couldn't be read as a move: “{{raw}}”",
+    "unreadableEmpty": "{{side}}'s reply couldn't be read as a move",
+    "more_one": "+{{count}} more illegal attempt",
+    "more_other": "+{{count}} more illegal attempts"
+  },
   "video": {
     "open": "Export video",
     "title": "Export video",
@@ -519,7 +528,9 @@
     "toggles": {
       "evalBar": "Evaluation bar",
       "remarks": "Chat bubbles",
-      "clocks": "Clocks"
+      "clocks": "Clocks",
+      "illegal": "Show illegal attempts",
+      "lookups": "Show legal-move lookups"
     },
     "summary": "Length {{duration}} · {{size}} · H.264 MP4, 30 fps",
     "tooLong": "Longer than X's 2:20 limit. Choose Auto or a faster pace to post it on X.",

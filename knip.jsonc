@@ -55,11 +55,13 @@
         "scripts/video-export-harness/main.ts",
         // Browser page of the hero board check, built by scripts/hero-board-check.ts.
         "scripts/hero-board-harness/main.tsx",
-        // Browser page of the replay interaction check, built by scripts/replay-check.ts.
+        // Browser page of the replay interaction and motion checks (scripts/replay-check.ts,
+        // scripts/motion-check.ts).
         "scripts/replay-harness/main.tsx"
       ],
-      // Host tool the MP4 integration test (scripts/video-export-integration.ts) checks files with.
-      "ignoreBinaries": ["ffprobe"],
+      // Host tools the MP4 integration test (scripts/video-export-integration.ts) checks files
+      // with, and the motion check (scripts/motion-check.ts) joins its frame strips with.
+      "ignoreBinaries": ["ffprobe", "ffmpeg"],
       "ignoreDependencies": [
         // Imported only via PostCSS/Tailwind CSS pipeline, not statically.
         "tailwindcss",

@@ -1,6 +1,13 @@
 import type { Color } from "@cockpit-chess/chess";
-import { BOARD_COLORS, type Canvas2D, drawBoard } from "../board-canvas";
-import type { FrameState, VideoAspect } from "./video-plan";
+import {
+  BOARD_COLORS,
+  type Canvas2D,
+  type CanvasGhost,
+  drawBoard,
+  MARK_COLORS,
+} from "../board-canvas";
+import { ghostPose } from "../board-motion";
+import type { FrameState, SceneMotion, VideoAspect } from "./video-plan";
 
 /**
  * Draws one video frame. The only drawing seam the encoder worker uses; it runs
@@ -162,6 +169,14 @@ function drawPlayer(ctx: Canvas2D, rect: Rect, side: Color, state: FrameState) {
     ctx.fillStyle = ACCENT;
     ctx.fillRect(rect.x, rect.y, 6, rect.height);
   }
+  if (state.illegal?.flash === side) {
+    // A reply that could not be read as a move: the side's row in red.
+    ctx.fillStyle = "rgba(231, 0, 11, 0.22)";
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    ctx.strokeStyle = MARK_COLORS.illegal;
+    ctx.lineWidth = 4;
+    ctx.strokeRect(rect.x + 2, rect.y + 2, rect.width - 4, rect.height - 4);
+  }
   const swatch = Math.round(rect.height * 0.46);
   ctx.fillStyle = side === "w" ? PAPER : INK;
   ctx.strokeStyle = side === "w" ? INK : MUTED;
@@ -234,6 +249,65 @@ function drawRemark(ctx: Canvas2D, layout: FrameLayout, remark: NonNullable<Fram
     });
   });
   ctx.textBaseline = "alphabetic";
+}
+
+/** A rejected attempt's caption, in the remark area: who tried it, and what. */
+function drawIllegal(
+  ctx: Canvas2D,
+  layout: FrameLayout,
+  illegal: NonNullable<FrameState["illegal"]>,
+) {
+  const { bubble } = layout;
+  const pad = 22;
+  const headerSize = Math.round(bubble.size * 0.62);
+  const lineHeight = bubble.size * 1.2;
+  const top = bubble.y + 12 + headerSize * 1.3;
+  ctx.font = `bold ${bubble.size}px ${SANS}`;
+  const room = Math.max(1, Math.floor((bubble.y + bubble.height - 12 - top) / lineHeight));
+  const lines = wrapText(
+    (s) => ctx.measureText(s).width,
+    illegal.caption,
+    bubble.width - pad * 2,
+    Math.min(bubble.lines, room),
+  );
+  const height = Math.min(bubble.height, top - bubble.y + lines.length * lineHeight + 12);
+  ctx.fillStyle = "#3a0d10";
+  roundRect(ctx, { ...bubble, height }, 18);
+  ctx.fill();
+  ctx.strokeStyle = MARK_COLORS.illegal;
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  ctx.textBaseline = "top";
+  ctx.font = `bold ${headerSize}px ${SANS}`;
+  ctx.fillStyle = "#ff9b93";
+  ctx.fillText(
+    fitLine(ctx, illegal.speaker, bubble.width - pad * 2),
+    bubble.x + pad,
+    bubble.y + 12,
+  );
+  ctx.font = `bold ${bubble.size}px ${SANS}`;
+  ctx.fillStyle = PAPER;
+  clipped(ctx, { ...bubble, height }, () => {
+    lines.forEach((text, i) => {
+      ctx.fillText(text, bubble.x + pad, top + i * lineHeight);
+    });
+  });
+  ctx.textBaseline = "alphabetic";
+}
+
+/** The pieces in motion `frame` frames into a scene (0-based), from the plan alone. */
+export function motionGhosts(motion: SceneMotion, frame: number): CanvasGhost[] {
+  // The last motion frame lands exactly on the end pose.
+  const progress = Math.min(1, (frame + 1) / motion.frames);
+  return motion.ghosts.map((ghost) => {
+    const pose = ghostPose(ghost, progress);
+    return {
+      piece: ghost.piece,
+      file: ghost.from.charCodeAt(0) - 97 + pose.dx,
+      row: 8 - Number(ghost.from[1]) + pose.dy,
+      alpha: pose.alpha,
+    };
+  });
 }
 
 /** The result, in the remark area, so the final position stays fully visible. */
@@ -323,7 +397,17 @@ function drawTitleCard(ctx: Canvas2D, layout: FrameLayout, state: FrameState) {
   ctx.restore();
 }
 
-export function drawFrame(ctx: Canvas2D, layout: FrameLayout, state: FrameState) {
+/**
+ * One frame. `motion` and `frame` draw a scene's pieces in motion (frame < motion.frames);
+ * without them the scene's still picture.
+ */
+export function drawFrame(
+  ctx: Canvas2D,
+  layout: FrameLayout,
+  state: FrameState,
+  motion?: SceneMotion,
+  frame = 0,
+) {
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = BACKGROUND;
@@ -368,7 +452,16 @@ export function drawFrame(ctx: Canvas2D, layout: FrameLayout, state: FrameState)
   drawPlayer(ctx, layout.players.b, "b", state);
   drawPlayer(ctx, layout.players.w, "w", state);
   if (state.showEvalBar) drawEvalBar(ctx, layout.bar, state.evaluation);
-  drawBoard(ctx, state.fen, layout.board, { lastMove: state.lastMove, coordinates: true });
+  const moving = motion && frame < motion.frames;
+  drawBoard(ctx, state.fen, layout.board, {
+    lastMove: state.lastMove,
+    coordinates: true,
+    lookup: state.lookup,
+    outline: state.illegal?.squares ?? [],
+    hide: moving ? motion.hide : [],
+    ghosts: moving ? motionGhosts(motion, frame) : [],
+  });
   if (state.remark) drawRemark(ctx, layout, state.remark);
+  if (state.illegal) drawIllegal(ctx, layout, state.illegal);
   if (state.banner) drawBanner(ctx, layout, state.banner);
 }

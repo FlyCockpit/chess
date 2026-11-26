@@ -1,7 +1,8 @@
 import { Chess, type Square } from "@cockpit-chess/chess";
-import { memo, useMemo, useState } from "react";
+import { type CSSProperties, memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { WideContent } from "@/components/wide-content";
+import type { BoardIllegal, BoardMotion } from "./board-motion";
 import type { LookupOverlay } from "./legal-lookup";
 
 const glyphs = {
@@ -18,6 +19,67 @@ const glyphs = {
   bn: "♞",
   bp: "♟",
 };
+
+/** A square's place on the displayed board: column and row from the top-left corner. */
+function place(square: Square, flipped: boolean) {
+  const column = square.charCodeAt(0) - 97;
+  const row = 8 - Number(square[1]);
+  return flipped ? { column: 7 - column, row: 7 - row } : { column, row };
+}
+
+/**
+ * The pieces in motion, over the squares (decorative; the event text carries the
+ * meaning). The clock is an invisible element whose CSS animation lasts exactly the
+ * motion, so its end reports the motion's end even with reduced motion, when the
+ * pieces themselves stand still.
+ */
+function MotionLayer({
+  motion,
+  ms,
+  flipped,
+  onEnd,
+}: {
+  motion: BoardMotion;
+  ms: number;
+  flipped: boolean;
+  onEnd?: (motion: BoardMotion) => void;
+}) {
+  const sign = flipped ? -1 : 1;
+  return (
+    <div className="cc-motion-layer" aria-hidden="true">
+      {motion.ghosts.map((ghost, i) => {
+        const at = place(ghost.from, flipped);
+        const style = {
+          "--x": at.column,
+          "--y": at.row,
+          "--dx": sign * (ghost.to.charCodeAt(0) - ghost.from.charCodeAt(0)),
+          "--dy": sign * (Number(ghost.from[1]) - Number(ghost.to[1])),
+          "--motion-ms": `${ms}ms`,
+        } as CSSProperties;
+        return (
+          <span
+            // A new motion is a new element, so its animation starts from the beginning.
+            key={`${motion.index}-${motion.kind}-${i}`}
+            className={`cc-ghost cc-ghost-${ghost.effect}`}
+            style={style}
+          >
+            <span
+              className={`cc-piece ${ghost.piece.color === "w" ? "cc-white-piece" : "cc-black-piece"}`}
+            >
+              {glyphs[`${ghost.piece.color}${ghost.piece.type}`]}
+            </span>
+          </span>
+        );
+      })}
+      <span
+        key={`${motion.index}-${motion.kind}-${ms}`}
+        className="cc-motion-clock"
+        style={{ "--motion-ms": `${ms}ms` } as CSSProperties}
+        onAnimationEnd={() => onEnd?.(motion)}
+      />
+    </div>
+  );
+}
 export const ChessBoard = memo(function ChessBoard({
   fen,
   onMove,
@@ -25,6 +87,13 @@ export const ChessBoard = memo(function ChessBoard({
   flipped = false,
   lastMove,
   lookup,
+  motion,
+  motionMs = 0,
+  onMotionEnd,
+  onInteract,
+  illegal,
+  playFen,
+  announce = false,
 }: {
   fen: string;
   onMove?: (move: string) => void;
@@ -33,13 +102,32 @@ export const ChessBoard = memo(function ChessBoard({
   lastMove?: string;
   /** A model's legal-move lookup: decorative marks only; the event text carries the meaning. */
   lookup?: LookupOverlay;
+  /** The motion leading into this position (`use-board-playback`); null when still. */
+  motion?: BoardMotion | null;
+  /** How long the motion runs now (shorter while more events wait). */
+  motionMs?: number;
+  onMotionEnd?: (motion: BoardMotion) => void;
+  /** A click on the playable board: ends any motion first, so input is never blocked. */
+  onInteract?: () => void;
+  /** A rejected attempt to outline, with its caption. */
+  illegal?: BoardIllegal | null;
+  /**
+   * The position the next move is played in, when the board still shows an earlier
+   * one (catching up with a game). A click snaps the board to it, and selection and
+   * moves always follow it, never the position on screen mid-motion.
+   */
+  playFen?: string;
+  /** Announce each rejected attempt politely as the board shows it. */
+  announce?: boolean;
 }) {
   const { t } = useTranslation("chess");
   const [selectedSquare, setSelected] = useState<Square | null>(null);
   const [promotion, setPromotion] = useState<{ from: Square; to: Square } | null>(null);
-  const chess = useMemo(() => new Chess(fen), [fen]);
+  const shown = useMemo(() => new Chess(fen), [fen]);
+  const live = playFen ?? fen;
+  const chess = useMemo(() => (live === fen ? shown : new Chess(live)), [live, fen, shown]);
   const squares = useMemo(() => {
-    const list = chess.board().flatMap((row, rowIndex) =>
+    const list = shown.board().flatMap((row, rowIndex) =>
       row.map((piece, columnIndex) => ({
         piece,
         square: `${"abcdefgh"[columnIndex]}${8 - rowIndex}` as Square,
@@ -49,7 +137,7 @@ export const ChessBoard = memo(function ChessBoard({
     );
     if (flipped) list.reverse();
     return list;
-  }, [chess, flipped]);
+  }, [shown, flipped]);
   // A selection survives a position change only while it still holds a piece
   // of the side to move; otherwise it is stale and ignored.
   const selected =
@@ -69,8 +157,15 @@ export const ChessBoard = memo(function ChessBoard({
     () => (selected ? chess.moves({ square: selected, verbose: true }).map((move) => move.to) : []),
     [chess, selected],
   );
+  const hidden = motion ? motion.hide : [];
+  const outlined = illegal?.squares ?? [];
+  // The caption covers an edge rank that holds no outlined square: the bottom one, else
+  // the top one, else (both edge ranks outlined) the middle of the board.
+  const outlinedRows = outlined.map((square) => place(square, flipped).row);
+  const captionAt = !outlinedRows.includes(7) ? "" : !outlinedRows.includes(0) ? "top" : "middle";
   function choose(square: Square) {
     if (!onMove || disabled || activePromotion) return;
+    onInteract?.();
     if (selected && targets.includes(square)) {
       const piece = chess.get(selected);
       if (piece?.type === "p" && (square[1] === "8" || square[1] === "1"))
@@ -121,10 +216,13 @@ export const ChessBoard = memo(function ChessBoard({
               {piece && (
                 <span
                   aria-hidden="true"
-                  className={`cc-piece ${piece.color === "w" ? "cc-white-piece" : "cc-black-piece"}`}
+                  className={`cc-piece ${piece.color === "w" ? "cc-white-piece" : "cc-black-piece"} ${hidden.includes(square) ? "cc-piece-hidden" : ""}`}
                 >
                   {glyphs[`${piece.color}${piece.type}`]}
                 </span>
+              )}
+              {outlined.includes(square) && (
+                <span key={illegal?.index} aria-hidden="true" className="cc-illegal-ring" />
               )}
               {lookup?.from === square && <span aria-hidden="true" className="cc-lookup-from" />}
               {lookup?.targets.map(
@@ -152,8 +250,27 @@ export const ChessBoard = memo(function ChessBoard({
               )}
             </button>
           ))}
+          {motion && (
+            <MotionLayer motion={motion} ms={motionMs} flipped={flipped} onEnd={onMotionEnd} />
+          )}
+          {illegal && (
+            <p
+              aria-hidden="true"
+              key={illegal.index}
+              className={`cc-illegal-caption ${captionAt ? `cc-illegal-caption-${captionAt}` : ""}`}
+            >
+              {illegal.caption}
+            </p>
+          )}
         </div>
       </WideContent>
+      {/* The caption for assistive tech: one polite region that stays mounted, so each
+          attempt the board shows is announced once, in the order it plays. Each attempt
+          is its own child node (keyed by its event), so two that read alike are still
+          two additions, and both are announced. */}
+      <p className="sr-only" aria-live={announce ? "polite" : "off"}>
+        {illegal && <span key={illegal.index}>{illegal.caption}</span>}
+      </p>
       {activePromotion && (
         <div className="cc-promotion" role="group" aria-label={t("board.promote")}>
           {(["q", "r", "b", "n"] as const).map((piece) => (
