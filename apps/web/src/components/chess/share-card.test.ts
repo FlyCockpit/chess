@@ -1,4 +1,5 @@
 import { createMatch } from "@cockpit-chess/chess";
+import { gamePositions } from "@cockpit-chess/chess/spectator";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import { createInstance, type TFunction } from "i18next";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -116,5 +117,38 @@ describe("drawShareCard", () => {
     const { ctx, rects } = recordingContext();
     drawShareCard(ctx, fixtureGame({ evaluations: false }), t, null);
     expect(rects.some((rect) => rect.x === BOARD.x - 30)).toBe(false);
+  });
+  it("draws the spectators' score of the final position, and never a stale one", () => {
+    const match = fixtureGame({ evaluations: false });
+    const positions = gamePositions(match);
+    const final = positions.at(-1) as string;
+    const score = (fen: string) => ({
+      engine: "stockfish-19-lite-single" as const,
+      fen,
+      depth: 9,
+      nodes: 10000,
+      cp: 250,
+      mate: null,
+      bestMove: null,
+    });
+    const scored = recordingContext();
+    drawShareCard(scored.ctx, match, t, null, { [String(positions.length - 1)]: score(final) });
+    expect(scored.texts.map((entry) => entry.text)).toContain("+2.5");
+    expect(scored.rects.some((rect) => rect.x === BOARD.x - 30)).toBe(true);
+    // A spectator score of another position is not this one's.
+    const stale = recordingContext();
+    drawShareCard(stale.ctx, match, t, null, {
+      [String(positions.length - 1)]: score("8/8/8/8/8/8/8/K6k w - - 0 1"),
+    });
+    expect(stale.rects.some((rect) => rect.x === BOARD.x - 30)).toBe(false);
+    // Spectator scores win over the archive's own for the same position.
+    const both = recordingContext();
+    const evaluated = fixtureGame();
+    const last = gamePositions(evaluated).length - 1;
+    drawShareCard(both.ctx, evaluated, t, null, {
+      [String(last)]: score(gamePositions(evaluated)[last] as string),
+    });
+    expect(both.texts.map((entry) => entry.text)).toContain("+2.5");
+    expect(both.texts.map((entry) => entry.text)).not.toContain("M2");
   });
 });

@@ -9,6 +9,7 @@
     "./runner": "./src/runner.ts",
     "./ending": "./src/ending.ts",
     "./pgn": "./src/pgn.ts",
+    "./spectator": "./src/spectator.ts",
     "./testing": "./src/testing.ts",
     "./local-contract": "./src/local-contract.ts"
   },

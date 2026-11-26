@@ -10,8 +10,14 @@ import {
  * A short fixture game for tests: commentary on, after-move evaluations, a
  * rejected attempt, and the remark/eval values the UI tests assert on.
  */
-export function fixtureGame(options: { evaluations?: boolean; remarks?: RemarkTone } = {}) {
-  const { evaluations = true, remarks = "trash-talk" } = options;
+export function fixtureGame(
+  options: {
+    evaluations?: boolean;
+    remarks?: RemarkTone;
+    clock?: { w: number; b: number } | null;
+  } = {},
+) {
+  const { evaluations = true, remarks = "trash-talk", clock = null } = options;
   const match: MatchArchive = createMatch(
     {
       title: "Fixture",
@@ -19,6 +25,7 @@ export function fixtureGame(options: { evaluations?: boolean; remarks?: RemarkTo
       black: { name: "openai/gpt-4.1-mini", model: "openai/gpt-4.1-mini", protocol: "openai-chat" },
       rules: {
         remarks,
+        clock,
         engineEvaluation: evaluations ? "after-move" : "off",
       },
     },

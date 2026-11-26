@@ -174,6 +174,27 @@ describe("PGN export", () => {
     expect(exportPgn(quiet)).not.toContain("rejected");
     expect(exportPgn(quiet)).not.toContain("psst");
   });
+  it("parses in chess.js strict mode: comments, repeated Black numbers, a Black-to-move start", () => {
+    const strict = (pgn: string) => {
+      const chess = new Chess();
+      chess.loadPgn(pgn, { strict: true });
+      return chess;
+    };
+    const match = createMatch({ white, black, rules: { remarks: "commentary" } });
+    play(match, [["e2e4", "Opening with the king's pawn."], ["e7e5", "Mirror."], ["g1f3"]]);
+    expect(strict(exportPgn(match)).history()).toEqual(["e4", "e5", "Nf3"]);
+    const fen = "4k3/8/8/8/8/8/4P3/4K3 b - - 0 12";
+    const fromBlack = createMatch({
+      white,
+      black,
+      rules: { remarks: "commentary" },
+      initialFen: fen,
+    });
+    play(fromBlack, [["e8d7", "Stepping aside."], ["e2e4", "Pushing."], ["d7d6"]]);
+    const pgn = exportPgn(fromBlack);
+    expect(pgn).toContain("12... Kd7 {Stepping aside.} 13. e4 {Pushing.} 13... Kd6");
+    expect(strict(pgn).history()).toEqual(["Kd7", "e4", "Kd6"]);
+  });
   it("maps every termination to a standard PGN Termination value and escapes text", () => {
     const standard = new Set([
       "abandoned",

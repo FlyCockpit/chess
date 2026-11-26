@@ -8,10 +8,12 @@ import {
   submitMove,
   validateArchive,
 } from "@cockpit-chess/chess";
+import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
 import { Download, RotateCcw, Upload } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChessBoard } from "./chess-board";
+import { endingHeadlineLabel } from "./ending-label";
 import { downloadGame, MatchReplay } from "./replay";
 
 export function LocalLab() {
@@ -77,7 +79,10 @@ export function LocalLab() {
           <p aria-live="polite">
             {match.status === "running"
               ? t("lab.yourTurn")
-              : t("lab.finished", { result: match.result })}
+              : t("lab.finished", {
+                  result: match.result,
+                  ending: endingHeadlineLabel(t, endingSummary(matchEnding(match))),
+                })}
           </p>
           <div className="cc-form-grid">
             <button

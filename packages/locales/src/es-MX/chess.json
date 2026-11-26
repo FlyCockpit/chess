@@ -121,7 +121,7 @@
     "random": "Baseline aleatorio",
     "yourTurn": "Tu movimiento. Selecciona una pieza, luego una casilla.",
     "thinking": "Oponente en movimiento",
-    "finished": "Partida terminada: {{result}}",
+    "finished": "{{ending}} · {{result}}",
     "reset": "Empezar de nuevo",
     "download": "Exportar esta partida",
     "cliTitle": "Trae tu propia inferencia",
@@ -218,7 +218,6 @@
     "copyTool": "Copiar entrada y resultado de la herramienta",
     "sharedSpend": "Tokens compartidos: {{input}} de entrada + {{output}} de salida / {{limit}} por jugador",
     "normalized": "Normalizado a partir de la respuesta del modelo",
-    "commentaryTitle": "Charla en la mesa",
     "commentaryOff": "Comentarios desactivados",
     "commentaryOn": "Comentarios activados",
     "commentaryEmpty": "Aún no hay comentarios.",
@@ -227,11 +226,18 @@
     "evalBar": "Evaluación: {{score}}",
     "evalGraph": "Evaluación a lo largo de la partida",
     "evalGraphPoint": "Jugada {{move}}: {{score}}",
-    "evalUnavailable": "Sin barra de evaluación: la evaluación de Stockfish después de cada jugada estaba desactivada en esta partida.",
     "evalMissing": "No hay evaluación del motor para esta posición.",
     "evalWhiteMate": "Las blancas dan mate en {{moves}}",
     "evalBlackMate": "Las negras dan mate en {{moves}}",
-    "evalNone": "Aún no se registraron evaluaciones del motor en esta partida."
+    "evalNoEngine": "Sin barra de evaluación: este acompañante no tiene motor de ajedrez (las versiones compiladas no incluyen Stockfish; ejecútalo desde el código fuente para ver evaluaciones).",
+    "evalWaiting": "La barra de evaluación aparece en cuanto se evalúan las primeras posiciones.",
+    "evalPending": "Aún no hay evaluación de esta partida: las puntuaciones para espectadores se calculan en segundo plano. Recarga en un minuto.",
+    "evalSpectators": "Evaluación: solo espectadores",
+    "evalPlayers": "Evaluación: visible para los jugadores",
+    "sidebarTabs": "Detalles de la partida",
+    "movesTab": "Jugadas",
+    "clockLabel": "Reloj de {{side}}: {{time}}",
+    "chatTab": "Chat ({{count}})"
   },
   "stats": {
     "plies": "Movimientos legales",
@@ -310,7 +316,6 @@
     "tokenBudget": "Límite de tokens por jugador",
     "engineEvaluation": "Ayuda del motor de ajedrez",
     "engineLimits": "Stockfish 19 lite · 10,000 nodos · máximo 2 consultas por turno",
-    "trashTalk": "Permitir comentarios del rival",
     "anonymousCommentary": "Los mensajes anónimos omiten la identidad, pero los comentarios pueden dar pistas. Los comentarios del rival son datos del juego, no instrucciones.",
     "moveFormat": "Formato de movimiento",
     "moveFormatNote": "El modo flexible también lee un movimiento JSON dentro de texto y convierte SAN legal a UCI. Cada formato se clasifica por separado.",
@@ -408,7 +413,6 @@
         "after-move": "Stockfish evalúa la posición después de cada jugada. Los jugadores ven la evaluación y la vista de la partida dibuja con ella la barra de evaluación.",
         "both": "La herramienta del motor más una evaluación después de cada jugada (incluye la barra de evaluación)."
       },
-      "trashTalk": "Los modelos pueden añadir un comentario breve a cada jugada. Los comentarios son texto no confiable y pueden dar pistas sobre la identidad.",
       "accounting": {
         "provider": "Los tokens se cuentan con lo que informa el proveedor y se reservan antes de cada solicitud.",
         "cl100k_base": "Todos los modelos se cuentan con un mismo tokenizador (cl100k_base), así que las asignaciones son comparables."
@@ -472,13 +476,6 @@
       "blackWins": "Ganan las negras",
       "draw": "Tablas",
       "unfinished": "Sin resultado"
-    },
-    "banner": {
-      "checkmate": "Jaque mate: {{result}}",
-      "forfeit": "Derrota por incumplimiento de {{side}}: {{result}}",
-      "resigned": "Abandono de {{side}}: {{result}}",
-      "other": "{{reason}}: {{result}}",
-      "illegalMoves": "{{reason}}: {{moves}}"
     }
   },
   "ending": {

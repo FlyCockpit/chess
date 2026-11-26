@@ -6,7 +6,11 @@ import {
   type MatchArchive,
   sideClockMs,
 } from "@cockpit-chess/chess";
-import { shortScore, toolEvaluation, whiteShare } from "../evaluation";
+import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
+import { gamePositions, type SpectatorEvaluations } from "@cockpit-chess/chess/spectator";
+import type { TFunction } from "i18next";
+import { endingDetailLabel, endingHeadlineLabel, timeControlLabel } from "../ending-label";
+import { evaluationSeries, shortScore, toolEvaluation, whiteShare } from "../evaluation";
 
 /**
  * The MP4 export's frame plan: which position, move, remark, clock and banner
@@ -48,25 +52,35 @@ export type VideoOptions = {
 export type VideoFeatures = { evalBar: boolean; remarks: boolean; clocks: boolean };
 
 /** What the match can show at all; a toggle for a missing feature is hidden. */
-export function videoFeatures(match: MatchArchive): VideoFeatures {
+export function videoFeatures(
+  match: MatchArchive,
+  spectator?: SpectatorEvaluations | null,
+): VideoFeatures {
+  // A bar only when some score (spectator, after-move or a tool call's) is of a position
+  // the game actually reached: the frames show exact-position scores only.
   let evalBar = false;
+  try {
+    const reached = new Set(gamePositions(match));
+    evalBar = evaluationSeries(match, spectator).some((point) => reached.has(point.evaluation.fen));
+  } catch {
+    // An archive that does not replay has no positions to score.
+  }
   let remarks = false;
   // Clocks only in timed games (an untimed game has no clock to run down).
   let clocks = false;
   const timed = sideClockMs(match.config.rules, "w") !== null;
   for (const event of match.events) {
-    if (event.type === "evaluation") evalBar = true;
-    else if (event.type === "tool" && event.name === "engine_eval" && toolEvaluation(event.output))
-      evalBar = true;
-    else if (event.type === "attempt" && event.accepted && cleanRemark(event.comment))
-      remarks = true;
+    if (event.type === "attempt" && event.accepted && cleanRemark(event.comment)) remarks = true;
     else if (event.type === "timing" && timed) clocks = true;
   }
   return { evalBar, remarks, clocks };
 }
 
-export function defaultVideoOptions(match: MatchArchive): VideoOptions {
-  return { aspect: "square", pace: "auto", ...videoFeatures(match) };
+export function defaultVideoOptions(
+  match: MatchArchive,
+  spectator?: SpectatorEvaluations | null,
+): VideoOptions {
+  return { aspect: "square", pace: "auto", ...videoFeatures(match, spectator) };
 }
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -149,34 +163,17 @@ function outcome(result: MatchArchive["result"], t: Translate) {
   return t("video.outcome.unfinished");
 }
 
-/** The final banner: a headline ("Checkmate: Black wins") and the reason. */
-function resultBanner(match: MatchArchive, t: Translate, loser: Color | null) {
-  const result = outcome(match.result, t);
-  const reason = t(`termination.${match.termination}`);
-  const side = loser ? t(`colors.${loser}`) : "";
-  let headline: string;
-  if (match.termination === "checkmate") headline = t("video.banner.checkmate", { result });
-  else if (
-    loser &&
-    ["illegal-forfeit", "timeout", "token-budget", "cost-budget"].includes(match.termination)
-  )
-    headline = t("video.banner.forfeit", { side, result });
-  else if (loser && match.termination === "resignation")
-    headline = t("video.banner.resigned", { side, result });
-  else headline = t("video.banner.other", { reason, result });
-  let detail = reason;
-  if (match.termination === "illegal-forfeit" && loser) {
-    const rejected: string[] = [];
-    for (let i = match.events.length - 1; i >= 0; i--) {
-      const event = match.events[i];
-      if (event?.type !== "attempt") continue;
-      if (event.accepted || event.side !== loser) break;
-      rejected.unshift(cleanRemark(event.move).slice(0, 16));
-    }
-    if (rejected.length > 0)
-      detail = t("video.banner.illegalMoves", { reason, moves: rejected.join(", ") });
-  }
-  return { headline, detail };
+/**
+ * The final banner: the same plain-words ending as the game view (`chess:ending.*`,
+ * one mapping for every surface), with its detail, else the result.
+ */
+function resultBanner(match: MatchArchive, t: Translate, locale: string) {
+  const labels = t as unknown as TFunction<"chess">;
+  const ending = matchEnding(match);
+  return {
+    headline: endingHeadlineLabel(labels, endingSummary(ending)),
+    detail: endingDetailLabel(labels, locale, ending) ?? outcome(match.result, t),
+  };
 }
 
 /** `<match-title>-<result>.mp4`, safe for every file system. */
@@ -204,6 +201,7 @@ export function buildVideoPlan(
   match: MatchArchive,
   options: VideoOptions,
   t: Translate,
+  context: { locale?: string; spectator?: SpectatorEvaluations | null } = {},
 ): VideoPlan {
   const size = VIDEO_SIZES[options.aspect];
   const chess = new Chess(match.config.initialFen);
@@ -211,7 +209,15 @@ export function buildVideoPlan(
     w: sideClockMs(match.config.rules, "w") ?? 0,
     b: sideClockMs(match.config.rules, "b") ?? 0,
   };
-  const evaluations = new Map<string, EngineEvaluation>();
+  // Spectator scores (by exact position) first; the archive's own evaluations add to them.
+  const evaluations = new Map<string, EngineEvaluation>(
+    context.spectator
+      ? evaluationSeries(match, context.spectator).map((point) => [
+          point.evaluation.fen,
+          point.evaluation,
+        ])
+      : [],
+  );
   type Position = {
     fen: string;
     turn: Color;
@@ -229,9 +235,12 @@ export function buildVideoPlan(
       moveLabel: null,
       remark: null,
       clocks: { ...remaining },
-      evaluation: undefined,
+      evaluation: evaluations.get(chess.fen()),
     },
   ];
+  // Positions the spectators scored keep that score: the archive's own evaluations
+  // (player-facing or tool calls) only fill positions without one, as in the replay.
+  const spectatorScored = new Set(evaluations.keys());
   let replayFailed = false;
   for (const event of match.events) {
     if (event.type === "timing") {
@@ -247,7 +256,7 @@ export function buildVideoPlan(
       (event.type === "tool" && event.name === "engine_eval")
     ) {
       const value = event.type === "evaluation" ? event.evaluation : toolEvaluation(event.output);
-      if (value) {
+      if (value && !spectatorScored.has(value.fen)) {
         evaluations.set(value.fen, value);
         const current = positions.at(-1);
         if (current && current.fen === value.fen) current.evaluation = value;
@@ -322,7 +331,7 @@ export function buildVideoPlan(
         white: name("w"),
         black: name("b"),
         versus: t("video.versus"),
-        rules: `${t(`context.${match.config.rules.context}`)} · ${t(`identity.${match.config.rules.opponentIdentity}`)}`,
+        rules: `${timeControlLabel(t as unknown as TFunction<"chess">, match.config.rules)} · ${t(`context.${match.config.rules.context}`)} · ${t(`identity.${match.config.rules.opponentIdentity}`)}`,
       },
     },
   });
@@ -353,7 +362,6 @@ export function buildVideoPlan(
     });
   }
   const last = scenes.at(-1)?.state as FrameState;
-  const loser: Color | null = match.result === "1-0" ? "b" : match.result === "0-1" ? "w" : null;
   scenes.push({
     frames: FINAL_HOLD_SECONDS * VIDEO_FPS,
     state: {
@@ -362,7 +370,7 @@ export function buildVideoPlan(
       players: players(remaining),
       toMove: null,
       remark: null,
-      banner: resultBanner(match, t, loser),
+      banner: resultBanner(match, t, context.locale ?? "en-US"),
     },
   });
   return {

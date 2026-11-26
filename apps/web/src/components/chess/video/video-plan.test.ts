@@ -1,4 +1,5 @@
 import { Chess, createMatch, type MatchArchive, submitMove } from "@cockpit-chess/chess";
+import { gamePositions } from "@cockpit-chess/chess/spectator";
 import chessEn from "@locales/en-US/chess.json";
 import i18next from "i18next";
 import { describe, expect, it } from "vitest";
@@ -178,7 +179,8 @@ describe("frame plan", () => {
   });
 
   it("ends on the result banner", () => {
-    expect(states[9]?.banner).toEqual({ headline: "Checkmate: White wins", detail: "Checkmate" });
+    // The same plain-words ending as the game view; the result as its detail.
+    expect(states[9]?.banner).toEqual({ headline: "Checkmate: White wins", detail: "White wins" });
     expect(states[9]?.remark).toBeNull();
     expect(states.slice(0, 9).every((s) => s.banner === null)).toBe(true);
     expect(states[0]?.titleCard).toMatchObject({
@@ -186,6 +188,7 @@ describe("frame plan", () => {
       black: "Black · GPT-4.1 Mini",
       versus: "vs",
     });
+    expect(states[0]?.titleCard?.rules).toMatch(/^2 min each · /);
   });
 
   it("honours the toggles and the landscape size", () => {
@@ -231,9 +234,82 @@ describe("frame plan", () => {
     expect(forfeit.termination).toBe("illegal-forfeit");
     const banner = buildVideoPlan(forfeit, all, t).scenes.at(-1)?.state.banner;
     expect(banner).toEqual({
-      headline: "White forfeited: Black wins",
-      detail: "Illegal-move forfeit: d2d4, d2d3, d2d4",
+      headline: "White forfeited: 3 illegal moves",
+      detail: "d2d4, d2d3, d2d4; its d-pawn had already moved",
     });
+  });
+
+  it("draws the spectators' evaluation of each position on the bar", () => {
+    const plain = plainMatch(["e2e4", "e7e5"]);
+    expect(videoFeatures(plain).evalBar).toBe(false);
+    const spectator = Object.fromEntries(
+      gamePositions(plain).map((fen, ply) => [
+        String(ply),
+        {
+          engine: "stockfish-19-lite-single" as const,
+          fen,
+          depth: 9,
+          nodes: 10000,
+          cp: 150,
+          mate: null,
+          bestMove: null,
+        },
+      ]),
+    );
+    expect(videoFeatures(plain, spectator).evalBar).toBe(true);
+    // Scores of other positions (stale) do not make a bar to show.
+    const stale = Object.fromEntries(
+      Object.entries(spectator).map(([ply, value]) => [
+        ply,
+        { ...value, fen: "8/8/8/8/8/8/8/K6k w - - 0 1" },
+      ]),
+    );
+    expect(videoFeatures(plain, stale).evalBar).toBe(false);
+    // Nor does an archived tool score of a position the game never reached.
+    const tooled = plainMatch(["e2e4", "e7e5"]);
+    tooled.events.push({
+      type: "tool",
+      seq: tooled.events.length,
+      at: new Date().toISOString(),
+      side: "w",
+      ply: 2,
+      name: "engine_eval",
+      input: "{}",
+      output: JSON.stringify({ ...spectator["0"], fen: "8/8/8/8/8/8/8/K6k w - - 0 1" }),
+    });
+    expect(videoFeatures(tooled).evalBar).toBe(false);
+    const options = defaultVideoOptions(plain, spectator);
+    expect(options.evalBar).toBe(true);
+    const plan = buildVideoPlan(plain, options, t, { spectator });
+    // Every position, the start included, shows its spectator score.
+    const positions = plan.scenes.filter(
+      (scene) => scene.state.kind !== "title" && scene.state.kind !== "final",
+    );
+    expect(positions.length).toBe(3);
+    expect(positions.every((scene) => scene.state.evaluation?.label === "+1.5")).toBe(true);
+  });
+  it("keeps the spectators' score where the archive also scored the position", () => {
+    const game = videoFixtureGame(); // carries after-move evaluations of its own
+    const spectator = Object.fromEntries(
+      gamePositions(game).map((fen, ply) => [
+        String(ply),
+        {
+          engine: "stockfish-19-lite-single" as const,
+          fen,
+          depth: 9,
+          nodes: 10000,
+          cp: -420,
+          mate: null,
+          bestMove: null,
+        },
+      ]),
+    );
+    const plan = buildVideoPlan(game, defaultVideoOptions(game, spectator), t, { spectator });
+    const labels = plan.scenes.flatMap((scene) =>
+      scene.state.evaluation ? [scene.state.evaluation.label] : [],
+    );
+    expect(labels.length).toBeGreaterThan(0);
+    expect(new Set(labels)).toEqual(new Set(["−4.2"]));
   });
 
   it("stays inside 2:20 for a 200-ply game on auto", () => {

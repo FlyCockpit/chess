@@ -40,7 +40,11 @@
       "entry": [
         "src/routes/**/*.tsx!",
         // Browser page of the MP4 integration test, built by scripts/video-export-integration.ts.
-        "scripts/video-export-harness/main.ts"
+        "scripts/video-export-harness/main.ts",
+        // Browser page of the hero board check, built by scripts/hero-board-check.ts.
+        "scripts/hero-board-harness/main.tsx",
+        // Browser page of the replay interaction check, built by scripts/replay-check.ts.
+        "scripts/replay-harness/main.tsx"
       ],
       // Host tool the MP4 integration test (scripts/video-export-integration.ts) checks files with.
       "ignoreBinaries": ["ffprobe"],

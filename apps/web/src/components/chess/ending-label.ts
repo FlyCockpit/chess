@@ -91,7 +91,7 @@ function illegalWhyLabel(t: ChessT, why: IllegalWhy) {
   }
 }
 
-function endingDetailLabel(t: ChessT, locale: string, ending: MatchEnding): string | null {
+export function endingDetailLabel(t: ChessT, locale: string, ending: MatchEnding): string | null {
   switch (ending.kind) {
     case "illegal-forfeit": {
       const whys = ending.attempts.map((attempt) => illegalWhyLabel(t, attempt.why));

@@ -245,11 +245,22 @@
   color: var(--cc-subtle);
   font-size: 11px;
 }
-.cc-hero-board {
-  max-width: 340px;
+/* The landing board: tilted, with its caption below it (never over a square). Pieces
+   and coordinates scale with the board itself (container units), so the corner labels
+   stay clear of the pieces from phone widths to 4K. */
+.cc-hero-figure {
+  display: grid;
+  justify-items: center;
+  gap: 28px;
   width: 100%;
+  max-width: clamp(260px, 30vw, 560px);
   margin: auto;
-  transform: rotate(-5deg);
+  /* Room for the tilted corners: nothing around it clips them. */
+  padding: 18px;
+}
+.cc-hero-board {
+  width: 100%;
+  transform: rotate(-4deg);
   box-shadow: 0 20px 100px var(--cc-hero-shadow);
   border: 6px solid oklch(0.26 0.014 185);
   border-radius: 9px;
@@ -258,13 +269,12 @@
 .cc-hero-board .cc-board {
   border-radius: 3px;
   overflow: hidden;
+  container-type: inline-size;
 }
 .cc-hero-sticker {
-  position: absolute;
-  right: -20px;
-  bottom: -20px;
-  transform: rotate(5deg);
-  padding: 14px 20px;
+  justify-self: end;
+  transform: rotate(2deg);
+  padding: 12px 18px;
   background: oklch(0.83 0.12 85);
   color: oklch(0.22 0.03 100);
   font:
@@ -416,7 +426,21 @@
   text-shadow: 0 1px 1px oklch(0.8 0.01 190 / 0.3);
 }
 .cc-hero-board .cc-piece {
-  font-size: 36px;
+  /* Under two thirds of a square: the corner labels keep their own room. */
+  font-size: calc(100cqi / 8 * 0.62);
+  transform: none;
+}
+.cc-hero-board .cc-rank,
+.cc-hero-board .cc-file {
+  font-size: max(6px, calc(100cqi / 8 * 0.15));
+}
+.cc-hero-board .cc-rank {
+  top: 2px;
+  left: 3px;
+}
+.cc-hero-board .cc-file {
+  bottom: 1px;
+  right: 3px;
 }
 .cc-rank,
 .cc-file {
@@ -869,8 +893,8 @@
   .cc-hero h1 {
     letter-spacing: -2.5px;
   }
-  .cc-hero-board {
-    max-width: 270px;
+  .cc-hero-figure {
+    max-width: 320px;
   }
   .cc-replay-grid {
     grid-template-columns: minmax(0, 1fr) minmax(250px, 0.8fr);
@@ -878,9 +902,6 @@
   }
   .cc-card-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .cc-hero-board .cc-piece {
-    font-size: 29px;
   }
   .cc-board-panel {
     padding-block: 14px;
@@ -921,9 +942,8 @@
     font-size: 62px;
     letter-spacing: -3px;
   }
-  .cc-hero-board {
-    max-width: 260px;
-    margin-bottom: 14px;
+  .cc-hero-figure {
+    max-width: 300px;
   }
   .cc-eyebrow {
     font-size: 9px;
@@ -956,7 +976,9 @@
     padding: 0;
     margin-inline: -14px;
   }
-  .cc-player {
+  .cc-player,
+  .cc-bubble-slot,
+  .cc-result-banner {
     margin-inline: 12px;
   }
   .cc-replay-controls {
@@ -1384,8 +1406,170 @@
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+/* The speaking side's chat bubble, in a fixed-height slot on the board's outer edge
+   (above the top player, below the bottom one): it never covers a square or moves
+   the board. Two lines here; the chat log has the whole remark. */
+.cc-bubble-slot {
+  /* A fixed height that holds the bubble's one meta line, two text lines, padding and
+     tail, so a bubble appearing or changing never moves the board. */
+  block-size: 88px;
+  display: flex;
+  align-items: flex-end;
+  min-width: 0;
+}
+.cc-bubble-slot-bottom {
+  align-items: flex-start;
+  margin-block-end: 8px;
+}
+.cc-bubble-slot-top {
+  margin-block-end: 8px;
+}
 .cc-remark-bubble {
+  position: relative;
+  max-block-size: calc(100% - 8px);
+  max-inline-size: min(100%, 520px);
+  inline-size: auto;
+  animation: cc-bubble-in 180ms ease-out;
+}
+.cc-remark-bubble .cc-remark-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.cc-remark-bubble .cc-remark-meta {
+  display: flex;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.cc-remark-bubble.cc-remark-w {
+  background: oklch(0.97 0.01 95);
+  color: oklch(0.22 0.015 190);
+  border-color: oklch(0.82 0.02 95);
+}
+.cc-remark-bubble.cc-remark-b {
+  background: oklch(0.27 0.015 190);
+  color: oklch(0.95 0.01 95);
+  border-color: oklch(0.4 0.015 190);
+}
+.cc-remark-bubble.cc-remark-w .cc-remark-meta {
+  color: oklch(0.42 0.015 190);
+}
+.cc-remark-bubble.cc-remark-b .cc-remark-meta {
+  color: oklch(0.8 0.01 190);
+}
+/* The tail points at the speaking player's row. */
+.cc-remark-bubble::after {
+  content: "";
+  position: absolute;
+  inset-inline-start: 22px;
+  width: 10px;
+  height: 10px;
+  background: inherit;
+  border: inherit;
+  border-width: 0 1px 1px 0;
+  transform: rotate(45deg);
+}
+.cc-bubble-slot-top .cc-remark-bubble::after {
+  bottom: -6px;
+}
+.cc-bubble-slot-bottom .cc-remark-bubble::after {
+  top: -6px;
+  transform: rotate(-135deg);
+}
+@keyframes cc-bubble-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.cc-clock {
+  margin-left: auto;
+  padding: 4px 8px;
+  min-inline-size: 64px;
+  text-align: center;
+  font:
+    600 15px ui-monospace,
+    monospace;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--cc-line);
+  border-radius: 6px;
+  background: var(--cc-sunken);
+  color: var(--cc-text);
+}
+.cc-clock + .cc-side-label {
+  margin-left: 0;
+}
+.cc-clock-running {
+  border-color: var(--cc-accent-line);
+  background: var(--cc-tint);
+}
+.cc-clock-flagged {
+  color: var(--cc-error-text);
+  border-color: var(--cc-error-text);
+}
+/* The result, in plain words, at the end of a finished game. */
+.cc-result-banner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  align-items: center;
   margin-block: 4px 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--cc-line-strong);
+  border-inline-start-width: 4px;
+  border-radius: 8px;
+  background: var(--cc-raised);
+  overflow-wrap: anywhere;
+}
+.cc-result-banner strong {
+  font-size: 17px;
+  font-weight: 650;
+}
+.cc-result-banner span:not(.cc-result-score) {
+  grid-column: 1;
+  font-size: 13px;
+  color: var(--cc-text-soft);
+}
+.cc-result-score {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  font:
+    700 22px ui-monospace,
+    monospace;
+}
+.cc-result-w {
+  border-inline-start-color: oklch(0.88 0.03 95);
+}
+.cc-result-b {
+  border-inline-start-color: oklch(0.32 0.02 190);
+}
+.cc-result-draw {
+  border-inline-start-color: var(--cc-accent-line);
+}
+.cc-result-unscored {
+  border-inline-start-color: var(--cc-warn-text);
+}
+.cc-tabs {
+  display: flex;
+  gap: 4px;
+  margin-block: 12px 8px;
+  border-bottom: 1px solid var(--cc-line);
+}
+.cc-tab {
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 13px;
+  color: var(--cc-muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.cc-tab-active {
+  color: var(--cc-text);
+  border-bottom-color: var(--cc-accent);
+  font-weight: 600;
 }
 .cc-remark-b {
   border-inline-start: 3px solid oklch(0.35 0.02 180);
@@ -1429,6 +1613,9 @@
   .cc-section-chevron,
   .cc-eval-white {
     transition: none;
+  }
+  .cc-remark-bubble {
+    animation: none;
   }
 }
 .cc-eval-none .cc-eval-white {

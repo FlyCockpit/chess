@@ -19,12 +19,19 @@ vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
   return { default: mockDeep<typeof prismaInstance>() };
 });
-const { ensureRunnableJob, budget, env } = vi.hoisted(() => ({
+const { ensureRunnableJob, budget, env, reconcileAdd } = vi.hoisted(() => ({
   ensureRunnableJob: vi.fn(),
+  reconcileAdd: vi.fn(),
   budget: vi.fn(),
   env: { CHESS_HOSTED_ENABLED: true, OPENROUTER_API_KEY: "test-only" },
 }));
-vi.mock("@cockpit-chess/queue", () => ({ chessRunQueue: {}, ensureRunnableJob }));
+vi.mock("@cockpit-chess/queue", () => ({
+  CHESS_SPECTATOR_JOB_PRIORITY: 10,
+  chessRunQueue: {},
+  chessReconcileQueue: { add: reconcileAdd },
+  chessSpectatorJobId: (id: string, ply: number) => `chess-spectator-${id}-${ply}`,
+  ensureRunnableJob,
+}));
 vi.mock("@cockpit-chess/env/shared", () => ({ env }));
 vi.mock("../lib/procedure-budget", () => ({ createProcedureBudget: () => budget }));
 const { default: prisma } = await import("@cockpit-chess/db");
@@ -99,6 +106,8 @@ function row() {
     whiteCostMicros: null,
     blackCostMicros: null,
     moveFormat: null,
+    ending: null,
+    spectatorEvaluations: null as unknown,
   };
 }
 type StatsRow = {
@@ -448,6 +457,74 @@ describe("chess public projection and operator boundaries", () => {
     await expect(client(null).get({ slug: "test-game" })).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
+  });
+  it("serves spectator evaluations and asks once for a backfill of a finished game's gaps", async () => {
+    reconcileAdd.mockResolvedValue({});
+    const archive = match();
+    const chess = boardAt(archive);
+    submitMove(archive, chess, "e2e4");
+    finishMatch(archive, "*", "cancelled", "stopped");
+    const start = createMatch(newConfig()).config.initialFen;
+    const evaluation = {
+      engine: "stockfish-19-lite-single",
+      fen: boardAt(createMatch(newConfig())).fen(),
+      depth: 9,
+      nodes: 10000,
+      cp: 25,
+      mate: null,
+      bestMove: null,
+    };
+    expect(start).toContain("rnbqkbnr");
+    const stored = { ...row(), id: "spectated", status: "stopped", archive };
+    db.chessMatch.findFirst.mockResolvedValue({
+      ...stored,
+      spectatorEvaluations: { "0": evaluation, bogus: 1 },
+    });
+    // A malformed stored entry reads as "not evaluated" without hiding the valid ones.
+    expect((await client(null).get({ slug: "test-game" })).spectatorEvaluations).toEqual({
+      "0": evaluation,
+    });
+    db.chessMatch.findFirst.mockResolvedValue({
+      ...stored,
+      spectatorEvaluations: { "0": evaluation },
+    });
+    const game = await client(null).get({ slug: "test-game" });
+    expect(game.spectatorEvaluations).toEqual({ "0": evaluation });
+    expect(db.chessMatch.findFirst.mock.calls[0]?.[0]?.select).toMatchObject({
+      spectatorEvaluations: true,
+    });
+    await client(null).get({ slug: "test-game" });
+    // One request per gap (memoized), made runnable even if a finished job is retained.
+    await vi.waitFor(() =>
+      expect(ensureRunnableJob).toHaveBeenCalledExactlyOnceWith(
+        { add: reconcileAdd },
+        "chess-spectator",
+        { reason: "spectator", matchId: "spectated", fromPly: 1 },
+        "chess-spectator-spectated-1",
+        { priority: 10 },
+      ),
+    );
+    // A running game is evaluated by its own run; a complete one needs nothing.
+    ensureRunnableJob.mockClear();
+    db.chessMatch.findFirst.mockResolvedValue({ ...row(), id: "live", status: "running" });
+    await client(null).get({ slug: "test-game" });
+    const done = match();
+    db.chessMatch.findFirst.mockResolvedValue({
+      ...row(),
+      id: "complete",
+      status: "completed",
+      archive: done,
+      spectatorEvaluations: { "0": evaluation },
+    });
+    await client(null).get({ slug: "test-game" });
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+    // A queue outage never fails the read.
+    ensureRunnableJob.mockRejectedValueOnce(new Error("valkey down"));
+    db.chessMatch.findFirst.mockResolvedValue({ ...stored, id: "outage" });
+    await expect(client(null).get({ slug: "test-game" })).resolves.toMatchObject({
+      spectatorEvaluations: null,
+    });
+    await vi.waitFor(() => expect(ensureRunnableJob).toHaveBeenCalledTimes(1));
   });
   it("normalizes a running snapshot under an errored row status", async () => {
     const record = row();

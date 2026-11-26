@@ -20,8 +20,9 @@ import { QueryBoundary } from "@/components/query-boundary";
 import { WideContent } from "@/components/wide-content";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { orpc } from "@/utils/orpc";
-import { ChessBoard } from "./chess-board";
 import { endingHeadlineLabel } from "./ending-label";
+import { replayRefetch } from "./evaluation";
+import { HeroBoard } from "./hero-board";
 import { LocalLab } from "./local-lab";
 import { MatchReplay } from "./replay";
 
@@ -142,7 +143,7 @@ function Arena({
     ...orpc.chess.get.queryOptions({ input: { slug: slug ?? "not-selected" } }),
     enabled: Boolean(slug),
     meta: { skipGlobalErrorToast: true },
-    refetchInterval: (query) => (query.state.data?.archive.status === "running" ? 2000 : false),
+    refetchInterval: replayRefetch,
   });
   const selected = isQueryAccessError(selectedError) ? undefined : selectedData;
   const games = isQueryAccessError(listError)
@@ -179,10 +180,7 @@ function Arena({
               {t("hero.note")}
             </div>
           </div>
-          <div className="cc-hero-board">
-            <ChessBoard fen={boardAt(demo, 5).fen()} />
-            <div className="cc-hero-sticker">{t("hero.live")}</div>
-          </div>
+          <HeroBoard fen={boardAt(demo, 5).fen()} />
         </section>
       )}
       <div className="cc-section-bar" id="arena-board">
@@ -254,6 +252,7 @@ function Arena({
           key={selected?.id ?? "demonstration"}
           match={current}
           live={current.status === "running"}
+          spectator={selected ? { evaluations: selected.spectatorEvaluations } : undefined}
         />
       )}
       {!slug && (

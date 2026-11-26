@@ -47,10 +47,36 @@ export type ChessRunJobData = z.infer<typeof chessRunJobSchema>;
  * Lives on its own queue: the chess-run consumer has concurrency 1, so a sweep
  * sharing it could never run while a match (the thing it watches) was running.
  */
-export const chessReconcileJobSchema = z.object({
-  reason: z.enum(["cron"]),
-});
+export const chessReconcileJobSchema = z.discriminatedUnion("reason", [
+  z.object({ reason: z.literal("cron") }),
+  /**
+   * A finished game's missing spectator evaluations (enqueued by a replay read,
+   * deduplicated per match by `chessSpectatorJobId`). It shares this queue because
+   * the chess-run consumer must never wait behind it.
+   */
+  z.object({
+    reason: z.literal("spectator"),
+    matchId: z.string().min(1).max(64),
+    /** The first missing ply when the chunk was requested (also in its job id). */
+    fromPly: z.number().int().nonnegative(),
+  }),
+]);
 export type ChessReconcileJobData = z.infer<typeof chessReconcileJobSchema>;
+
+/**
+ * A spectator-evaluation backfill chunk: one per match and first missing ply, so
+ * concurrent readers of the same gap share one job, and a chunk that leaves positions
+ * behind hands them to a new job (the next first missing ply) instead of its own,
+ * still-active id.
+ */
+export const chessSpectatorJobId = (matchId: string, fromPly: number) =>
+  `chess-spectator-${matchId}-${fromPly}`;
+/**
+ * Backfill chunks are prioritized BullMQ jobs; the reconcile sweep's scheduled jobs are
+ * not, and BullMQ hands out unprioritized waiting jobs first. So a sweep waits for at
+ * most the one chunk in progress, however many backfills are queued.
+ */
+export const CHESS_SPECTATOR_JOB_PRIORITY = 10;
 
 /** Stable BullMQ Job Scheduler ID for the chess reconcile sweep. */
 export const CHESS_RECONCILE_JOB_SCHEDULER_ID = "chess-reconcile";

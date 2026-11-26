@@ -1,4 +1,5 @@
 import { boardAt, matchConfigSchema, type RemarkTone, remarkTones } from "@cockpit-chess/chess";
+import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
 import type { LocalClient } from "@cockpit-chess/chess/local-contract";
 import { CopyField } from "@cockpit-chess/ui/components/copy-field";
 import { Skeleton } from "@cockpit-chess/ui/components/skeleton";
@@ -15,6 +16,7 @@ import { useTranslation } from "react-i18next";
 import { useMobileKeyboard } from "@/hooks/use-mobile-keyboard";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { ChessBoard } from "./chess-board";
+import { endingHeadlineLabel } from "./ending-label";
 import { MatchReplay } from "./replay";
 import {
   autoMoveLimitMs,
@@ -175,7 +177,10 @@ export function LocalModelLab() {
                     ? t("local.running")
                     : match.status === "running"
                       ? t("lab.yourTurn")
-                      : t("lab.finished", { result: match.result })}
+                      : t("lab.finished", {
+                          result: match.result,
+                          ending: endingHeadlineLabel(t, endingSummary(matchEnding(match))),
+                        })}
                 </p>
                 <div className="cc-export-row">
                   <button
@@ -406,7 +411,12 @@ export function LocalModelLab() {
                 <h2>{t("replay.recorded")}</h2>
                 <span className="cc-pill">{t("local.private")}</span>
               </div>
-              <MatchReplay match={match} live={match.status === "running"} />
+              <MatchReplay
+                key={match.id}
+                match={match}
+                live={match.status === "running"}
+                spectator={data?.spectator}
+              />
             </>
           )}
           <footer className="cc-footer">

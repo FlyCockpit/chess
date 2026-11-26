@@ -15,7 +15,11 @@ export const isLiveJobState = (state: string) => LIVE_STATES.has(state);
 type RunnableJob = Pick<Job, "getState" | "retry" | "id" | "updateData">;
 
 type EnsureQueue<Data> = {
-  add(name: string, data: Data, options: { jobId: string }): Promise<RunnableJob>;
+  add(
+    name: string,
+    data: Data,
+    options: { jobId: string; priority?: number },
+  ): Promise<RunnableJob>;
   getJob(jobId: string): Promise<RunnableJob | null | undefined>;
 };
 
@@ -42,6 +46,8 @@ export async function ensureRunnableJob<Data>(
   name: string,
   data: Data,
   jobId: string,
+  /** BullMQ priority for a newly added job (a retried job keeps the one it was added with). */
+  options: { priority?: number } = {},
 ): Promise<RunnableJob> {
   let lastState = "missing";
 
@@ -50,7 +56,7 @@ export async function ensureRunnableJob<Data>(
     // retention bookkeeping wins the race after getJob(). Classify that job in
     // the same loop instead of assuming an add result is newly waiting.
     const existing = await queue.getJob(jobId);
-    const candidate = existing ?? (await queue.add(name, data, { jobId }));
+    const candidate = existing ?? (await queue.add(name, data, { ...options, jobId }));
     const state = await candidate.getState();
     lastState = state;
 

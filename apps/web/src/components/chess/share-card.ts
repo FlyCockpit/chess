@@ -1,5 +1,6 @@
 import { boardAt, type MatchArchive, matchStats, remarkTone } from "@cockpit-chess/chess";
 import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
+import type { SpectatorEvaluations } from "@cockpit-chess/chess/spectator";
 import type { TFunction } from "i18next";
 import { drawBoard } from "./board-canvas";
 import { endingHeadlineLabel, remarkToneLabel, timeControlLabel } from "./ending-label";
@@ -14,12 +15,16 @@ const PAPER = "#f2f1e8";
 
 const PROTOCOLS = new Set(["openai-chat", "openai-responses", "anthropic"]);
 
-/** Draws the whole card. `replayUrl` is null for a private draft. */
+/**
+ * Draws the whole card. `replayUrl` is null for a private draft; `spectator` is the
+ * game's spectator evaluation (the bar shows the exported position's score).
+ */
 export function drawShareCard(
   ctx: CanvasRenderingContext2D,
   match: MatchArchive,
   t: TFunction<"chess">,
   replayUrl: string | null,
+  spectator?: SpectatorEvaluations | null,
 ) {
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
@@ -115,7 +120,11 @@ export function drawShareCard(
 
   // The evaluation of exactly the exported position, when one was recorded:
   // White fills from the bottom.
-  const final = pointForPosition(evaluationSeries(match), Number.POSITIVE_INFINITY, board.fen());
+  const final = pointForPosition(
+    evaluationSeries(match, spectator),
+    Number.POSITIVE_INFINITY,
+    board.fen(),
+  );
   if (final) {
     const barX = BOARD.x - 30;
     const height = size * 8;

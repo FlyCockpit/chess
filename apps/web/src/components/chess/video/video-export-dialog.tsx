@@ -1,4 +1,5 @@
 import type { MatchArchive } from "@cockpit-chess/chess";
+import type { SpectatorEvaluations } from "@cockpit-chess/chess/spectator";
 import { Button } from "@cockpit-chess/ui/components/button";
 import {
   Dialog,
@@ -49,24 +50,32 @@ function save(url: string, fileName: string) {
 }
 
 /** Export → Dialog: options, then an in-browser MP4 encode with progress and cancel. */
-export function VideoExportDialog({ match }: { match: MatchArchive }) {
-  const { t } = useTranslation("chess");
+export function VideoExportDialog({
+  match,
+  spectator,
+}: {
+  match: MatchArchive;
+  /** The game's spectator evaluation, as the game view shows it. */
+  spectator?: SpectatorEvaluations | null;
+}) {
+  const { t, i18n } = useTranslation("chess");
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>({ name: "probing" });
-  const [options, setOptions] = useState<VideoOptions>(() => defaultVideoOptions(match));
+  const [options, setOptions] = useState<VideoOptions>(() => defaultVideoOptions(match, spectator));
   // One support check per aspect while the dialog is open (each is a short-lived worker).
   const codecs = useRef<Partial<Record<VideoAspect, Promise<string | null>>>>({});
   const probes = useRef<AbortController | null>(null);
   const abort = useRef<AbortController | null>(null);
   const objectUrl = useRef<string | null>(null);
-  const features = useMemo(() => videoFeatures(match), [match]);
+  const features = useMemo(() => videoFeatures(match, spectator), [match, spectator]);
   const translate = t as unknown as (
     key: string,
     params?: Record<string, string | number>,
   ) => string;
   const plan = useMemo(
-    () => (open ? buildVideoPlan(match, options, translate) : null),
-    [open, match, options, translate],
+    () =>
+      open ? buildVideoPlan(match, options, translate, { locale: i18n.language, spectator }) : null,
+    [open, match, options, translate, i18n.language, spectator],
   );
   const seconds = plan ? plan.totalFrames / plan.fps : 0;
 
@@ -109,7 +118,7 @@ export function VideoExportDialog({ match }: { match: MatchArchive }) {
       setPhase({ name: "probing" });
       return;
     }
-    const defaults = defaultVideoOptions(match);
+    const defaults = defaultVideoOptions(match, spectator);
     setOptions(defaults);
     checkSupport(defaults.aspect);
   };

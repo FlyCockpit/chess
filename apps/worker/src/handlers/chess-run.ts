@@ -8,6 +8,7 @@ import {
   type ProviderCredentials,
   runMatch,
 } from "@cockpit-chess/chess/runner";
+import { storedSpectatorEvaluations } from "@cockpit-chess/chess/spectator";
 import prisma from "@cockpit-chess/db";
 import { env } from "@cockpit-chess/env/shared";
 import {
@@ -19,6 +20,11 @@ import {
   isLiveJobState,
   type Job,
 } from "@cockpit-chess/queue";
+import {
+  backfillSpectatorEvaluations,
+  matchSpectatorFeed,
+  settleSpectatorFeed,
+} from "./chess-spectator";
 
 const STALE_HEARTBEAT_MS = 300000;
 const RECONCILE_BATCH = 50;
@@ -41,8 +47,13 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
  * Every write is a compare-and-set on (status, heartbeatAt), so a claim or
  * heartbeat that lands mid-sweep wins.
  */
-export async function handleChessReconcileJob(job: Pick<Job<ChessReconcileJobData>, "data">) {
-  chessReconcileJobSchema.parse(job.data);
+export async function handleChessReconcileJob(
+  job: Pick<Job<ChessReconcileJobData>, "data">,
+  signal?: AbortSignal,
+) {
+  const data = chessReconcileJobSchema.parse(job.data);
+  if (data.reason === "spectator")
+    return backfillSpectatorEvaluations(data.matchId, data.fromPly, signal);
   const cutoff = new Date(Date.now() - STALE_HEARTBEAT_MS);
   const select = { id: true, status: true, heartbeatAt: true } as const;
   const orderBy = [{ heartbeatAt: "asc" }, { id: "asc" }] as const;
@@ -129,7 +140,7 @@ export async function handleChessRunJob(
   if (claimed.count !== 1) return;
   const row = await prisma.chessMatch.findUnique({
     where: { id: matchId },
-    select: { archive: true },
+    select: { archive: true, spectatorEvaluations: true },
   });
   if (!row) return;
   let match: MatchArchive;
@@ -181,6 +192,14 @@ export async function handleChessRunJob(
         polling = false;
       });
   }, 2000);
+  // Spectator evaluation of each committed position, in the background on its own
+  // engine lane: it never delays a move, and a failure never touches the game.
+  const spectatorStop = new AbortController();
+  const spectators = matchSpectatorFeed(
+    matchId,
+    storedSpectatorEvaluations.parse(row.spectatorEvaluations),
+    signal ? AbortSignal.any([signal, spectatorStop.signal]) : spectatorStop.signal,
+  );
   let terminalPersisted = false;
   let terminalWriteAttempts = 0;
   // Last snapshot this run wrote. An unchanged running snapshot is not
@@ -216,6 +235,8 @@ export async function handleChessRunJob(
     }
     lastWritten = serialized;
     if (archive.status !== "running") terminalPersisted = true;
+    // Only the new moves are replayed here; the analysis runs in the background.
+    spectators.update(archive);
   }
   try {
     const credentials: Partial<Record<"w" | "b", ProviderCredentials>> = {};
@@ -305,5 +326,8 @@ export async function handleChessRunJob(
     clearInterval(timer);
     signal?.removeEventListener("abort", abort);
   }
+  // The result is already written. Give the last positions a short, bounded wait
+  // (they were evaluated while the game was played); anything left goes to a backfill.
+  await settleSpectatorFeed(matchId, spectators, spectatorStop);
   return { result: match.result, termination: match.termination, fen: boardAt(match).fen() };
 }

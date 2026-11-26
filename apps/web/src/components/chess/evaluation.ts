@@ -4,6 +4,11 @@ import {
   evaluationSchema,
   type MatchArchive,
 } from "@cockpit-chess/chess";
+import {
+  gamePositions,
+  missingSpectatorPlies,
+  type SpectatorEvaluations,
+} from "@cockpit-chess/chess/spectator";
 
 /**
  * Engine evaluations for the evaluation bar, graph and share card. Scores are
@@ -76,8 +81,55 @@ export type EvalPoint = {
   evaluation: EngineEvaluation;
 };
 
-/** Every recorded evaluation, in game order (the bar looks positions up in this). */
-export function evaluationSeries(match: MatchArchive): EvalPoint[] {
+/**
+ * The evaluations the bar, graph, PNG and MP4 show, in game order (the bar looks
+ * positions up in this). The spectators' evaluation of every position when the game has
+ * one (`spectator`, stored outside the archive); otherwise, for older games, whatever
+ * the archive recorded (player-facing after-move scores and the players' own engine
+ * tool calls). Empty when neither exists: the bar is then hidden with a reason.
+ */
+export function evaluationSeries(
+  match: MatchArchive,
+  spectator?: SpectatorEvaluations | null,
+): EvalPoint[] {
+  const scored = spectator ? spectatorSeries(match, spectator) : [];
+  if (!scored.length) return archiveSeries(match);
+  // Spectator scores win per exact position; the archive's fill the positions the
+  // spectators have not scored (yet), so a sparse backfill never hides a score.
+  const covered = new Set(scored.map((point) => point.evaluation.fen));
+  return [
+    ...scored,
+    ...archiveSeries(match).filter((point) => !covered.has(point.evaluation.fen)),
+  ].sort((a, b) => a.index - b.index);
+}
+
+/** One point per evaluated position, at the event that reached it (-1: the start). */
+function spectatorSeries(match: MatchArchive, spectator: SpectatorEvaluations): EvalPoint[] {
+  let positions: string[];
+  try {
+    positions = gamePositions(match);
+  } catch {
+    return [];
+  }
+  const reachedAt = [-1];
+  for (const [index, event] of match.events.entries())
+    if (event.type === "attempt" && event.accepted) reachedAt.push(index);
+  const points: EvalPoint[] = [];
+  for (const [ply, fen] of positions.entries()) {
+    const evaluation = spectator[String(ply)];
+    // Only a score of exactly this position counts (never a stale one).
+    if (!evaluation || evaluation.fen !== fen) continue;
+    points.push({
+      index: reachedAt[ply] ?? -1,
+      move: moveNumber(match.config.initialFen, Math.max(0, ply - 1)),
+      share: whiteShare(evaluation),
+      evaluation,
+    });
+  }
+  return points;
+}
+
+function archiveSeries(match: MatchArchive): EvalPoint[] {
   const points: EvalPoint[] = [];
   let plies = 0;
   for (const [index, event] of match.events.entries()) {
@@ -149,4 +201,45 @@ export function graphCursor(
     if (drawn) return drawn;
   }
   return pointAt(graph, index);
+}
+
+/** Each query's refetch count when its game was first seen finished. */
+const finishedAtFetch = new WeakMap<object, number>();
+/**
+ * `refetchInterval` for a game view's query: counts the finished-game polling allowance
+ * from when the game was first seen finished, not from the live game's many polls.
+ */
+export function replayRefetch(query: {
+  state: {
+    data?: { archive: MatchArchive; spectatorEvaluations: SpectatorEvaluations | null };
+    dataUpdateCount: number;
+  };
+}) {
+  const { data, dataUpdateCount } = query.state;
+  if (data && data.archive.status !== "running" && !finishedAtFetch.has(query))
+    finishedAtFetch.set(query, dataUpdateCount);
+  return replayRefetchInterval(
+    data,
+    dataUpdateCount - (finishedAtFetch.get(query) ?? dataUpdateCount),
+  );
+}
+/** Polls a finished game's spectator scores for at most this many refetches (~6 min). */
+const SPECTATOR_POLLS = 36;
+/**
+ * How often a game view refetches: every 2 s while the game runs; every 10 s for a
+ * bounded while when a finished game still lacks spectator scores (the run's last
+ * positions, or a backfill the read just asked for); otherwise not at all.
+ */
+export function replayRefetchInterval(
+  data: { archive: MatchArchive; spectatorEvaluations: SpectatorEvaluations | null } | undefined,
+  fetches: number,
+) {
+  if (!data) return false;
+  if (data.archive.status === "running") return 2000;
+  if (fetches >= SPECTATOR_POLLS) return false;
+  try {
+    return missingSpectatorPlies(data.archive, data.spectatorEvaluations).length ? 10_000 : false;
+  } catch {
+    return false;
+  }
 }

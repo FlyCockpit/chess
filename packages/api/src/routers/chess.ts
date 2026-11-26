@@ -16,6 +16,7 @@ import { ORPCError } from "@orpc/server";
 import { z } from "zod";
 import { adminOr404Procedure, publicProcedure } from "../index";
 import { getModelCatalog } from "../lib/chess-models";
+import { spectatorEvaluationsFor } from "../lib/chess-spectator";
 import { chessStatsColumns, INTERRUPTED_ENDING, STOPPED_ENDING } from "../lib/chess-stats";
 import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagination";
 import { createProcedureBudget } from "../lib/procedure-budget";
@@ -105,12 +106,14 @@ const ownDraftSelect = {
   source: true,
   published: true,
 } satisfies Prisma.ChessMatchSelect;
+const ownInspectSelect = {
+  ...ownDraftSelect,
+  spectatorEvaluations: true,
+} satisfies Prisma.ChessMatchSelect;
 const ownIdSelect = { id: true } satisfies Prisma.ChessMatchSelect;
-async function ownDraft<S extends typeof ownDraftSelect | typeof ownIdSelect>(
-  slug: string,
-  ownerId: string,
-  select: S,
-) {
+async function ownDraft<
+  S extends typeof ownDraftSelect | typeof ownInspectSelect | typeof ownIdSelect,
+>(slug: string, ownerId: string, select: S) {
   const row = await prisma.chessMatch.findFirst({ where: { slug, ownerId }, select });
   if (!row) throw new ORPCError("NOT_FOUND");
   return row;
@@ -158,10 +161,16 @@ export const chessRouter = {
   get: publicProcedure.input(slugInput).handler(async ({ input }) => {
     const row = await prisma.chessMatch.findFirst({
       where: { slug: input.slug, published: true },
-      select: { ...summary, archive: true },
+      select: { ...summary, archive: true, spectatorEvaluations: true },
     });
     if (!row) throw new ORPCError("NOT_FOUND");
-    return { ...withEnding(row), archive: checkedArchive(row.archive, row.status) };
+    const { spectatorEvaluations, ...rest } = row;
+    const archive = checkedArchive(row.archive, row.status);
+    return {
+      ...withEnding(rest),
+      archive,
+      spectatorEvaluations: spectatorEvaluationsFor({ ...row, archive }),
+    };
   }),
   studio: adminOr404Procedure.input(cursorPageInput).handler(async ({ input, context }) => {
     const rows = await prisma.chessMatch.findMany({
@@ -173,11 +182,13 @@ export const chessRouter = {
     return cursorPage(rows.map(withEnding), input.limit, "createdAt");
   }),
   inspect: adminOr404Procedure.input(slugInput).handler(async ({ input, context }) => {
-    const row = await ownDraft(input.slug, context.session.user.id, ownDraftSelect);
+    const row = await ownDraft(input.slug, context.session.user.id, ownInspectSelect);
+    const archive = checkedArchive(row.archive, row.status);
     return {
-      archive: checkedArchive(row.archive, row.status),
+      archive,
       status: row.status,
       published: row.published,
+      spectatorEvaluations: spectatorEvaluationsFor({ ...row, archive }),
     };
   }),
   create: adminOr404Procedure.input(matchConfigSchema).handler(async ({ input, context }) => {

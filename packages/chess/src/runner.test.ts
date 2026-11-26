@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   archiveByteLength,
   boardAt,
+  Chess,
   createMatch,
   finishMatch,
   MAX_ARCHIVE_BYTES,
@@ -24,6 +25,7 @@ import {
   MAX_UNMEASURED_EVENT_BYTES,
   REMARK_PROMPTS,
   runMatch,
+  spectatorFeed,
   TERMINAL_BOOKKEEPING_BYTES,
   turnPrompt,
 } from "./runner";
@@ -462,6 +464,10 @@ describe("shared tokens, anonymous commentary and engine assistance", () => {
     expect(commentary).toContain("neutral remark");
     const trash = prompt("trash-talk");
     expect(trash).toContain(REMARK_PROMPTS["trash-talk"]);
+    // The reply template names the register too, not a generic "remark".
+    expect(trash).toContain('"comment":"<one playful jab at your opponent>"');
+    expect(commentary).toContain('"comment":"<one neutral remark about your move>"');
+    expect(REMARK_PROMPTS["trash-talk"]).toContain("spoken to your opponent");
     expect(trash).not.toContain(REMARK_PROMPTS.commentary);
     for (const banned of ["no slurs", "no profanity", "nothing about anyone's identity"])
       expect(REMARK_PROMPTS["trash-talk"]).toContain(banned);
@@ -1201,5 +1207,101 @@ describe("strict and lenient move formats", () => {
     const extracted = await firstAttempt(long, "lenient");
     expect(extracted).toMatchObject({ move: "e2e5", accepted: false, reason: "illegal" });
     expect(extracted?.type === "attempt" && extracted.normalizedFrom).toBe("e2e5");
+  });
+});
+
+describe("spectator evaluation", () => {
+  const score = (fen: string, cp: number) => ({
+    engine: "stockfish-19-lite-single" as const,
+    fen,
+    depth: 12,
+    nodes: 10000,
+    cp,
+    mate: null,
+    bestMove: null,
+  });
+  it("evaluates every committed position once, in order, on the spectators' engine lane", async () => {
+    evaluatePosition.mockImplementation(async (fen: string) => score(fen, 987654));
+    const match = createMatch({ white: random, black: random, rules: {} });
+    const recorded: Array<[number, string]> = [];
+    const known = { "0": score(boardAt(match).fen(), 20) };
+    const feed = spectatorFeed({
+      known,
+      record: (ply, value) => void recorded.push([ply, value.fen]),
+    });
+    submitMove(match, boardAt(match), "e2e4");
+    feed.update(match);
+    submitMove(match, boardAt(match), "e7e5");
+    feed.update(match);
+    feed.update(match);
+    await feed.drain();
+    expect(recorded.map(([ply]) => ply)).toEqual([1, 2]);
+    expect(recorded.map(([, fen]) => fen)).toEqual(
+      [1, 2].map((ply) => {
+        const chess = new Chess();
+        for (const move of ["e4", "e5"].slice(0, ply)) chess.move(move);
+        return chess.fen();
+      }),
+    );
+    for (const [, options] of evaluatePosition.mock.calls)
+      expect(options).toMatchObject({ lane: "spectators", nodes: 10000 });
+    // Never part of the archive or of either player's prompt.
+    expect(JSON.stringify(match)).not.toContain("987654");
+    expect(turnPrompt(match, "w")).not.toContain("987654");
+    expect(turnPrompt(match, "w")).not.toMatch(/evaluation|centipawn/i);
+  });
+  it("stops at the first engine failure without touching the game", async () => {
+    evaluatePosition.mockRejectedValue(new Error("Engine could not start"));
+    const record = vi.fn();
+    const match = createMatch({ white: random, black: random, rules: {} });
+    const before = serializeArchive(match);
+    const feed = spectatorFeed({ record });
+    feed.update(match);
+    submitMove(match, boardAt(match), "e2e4");
+    expect(() => feed.update(match)).not.toThrow();
+    await feed.drain();
+    expect(feed.failed).toBe(true);
+    expect(record).not.toHaveBeenCalled();
+    expect(evaluatePosition).toHaveBeenCalledTimes(1);
+    expect(match.status).toBe("running");
+    expect(JSON.parse(serializeArchive(match)).events).toHaveLength(
+      JSON.parse(before).events.length + 1,
+    );
+  });
+  it("replays only new moves on update and never waits for the engine", async () => {
+    let release: (() => void) | undefined;
+    evaluatePosition.mockImplementation(
+      (fen: string) =>
+        new Promise((resolve) => {
+          release = () => resolve(score(fen, 5));
+        }),
+    );
+    const match = createMatch({ white: random, black: random, rules: {} });
+    const recorded: number[] = [];
+    const feed = spectatorFeed({ record: (ply) => void recorded.push(ply) });
+    submitMove(match, boardAt(match), "e2e4");
+    feed.update(match); // returns while the first analysis is still pending
+    expect(recorded).toEqual([]);
+    expect(feed.remaining).toBe(1);
+    // Moves already replayed are not replayed again: corrupting one changes nothing.
+    const first = match.events[0];
+    if (first?.type === "attempt") first.move = "a1a1";
+    submitMove(
+      match,
+      new Chess("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"),
+      "e7e5",
+    );
+    feed.update(match);
+    expect(feed.failed).toBe(false);
+    for (let i = 0; i < 3; i++) {
+      await vi.waitFor(() => expect(release).toBeDefined());
+      const go = release as () => void;
+      release = undefined;
+      go();
+      await vi.waitFor(() => expect(recorded).toHaveLength(i + 1));
+    }
+    await feed.drain();
+    expect(recorded).toEqual([0, 1, 2]);
+    expect(feed.remaining).toBe(0);
   });
 });

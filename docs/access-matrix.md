@@ -12,14 +12,14 @@ registered access levels; handler tests verify ownership and custom role rules.
 |---|---|---|---|---|---|---|
 | Read arena configuration | implemented | read | read | read | `chess.info` | No secrets |
 | Browse published matches | implemented | read | read | read | `chess.list` | Public projection only; cursor bounded |
-| View a published game and replay | implemented | read | read | read | `chess.get` | Drafts never public |
+| View a published game and replay | implemented | read | read | read | `chess.get` | Drafts never public; includes spectator-only engine scores; a finished game missing some may enqueue one deduplicated background backfill (engine CPU only, no inference spend) |
 | Read official results | implemented | read | read | read | `chess.leaderboard` | Controlled runs only |
 | Create a hosted match | implemented | none | none | full | `chess.create` | Paid work admin-only |
 | List hosted models for the create form | implemented | none | none | full | `chess.models` | Server-side OpenRouter catalog, cached 1 h; no key sent |
 | Import a local archive as draft | implemented | none | none | full | `chess.importGame` | Validate full move sequence; no credential fields |
 | Publish a draft | implemented | none | none | full | `chess.publish` | Explicit admin action |
 | Stop a hosted match | implemented | none | none | full | `chess.stop` | No further inference after cancellation |
-| Inspect own private archive | implemented | none | none | full | `chess.inspect` | Owner-scoped admin |
+| Inspect own private archive | implemented | none | none | full | `chess.inspect` | Owner-scoped admin; same spectator scores and backfill as `chess.get` |
 | Browse private studio | implemented | none | none | full | `chess.studio` | Includes drafts |
 | Spend the first-admin setup link | implemented | write | write | write | `setup.claimFirstAdmin` | The link token is the credential; 404 unless `SETUP_KEY` is set; refused once any admin exists; per-IP budget and secret-free audit line |
 | See that `SETUP_KEY` is still set | implemented | none | none | read | `settings.setupKeyStatus` | Hidden (404) from non-admins; drives the "Remove SETUP_KEY" banner |

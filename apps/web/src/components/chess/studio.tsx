@@ -1,5 +1,6 @@
 import { hasRole } from "@cockpit-chess/auth/roles";
 import { MAX_ARCHIVE_BYTES, type MatchArchive } from "@cockpit-chess/chess";
+import type { SpectatorEvaluations } from "@cockpit-chess/chess/spectator";
 import { Button } from "@cockpit-chess/ui/components/button";
 import {
   Dialog,
@@ -28,6 +29,7 @@ import { isQueryAccessError } from "@/lib/query-access-error";
 import { orpc } from "@/utils/orpc";
 import { CreateMatchDialog } from "./create-match-dialog";
 import { endingHeadlineLabel } from "./ending-label";
+import { replayRefetch } from "./evaluation";
 import { MatchReplay } from "./replay";
 import { drawShareCard, SHARE_HEIGHT, SHARE_WIDTH } from "./share-card";
 
@@ -72,7 +74,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
     ...orpc.chess.inspect.queryOptions({ input: { slug: selected || "not-selected" } }),
     enabled: admin && Boolean(selected),
     meta: { skipGlobalErrorToast: true },
-    refetchInterval: (query) => (query.state.data?.archive.status === "running" ? 2000 : false),
+    refetchInterval: replayRefetch,
   });
   const detail = isQueryAccessError(detailFailure) ? undefined : detailData;
   const publish = useEntityMutation(orpc.chess.publish.mutationOptions(), {
@@ -185,12 +187,18 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
             <>
               <div className="cc-section-bar">
                 <h2>{t("studio.preview")}</h2>
-                <ShareCard match={detail.archive} slug={selected} published={detail.published} />
+                <ShareCard
+                  match={detail.archive}
+                  slug={selected}
+                  published={detail.published}
+                  spectator={detail.spectatorEvaluations}
+                />
               </div>
               <MatchReplay
                 key={detail.archive.id}
                 match={detail.archive}
                 live={detail.archive.status === "running"}
+                spectator={{ evaluations: detail.spectatorEvaluations }}
               />
             </>
           )}
@@ -291,10 +299,12 @@ function ShareCard({
   match,
   slug,
   published,
+  spectator,
 }: {
   match: MatchArchive;
   slug: string;
   published: boolean;
+  spectator: SpectatorEvaluations | null;
 }) {
   const { t } = useTranslation("chess");
   function download() {
@@ -306,7 +316,7 @@ function ShareCard({
     const replayUrl = new URL(window.location.href);
     replayUrl.search = new URLSearchParams({ game: slug }).toString();
     replayUrl.hash = "";
-    drawShareCard(ctx, match, t, published ? replayUrl.toString() : null);
+    drawShareCard(ctx, match, t, published ? replayUrl.toString() : null, spectator);
     const anchor = document.createElement("a");
     anchor.download = `cockpit-${match.id}.png`;
     anchor.href = canvas.toDataURL("image/png");

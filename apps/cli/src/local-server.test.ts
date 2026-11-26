@@ -13,12 +13,24 @@ import {
 } from "./local-assets";
 import { startLocalChess } from "./local-server";
 
+const { evaluatePosition } = vi.hoisted(() => ({ evaluatePosition: vi.fn() }));
+vi.mock("../../../packages/chess/src/engine", () => ({ evaluatePosition }));
+const score = (fen: string) => ({
+  engine: "stockfish-19-lite-single" as const,
+  fen,
+  depth: 10,
+  nodes: 10000,
+  cp: 42,
+  mate: null,
+  bestMove: null,
+});
 const html = '<html><script type="module" src="/assets/lab.js"></script></html>';
 const script = 'console.log("local lab");';
 const running: Awaited<ReturnType<typeof startLocalChess>>[] = [];
 let directory: string;
 
 beforeEach(async () => {
+  evaluatePosition.mockImplementation(async (fen: string) => score(fen));
   directory = await mkdtemp(path.join(tmpdir(), "cockpit-local-server-"));
   // Exercise real HTTP request/response objects without opening TCP sockets.
   vi.spyOn(Server.prototype, "listen").mockImplementation(function (
@@ -406,5 +418,95 @@ describe("the human's clock on a timed local board", () => {
       expect.any(String),
       expect.objectContaining({ termination: "timeout" }),
     );
+  });
+});
+
+describe("spectator evaluation in the local lab", () => {
+  const rpc = (server: Server, name: string, json: unknown) =>
+    request(server, `/rpc/${name}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-csrf-token": "orpc" },
+      chunks: [JSON.stringify({ json })],
+    });
+  const stateOf = async (server: Server) =>
+    JSON.parse((await rpc(server, "state", null)).body).json;
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  it("scores every position for spectators only, on its own engine lane", async () => {
+    vi.spyOn(storage, "writeGame").mockResolvedValue(undefined);
+    const local = await start({ assetSource: await embeddedSource() });
+    expect((await createGame(local.server)).status).toBe(200);
+    await rpc(local.server, "move", { move: "e2e4", expectedSeq: 0 });
+    await settle();
+    const state = await stateOf(local.server);
+    expect(state.spectator.available).toBe(true);
+    expect(Object.keys(state.spectator.evaluations).sort()).toEqual(["0", "1"]);
+    expect(state.spectator.evaluations["1"].fen).toBe(state.match.events[0].fen);
+    expect(JSON.stringify(state.match)).not.toContain('"cp":42');
+    for (const [, options] of evaluatePosition.mock.calls)
+      expect(options).toMatchObject({ lane: "spectators" });
+    const written = vi.mocked(storage.writeGame).mock.calls.map(([, record]) => record);
+    expect(JSON.stringify(written)).not.toContain('"cp":42');
+  });
+  it("hides the bar's data, with a reason, when there is no engine or it fails", async () => {
+    vi.spyOn(storage, "writeGame").mockResolvedValue(undefined);
+    const compiled = await start({ assetSource: await embeddedSource(), engineAvailable: false });
+    expect((await createGame(compiled.server)).status).toBe(200);
+    await settle();
+    expect((await stateOf(compiled.server)).spectator).toEqual({
+      evaluations: {},
+      available: false,
+    });
+    expect(evaluatePosition).not.toHaveBeenCalled();
+    evaluatePosition.mockRejectedValue(new Error("Engine could not start"));
+    const failing = await start({ assetSource: await embeddedSource() });
+    expect((await createGame(failing.server)).status).toBe(200);
+    await settle();
+    await rpc(failing.server, "move", { move: "e2e4", expectedSeq: 0 });
+    await settle();
+    const state = await stateOf(failing.server);
+    expect(state.spectator.available).toBe(false);
+    expect(state.match.status).toBe("running");
+    expect(state.match.events).toHaveLength(1);
+  });
+});
+
+describe("the human's opening clock with a slow start", () => {
+  it("counts from the match's creation, as the lab shows it, even if saving it was slow", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const timed = matchConfigSchema.parse({
+        white: { name: "White", model: "human", protocol: "human" },
+        black: { name: "Black", model: "human", protocol: "human" },
+        rules: { engineEvaluation: "off", clock: { w: 30000, b: 30000 }, turnTimeoutMs: 30000 },
+      });
+      // The first save takes 5 s: the clock still started when the match was created.
+      vi.spyOn(storage, "writeGame").mockImplementationOnce(
+        () => new Promise((resolve) => setTimeout(resolve, 5000)),
+      );
+      vi.spyOn(storage, "writeGame").mockResolvedValue(undefined);
+      const local = await start({ assetSource: await embeddedSource(), engineAvailable: false });
+      const rpc = (name: string, json: unknown) =>
+        request(local.server, `/rpc/${name}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-csrf-token": "orpc" },
+          chunks: [JSON.stringify({ json })],
+        });
+      const creating = rpc("create", timed);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect((await creating).status).toBe(200);
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(24_999);
+      let match = JSON.parse((await rpc("state", null)).body).json.match;
+      expect(match.status).toBe("running");
+      await vi.advanceTimersByTimeAsync(1);
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      match = JSON.parse((await rpc("state", null)).body).json.match;
+      expect(match).toMatchObject({ status: "completed", termination: "timeout" });
+      expect(match.events[0]).toMatchObject({ type: "timing", elapsedMs: 30000 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

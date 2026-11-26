@@ -159,7 +159,7 @@ export async function startWorkerRuntime(options: {
     // scan the same rows, and the compare-and-set makes the second a no-op.
     const chessReconcileWorker = createWorker<ChessReconcileJobData>(
       QUEUE_NAMES.chessReconcile,
-      handleChessReconcileJob,
+      (job) => handleChessReconcileJob(job, options.signal),
       { connection, concurrency: 1 },
     );
 

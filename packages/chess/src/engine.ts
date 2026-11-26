@@ -27,8 +27,16 @@ interface EngineProcess {
   onOutput?: (bytes: number) => void;
   onFailure?: (error: Error) => void;
 }
-let engine: EngineProcess | undefined;
-let queue: Promise<void> = Promise.resolve();
+/**
+ * Two independent lanes, each its own process and serialized queue: the players'
+ * engine (tool calls, player-facing after-move evaluations) never waits behind the
+ * spectators' evaluation of the game, which runs in the background.
+ */
+export type EngineLane = "players" | "spectators";
+const lanes: Record<EngineLane, { engine?: EngineProcess; queue: Promise<void> }> = {
+  players: { queue: Promise.resolve() },
+  spectators: { queue: Promise.resolve() },
+};
 
 /** The process must never keep its host alive; an in-flight request's timer does that. */
 function unref(handle: unknown) {
@@ -37,7 +45,7 @@ function unref(handle: unknown) {
 function stopEngine(target: EngineProcess) {
   if (!target.alive) return;
   target.alive = false;
-  if (engine === target) engine = undefined;
+  for (const lane of Object.values(lanes)) if (lane.engine === target) lane.engine = undefined;
   target.lines.close();
   target.child.kill("SIGKILL");
 }
@@ -81,14 +89,20 @@ function startEngine(): EngineProcess {
   return started;
 }
 
-function analyse(chess: Chess, nodes: number, signal?: AbortSignal): Promise<EngineEvaluation> {
+function analyse(
+  lane: EngineLane,
+  chess: Chess,
+  nodes: number,
+  signal?: AbortSignal,
+): Promise<EngineEvaluation> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new Error("Engine analysis cancelled"));
       return;
     }
-    const current = engine?.alive ? engine : startEngine();
-    engine = current;
+    const slot = lanes[lane];
+    const current = slot.engine?.alive ? slot.engine : startEngine();
+    slot.engine = current;
     const result: EngineEvaluation = {
       engine: ENGINE_ID,
       fen: chess.fen(),
@@ -168,10 +182,10 @@ function analyse(chess: Chess, nodes: number, signal?: AbortSignal): Promise<Eng
   });
 }
 
-/** Bounded nodes and a 5 s allowance per analysis, on the shared serialized engine. */
+/** Bounded nodes and a 5 s allowance per analysis, on the lane's serialized engine. */
 export async function evaluatePosition(
   fen: string,
-  options: { nodes?: number; signal?: AbortSignal } = {},
+  options: { nodes?: number; signal?: AbortSignal; lane?: EngineLane } = {},
 ): Promise<EngineEvaluation> {
   const chess = new Chess(fen);
   const nodes = options.nodes ?? 10000;
@@ -179,8 +193,10 @@ export async function evaluatePosition(
     throw new Error("Invalid engine node allowance");
   const { signal } = options;
   signal?.throwIfAborted();
-  const run = queue.then(() => analyse(chess, nodes, signal));
-  queue = run.then(
+  const lane = options.lane ?? "players";
+  const slot = lanes[lane];
+  const run = slot.queue.then(() => analyse(lane, chess, nodes, signal));
+  slot.queue = run.then(
     () => undefined,
     () => undefined,
   );

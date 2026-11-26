@@ -1,4 +1,5 @@
-import { createMatch } from "@cockpit-chess/chess";
+import { createMatch, finishMatch } from "@cockpit-chess/chess";
+import { gamePositions } from "@cockpit-chess/chess/spectator";
 import { describe, expect, it } from "vitest";
 import {
   evaluationSeries,
@@ -7,6 +8,8 @@ import {
   moveNumber,
   pointAt,
   pointForPosition,
+  replayRefetch,
+  replayRefetchInterval,
   shortScore,
   whiteShare,
 } from "./evaluation";
@@ -150,5 +153,74 @@ describe("evaluationSeries", () => {
   });
   it("is empty without evaluations", () => {
     expect(evaluationSeries(fixtureGame({ evaluations: false }))).toEqual([]);
+  });
+});
+
+describe("replayRefetchInterval", () => {
+  const scoredAll = (match: ReturnType<typeof fixtureGame>) =>
+    Object.fromEntries(
+      gamePositions(match).map((fen, ply) => [
+        String(ply),
+        {
+          engine: "stockfish-19-lite-single" as const,
+          fen,
+          depth: 1,
+          nodes: 1000,
+          cp: 0,
+          mate: null,
+          bestMove: null,
+        },
+      ]),
+    );
+  it("polls fast while running, slowly and boundedly while a finished game lacks scores", () => {
+    const running = fixtureGame();
+    expect(replayRefetchInterval({ archive: running, spectatorEvaluations: null }, 500)).toBe(2000);
+    const done = fixtureGame();
+    finishMatch(done, "*", "cancelled", "stopped");
+    expect(replayRefetchInterval({ archive: done, spectatorEvaluations: null }, 1)).toBe(10_000);
+    expect(replayRefetchInterval({ archive: done, spectatorEvaluations: null }, 36)).toBe(false);
+    expect(replayRefetchInterval({ archive: done, spectatorEvaluations: scoredAll(done) }, 1)).toBe(
+      false,
+    );
+    expect(replayRefetchInterval(undefined, 0)).toBe(false);
+  });
+});
+
+describe("spectator and archive scores together", () => {
+  it("prefers the spectators' score per position and keeps archive scores elsewhere", () => {
+    const match = fixtureGame(); // after-move evaluations of every position after a move
+    const start = gamePositions(match)[0] as string;
+    const sparse = {
+      "0": {
+        engine: "stockfish-19-lite-single" as const,
+        fen: start,
+        depth: 1,
+        nodes: 1000,
+        cp: 7,
+        mate: null,
+        bestMove: null,
+      },
+    };
+    const series = evaluationSeries(match, sparse);
+    expect(series[0]?.evaluation.cp).toBe(7);
+    // The archive's later scores are still there.
+    expect(series.length).toBe(evaluationSeries(match).length + 1);
+    expect(series.map((point) => point.index)).toEqual(
+      [...series.map((point) => point.index)].sort((a, b) => a - b),
+    );
+  });
+  it("counts the polling allowance from when the game was first seen finished", () => {
+    const match = fixtureGame();
+    const query = {
+      state: { data: { archive: match, spectatorEvaluations: null }, dataUpdateCount: 400 },
+    };
+    expect(replayRefetch(query)).toBe(2000);
+    finishMatch(match, "*", "cancelled", "stopped");
+    query.state.dataUpdateCount = 401;
+    expect(replayRefetch(query)).toBe(10_000);
+    query.state.dataUpdateCount = 436;
+    expect(replayRefetch(query)).toBe(10_000);
+    query.state.dataUpdateCount = 437;
+    expect(replayRefetch(query)).toBe(false);
   });
 });

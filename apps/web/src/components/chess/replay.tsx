@@ -8,8 +8,9 @@ import {
   matchStats,
   remarkTone,
 } from "@cockpit-chess/chess";
-import { type MatchEnding, matchEnding } from "@cockpit-chess/chess/ending";
+import { endingSummary, type MatchEnding, matchEnding } from "@cockpit-chess/chess/ending";
 import { exportPgn } from "@cockpit-chess/chess/pgn";
+import type { SpectatorEvaluations } from "@cockpit-chess/chess/spectator";
 import { CodeSnippet } from "@cockpit-chess/ui/components/code-snippet";
 import { CopyField } from "@cockpit-chess/ui/components/copy-field";
 import {
@@ -24,9 +25,17 @@ import {
 } from "lucide-react";
 import { memo, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useNow } from "@/hooks/use-now";
 import { useReplayClock } from "@/hooks/use-replay-clock";
 import { ChessBoard } from "./chess-board";
-import { endingLabel, remarkToneLabel, timeControlLabel } from "./ending-label";
+import { clockAt, formatClock, liveClock } from "./clock";
+import {
+  endingDetailLabel,
+  endingHeadlineLabel,
+  endingLabel,
+  remarkToneLabel,
+  timeControlLabel,
+} from "./ending-label";
 import { EvalBar, EvalGraph } from "./eval-bar";
 import {
   evaluationSeries,
@@ -43,24 +52,105 @@ function modelLine(player: { name: string; model: string }) {
   return player.model.trim() && player.model !== player.name ? player.model : null;
 }
 
-function PlayerRow({ player, side }: { player: { name: string; model: string }; side: Color }) {
+type Remark = { index: number; side: Color; move: number; label: string; comment: string };
+
+/**
+ * One remark: the chat bubble beside its player and each chat-log entry are this same
+ * component. Untrusted model text, rendered as plain text only.
+ */
+function RemarkButton({
+  remark,
+  className,
+  onSelect,
+}: {
+  remark: Remark;
+  className: string;
+  onSelect: (remark: Remark) => void;
+}) {
   const { t } = useTranslation("chess");
-  const detail = modelLine(player);
   return (
-    <div className="cc-player">
-      <span className={side === "w" ? "cc-avatar cc-avatar-light" : "cc-avatar"}>
-        {side === "w" ? "♔" : "♚"}
+    <button
+      type="button"
+      className={`${className} cc-remark-${remark.side}`}
+      onClick={() => onSelect(remark)}
+    >
+      <span className="cc-remark-meta">
+        <span aria-hidden="true" className={`cc-swatch cc-swatch-${remark.side}`} />
+        {t(`colors.${remark.side}`)} ·{" "}
+        {t("replay.remarkMove", { move: remark.move, san: remark.label })}
       </span>
-      <div>
-        <strong>{player.name}</strong>
-        {detail && <span>{detail}</span>}
-      </div>
-      <span className="cc-side-label">{t(`colors.${side}`)}</span>
-    </div>
+      <span className="cc-remark-text">{remark.comment}</span>
+    </button>
   );
 }
 
-type Remark = { index: number; side: Color; move: number; label: string; comment: string };
+/**
+ * A player's row: name, model, clock (timed games), and, when remarks are on, a slot
+ * of fixed height for the side's chat bubble, on the board's outer edge so a bubble
+ * never covers a square or moves the board.
+ */
+function PlayerRow({
+  player,
+  side,
+  position,
+  clock,
+  ticking,
+  bubbles,
+  remark,
+  onRemark,
+}: {
+  player: { name: string; model: string };
+  side: Color;
+  position: "top" | "bottom";
+  clock: number | null;
+  ticking: boolean;
+  bubbles: boolean;
+  remark: Remark | undefined;
+  onRemark: (remark: Remark) => void;
+}) {
+  const { t } = useTranslation("chess");
+  const detail = modelLine(player);
+  const slot = bubbles && (
+    <div className={`cc-bubble-slot cc-bubble-slot-${position}`} aria-live="polite">
+      {remark && (
+        <RemarkButton
+          key={remark.index}
+          remark={remark}
+          className="cc-remark-bubble"
+          onSelect={onRemark}
+        />
+      )}
+    </div>
+  );
+  return (
+    <div className={`cc-player-block cc-player-${position}`}>
+      {position === "top" && slot}
+      <div className="cc-player">
+        <span className={side === "w" ? "cc-avatar cc-avatar-light" : "cc-avatar"}>
+          {side === "w" ? "♔" : "♚"}
+        </span>
+        <div>
+          <strong>{player.name}</strong>
+          {detail && <span>{detail}</span>}
+        </div>
+        {clock !== null && (
+          <span
+            className={`cc-clock ${ticking ? "cc-clock-running" : ""} ${clock === 0 ? "cc-clock-flagged" : ""}`}
+            role="timer"
+            aria-label={t("replay.clockLabel", {
+              side: t(`colors.${side}`),
+              time: formatClock(clock),
+            })}
+          >
+            {formatClock(clock)}
+          </span>
+        )}
+        <span className="cc-side-label">{t(`colors.${side}`)}</span>
+      </div>
+      {position === "bottom" && slot}
+    </div>
+  );
+}
 /** Every non-empty remark, tied to the attempt it came with. Rendered as text only. */
 function remarksOf(match: MatchArchive): Remark[] {
   const remarks: Remark[] = [];
@@ -213,11 +303,37 @@ export function downloadGame(
   anchor.click();
   URL.revokeObjectURL(url);
 }
-export function MatchReplay({ match, live = false }: { match: MatchArchive; live?: boolean }) {
+/** Why a game shows no evaluation bar. */
+function evaluationNote(
+  match: MatchArchive,
+  spectator: { evaluations: SpectatorEvaluations | null; available?: boolean } | undefined,
+) {
+  if (spectator?.available === false) return "replay.evalNoEngine";
+  if (match.status === "running") return "replay.evalWaiting";
+  return "replay.evalPending";
+}
+
+export function MatchReplay({
+  match,
+  live = false,
+  spectator,
+}: {
+  match: MatchArchive;
+  live?: boolean;
+  /**
+   * Spectator-only engine scores (`chess.get` / `chess.inspect`, the local lab's
+   * state). `available: false` means no engine can produce them here.
+   */
+  spectator?: { evaluations: SpectatorEvaluations | null; available?: boolean };
+}) {
   const { t, i18n } = useTranslation("chess");
   const [cursor, setCursor] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [flipped, setFlipped] = useState(false);
+  // With remarks on, the chat log is what most viewers come for; the move list is one tab away.
+  const [tab, setTab] = useState<"moves" | "chat">(
+    remarkTone(match.config.rules) === "off" ? "moves" : "chat",
+  );
   const lastIndex = match.events.length - 1;
   const index = cursor === null ? lastIndex : Math.min(cursor, lastIndex);
   // Reaching the last event resumes live-follow (cursor === null) instead of
@@ -233,7 +349,10 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
   }, []);
   const replay = useMemo(() => buildReplayIndex(match), [match]);
   const stats = useMemo(() => matchStats(match), [match]);
-  const series = useMemo(() => evaluationSeries(match), [match]);
+  const series = useMemo(
+    () => evaluationSeries(match, spectator?.evaluations),
+    [match, spectator?.evaluations],
+  );
   const graph = useMemo(() => graphSeries(series), [series]);
   const remarks = useMemo(() => remarksOf(match), [match]);
   const sideStats = useMemo(
@@ -280,10 +399,45 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
     (ending: MatchEnding) => endingLabel(t, i18n.language, ending),
     [t, i18n.language],
   );
-  const ending = useMemo(() => describeEnding(matchEnding(match)), [describeEnding, match]);
+  const structuredEnding = useMemo(() => matchEnding(match), [match]);
+  const ending = describeEnding(structuredEnding);
   const currentRemark = commentary
     ? remarks.filter((remark) => remark.index <= index).at(-1)
     : undefined;
+  const selectRemark = useCallback(
+    (remark: Remark) => selectEvent(remark.index === lastIndex ? null : remark.index),
+    [selectEvent, lastIndex],
+  );
+  const timed = clockAt(match, "w", -1) !== null;
+  const following = live && cursor === null && match.status === "running";
+  const now = useNow(timed && following);
+  const clockOf = (side: Color) =>
+    following ? liveClock(match, side, frame.turn, now) : clockAt(match, side, index);
+  // The result, in plain words, once the replay reaches the end of a finished game.
+  const finished = match.termination !== "playing" && index === lastIndex;
+  const summary = endingSummary(structuredEnding);
+  const outcome =
+    structuredEnding.kind === "draw" || structuredEnding.kind === "ply-limit"
+      ? "draw"
+      : match.result === "1-0"
+        ? "w"
+        : match.result === "0-1"
+          ? "b"
+          : "unscored";
+  const top: Color = flipped ? "w" : "b";
+  const bottom: Color = flipped ? "b" : "w";
+  const row = (side: Color, position: "top" | "bottom") => (
+    <PlayerRow
+      player={side === "w" ? match.config.white : match.config.black}
+      side={side}
+      position={position}
+      clock={clockOf(side)}
+      ticking={following && frame.turn === side}
+      bubbles={commentary}
+      remark={currentRemark?.side === side ? currentRemark : undefined}
+      onRemark={selectRemark}
+    />
+  );
   const event = match.events[index];
   const evaluation = evaluationAt(replay, frame.fen, index);
   const score = evaluation
@@ -294,35 +448,24 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
   return (
     <div className="cc-replay-grid">
       <section className="cc-board-panel">
-        <PlayerRow
-          player={flipped ? match.config.white : match.config.black}
-          side={flipped ? "w" : "b"}
-        />
+        {/* The result, above the board where it is seen first; the final position stays visible. */}
+        {finished && (
+          <div className={`cc-result-banner cc-result-${outcome}`} role="status">
+            <strong>{endingHeadlineLabel(t, summary)}</strong>
+            {endingDetailLabel(t, i18n.language, structuredEnding) && (
+              <span>{endingDetailLabel(t, i18n.language, structuredEnding)}</span>
+            )}
+            <span className="cc-result-score">{match.result}</span>
+          </div>
+        )}
+        {row(top, "top")}
         <div className={showEval ? "cc-board-row" : undefined}>
           {showEval && <EvalBar point={evalPoint} flipped={flipped} />}
           <div className="cc-board-cell">
             <ChessBoard fen={frame.fen} flipped={flipped} lastMove={frame.lastMove} />
           </div>
         </div>
-        <PlayerRow
-          player={flipped ? match.config.black : match.config.white}
-          side={flipped ? "b" : "w"}
-        />
-        {currentRemark && (
-          <button
-            type="button"
-            className={`cc-remark-bubble cc-remark-${currentRemark.side}`}
-            onClick={() =>
-              selectEvent(currentRemark.index === lastIndex ? null : currentRemark.index)
-            }
-          >
-            <span className="cc-remark-meta">
-              {t(`colors.${currentRemark.side}`)} ·{" "}
-              {t("replay.remarkMove", { move: currentRemark.move, san: currentRemark.label })}
-            </span>
-            <span className="cc-remark-text">{currentRemark.comment}</span>
-          </button>
-        )}
+        {row(bottom, "bottom")}
         <div className="cc-replay-controls">
           <button
             type="button"
@@ -402,13 +545,7 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
             onSelect={(target) => selectEvent(target >= lastIndex ? null : target)}
           />
         ) : (
-          <p className="cc-muted cc-eval-note">
-            {t(
-              match.config.rules.engineEvaluation === "off"
-                ? "replay.evalUnavailable"
-                : "replay.evalNone",
-            )}
-          </p>
+          <p className="cc-muted cc-eval-note">{t(evaluationNote(match, spectator))}</p>
         )}
       </section>
       <aside className="cc-match-sidebar">
@@ -427,6 +564,13 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
           <span>{t(`engineModes.${match.config.rules.engineEvaluation}`)}</span>
           <span>{timeControlLabel(t, match.config.rules)}</span>
           <span>{remarkToneLabel(t, tone)}</span>
+          <span>
+            {t(
+              match.config.rules.engineEvaluation === "off"
+                ? "replay.evalSpectators"
+                : "replay.evalPlayers",
+            )}
+          </span>
         </div>
         {evaluation && (
           <div className="cc-engine-summary">
@@ -485,8 +629,47 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
           </details>
         )}
         {commentary && (
-          <section className="cc-commentary" aria-labelledby={`${match.id}-talk`}>
-            <h3 id={`${match.id}-talk`}>{t("replay.commentaryTitle")}</h3>
+          <div className="cc-tabs" role="tablist" aria-label={t("replay.sidebarTabs")}>
+            {(["moves", "chat"] as const).map((name) => (
+              <button
+                key={name}
+                type="button"
+                role="tab"
+                id={`${match.id}-tab-${name}`}
+                aria-controls={`${match.id}-panel-${name}`}
+                aria-selected={tab === name}
+                // Roving focus: Tab reaches the selected tab; arrows, Home and End move.
+                tabIndex={tab === name ? 0 : -1}
+                className={tab === name ? "cc-tab cc-tab-active" : "cc-tab"}
+                onClick={() => setTab(name)}
+                onKeyDown={(keyEvent) => {
+                  // Two tabs: either arrow moves to the other one (wrapping).
+                  const other = name === "chat" ? "moves" : "chat";
+                  const next = (
+                    { ArrowLeft: other, ArrowRight: other, Home: "moves", End: "chat" } as const
+                  )[keyEvent.key as "ArrowLeft"];
+                  if (!next) return;
+                  keyEvent.preventDefault();
+                  setTab(next);
+                  document.getElementById(`${match.id}-tab-${next}`)?.focus();
+                }}
+              >
+                {name === "chat"
+                  ? t("replay.chatTab", { count: remarks.length })
+                  : t("replay.movesTab")}
+              </button>
+            ))}
+          </div>
+        )}
+        {/* Both panels stay mounted (the tabs control them); only the selected one shows. */}
+        {commentary && (
+          <section
+            className="cc-commentary"
+            role="tabpanel"
+            id={`${match.id}-panel-chat`}
+            aria-labelledby={`${match.id}-tab-chat`}
+            hidden={tab !== "chat"}
+          >
             <p className="cc-muted text-xs">{t("replay.commentaryNote")}</p>
             {remarks.length === 0 ? (
               <p className="cc-muted text-xs">{t("replay.commentaryEmpty")}</p>
@@ -494,45 +677,47 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
               <ol>
                 {remarks.map((remark) => (
                   <li key={remark.index}>
-                    <button
-                      type="button"
-                      className={`cc-remark cc-remark-${remark.side} ${remark === currentRemark ? "cc-current-remark" : ""}`}
-                      onClick={() => selectEvent(remark.index === lastIndex ? null : remark.index)}
-                    >
-                      <span className="cc-remark-meta">
-                        <span aria-hidden="true" className={`cc-swatch cc-swatch-${remark.side}`} />
-                        {t(`colors.${remark.side}`)} ·{" "}
-                        {t("replay.remarkMove", { move: remark.move, san: remark.label })}
-                      </span>
-                      <span className="cc-remark-text">{remark.comment}</span>
-                    </button>
+                    <RemarkButton
+                      remark={remark}
+                      className={`cc-remark ${remark === currentRemark ? "cc-current-remark" : ""}`}
+                      onSelect={selectRemark}
+                    />
                   </li>
                 ))}
               </ol>
             )}
           </section>
         )}
-        <div className="cc-event-caption" aria-live="polite">
-          {event?.type === "attempt"
-            ? event.accepted
-              ? t("replay.accepted", { move: event.san })
-              : t("replay.rejected", { move: event.move })
-            : event
-              ? t(`events.${event.type}`)
-              : t("replay.initial")}
-        </div>
-        <ol className="cc-timeline">
-          {match.events.map((entry, i) => (
-            <TimelineRow
-              key={entry.seq}
-              entry={entry}
-              index={i}
-              current={i === index}
-              last={i === lastIndex}
-              onSelect={selectEvent}
-            />
-          ))}
-        </ol>
+        {
+          <div
+            role={commentary ? "tabpanel" : undefined}
+            id={`${match.id}-panel-moves`}
+            aria-labelledby={commentary ? `${match.id}-tab-moves` : undefined}
+            hidden={commentary && tab !== "moves"}
+          >
+            <div className="cc-event-caption" aria-live="polite">
+              {event?.type === "attempt"
+                ? event.accepted
+                  ? t("replay.accepted", { move: event.san })
+                  : t("replay.rejected", { move: event.move })
+                : event
+                  ? t(`events.${event.type}`)
+                  : t("replay.initial")}
+            </div>
+            <ol className="cc-timeline">
+              {match.events.map((entry, i) => (
+                <TimelineRow
+                  key={entry.seq}
+                  entry={entry}
+                  index={i}
+                  current={i === index}
+                  last={i === lastIndex}
+                  onSelect={selectEvent}
+                />
+              ))}
+            </ol>
+          </div>
+        }
         <div className="cc-export-row">
           <button type="button" onClick={() => downloadGame(match, "json")}>
             <Download size={15} />
@@ -541,7 +726,7 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
           <button type="button" onClick={() => downloadGame(match, "pgn", describeEnding)}>
             {t("replay.pgn")}
           </button>
-          <VideoExportDialog match={match} />
+          <VideoExportDialog match={match} spectator={spectator?.evaluations} />
         </div>
         <CopyField value={frame.fen} copyLabel={t("replay.fen")} />
       </aside>

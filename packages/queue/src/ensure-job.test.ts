@@ -33,6 +33,15 @@ describe("ensureRunnableJob", () => {
     },
   );
 
+  it("adds a missing job with the caller's priority", async () => {
+    const job = retainedJob("prioritized");
+    const queue = { getJob: vi.fn().mockResolvedValue(null), add: vi.fn().mockResolvedValue(job) };
+
+    await ensureRunnableJob(queue as never, "work", { id: "1" }, "work-1", { priority: 10 });
+
+    expect(queue.add).toHaveBeenCalledWith("work", { id: "1" }, { priority: 10, jobId: "work-1" });
+  });
+
   it.each(["completed", "failed"])("requeues a retained %s job", async (state) => {
     const job = retainedJob(state);
     const queue = { getJob: vi.fn().mockResolvedValue(job), add: vi.fn() };

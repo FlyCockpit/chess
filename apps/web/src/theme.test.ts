@@ -82,7 +82,7 @@ describe("arena palette", () => {
   });
   it("keeps literal colours only on the board, pieces and White/Black depictions", () => {
     const fixed =
-      /^\.cc-(hero-board|hero-sticker|square|light|dark|last|selected|white-piece|black-piece|target|capture-target|avatar-light|dot|swatch-[wb]|eval-[a-z-]+|remark-[wb])\b/;
+      /^\.cc-(hero-board|hero-sticker|square|light|dark|last|selected|white-piece|black-piece|target|capture-target|avatar-light|dot|swatch-[wb]|eval-[a-z-]+|remark-[wb]|remark-bubble\.cc-remark-[wb]|result-[wb])\b/;
     for (const [, selector = "", body = ""] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
       const literal = body
         .split(";")

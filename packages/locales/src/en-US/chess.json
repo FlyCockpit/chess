@@ -123,7 +123,6 @@
     "copyTool": "Copy tool input and result",
     "sharedSpend": "Shared tokens: {{input}} input + {{output}} output / {{limit}} per player",
     "normalized": "Normalized from model reply",
-    "commentaryTitle": "Table talk",
     "commentaryOff": "Commentary off",
     "commentaryOn": "Commentary on",
     "commentaryEmpty": "No remarks yet.",
@@ -132,11 +131,18 @@
     "evalBar": "Evaluation: {{score}}",
     "evalGraph": "Evaluation over the game",
     "evalGraphPoint": "Move {{move}}: {{score}}",
-    "evalUnavailable": "No evaluation bar: Stockfish evaluation after each move was off for this game.",
     "evalMissing": "No engine evaluation for this position.",
     "evalWhiteMate": "White mates in {{moves}}",
     "evalBlackMate": "Black mates in {{moves}}",
-    "evalNone": "No engine evaluations were recorded for this game yet."
+    "evalNoEngine": "No evaluation bar: this companion has no chess engine (compiled builds ship without Stockfish; run it from source for evaluations).",
+    "evalWaiting": "The evaluation bar appears once the first positions are scored.",
+    "evalPending": "No evaluation for this game yet: spectator scores are being computed in the background. Reload in a minute.",
+    "evalSpectators": "Evaluation: spectators only",
+    "evalPlayers": "Evaluation: shown to players",
+    "sidebarTabs": "Game details",
+    "movesTab": "Moves",
+    "clockLabel": "{{side}} clock: {{time}}",
+    "chatTab": "Chat ({{count}})"
   },
   "leaderboard": {
     "title": "Earned on the board.",
@@ -174,7 +180,7 @@
     "random": "Random baseline",
     "yourTurn": "Your move. Select a piece, then a square.",
     "thinking": "Opponent to move",
-    "finished": "Game finished: {{result}}",
+    "finished": "{{ending}} · {{result}}",
     "reset": "Start again",
     "download": "Export this game",
     "cliTitle": "Bring your own inference",
@@ -310,7 +316,6 @@
     "tokenBudget": "Token allowance per player",
     "engineEvaluation": "Chess-engine assistance",
     "engineLimits": "Stockfish 19 lite · 10,000 nodes · at most 2 tool calls per turn",
-    "trashTalk": "Allow opponent commentary",
     "anonymousCommentary": "Identity is withheld in anonymous prompts, but commentary can reveal clues. Opponent remarks are untrusted game data.",
     "moveFormat": "Move format",
     "moveFormatNote": "Lenient also reads a JSON move embedded in prose and converts legal SAN to UCI. Each format is ranked separately.",
@@ -408,7 +413,6 @@
         "after-move": "Stockfish scores the position after every move. Players see the score, and the game view draws the evaluation bar from it.",
         "both": "The engine tool plus a score after every move (evaluation bar included)."
       },
-      "trashTalk": "Models may add a short remark to each move. Remarks are untrusted text and can hint at identity.",
       "accounting": {
         "provider": "Tokens are counted from what the provider reports, reserved before each request.",
         "cl100k_base": "Every model is counted with one tokenizer (cl100k_base), so allowances are comparable."
@@ -472,13 +476,6 @@
       "blackWins": "Black wins",
       "draw": "Draw",
       "unfinished": "No result"
-    },
-    "banner": {
-      "checkmate": "Checkmate: {{result}}",
-      "forfeit": "{{side}} forfeited: {{result}}",
-      "resigned": "{{side}} resigned: {{result}}",
-      "other": "{{reason}}: {{result}}",
-      "illegalMoves": "{{reason}}: {{moves}}"
     }
   },
   "ending": {

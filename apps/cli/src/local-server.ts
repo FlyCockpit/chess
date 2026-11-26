@@ -16,7 +16,9 @@ import {
   evaluateAfterMove,
   type MatchRunnerOptions,
   runMatch,
+  spectatorFeed,
 } from "@cockpit-chess/chess/runner";
+import type { SpectatorEvaluations } from "@cockpit-chess/chess/spectator";
 import { ORPCError, os } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
 import { SimpleCsrfProtectionHandlerPlugin } from "@orpc/server/plugins";
@@ -24,6 +26,7 @@ import { z } from "zod";
 import { t } from "./chess-i18n";
 import {
   assertEngineSupported,
+  isCompiledBinary,
   type LocalProviderOptions,
   localCredentials,
   ProviderConfigError,
@@ -85,6 +88,8 @@ export async function startLocalChess(
     assetsDir?: string;
     assetSource?: LocalAssetSource;
     onError?: (message: string) => void;
+    /** Whether Stockfish can run here (not in a compiled binary); for spectator evaluation. */
+    engineAvailable?: boolean;
   },
 ): Promise<{ server: Server; url: string; close: () => Promise<void> }> {
   let assets: LocalAssetSource;
@@ -127,26 +132,63 @@ export async function startLocalChess(
     const chess = boardAt(match);
     const side = chess.turn();
     if ((side === "w" ? match.config.white : match.config.black).protocol !== "human") return;
-    const turn: HumanTurn = { started: Date.now(), seq: match.events.length };
+    // The turn began when the archive's last event was recorded (the opening move: when
+    // the match was created), the same instant the lab's clock display counts from, so
+    // the clock a person sees and the one enforced here always agree.
+    const began = Date.parse(match.events.at(-1)?.at ?? match.createdAt);
+    const turn: HumanTurn = {
+      started: Number.isFinite(began) ? Math.min(began, Date.now()) : Date.now(),
+      seq: match.events.length,
+    };
     humanTurn = turn;
     const left = clockLeftMs(match, side);
     if (left === null) return;
-    turn.timer = setTimeout(() => {
-      if (humanTurn !== turn || busy || match.status !== "running") return;
-      if (match.events.length !== turn.seq) return;
-      humanTurn = null;
-      playHumanTurn(match, boardAt(match), Date.now() - turn.started);
-      void persist(match).catch(() => options.onError?.(t("cli.persistFailed")));
-    }, left);
+    turn.timer = setTimeout(
+      () => {
+        if (humanTurn !== turn || busy || match.status !== "running") return;
+        if (match.events.length !== turn.seq) return;
+        humanTurn = null;
+        playHumanTurn(match, boardAt(match), Date.now() - turn.started);
+        void persist(match).catch(() => options.onError?.(t("cli.persistFailed")));
+      },
+      Math.max(0, left - (Date.now() - turn.started)),
+    );
     turn.timer.unref?.();
   }
+  // Spectator evaluation: in memory, on its own engine lane and abort signal (a Stop
+  // ends the game, not the scoring of positions already played); never in a prompt.
+  const engineAvailable = options.engineAvailable ?? !isCompiledBinary();
+  let spectatorController = new AbortController();
+  let spectatorEvaluations: SpectatorEvaluations = {};
+  const newSpectatorFeed = () => {
+    const evaluations: SpectatorEvaluations = {};
+    spectatorEvaluations = evaluations;
+    return spectatorFeed({
+      signal: spectatorController.signal,
+      record: (ply, evaluation) => {
+        evaluations[String(ply)] = evaluation;
+      },
+    });
+  };
+  let spectators = newSpectatorFeed();
   const state = (): LocalState => ({
     match,
     busy,
     providerReady: providerReady(options.baseUrl),
+    spectator: {
+      evaluations: spectatorEvaluations,
+      available: engineAvailable && !spectators.failed,
+    },
   });
-  const persist = (record: MatchArchive) =>
-    writeGame(path.join(options.dataDir, `${record.id}.json`), record);
+  const persist = async (record: MatchArchive) => {
+    await writeGame(path.join(options.dataDir, `${record.id}.json`), record);
+    if (!engineAvailable || record !== match) return;
+    try {
+      spectators.update(record);
+    } catch {
+      // Positions that no longer replay are simply not evaluated.
+    }
+  };
   async function advance() {
     if (busy || match.status !== "running") return;
     busy = true;
@@ -187,8 +229,11 @@ export async function startLocalChess(
       clearHumanTurn();
       busy = true;
       controller = new AbortController();
+      spectatorController.abort();
+      spectatorController = new AbortController();
       memory = {};
       match = next;
+      spectators = newSpectatorFeed();
       try {
         await persist(match);
       } finally {
@@ -350,6 +395,7 @@ export async function startLocalChess(
       if (closePromise) return closePromise;
       closing = true;
       clearHumanTurn();
+      spectatorController.abort();
       closePromise = (async () => {
         // Stop admission before draining: a failed write must never skip close.
         const closed = new Promise<void>((resolve, reject) =>

@@ -257,6 +257,17 @@ move, the evaluation bar, each move's remark, the clocks and a final result
 banner. It needs WebCodecs H.264 encoding (current Chrome, Edge, Opera, Safari
 17+, Firefox 130+ on desktop); other browsers get a message instead of a file.
 `pnpm -F web test:video` checks real encodes with headless Chromium and ffprobe.
+Two more browser checks use the same headless Chromium: `pnpm -F web test:replay`
+drives the game view (chat bubbles, chat tab, keyboard tabs, result banner, reduced
+motion) and `pnpm -F web test:hero` measures the landing board (centred pieces,
+labels clear of pieces, caption off the board) from phone widths to 4K.
+
+Every hosted game also gets a **spectator evaluation**: Stockfish scores each position
+in the background on its own engine process, stored outside the archive (the players
+never see it unless the separate player-facing evaluation rule is on). The evaluation
+bar, graph, PNG and MP4 use it; older games are backfilled when their replay is
+opened. The local lab does the same when it runs from source (compiled binaries ship
+without Stockfish and say so).
 
 Archives have one interchange limit: 2 MB (2,000,000 bytes of the pretty-printed
 JSON file, `MAX_ARCHIVE_BYTES` in `packages/chess/src/index.ts`). The runner ends a

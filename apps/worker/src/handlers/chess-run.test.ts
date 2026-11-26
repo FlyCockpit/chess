@@ -1,4 +1,4 @@
-import { createMatch, validateArchive } from "@cockpit-chess/chess";
+import { boardAt, createMatch, validateArchive } from "@cockpit-chess/chess";
 import { advanceMatch, MATCH_INTERRUPTED } from "@cockpit-chess/chess/runner";
 import { asCockpitV1 } from "@cockpit-chess/chess/testing";
 import type prismaInstance from "@cockpit-chess/db";
@@ -9,8 +9,9 @@ vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
   return { default: mockDeep<typeof prismaInstance>() };
 });
-const { getJob, runner } = vi.hoisted(() => ({
+const { getJob, runner, ensureJob } = vi.hoisted(() => ({
   getJob: vi.fn(),
+  ensureJob: vi.fn(),
   runner: {
     override: null as
       | null
@@ -25,7 +26,19 @@ vi.mock("@cockpit-chess/queue", async () => {
     "../../../../packages/queue/src/jobs"
   );
   const { isLiveJobState } = await import("../../../../packages/queue/src/ensure-job");
-  return { chessReconcileJobSchema, chessRunJobSchema, chessRunQueue: { getJob }, isLiveJobState };
+  const { CHESS_SPECTATOR_JOB_PRIORITY, chessSpectatorJobId } = await import(
+    "../../../../packages/queue/src/jobs"
+  );
+  return {
+    chessReconcileJobSchema,
+    chessRunJobSchema,
+    chessRunQueue: { getJob },
+    chessReconcileQueue: {},
+    CHESS_SPECTATOR_JOB_PRIORITY,
+    chessSpectatorJobId,
+    ensureRunnableJob: ensureJob,
+    isLiveJobState,
+  };
 });
 vi.mock("@cockpit-chess/chess/runner", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@cockpit-chess/chess/runner")>();
@@ -35,8 +48,19 @@ vi.mock("@cockpit-chess/chess/runner", async (importOriginal) => {
       runner.override ? runner.override(...args) : actual.runMatch(...args),
   };
 });
+const { evaluatePosition } = vi.hoisted(() => ({ evaluatePosition: vi.fn() }));
+vi.mock("../../../../packages/chess/src/engine", () => ({ evaluatePosition }));
+const score = (fen: string) => ({
+  engine: "stockfish-19-lite-single" as const,
+  fen,
+  depth: 10,
+  nodes: 10000,
+  cp: 31,
+  mate: null,
+  bestMove: null,
+});
 const { env } = vi.hoisted(() => ({
-  env: { CHESS_HOSTED_ENABLED: false, OPENROUTER_API_KEY: undefined },
+  env: { CHESS_HOSTED_ENABLED: false, OPENROUTER_API_KEY: undefined as string | undefined },
 }));
 vi.mock("@cockpit-chess/env/shared", () => ({ env }));
 const { default: prisma } = await import("@cockpit-chess/db");
@@ -77,6 +101,7 @@ function row() {
     blackCostMicros: null,
     moveFormat: null,
     ending: null,
+    spectatorEvaluations: null,
   };
 }
 beforeEach(() => {
@@ -87,7 +112,24 @@ beforeEach(() => {
   vi.spyOn(console, "info").mockImplementation(() => {});
   db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
   db.chessMatch.findUnique.mockResolvedValue(row());
+  db.$executeRaw.mockResolvedValue(1);
+  ensureJob.mockResolvedValue({});
+  evaluatePosition.mockImplementation(async (fen: string) => score(fen));
 });
+/** The spectator evaluations the run merged into the row: ply → evaluated FEN. */
+const updates = () =>
+  db.$executeRaw.mock.calls.filter((call) =>
+    (call[0] as unknown as TemplateStringsArray)[0]?.startsWith("UPDATE"),
+  );
+const spectatorWrites = () =>
+  updates().map((call): [number, string] => {
+    const [, patch, id] = call as unknown as [TemplateStringsArray, string, string];
+    expect(id).toBe("match-id");
+    const entries = Object.entries(JSON.parse(patch) as Record<string, { fen: string }>);
+    expect(entries).toHaveLength(1);
+    const [ply = "", value] = entries[0] ?? [];
+    return [Number(ply), value?.fen ?? ""];
+  });
 afterEach(() => vi.useRealTimers());
 describe("durable chess worker", () => {
   it("does no work unless it atomically claims the queued match", async () => {
@@ -133,6 +175,105 @@ describe("durable chess worker", () => {
     const record = validateArchive(terminal?.data.archive);
     expect(record.config.rules.version).toBe("cockpit-v2");
     expect(record.termination).toBe(result?.termination);
+  });
+  it("evaluates every committed position for spectators, outside the archive", async () => {
+    const result = await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(result).toMatchObject({ termination: "ply-limit" });
+    const terminal = db.chessMatch.updateMany.mock.calls.find(
+      ([input]) => input.data.status === "completed",
+    )?.[0];
+    const record = validateArchive(terminal?.data.archive);
+    const writes = spectatorWrites();
+    expect(writes.map(([ply]) => ply)).toEqual([0, 1, 2]);
+    expect(writes.at(-1)?.[1]).toBe(boardAt(record).fen());
+    for (const [, options] of evaluatePosition.mock.calls)
+      expect(options).toMatchObject({ lane: "spectators" });
+    expect(record.events.some((event) => event.type === "evaluation")).toBe(false);
+    // Only the spectator column is written: never the archive, status or claim.
+    for (const call of updates())
+      expect((call[0] as TemplateStringsArray).join("?")).toMatch(
+        /^UPDATE "chess_match" SET "spectatorEvaluations" = \(CASE WHEN jsonb_typeof\("spectatorEvaluations"\) = 'object' THEN "spectatorEvaluations" ELSE '\{\}'::jsonb END\) \|\| \?::jsonb WHERE "id" = \?$/,
+      );
+  });
+  it("finishes the game normally when spectator evaluation fails", async () => {
+    evaluatePosition.mockRejectedValue(new Error("Engine could not start"));
+    const result = await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(result).toMatchObject({ result: "1/2-1/2", termination: "ply-limit" });
+    expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "completed" }) }),
+    );
+    expect(db.$executeRaw).not.toHaveBeenCalled();
+    expect(evaluatePosition).toHaveBeenCalledTimes(1);
+    // The gap goes to a backfill job instead of holding the run.
+    expect(ensureJob).toHaveBeenCalledWith(
+      {},
+      "chess-spectator",
+      { reason: "spectator", matchId: "match-id", fromPly: 0 },
+      "chess-spectator-match-id-0",
+      { priority: 10 },
+    );
+  });
+  it("never lets a failing or hanging spectator write hold up the game", async () => {
+    // A rejected write: the game and its terminal write go on; the gap is handed off.
+    db.$transaction.mockRejectedValue(new Error("deadlock"));
+    let result = await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(result).toMatchObject({ termination: "ply-limit" });
+    expect(ensureJob).toHaveBeenCalledTimes(1);
+    // A write that never returns: moves, heartbeats and the terminal write still land,
+    // and the run lets go after its bounded wait.
+    vi.clearAllMocks();
+    db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
+    db.chessMatch.findUnique.mockResolvedValue(row());
+    ensureJob.mockResolvedValue({});
+    evaluatePosition.mockImplementation(async (fen: string) => score(fen));
+    db.$transaction.mockImplementation(() => new Promise(() => {}));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const running = handleChessRunJob({ data: { matchId: "match-id" } });
+    for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(1000);
+    result = await running;
+    expect(result).toMatchObject({ result: "1/2-1/2", termination: "ply-limit" });
+    expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "completed" }) }),
+    );
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(ensureJob).toHaveBeenCalledWith(
+      {},
+      "chess-spectator",
+      { reason: "spectator", matchId: "match-id", fromPly: 0 },
+      "chess-spectator-match-id-0",
+      { priority: 10 },
+    );
+  });
+  it("keeps heartbeating and playing while a spectator write hangs", async () => {
+    db.$transaction.mockImplementation(() => new Promise(() => {}));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    let heartbeatsDuringGame = 0;
+    const gameOver = Promise.withResolvers<void>();
+    runner.override = async (match, options) => {
+      // The first move commits (its spectator write then hangs); the game goes on.
+      await advanceMatch(match, options);
+      await vi.advanceTimersByTimeAsync(6000); // three heartbeat ticks
+      heartbeatsDuringGame = db.chessMatch.updateMany.mock.calls.filter(
+        ([input]) => Object.keys(input.data).join() === "heartbeatAt",
+      ).length;
+      while (match.status === "running") await advanceMatch(match, options);
+      gameOver.resolve();
+    };
+    const running = handleChessRunJob({ data: { matchId: "match-id" } });
+    await gameOver.promise;
+    // Then the bounded wait for the hanging spectator write.
+    for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(1000);
+    const result = await running;
+    expect(heartbeatsDuringGame).toBeGreaterThanOrEqual(3);
+    expect(result).toMatchObject({ result: "1/2-1/2", termination: "ply-limit" });
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+  });
+  it("routes a spectator backfill job to the backfill", async () => {
+    db.chessMatch.findUnique.mockResolvedValue({ ...row(), status: "running" });
+    await expect(
+      handleChessReconcileJob({ data: { reason: "spectator", matchId: "match-id", fromPly: 0 } }),
+    ).resolves.toEqual({ evaluated: false });
+    expect(db.chessMatch.findMany).not.toHaveBeenCalled();
   });
   it("interrupts an already-aborted hosted run without dispatching inference", async () => {
     const controller = new AbortController();
@@ -220,6 +361,39 @@ describe("durable chess worker", () => {
         }),
       }),
     );
+  });
+  it("names no side when Black's model has no price and the run fails before play", async () => {
+    env.CHESS_HOSTED_ENABLED = true;
+    env.OPENROUTER_API_KEY = "test-only";
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ data: [] }), // Black's model is not in the catalog
+    );
+    try {
+      const record = row();
+      record.archive = createMatch(
+        {
+          white: player,
+          black: { name: "Model", model: "vendor/unpriced", protocol: "openai-chat" },
+          rules: {},
+        },
+        "hosted",
+      );
+      db.chessMatch.findUnique.mockResolvedValue(record);
+      await handleChessRunJob({ data: { matchId: "match-id" } });
+      expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: "error",
+            archive: expect.objectContaining({ termination: "provider-error" }),
+            ending: { kind: "provider-error" },
+          }),
+        }),
+      );
+    } finally {
+      fetch.mockRestore();
+      env.CHESS_HOSTED_ENABLED = false;
+      env.OPENROUTER_API_KEY = undefined;
+    }
   });
   it("records typed leaderboard stats on the terminal write only", async () => {
     await handleChessRunJob({ data: { matchId: "match-id" } });

@@ -57,4 +57,28 @@ describe("bounded real Stockfish UCI process", () => {
     await expect(cancelled).rejects.toThrow("cancelled");
     expect(await evaluatePosition(fen)).toEqual(first);
   });
+  it("runs spectator analyses on their own process: queued or cancelled ones never hold up a player", async () => {
+    const fen = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
+    const reference = await evaluatePosition(fen);
+    const controller = new AbortController();
+    // A deep spectator search, then a queue behind it on the same lane.
+    const busy = evaluatePosition(DEFAULT_POSITION, {
+      nodes: 100000,
+      signal: controller.signal,
+      lane: "spectators",
+    });
+    const queued = evaluatePosition(fen, { lane: "spectators", signal: controller.signal });
+    const started = Date.now();
+    const player = await evaluatePosition(fen);
+    const waited = Date.now() - started;
+    expect(player).toEqual(reference);
+    controller.abort();
+    await expect(busy).rejects.toThrow("cancelled");
+    await expect(queued).rejects.toThrow("cancelled");
+    // The player's lane did not wait for the deep spectator search to finish.
+    expect(waited).toBeLessThan(4000);
+    // Cancelling the spectator lane left the players' engine working.
+    expect(await evaluatePosition(fen)).toEqual(reference);
+    expect(await evaluatePosition(fen, { lane: "spectators" })).toEqual(reference);
+  });
 });
