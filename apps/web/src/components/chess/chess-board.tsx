@@ -1,24 +1,33 @@
-import { Chess, type Square } from "@cockpit-chess/chess";
+import { Chess, type Color, type PieceSymbol, type Square } from "@cockpit-chess/chess";
 import { type CSSProperties, memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { WideContent } from "@/components/wide-content";
 import type { BoardIllegal, BoardMotion } from "./board-motion";
 import type { LookupOverlay } from "./legal-lookup";
+import { PIECE_PATHS, PIECE_VIEWBOX } from "./piece-paths";
 
-const glyphs = {
-  wk: "♚",
-  wq: "♛",
-  wr: "♜",
-  wb: "♝",
-  wn: "♞",
-  wp: "♟",
-  bk: "♚",
-  bq: "♛",
-  br: "♜",
-  bb: "♝",
-  bn: "♞",
-  bp: "♟",
-};
+/**
+ * One piece, drawn from the bundled outlines (piece-paths.ts), never from a font
+ * glyph. Decorative: the square's accessible name says which piece stands there.
+ */
+function Piece({
+  piece,
+  hidden = false,
+}: {
+  piece: { color: Color; type: PieceSymbol };
+  hidden?: boolean;
+}) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      viewBox={`0 0 ${PIECE_VIEWBOX} ${PIECE_VIEWBOX}`}
+      className={`cc-piece ${piece.color === "w" ? "cc-white-piece" : "cc-black-piece"} ${hidden ? "cc-piece-hidden" : ""}`}
+    >
+      <path d={PIECE_PATHS[piece.type]} />
+    </svg>
+  );
+}
 
 /** A square's place on the displayed board: column and row from the top-left corner. */
 function place(square: Square, flipped: boolean) {
@@ -63,11 +72,7 @@ function MotionLayer({
             className={`cc-ghost cc-ghost-${ghost.effect}`}
             style={style}
           >
-            <span
-              className={`cc-piece ${ghost.piece.color === "w" ? "cc-white-piece" : "cc-black-piece"}`}
-            >
-              {glyphs[`${ghost.piece.color}${ghost.piece.type}`]}
-            </span>
+            <Piece piece={ghost.piece} />
           </span>
         );
       })}
@@ -213,14 +218,7 @@ export const ChessBoard = memo(function ChessBoard({
                 if (next instanceof HTMLElement) next.focus();
               }}
             >
-              {piece && (
-                <span
-                  aria-hidden="true"
-                  className={`cc-piece ${piece.color === "w" ? "cc-white-piece" : "cc-black-piece"} ${hidden.includes(square) ? "cc-piece-hidden" : ""}`}
-                >
-                  {glyphs[`${piece.color}${piece.type}`]}
-                </span>
-              )}
+              {piece && <Piece piece={piece} hidden={hidden.includes(square)} />}
               {outlined.includes(square) && (
                 <span key={illegal?.index} aria-hidden="true" className="cc-illegal-ring" />
               )}

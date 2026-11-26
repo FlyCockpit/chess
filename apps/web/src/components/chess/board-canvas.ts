@@ -1,4 +1,5 @@
-import { Chess } from "@cockpit-chess/chess";
+import { Chess, type PieceSymbol } from "@cockpit-chess/chess";
+import { PIECE_PATHS, PIECE_VIEWBOX } from "./piece-paths";
 
 /**
  * The one canvas board renderer, used by the PNG share card and every MP4
@@ -14,28 +15,17 @@ export const BOARD_COLORS = {
   whitePiece: "#fffdf3",
   ink: "#182520",
 } as const;
-const GLYPHS = { p: "♟", n: "♞", b: "♝", r: "♜", q: "♛", k: "♚" } as const;
-const PIECE_FONT = "Georgia, 'DejaVu Sans', serif";
 const COORD_FONT = "'Helvetica Neue', Arial, 'DejaVu Sans', sans-serif";
 
-type GlyphMetrics = Pick<
-  TextMetrics,
-  | "actualBoundingBoxLeft"
-  | "actualBoundingBoxRight"
-  | "actualBoundingBoxAscent"
-  | "actualBoundingBoxDescent"
->;
-
-/**
- * Where to draw a glyph (textAlign "left", textBaseline "alphabetic") so its
- * ink box is centred on (cx, cy). Chess glyphs sit off-centre in their advance
- * box and differ by font, so the measured ink box is the only reliable centre.
- */
-export function glyphOrigin(metrics: GlyphMetrics, cx: number, cy: number) {
-  return {
-    x: cx - (metrics.actualBoundingBoxRight - metrics.actualBoundingBoxLeft) / 2,
-    y: cy + (metrics.actualBoundingBoxAscent - metrics.actualBoundingBoxDescent) / 2,
-  };
+/** Each piece's outline, parsed once per realm (page or worker) on first use. */
+const piecePaths = new Map<PieceSymbol, Path2D>();
+function piecePath(type: PieceSymbol) {
+  let path = piecePaths.get(type);
+  if (!path) {
+    path = new Path2D(PIECE_PATHS[type]);
+    piecePaths.set(type, path);
+  }
+  return path;
 }
 
 /**
@@ -52,7 +42,7 @@ export const MARK_COLORS = {
 
 /** A piece drawn off its square: `file` 0–7 from a, `row` 0–7 from rank 8 (may be fractional). */
 export type CanvasGhost = {
-  piece: { type: keyof typeof GLYPHS; color: "w" | "b" };
+  piece: { type: PieceSymbol; color: "w" | "b" };
   file: number;
   row: number;
   alpha: number;
@@ -70,6 +60,11 @@ type BoardMarks = {
   ghosts?: readonly CanvasGhost[];
 };
 
+/**
+ * Draws a piece centred on (cx, cy) from the bundled outlines (piece-paths.ts), the
+ * same ones the DOM board shows: the fill gives its colour, so no font or emoji
+ * presentation can change it.
+ */
 function drawPiece(
   ctx: Canvas2D,
   piece: CanvasGhost["piece"],
@@ -77,14 +72,19 @@ function drawPiece(
   cy: number,
   square: number,
 ) {
-  const glyph = GLYPHS[piece.type];
-  ctx.font = `${Math.round(square * 0.8)}px ${PIECE_FONT}`;
-  const origin = glyphOrigin(ctx.measureText(glyph), cx, cy);
+  const scale = square / PIECE_VIEWBOX;
+  ctx.save();
+  ctx.translate(cx - square / 2, cy - square / 2);
+  ctx.scale(scale, scale);
   ctx.fillStyle = piece.color === "w" ? BOARD_COLORS.whitePiece : BOARD_COLORS.ink;
   ctx.strokeStyle = BOARD_COLORS.ink;
-  ctx.lineWidth = Math.max(1, square / 50);
-  ctx.strokeText(glyph, origin.x, origin.y);
-  ctx.fillText(glyph, origin.x, origin.y);
+  ctx.lineJoin = "round";
+  // The outline's width in board pixels, as before: a fiftieth of a square, at least 1.
+  ctx.lineWidth = Math.max(1, square / 50) / scale;
+  const path = piecePath(piece.type);
+  ctx.stroke(path);
+  ctx.fill(path);
+  ctx.restore();
 }
 
 /** A square's top-left corner on a board drawn from White's side. */

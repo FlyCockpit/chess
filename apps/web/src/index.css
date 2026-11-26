@@ -421,34 +421,45 @@
   box-shadow: inset 0 0 0 100px oklch(0.84 0.18 90 / 0.65);
 }
 .cc-piece {
-  line-height: 1;
-  font-family: Georgia, "Times New Roman", serif;
-  /* 80 % of a square, so a piece keeps its proportion on every board size. */
-  font-size: calc(100cqi / 8 * 0.8);
-  transform: translateY(-1px);
+  /* An inline SVG the size of its square (piece-paths.ts: each outline is already
+   * scaled to 80 % of the square and centred), so a piece keeps its proportion on
+   * every board size and never shifts the layout. */
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
   user-select: none;
   z-index: 1;
 }
+.cc-piece path {
+  stroke-linejoin: round;
+  /* The outline stays one CSS pixel wide at every size, as the text stroke was. */
+  vector-effect: non-scaling-stroke;
+}
 .cc-white-piece {
   /* theme-exempt: board squares and pieces keep one palette in both themes */
-  color: oklch(0.98 0.008 95);
+  fill: oklch(0.98 0.008 95);
   /* theme-exempt: board squares and pieces keep one palette in both themes */
-  -webkit-text-stroke: 1px oklch(0.27 0.02 170);
+  stroke: oklch(0.27 0.02 170);
+  stroke-width: 1px;
   /* theme-exempt: board squares and pieces keep one palette in both themes */
-  text-shadow: 0 2px 2px oklch(0.2 0.01 190 / 0.3);
+  filter: drop-shadow(0 2px 1px oklch(0.2 0.01 190 / 0.3));
 }
 .cc-black-piece {
   /* theme-exempt: board squares and pieces keep one palette in both themes */
-  color: oklch(0.22 0.012 180);
+  fill: oklch(0.22 0.012 180);
   /* theme-exempt: board squares and pieces keep one palette in both themes */
-  -webkit-text-stroke: 0.7px oklch(0.1 0.01 180);
+  stroke: oklch(0.1 0.01 180);
+  stroke-width: 0.7px;
   /* theme-exempt: board squares and pieces keep one palette in both themes */
-  text-shadow: 0 1px 1px oklch(0.8 0.01 190 / 0.3);
+  filter: drop-shadow(0 1px 0.5px oklch(0.8 0.01 190 / 0.3));
 }
 .cc-hero-board .cc-piece {
-  /* Under two thirds of a square: the corner labels keep their own room. */
-  font-size: calc(100cqi / 8 * 0.62);
-  transform: none;
+  /* Under two thirds of a square (0.62 / 0.8 of the outline): the corner labels keep
+   * their own room. */
+  transform: scale(0.775);
 }
 .cc-hero-board .cc-rank,
 .cc-hero-board .cc-file {

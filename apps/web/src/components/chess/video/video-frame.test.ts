@@ -1,8 +1,9 @@
 import chessEn from "@locales/en-US/chess.json";
 import i18next from "i18next";
 import { describe, expect, it } from "vitest";
-import type { Canvas2D } from "../board-canvas";
+import { BOARD_COLORS, type Canvas2D } from "../board-canvas";
 import { moveMotion } from "../board-motion";
+import { recordPieces } from "../piece-recorder.test-support";
 import { videoFixtureGame, videoIllegalFixtureGame } from "./video-fixture";
 import { drawFrame, frameLayout, motionGhosts, wrapText } from "./video-frame";
 import { buildVideoPlan, defaultVideoOptions, type FrameState } from "./video-plan";
@@ -64,15 +65,18 @@ describe("drawFrame", () => {
         return Reflect.set(target, key, value);
       },
     }) as Canvas2D;
+    // Each piece is drawn inside its own save/restore with no clip; only the clipped
+    // text blocks count here.
+    const clips = () => calls.join(" ").replaceAll("save restore", "").split(" ").filter(Boolean);
     drawFrame(spy, frameLayout("square"), scene(2));
     // Title and remark; each clip sits between a save and a restore.
-    expect(calls).toEqual(["save", "clip", "restore", "save", "clip", "restore"]);
+    expect(clips()).toEqual(["save", "clip", "restore", "save", "clip", "restore"]);
     calls.length = 0;
     drawFrame(spy, frameLayout("square"), scene(plan.scenes.length - 1));
-    expect(calls).toEqual(["save", "clip", "restore", "save", "clip", "restore"]);
+    expect(clips()).toEqual(["save", "clip", "restore", "save", "clip", "restore"]);
     calls.length = 0;
     drawFrame(spy, frameLayout("square"), scene(0));
-    expect(calls).toEqual(["save", "clip", "restore"]);
+    expect(clips()).toEqual(["save", "clip", "restore"]);
   });
 
   it("draws the title, both players with clocks, the move and the remark as plain text", () => {
@@ -87,10 +91,26 @@ describe("drawFrame", () => {
     expect(texts).toContain("+0.3");
   });
 
-  it("draws all 32 pieces centred on their squares", () => {
+  it("draws all 32 pieces centred on their squares, White's light and Black's dark", () => {
     const { ctx, texts } = recordingContext();
-    drawFrame(ctx, frameLayout("square"), scene(1));
-    expect(texts.filter((text) => "♟♞♝♜♛♚".includes(text) && text.length === 1)).toHaveLength(32);
+    const { spy, pieces } = recordPieces(ctx);
+    const layout = frameLayout("square");
+    drawFrame(spy, layout, scene(1));
+    expect(pieces).toHaveLength(32);
+    const { x, y, square } = layout.board;
+    for (const piece of pieces) {
+      expect(piece.width).toBe(square);
+      expect(piece.height).toBe(square);
+      const file = (piece.cx - x - square / 2) / square;
+      const row = (piece.cy - y - square / 2) / square;
+      expect(Number.isInteger(file) && Number.isInteger(row)).toBe(true);
+      expect(piece.fill).toBe(row >= 6 ? BOARD_COLORS.whitePiece : BOARD_COLORS.ink);
+    }
+    // White's eight pawns on rank 2 are light (an emoji pawn would ignore the fill).
+    const pawns = pieces.filter((piece) => piece.type === "p" && piece.cy > y + square * 6);
+    expect(pawns).toHaveLength(8);
+    expect(pawns.every((pawn) => pawn.fill === BOARD_COLORS.whitePiece)).toBe(true);
+    expect(texts.some((text) => /[\u2654-\u265F]/u.test(text))).toBe(false);
   });
 
   it("highlights the last move's squares", () => {
@@ -160,18 +180,17 @@ describe("motion frames", () => {
         return Reflect.set(target, key, value);
       },
     }) as Canvas2D;
-    drawFrame(spy, frameLayout("square"), attempt?.state as FrameState, motion, 3);
+    const recorded = recordPieces(spy);
+    drawFrame(recorded.spy, frameLayout("square"), attempt?.state as FrameState, motion, 3);
     expect(texts).toContain("White tried Ng1-e5: not a legal move");
     expect(texts).toContain("White · GPT-4.1 Nano");
     // Both squares ringed in red.
     expect(strokes.filter((style) => style === "#e7000b")).toHaveLength(2);
     // 32 pieces: the knight is drawn once, as the ghost, not also on g1.
-    expect(texts.filter((text) => "♟♞♝♜♛♚".includes(text) && text.length === 1)).toHaveLength(32);
-    const still = recordingContext();
-    drawFrame(still.ctx, frameLayout("square"), attempt?.state as FrameState);
-    expect(still.texts.filter((text) => "♟♞♝♜♛♚".includes(text) && text.length === 1)).toHaveLength(
-      32,
-    );
+    expect(recorded.pieces).toHaveLength(32);
+    const still = recordPieces(recordingContext().ctx);
+    drawFrame(still.spy, frameLayout("square"), attempt?.state as FrameState);
+    expect(still.pieces).toHaveLength(32);
   });
 
   it("draws a lookup's dots and a counter for a long run", () => {
@@ -196,25 +215,10 @@ describe("motion frames", () => {
 });
 
 describe("motion positions", () => {
-  /** Records each glyph drawn with where its centre lands. */
-  function glyphContext() {
-    const glyphs: Array<{ text: string; cx: number; cy: number }> = [];
-    const { ctx } = recordingContext();
-    const spy = new Proxy(ctx as object, {
-      get(target, key: string) {
-        // The recording context measures every glyph as a 10×10 ink box from its origin.
-        if (key === "fillText")
-          return (text: string, x: number, y: number) => {
-            if ("♟♞♝♜♛♚".includes(text) && text.length === 1)
-              glyphs.push({ text, cx: x + 5, cy: y - 5 });
-          };
-        return Reflect.get(target, key);
-      },
-      set(target, key, value) {
-        return Reflect.set(target, key, value);
-      },
-    }) as Canvas2D;
-    return { spy, glyphs };
+  /** Records each piece drawn with where its centre lands. */
+  function pieceContext() {
+    const { spy, pieces } = recordPieces(recordingContext().ctx);
+    return { spy, glyphs: pieces };
   }
   const layout = frameLayout("square");
   const centre = (square: string) => ({
@@ -229,16 +233,16 @@ describe("motion positions", () => {
     const motion = { frames: 7, ghosts: slide.ghosts, hide: slide.hide };
     const state = { ...scene(2), fen: after, lastMove: "a7a8q", remark: null };
     const path = [0, 3, 6].map((frame) => {
-      const { spy, glyphs } = glyphContext();
+      const { spy, glyphs } = pieceContext();
       drawFrame(spy, layout, state, motion, frame);
       return glyphs;
     });
     for (const glyphs of path) {
       // The pawn is in motion; the queen on a8 waits; the kings stay put.
-      expect(glyphs.map((g) => g.text).sort()).toEqual(["♚", "♚", "♟"]);
+      expect(glyphs.map((g) => g.type).sort()).toEqual(["k", "k", "p"]);
     }
     const pawn = path.map(
-      (glyphs) => glyphs.find((g) => g.text === "♟") as { cx: number; cy: number },
+      (glyphs) => glyphs.find((g) => g.type === "p") as { cx: number; cy: number },
     );
     const a7 = centre("a7");
     const a8 = centre("a8");
@@ -247,13 +251,13 @@ describe("motion positions", () => {
     expect(pawn[0]?.cy).toBeGreaterThan(pawn[1]?.cy ?? 0);
     expect(pawn[2]).toMatchObject({ cx: expect.closeTo(a8.cx), cy: expect.closeTo(a8.cy) });
     // The still frame: the queen on a8, no pawn.
-    const { spy, glyphs } = glyphContext();
+    const { spy, glyphs } = pieceContext();
     drawFrame(spy, layout, state);
-    expect(glyphs.find((g) => g.text === "♛")).toMatchObject({
+    expect(glyphs.find((g) => g.type === "q")).toMatchObject({
       cx: expect.closeTo(a8.cx),
       cy: expect.closeTo(a8.cy),
     });
-    expect(glyphs.some((g) => g.text === "♟")).toBe(false);
+    expect(glyphs.some((g) => g.type === "p")).toBe(false);
   });
 
   it("takes an illegal knight to the square it tried and back to its own", () => {
@@ -265,13 +269,13 @@ describe("motion positions", () => {
     const attempt = struggle.scenes[3] as NonNullable<(typeof struggle.scenes)[number]>;
     const motion = attempt.motion as NonNullable<typeof attempt.motion>;
     const knightAt = (frame: number) => {
-      const { spy, glyphs } = glyphContext();
+      const { spy, glyphs } = pieceContext();
       drawFrame(spy, layout, attempt.state, motion, frame);
       // The ghost is drawn last, over the board.
       return glyphs.at(-1);
     };
     const out = knightAt(Math.round(motion.frames * 0.26));
-    expect(out).toMatchObject({ text: "♞" });
+    expect(out).toMatchObject({ type: "n" });
     expect(Math.abs((out?.cx ?? 0) - centre("e5").cx)).toBeLessThan(layout.board.square * 0.12);
     expect(out?.cy).toBeCloseTo(centre("e5").cy);
     expect(knightAt(motion.frames - 1)).toMatchObject({

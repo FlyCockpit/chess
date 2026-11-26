@@ -31,24 +31,9 @@ const box = (rect: DOMRect): Rect => ({
   width: rect.width,
   height: rect.height,
 });
-/** The glyph's ink box on the page, from the span's box and the font's measured ink. */
-function inkBox(span: HTMLElement): Rect {
-  const style = getComputedStyle(span);
-  const ctx = document.createElement("canvas").getContext("2d") as CanvasRenderingContext2D;
-  ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-  const metrics = ctx.measureText(span.textContent ?? "");
-  const outer = span.getBoundingClientRect();
-  // The span is an inline line box of line-height 1 centred in its square: its
-  // baseline sits where the font's ascent places it inside that box.
-  const contentHeight = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
-  const baseline = outer.y + outer.height / 2 - contentHeight / 2 + metrics.fontBoundingBoxAscent;
-  const left = outer.x + outer.width / 2 - metrics.width / 2;
-  return {
-    x: left - metrics.actualBoundingBoxLeft,
-    y: baseline - metrics.actualBoundingBoxAscent,
-    width: metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight,
-    height: metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent,
-  };
+/** The piece's ink box on the page: its outline's painted box (the SVG path's own box). */
+function inkBox(piece: Element): Rect {
+  return box((piece.querySelector("path") ?? piece).getBoundingClientRect());
 }
 
 async function measure(fen: keyof typeof FENS, dark: boolean) {
@@ -127,7 +112,7 @@ async function measure(fen: keyof typeof FENS, dark: boolean) {
   board.style.transform = "none";
   const squares = [...document.querySelectorAll<HTMLElement>(".cc-hero-board .cc-square")].map(
     (square) => {
-      const piece = square.querySelector<HTMLElement>(".cc-piece");
+      const piece = square.querySelector(".cc-piece");
       return {
         square: box(square.getBoundingClientRect()),
         size: square.offsetWidth,

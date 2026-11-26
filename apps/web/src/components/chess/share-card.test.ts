@@ -3,8 +3,9 @@ import { gamePositions } from "@cockpit-chess/chess/spectator";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import { createInstance, type TFunction } from "i18next";
 import { beforeAll, describe, expect, it } from "vitest";
-import { glyphOrigin } from "./board-canvas";
+import { BOARD_COLORS } from "./board-canvas";
 import { fixtureGame } from "./fixture-game";
+import { recordPieces } from "./piece-recorder.test-support";
 import { BOARD, drawShareCard, lastIllegalSquares } from "./share-card";
 
 let t: TFunction<"chess">;
@@ -14,18 +15,13 @@ beforeAll(async () => {
   t = i18n.getFixedT("en-US", "chess");
 });
 
-const PIECES = new Set(["♟", "♞", "♝", "♜", "♛", "♚"]);
-/**
- * A fake 2D context that records text and rects. Its glyph ink box is
- * deliberately off-centre in the advance box (as real chess glyphs are), so a
- * naive `fillText(glyph, x + 4, y + 40)` would fail the centring assertions.
- */
+/** A fake 2D context that records text and rects. */
 function recordingContext() {
   const ink = {
-    actualBoundingBoxLeft: -3,
-    actualBoundingBoxRight: 31,
-    actualBoundingBoxAscent: 33,
-    actualBoundingBoxDescent: 2,
+    actualBoundingBoxLeft: 0,
+    actualBoundingBoxRight: 10,
+    actualBoundingBoxAscent: 10,
+    actualBoundingBoxDescent: 0,
   };
   const texts: Array<{ text: string; x: number; y: number; fill: string }> = [];
   const rects: Array<{ x: number; y: number; w: number; h: number; fill: string }> = [];
@@ -40,7 +36,12 @@ function recordingContext() {
       rects.push({ x, y, w, h, fill: String(this.fillStyle) });
     },
     strokeRect() {},
-    strokeText() {},
+    stroke() {},
+    fill() {},
+    save() {},
+    restore() {},
+    translate() {},
+    scale() {},
     fillText(text: string, x: number, y: number) {
       texts.push({ text, x, y, fill: String(this.fillStyle) });
     },
@@ -48,46 +49,33 @@ function recordingContext() {
       return { width: text.length * 12, ...ink };
     },
   };
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, texts, rects, ink };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, texts, rects };
 }
 
-describe("glyphOrigin", () => {
-  it("centres the measured ink box on the point", () => {
-    const metrics = {
-      actualBoundingBoxLeft: 2,
-      actualBoundingBoxRight: 20,
-      actualBoundingBoxAscent: 30,
-      actualBoundingBoxDescent: 4,
-    };
-    const { x, y } = glyphOrigin(metrics, 100, 200);
-    expect((x - metrics.actualBoundingBoxLeft + x + metrics.actualBoundingBoxRight) / 2).toBe(100);
-    expect((y - metrics.actualBoundingBoxAscent + y + metrics.actualBoundingBoxDescent) / 2).toBe(
-      200,
-    );
-  });
-});
-
 describe("drawShareCard", () => {
-  it("centres every piece, of both colours and all types, on its square", () => {
-    const { ctx, texts, ink } = recordingContext();
+  it("draws every piece from its outline, centred on its square, light for White and dark for Black", () => {
+    const { ctx, texts } = recordingContext();
+    const { spy, pieces } = recordPieces(ctx);
     const match = createMatch({
       white: { name: "W", model: "w", protocol: "random" },
       black: { name: "B", model: "b", protocol: "random" },
       rules: {},
     });
-    drawShareCard(ctx, match, t, null);
-    const pieces = texts.filter((entry) => PIECES.has(entry.text));
+    drawShareCard(spy, match, t, null);
     expect(pieces).toHaveLength(32);
-    expect(new Set(pieces.map((entry) => entry.text)).size).toBe(6);
-    expect(new Set(pieces.map((entry) => entry.fill)).size).toBe(2);
+    expect(new Set(pieces.map((piece) => piece.type)).size).toBe(6);
     for (const piece of pieces) {
-      const centreX = piece.x + (ink.actualBoundingBoxRight - ink.actualBoundingBoxLeft) / 2;
-      const centreY = piece.y + (ink.actualBoundingBoxDescent - ink.actualBoundingBoxAscent) / 2;
-      const file = (centreX - BOARD.x - BOARD.square / 2) / BOARD.square;
-      const rank = (centreY - BOARD.y - BOARD.square / 2) / BOARD.square;
+      expect(piece.width).toBe(BOARD.square);
+      expect(piece.height).toBe(BOARD.square);
+      const file = (piece.cx - BOARD.x - BOARD.square / 2) / BOARD.square;
+      const rank = (piece.cy - BOARD.y - BOARD.square / 2) / BOARD.square;
       expect(Number.isInteger(file) && file >= 0 && file < 8).toBe(true);
       expect(Number.isInteger(rank) && [0, 1, 6, 7].includes(rank)).toBe(true);
+      // Rows 6 and 7 (ranks 2 and 1) are White's, pawns included.
+      expect(piece.fill).toBe(rank >= 6 ? BOARD_COLORS.whitePiece : BOARD_COLORS.ink);
     }
+    // No piece comes from a font glyph, so no platform can swap in an emoji.
+    expect(texts.some((entry) => /[\u2654-\u265F]/u.test(entry.text))).toBe(false);
   });
   it("says who played which colour, shows the id only when it differs, and draws the final eval", () => {
     const { ctx, texts, rects } = recordingContext();
