@@ -23,7 +23,7 @@ All require an active session (enforced by the `_auth` layout).
 
 | Path | Description |
 |------|-------------|
-| `/{lang}/dashboard` | Main dashboard page |
+| `/{lang}/dashboard` | Main dashboard page: the welcome and the next step (Arena for everyone; Studio, the match-creation surface on the arena page, for admins) |
 | `/{lang}/settings` | Profile settings (name, email display) |
 | `/{lang}/settings/security` | Two-factor authentication enable/disable |
 | `/{lang}/settings/cli` | Command-line access — a freshly minted copy-paste install/update command for the companion CLI (macOS/Linux/WSL and PowerShell; the embedded token expires after 15 minutes) and API key management (create shows the key once; revoke is type-to-confirm). See [packages/api/src/routers/cli.ts](./packages/api/src/routers/cli.ts). |

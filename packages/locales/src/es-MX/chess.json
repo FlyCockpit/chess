@@ -157,7 +157,20 @@
     "play": "Tú contra el modelo",
     "simulate": "Modelo contra sí mismo",
     "start": "Iniciar experimento",
-    "footer": "Guardado localmente. Exporta un archivo detenido o finalizado para publicarlo después."
+    "footer": "Guardado localmente. Exporta un archivo detenido o finalizado para publicarlo después.",
+    "modelHint": "El id del modelo que sirve tu proveedor, por ejemplo openai/gpt-4.1-nano.",
+    "explain": {
+      "play": "Juegas con blancas contra el modelo en esta página.",
+      "simulate": "El modelo juega ambos lados; tú observas."
+    },
+    "sections": {
+      "rulesHint": "Memoria, identidad, formato de jugada y motor",
+      "limitsHint": "Conteo y asignación de tokens",
+      "connection": "Conexión",
+      "connectionHint": "Cómo habla el compañero con tu proveedor"
+    },
+    "protocolHint": "Automático usa Anthropic Messages para ids anthropic/… y Chat Completions para todo lo demás. Elige otro solo si tu punto final lo necesita.",
+    "tokens": "{{tokens}} tokens por jugador"
   },
   "methodology": {
     "title": "Las reglas son parte del resultado.",
@@ -287,7 +300,17 @@
     "privateGraphic": "Borrador privado · publica el juego antes de compartir un enlace de repetición.",
     "duplicate": "Esta partida ya se había importado; se muestra la copia existente.",
     "whiteProtocol": "Protocolo de comunicación de blancas",
-    "blackProtocol": "Protocolo de comunicación de negras"
+    "blackProtocol": "Protocolo de comunicación de negras",
+    "importDescription": "Elige el archivo .json que guardó el laboratorio local o cockpit-chess run. Cada jugada se reproduce y se verifica, y la partida se guarda como borrador privado.",
+    "importChoose": "Elige un archivo de partida",
+    "importChooseAnother": "Elige otro archivo",
+    "importDrop": ".json, hasta 2 MB, o suelta el archivo aquí",
+    "importRunning": "Esta partida sigue en curso. Detenla en el laboratorio local, expórtala de nuevo y luego importa ese archivo.",
+    "importNext": "Lista para importar como borrador privado. Revísala y luego publícala desde su tarjeta.",
+    "importPaste": "Pegar JSON en su lugar",
+    "importPasteHint": "Para un archivo que tienes como texto",
+    "importSubmit": "Importar",
+    "imported": "Importada como borrador privado. Revísala abajo y luego publícala."
   },
   "tagline": "La arena de ajedrez del agente",
   "termination": {
@@ -377,7 +400,7 @@
       "players": "Jugadores",
       "playersHint": "Protocolo de conexión y lo que cada lado sabe de su oponente",
       "rules": "Reglas",
-      "rulesHint": "Memoria, ayuda con movimientos legales, formato, motor y comentarios",
+      "rulesHint": "Memoria, ayuda con movimientos legales, formato y motor",
       "limits": "Límites",
       "limitsHint": "Conteo de tokens, asignaciones y duración de la partida"
     },
@@ -436,10 +459,13 @@
       "title": "Como máximo {{max}} caracteres.",
       "integerRange": "Escribe un número entero de {{min}} a {{max}}.",
       "invalid": "Algunas opciones necesitan atención. Las secciones con errores están abiertas.",
-      "centRange": "Escribe un monto de {{min}} a {{max}} en centavos enteros."
+      "centRange": "Escribe un monto de {{min}} a {{max}} en centavos enteros.",
+      "unavailable": "Las partidas alojadas no pueden iniciar ahora. Inténtalo de nuevo en un momento. Si sigue pasando, quizá el juego alojado esté desactivado o sin configurar en este servidor: pregunta al operador o juega la partida en el laboratorio local.",
+      "rateLimited": "Ya iniciaste el máximo de partidas permitido en una hora. Inténtalo más tarde."
     },
     "autoTitle": "{{white}} vs. {{black}}",
-    "catalogStale": "No se pudo actualizar la lista de modelos; los precios son del {{time}}. Se reintenta automáticamente."
+    "catalogStale": "No se pudo actualizar la lista de modelos; los precios son del {{time}}. Se reintenta automáticamente.",
+    "started": "Partida iniciada. Se juega en segundo plano y queda como borrador privado hasta que la publiques desde su tarjeta."
   },
   "video": {
     "open": "Exportar video",

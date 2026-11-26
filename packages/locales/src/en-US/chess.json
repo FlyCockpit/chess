@@ -229,7 +229,17 @@
     "privateGraphic": "Private draft · publish the game before sharing a replay link.",
     "duplicate": "This game was already imported; showing the existing copy.",
     "whiteProtocol": "White wire protocol",
-    "blackProtocol": "Black wire protocol"
+    "blackProtocol": "Black wire protocol",
+    "importDescription": "Choose the .json archive the local lab or cockpit-chess run saved. Every move is replayed and checked, and the game is saved as a private draft.",
+    "importChoose": "Choose a game archive",
+    "importChooseAnother": "Choose another file",
+    "importDrop": ".json, up to 2 MB, or drop the file here",
+    "importRunning": "This game is still running. Stop it in the local lab, export it again, then import that file.",
+    "importNext": "Ready to import as a private draft. Preview it, then publish it from its card.",
+    "importPaste": "Paste JSON instead",
+    "importPasteHint": "For an archive you have as text",
+    "importSubmit": "Import",
+    "imported": "Imported as a private draft. Preview it below, then publish it."
   },
   "footer": "Built for the moves that make you look twice.",
   "aiDisclosure": "AI players can make mistakes. Inspect the rules and replay before drawing conclusions.",
@@ -247,7 +257,20 @@
     "play": "You versus model",
     "simulate": "Model versus itself",
     "start": "Start experiment",
-    "footer": "Saved locally. Export a stopped or completed archive to publish it later."
+    "footer": "Saved locally. Export a stopped or completed archive to publish it later.",
+    "modelHint": "The model id your provider serves, for example openai/gpt-4.1-nano.",
+    "explain": {
+      "play": "You play White against the model on this page.",
+      "simulate": "The model plays both sides; you watch."
+    },
+    "sections": {
+      "rulesHint": "Memory, identity, move format and engine",
+      "limitsHint": "Token accounting and allowance",
+      "connection": "Connection",
+      "connectionHint": "How the companion talks to your provider"
+    },
+    "protocolHint": "Automatic uses Anthropic Messages for anthropic/… ids and Chat Completions for everything else. Pick another only if your endpoint needs it.",
+    "tokens": "{{tokens}} tokens per player"
   },
   "cli": {
     "message0": "Start a private local browser chess lab",
@@ -377,7 +400,7 @@
       "players": "Players",
       "playersHint": "Wire protocol and what each side knows about its opponent",
       "rules": "Rules",
-      "rulesHint": "Memory, legal-move help, move format, engine and commentary",
+      "rulesHint": "Memory, legal-move help, move format and engine",
       "limits": "Limits",
       "limitsHint": "Token accounting, allowances and game length"
     },
@@ -436,10 +459,13 @@
       "title": "At most {{max}} characters.",
       "integerRange": "Enter a whole number from {{min}} to {{max}}.",
       "invalid": "Some settings need attention. The sections with errors are open.",
-      "centRange": "Enter an amount from {{min}} to {{max}} in whole cents."
+      "centRange": "Enter an amount from {{min}} to {{max}} in whole cents.",
+      "unavailable": "Hosted matches can't start right now. Try again in a moment. If it keeps happening, hosted play may be off or not set up on this server: ask the operator, or run the game in the local lab.",
+      "rateLimited": "You've started the most matches allowed in an hour. Try again later."
     },
     "autoTitle": "{{white}} vs {{black}}",
-    "catalogStale": "The model list could not be refreshed; prices are from {{time}}. Retrying automatically."
+    "catalogStale": "The model list could not be refreshed; prices are from {{time}}. Retrying automatically.",
+    "started": "Match started. It plays in the background and stays a private draft until you publish it from its card."
   },
   "video": {
     "open": "Export video",

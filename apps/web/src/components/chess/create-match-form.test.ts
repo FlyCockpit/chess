@@ -220,7 +220,9 @@ describe("validation keeps the hosted bounds", () => {
   it("maps every advanced field to its section", () => {
     expect(FIELD_SECTION.whiteProtocol).toBe("players");
     expect(FIELD_SECTION.identity).toBe("players");
-    expect(FIELD_SECTION.remarks).toBe("rules");
+    expect(FIELD_SECTION.context).toBe("rules");
+    // The remark tone is on the quick path, next to the time control.
+    expect(FIELD_SECTION.remarks).toBeUndefined();
     expect(FIELD_SECTION.moveLimit).toBe("limits");
     expect(FIELD_SECTION.time).toBeUndefined();
     expect(FIELD_SECTION.white).toBeUndefined();

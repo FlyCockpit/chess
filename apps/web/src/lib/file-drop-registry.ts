@@ -2,9 +2,21 @@
  * Module-level registry of file-drop targets for the document-level
  * `FileDropGuard`. Deliberately a plain `Map` — not Zustand and not React
  * context: there is no drop state for React to render, the guard just reads
- * this Map at event time. No drop zones are currently registered; this registry
- * is the opt-in point for a future drop zone via `registerFileDropTarget`.
+ * this Map at event time. A drop zone opts in via `registerFileDropTarget`
+ * (Studio's Import local archive dialog is one).
  */
+
+type OnFiles = (files: File[]) => void;
+
+const targets = new Map<object, OnFiles>();
+
+/** Register `element` as a drop target (matched by identity). Returns the unregister function. */
+export function registerFileDropTarget(element: object, onFiles: OnFiles): () => void {
+  targets.set(element, onFiles);
+  return () => {
+    targets.delete(element);
+  };
+}
 
 /**
  * Duck-typed parent chain. Deliberately NOT `Element` / `Node`: an
@@ -12,26 +24,6 @@
  * nodes, and on plain-object test stubs. Anything with a `parentElement`
  * (and optionally a `parentNode`) link can be walked.
  */
-export type ParentLink<T extends ParentLink<T>> = {
-  parentElement: T | null;
-  parentNode?: T | null;
-};
-
-type OnFiles = (files: File[]) => void;
-
-const targets = new Map<object, OnFiles>();
-
-/** Register `element` as a drop target. Returns the unregister function. */
-export function registerFileDropTarget<T extends ParentLink<T>>(
-  element: T,
-  onFiles: OnFiles,
-): () => void {
-  targets.set(element, onFiles);
-  return () => {
-    targets.delete(element);
-  };
-}
-
 function parentOf(node: object): object | null {
   const { parentElement, parentNode } = node as {
     parentElement?: unknown;
@@ -77,4 +69,13 @@ export function dataTransferHasFiles(
 ): boolean {
   if (!dt) return false;
   return dt.types.includes("Files");
+}
+
+/**
+ * A React ref callback that makes its element a drop target while mounted (React 19 runs the
+ * returned cleanup on unmount, and on every re-render with a new callback).
+ */
+export function fileDropTargetRef(onFiles: OnFiles) {
+  return (element: object | null) =>
+    element ? registerFileDropTarget(element, onFiles) : undefined;
 }

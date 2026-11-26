@@ -3,17 +3,16 @@ import {
   createMatch,
   finishMatch,
   legalMoves,
-  MAX_ARCHIVE_BYTES,
   type MatchArchive,
   submitMove,
-  validateArchive,
 } from "@cockpit-chess/chess";
 import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
 import { Download, RotateCcw, Upload } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChessBoard } from "./chess-board";
 import { endingHeadlineLabel } from "./ending-label";
+import { checkArchiveFile, landLatest, readThenClear } from "./import-archive";
 import { downloadGame, MatchReplay } from "./replay";
 
 export function LocalLab() {
@@ -28,6 +27,7 @@ export function LocalLab() {
   const [match, setMatch] = useState<MatchArchive>(fresh);
   const [imported, setImported] = useState<MatchArchive | null>(null);
   const [error, setError] = useState("");
+  const reads = useRef(0);
   const chess = boardAt(match);
   function move(uci: string) {
     if (match.status !== "running" || chess.turn() !== "w") return;
@@ -107,23 +107,29 @@ export function LocalLab() {
                 className="sr-only"
                 type="file"
                 accept=".json,application/json"
-                onChange={async (event) => {
-                  const input = event.currentTarget;
-                  const file = input.files?.[0];
-                  // Clear on every path (including rejection) so re-picking the same file fires onChange.
-                  input.value = "";
-                  if (!file) return;
-                  if (file.size > MAX_ARCHIVE_BYTES) {
-                    setError(t("lab.importTooLarge"));
-                    return;
-                  }
-                  try {
-                    setImported(validateArchive(JSON.parse(await file.text())));
-                    setError("");
-                  } catch {
-                    setError(t("lab.importError"));
-                  }
-                }}
+                onChange={(event) =>
+                  void readThenClear(event.currentTarget, async (file) => {
+                    if (!file) return;
+                    // Only the latest choice lands, whichever read finishes last.
+                    await landLatest(
+                      reads,
+                      () => checkArchiveFile(file),
+                      (check) => {
+                        // The lab replays any valid archive, a still-running one included.
+                        if (check.kind === "ok" || check.kind === "running") {
+                          setImported(check.game);
+                          setError("");
+                        } else {
+                          setError(
+                            t(
+                              check.kind === "too-large" ? "lab.importTooLarge" : "lab.importError",
+                            ),
+                          );
+                        }
+                      },
+                    );
+                  })
+                }
               />
             </label>
           </div>

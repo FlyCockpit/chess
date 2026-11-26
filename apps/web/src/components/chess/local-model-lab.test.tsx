@@ -9,7 +9,7 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: () => ({ isPending: true }),
   useMutation: () => ({}),
 }));
-vi.mock("@tanstack/react-form", () => ({ useForm: () => ({}) }));
+vi.mock("@tanstack/react-form", () => ({ useForm: () => ({}), useStore: () => ({}) }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("./chess-board", () => ({ ChessBoard: () => null }));
 vi.mock("./replay", () => ({ MatchReplay: () => null }));

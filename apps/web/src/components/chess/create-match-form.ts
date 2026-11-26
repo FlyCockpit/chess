@@ -107,7 +107,6 @@ export const FIELD_SECTION: Partial<Record<keyof CreateMatchValues, SectionId>> 
   tools: "rules",
   moveFormat: "rules",
   engineEvaluation: "rules",
-  remarks: "rules",
   tokenAccounting: "limits",
   tokenBudget: "limits",
   budget: "limits",

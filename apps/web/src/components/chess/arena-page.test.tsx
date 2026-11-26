@@ -15,7 +15,7 @@ const fixture = vi.hoisted(() => ({
     refetch: vi.fn(),
   },
   list: {
-    data: { pages: [{ items: [] }] },
+    data: { pages: [{ items: [] as Record<string, unknown>[] }] },
     isPending: false,
     isError: false,
     refetch: vi.fn(),
@@ -123,4 +123,55 @@ it("retains a leaderboard table during transient refetch errors", () => {
   const html = render("leaderboard");
   expect(html).toContain("Loaded model");
   expect(html).toContain("Try again");
+});
+function listWith(...slugs: string[]) {
+  fixture.list = {
+    ...fixture.list,
+    data: {
+      pages: [
+        {
+          items: slugs.map((slug) => ({
+            id: slug,
+            slug,
+            title: `Card ${slug}`,
+            status: "finished",
+            whiteName: "W",
+            blackName: "B",
+            ending: null,
+            contextMode: "fresh",
+            official: false,
+          })),
+        },
+      ],
+    },
+  };
+}
+it("shows an open game right under the section bar, before the other games, and marks its card", () => {
+  loadedReplay();
+  fixture.query.error = undefined;
+  fixture.query.isError = false;
+  listWith("other", "published");
+  const html = render("arena", "published");
+  const replay = html.indexOf("Loaded replay");
+  expect(replay).toBeGreaterThan(html.indexOf(enChess.arena.title));
+  expect(replay).toBeLessThan(html.indexOf("Card other"));
+  expect(html.match(/aria-current="true"/g)).toHaveLength(1);
+  expect(html).toMatch(/aria-current="true"[^>]*>(?:(?!<\/button>).)*Card published/);
+});
+it("leads with the list and follows with the demonstration when no game is open", () => {
+  listWith("other");
+  const html = render("arena");
+  expect(html.indexOf("Card other")).toBeLessThan(html.indexOf(enChess.arena.demoTitle));
+  expect(html).not.toContain('aria-current="true"');
+});
+it("puts a pending or failed open game (skeleton, retry) above the list too", () => {
+  listWith("other", "published");
+  fixture.query = { ...fixture.query, data: undefined, isPending: true };
+  let html = render("arena", "published");
+  expect(html.indexOf("h-96")).toBeGreaterThan(-1);
+  expect(html.indexOf("h-96")).toBeLessThan(html.indexOf("Card other"));
+  fixture.query = { ...fixture.query, isPending: false, error: { code: "NOT_FOUND" } };
+  html = render("arena", "published");
+  expect(html.indexOf(enChess.arena.retry)).toBeGreaterThan(-1);
+  expect(html.indexOf(enChess.arena.retry)).toBeLessThan(html.indexOf("Card other"));
 });

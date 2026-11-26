@@ -1,4 +1,4 @@
-import { boardAt, matchConfigSchema, type RemarkTone, remarkTones } from "@cockpit-chess/chess";
+import { boardAt } from "@cockpit-chess/chess";
 import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
 import type { LocalClient } from "@cockpit-chess/chess/local-contract";
 import { CopyField } from "@cockpit-chess/ui/components/copy-field";
@@ -8,7 +8,7 @@ import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import { SimpleCsrfProtectionLinkPlugin } from "@orpc/client/plugins";
 import { createTanstackQueryUtils } from "@orpc/tanstack-query";
-import { useForm } from "@tanstack/react-form";
+import { useForm, useStore } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Square } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -16,15 +16,30 @@ import { useTranslation } from "react-i18next";
 import { useMobileKeyboard } from "@/hooks/use-mobile-keyboard";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { ChessBoard } from "./chess-board";
-import { endingHeadlineLabel } from "./ending-label";
-import { MatchReplay } from "./replay";
 import {
-  autoMoveLimitMs,
-  clockFromTimeControl,
-  DEFAULT_TIME_CONTROL,
-  type TimeControlValue,
-  timeControlErrors,
-} from "./time-control";
+  CONTEXT_MODES,
+  ENGINE_MODES,
+  IDENTITY_MODES,
+  LIMITS,
+  MOVE_FORMATS,
+  PROTOCOL_CHOICES,
+  type ProtocolChoice,
+  REMARK_TONES,
+  resolveProtocol,
+  TOKEN_ACCOUNTING,
+} from "./create-match-form";
+import { endingHeadlineLabel } from "./ending-label";
+import {
+  LAB_DEFAULTS,
+  LAB_MODES,
+  type LabSection,
+  labMatchConfig,
+  labSummary,
+  sectionsWithErrors,
+  tokenBudgetValid,
+} from "./lab-form";
+import { MatchReplay } from "./replay";
+import { ChoiceField, SettingsSection } from "./settings-section";
 import { TimeControlField } from "./time-control-field";
 
 const client = createORPCClient<LocalClient>(
@@ -36,7 +51,7 @@ const client = createORPCClient<LocalClient>(
 const rpc = createTanstackQueryUtils(client);
 export function LocalModelLab() {
   useMobileKeyboard();
-  const { t } = useTranslation("chess");
+  const { t, i18n } = useTranslation("chess");
   const queryClient = useQueryClient();
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: rpc.key() });
@@ -57,50 +72,34 @@ export function LocalModelLab() {
   const stop = useMutation(rpc.stop.mutationOptions({ onSuccess: refresh }));
   const [invalid, setInvalid] = useState(false);
   const form = useForm({
-    defaultValues: {
-      model: "openai/gpt-4.1-nano",
-      protocol: "openai-chat",
-      context: "fresh",
-      identity: "hidden",
-      mode: "play",
-      tokenAccounting: "provider",
-      tokenBudget: 1000000,
-      engineEvaluation: "off",
-      remarks: "off" as RemarkTone,
-      time: DEFAULT_TIME_CONTROL as TimeControlValue,
-      moveFormat: "strict",
-    },
+    defaultValues: LAB_DEFAULTS,
     onSubmit: ({ value }) => {
-      if (Object.keys(timeControlErrors(t, value.time)).length) {
-        setInvalid(true);
-        return;
-      }
-      const clock = clockFromTimeControl(value.time);
-      const model = { name: value.model, model: value.model, protocol: value.protocol };
-      const parsed = matchConfigSchema.safeParse({
-        title: t(value.mode === "play" ? "local.playTitle" : "local.simulateTitle"),
-        white:
-          value.mode === "play"
-            ? { name: t("lab.human"), model: "human", protocol: "human" }
-            : model,
-        black: model,
-        rules: {
-          context: value.context,
-          opponentIdentity: value.identity,
-          clock,
-          turnTimeoutMs: autoMoveLimitMs(clock),
-          tokenBudget: value.tokenBudget,
-          tokenAccounting: value.tokenAccounting,
-          engineEvaluation: value.engineEvaluation,
-          remarks: value.remarks,
-          moveFormat: value.moveFormat,
-          costBudgetMicros: 100000,
-        },
-      });
-      setInvalid(!parsed.success);
-      if (parsed.success) create.mutate(parsed.data);
+      const config = labMatchConfig(value, t);
+      setInvalid(!config);
+      if (config) create.mutate(config);
+    },
+    // A field error blocks onSubmit: say so beside Start and open the section that holds it.
+    onSubmitInvalid: ({ formApi }) => {
+      setInvalid(true);
+      const failing = sectionsWithErrors(formApi.state.fieldMeta);
+      setSections((current) => new Set([...current, ...failing]));
     },
   });
+  const values = useStore(form.store, (state) => state.values);
+  const [sections, setSections] = useState<ReadonlySet<LabSection>>(new Set());
+  const toggle = (id: LabSection, next: boolean) =>
+    setSections((current) => {
+      const updated = new Set(current);
+      if (next) updated.add(id);
+      else updated.delete(id);
+      return updated;
+    });
+  const protocolLabel = (choice: ProtocolChoice) =>
+    choice === "auto"
+      ? t("create.protocols.auto", {
+          protocol: t(`create.protocols.${resolveProtocol("auto", values.model, undefined)}`),
+        })
+      : t(`create.protocols.${choice}`);
   const data = isQueryAccessError(error) ? undefined : stateData;
   const match = data?.match;
   const chess = useMemo(() => (match ? boardAt(match) : undefined), [match]);
@@ -111,7 +110,7 @@ export function LocalModelLab() {
     <div className="cc-public-shell">
       <a
         href="#main-content"
-        className="sr-only fixed top-2 left-2 z-50 rounded-md bg-background px-4 py-3 text-foreground shadow-md focus:not-sr-only focus-visible:outline-2 focus-visible:outline-ring"
+        className="sr-only fixed top-2 left-2 z-50 rounded-md bg-background px-4 py-3 text-foreground shadow-md focus:not-sr-only focus:fixed focus-visible:outline-2 focus-visible:outline-ring"
       >
         {t("nav:skipToContent")}
       </a>
@@ -163,7 +162,13 @@ export function LocalModelLab() {
                       <span className="cc-avatar">♚</span>
                       <div>
                         <strong>{match.config.black.name}</strong>
-                        <span>{match.config.black.protocol}</span>
+                        <span>
+                          {match.config.black.protocol === "random"
+                            ? t("lab.random")
+                            : match.config.black.protocol === "human"
+                              ? t("lab.human")
+                              : t(`create.protocols.${match.config.black.protocol}`)}
+                        </span>
                       </div>
                     </div>
                     <ChessBoard
@@ -208,161 +213,42 @@ export function LocalModelLab() {
                     <p>{t("local.spendNote")}</p>
                     {!data.providerReady && <p className="cc-error">{t("local.noKey")}</p>}
                     <form
-                      className="cc-form-grid"
+                      className="cc-form-grid cc-lab-form"
+                      noValidate
                       onSubmit={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
                         void form.handleSubmit();
                       }}
                     >
-                      <form.Field name="model">
+                      <form.Field name="mode">
+                        {(field) => (
+                          <ChoiceField
+                            field={field}
+                            label={t("local.mode")}
+                            options={LAB_MODES}
+                            optionLabel={(value) => t(`local.${value}`)}
+                            explain={(value) => t(`local.explain.${value}`)}
+                          />
+                        )}
+                      </form.Field>
+                      <form.Field
+                        name="model"
+                        validators={{
+                          onChange: ({ value }) =>
+                            value.trim() ? undefined : t("create.errors.model"),
+                        }}
+                      >
                         {(field) => (
                           <TextField
                             field={field}
                             label={t("local.model")}
+                            description={t("local.modelHint")}
                             autoComplete="off"
                             inputMode="text"
                             required
                             maxLength={160}
                           />
-                        )}
-                      </form.Field>
-                      <form.Field name="protocol">
-                        {(field) => (
-                          <label>
-                            {t("studio.protocol")}
-                            <select
-                              value={field.state.value}
-                              onChange={(event) => field.handleChange(event.target.value)}
-                            >
-                              {["openai-chat", "openai-responses", "anthropic"].map((protocol) => (
-                                <option key={protocol} value={protocol}>
-                                  {protocol}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        )}
-                      </form.Field>
-                      <form.Field name="mode">
-                        {(field) => (
-                          <label>
-                            {t("local.mode")}
-                            <select
-                              value={field.state.value}
-                              onChange={(event) => field.handleChange(event.target.value)}
-                            >
-                              <option value="play">{t("local.play")}</option>
-                              <option value="simulate">{t("local.simulate")}</option>
-                            </select>
-                          </label>
-                        )}
-                      </form.Field>
-                      <form.Field name="context">
-                        {(field) => (
-                          <label>
-                            {t("studio.contextLabel")}
-                            <select
-                              value={field.state.value}
-                              onChange={(event) => field.handleChange(event.target.value)}
-                            >
-                              {["fresh", "persistent"].map((value) => (
-                                <option key={value} value={value}>
-                                  {t(`context.${value}`)}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        )}
-                      </form.Field>
-                      <form.Field name="identity">
-                        {(field) => (
-                          <label>
-                            {t("studio.identityLabel")}
-                            <select
-                              value={field.state.value}
-                              onChange={(event) => field.handleChange(event.target.value)}
-                            >
-                              {["hidden", "disclosed"].map((value) => (
-                                <option key={value} value={value}>
-                                  {t(`identity.${value}`)}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        )}
-                      </form.Field>
-
-                      <form.Field name="moveFormat">
-                        {(field) => (
-                          <label>
-                            {t("settings.moveFormat")}
-                            <select
-                              value={field.state.value}
-                              onChange={(event) => field.handleChange(event.target.value)}
-                            >
-                              {["strict", "lenient"].map((value) => (
-                                <option key={value} value={value}>
-                                  {t(`moveFormats.${value}`)}
-                                </option>
-                              ))}
-                            </select>
-                            <small>{t("settings.moveFormatNote")}</small>
-                          </label>
-                        )}
-                      </form.Field>
-                      <form.Field name="tokenAccounting">
-                        {(field) => (
-                          <label>
-                            {t("settings.tokenAccounting")}
-                            <select
-                              value={field.state.value}
-                              onChange={(event) => field.handleChange(event.target.value)}
-                            >
-                              {["provider", "cl100k_base"].map((value) => (
-                                <option key={value} value={value}>
-                                  {t(`accounting.${value}`)}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        )}
-                      </form.Field>
-                      <form.Field name="tokenBudget">
-                        {(field) => (
-                          <label>
-                            {t("settings.tokenBudget")}
-                            <input
-                              type="number"
-                              autoComplete="off"
-                              min={256}
-                              max={1000000}
-                              required
-                              value={field.state.value}
-                              onChange={(event) => {
-                                const value = event.currentTarget.valueAsNumber;
-                                if (Number.isFinite(value)) field.handleChange(value);
-                              }}
-                            />
-                          </label>
-                        )}
-                      </form.Field>
-                      <form.Field name="engineEvaluation">
-                        {(field) => (
-                          <label>
-                            {t("settings.engineEvaluation")}
-                            <select
-                              value={field.state.value}
-                              onChange={(event) => field.handleChange(event.target.value)}
-                            >
-                              {["off", "tool", "after-move", "both"].map((value) => (
-                                <option key={value} value={value}>
-                                  {t(`engineModes.${value}`)}
-                                </option>
-                              ))}
-                            </select>
-                            <small>{t("settings.engineLimits")}</small>
-                          </label>
                         )}
                       </form.Field>
                       <form.Field name="time">
@@ -375,28 +261,155 @@ export function LocalModelLab() {
                       </form.Field>
                       <form.Field name="remarks">
                         {(field) => (
-                          <label>
-                            {t("settings.remarks")}
-                            <select
-                              value={field.state.value}
-                              onChange={(event) => {
-                                const next = remarkTones.find(
-                                  (tone) => tone === event.target.value,
-                                );
-                                if (next) field.handleChange(next);
-                              }}
-                            >
-                              {remarkTones.map((tone) => (
-                                <option key={tone} value={tone}>
-                                  {t(`remarkTones.${tone}`)}
-                                </option>
-                              ))}
-                            </select>
-                            <small>{t(`create.explain.remarks.${field.state.value}`)}</small>
-                          </label>
+                          <ChoiceField
+                            field={field}
+                            label={t("settings.remarks")}
+                            options={REMARK_TONES}
+                            optionLabel={(value) => t(`remarkTones.${value}`)}
+                            explain={(value) => t(`create.explain.remarks.${value}`)}
+                          />
                         )}
                       </form.Field>
-                      <p className="cc-muted text-xs">{t("settings.anonymousCommentary")}</p>
+                      <div className="cc-create-summary">
+                        <span>{t("create.summaryLabel")}</span>
+                        <p>{labSummary(values, t)}</p>
+                      </div>
+                      <div className="cc-advanced">
+                        <h3>{t("create.advanced")}</h3>
+                        <p className="cc-field-hint">{t("create.advancedHint")}</p>
+                        <SettingsSection
+                          id="rules"
+                          open={sections.has("rules")}
+                          onToggle={toggle}
+                          title={t("create.sections.rules")}
+                          hint={t("local.sections.rulesHint")}
+                          status={[
+                            t(`context.${values.context}`),
+                            t(`identity.${values.identity}`),
+                            t(`moveFormats.${values.moveFormat}`),
+                            t(`engineModes.${values.engineEvaluation}`),
+                          ].join(" · ")}
+                        >
+                          <form.Field name="context">
+                            {(field) => (
+                              <ChoiceField
+                                field={field}
+                                label={t("studio.contextLabel")}
+                                options={CONTEXT_MODES}
+                                optionLabel={(value) => t(`context.${value}`)}
+                                explain={(value) => t(`create.explain.context.${value}`)}
+                              />
+                            )}
+                          </form.Field>
+                          <form.Field name="identity">
+                            {(field) => (
+                              <ChoiceField
+                                field={field}
+                                label={t("studio.identityLabel")}
+                                options={IDENTITY_MODES}
+                                optionLabel={(value) => t(`identity.${value}`)}
+                                explain={(value) => t(`create.explain.identity.${value}`)}
+                              />
+                            )}
+                          </form.Field>
+                          <form.Field name="moveFormat">
+                            {(field) => (
+                              <ChoiceField
+                                field={field}
+                                label={t("settings.moveFormat")}
+                                options={MOVE_FORMATS}
+                                optionLabel={(value) => t(`moveFormats.${value}`)}
+                                explain={(value) => t(`create.explain.moveFormat.${value}`)}
+                              />
+                            )}
+                          </form.Field>
+                          <form.Field name="engineEvaluation">
+                            {(field) => (
+                              <ChoiceField
+                                field={field}
+                                label={t("settings.engineEvaluation")}
+                                options={ENGINE_MODES}
+                                optionLabel={(value) => t(`engineModes.${value}`)}
+                                explain={(value) => t(`create.explain.engine.${value}`)}
+                              />
+                            )}
+                          </form.Field>
+                          <p className="cc-field-hint">{t("settings.anonymousCommentary")}</p>
+                        </SettingsSection>
+                        <SettingsSection
+                          id="limits"
+                          open={sections.has("limits")}
+                          onToggle={toggle}
+                          title={t("create.sections.limits")}
+                          hint={t("local.sections.limitsHint")}
+                          status={[
+                            t(`accounting.${values.tokenAccounting}`),
+                            t("local.tokens", {
+                              tokens: Number(values.tokenBudget).toLocaleString(i18n.language),
+                            }),
+                          ].join(" · ")}
+                        >
+                          <form.Field name="tokenAccounting">
+                            {(field) => (
+                              <ChoiceField
+                                field={field}
+                                label={t("settings.tokenAccounting")}
+                                options={TOKEN_ACCOUNTING}
+                                optionLabel={(value) => t(`accounting.${value}`)}
+                                explain={(value) => t(`create.explain.accounting.${value}`)}
+                              />
+                            )}
+                          </form.Field>
+                          <form.Field
+                            name="tokenBudget"
+                            validators={{
+                              onChange: ({ value }) =>
+                                tokenBudgetValid(value)
+                                  ? undefined
+                                  : t("create.errors.integerRange", {
+                                      min: LIMITS.tokens.min,
+                                      max: LIMITS.tokens.max,
+                                    }),
+                            }}
+                          >
+                            {(field) => (
+                              <TextField
+                                field={field}
+                                label={t("settings.tokenBudget")}
+                                description={t("create.explain.tokenBudget", {
+                                  min: LIMITS.tokens.min,
+                                  max: LIMITS.tokens.max,
+                                })}
+                                type="number"
+                                autoComplete="off"
+                                min={LIMITS.tokens.min}
+                                max={LIMITS.tokens.max}
+                                step={1}
+                              />
+                            )}
+                          </form.Field>
+                        </SettingsSection>
+                        <SettingsSection
+                          id="connection"
+                          open={sections.has("connection")}
+                          onToggle={toggle}
+                          title={t("local.sections.connection")}
+                          hint={t("local.sections.connectionHint")}
+                          status={protocolLabel(values.protocol)}
+                        >
+                          <form.Field name="protocol">
+                            {(field) => (
+                              <ChoiceField
+                                field={field}
+                                label={t("studio.protocol")}
+                                options={PROTOCOL_CHOICES}
+                                optionLabel={protocolLabel}
+                                explain={() => t("local.protocolHint")}
+                              />
+                            )}
+                          </form.Field>
+                        </SettingsSection>
+                      </div>
                       <button
                         className="cc-button"
                         type="submit"
@@ -407,7 +420,7 @@ export function LocalModelLab() {
                     </form>
                     {(invalid || create.isError || move.isError || stop.isError) && (
                       <p role="alert" className="cc-error">
-                        {t("studio.error")}
+                        {t(invalid ? "create.errors.invalid" : "studio.error")}
                       </p>
                     )}
                   </aside>

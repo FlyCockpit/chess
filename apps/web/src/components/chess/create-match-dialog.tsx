@@ -1,18 +1,18 @@
 import { Button } from "@cockpit-chess/ui/components/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@cockpit-chess/ui/components/dialog";
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@cockpit-chess/ui/components/sheet";
 import { fieldErrorMessages, TextField } from "@cockpit-chess/ui/components/text-field";
 import { useForm, useStore } from "@tanstack/react-form";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, Plus } from "lucide-react";
-import { type ReactNode, useId, useMemo, useState } from "react";
+import { Plus } from "lucide-react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
 import { orpc } from "@/utils/orpc";
@@ -38,6 +38,7 @@ import {
 } from "./create-match-form";
 import { durationLabel } from "./ending-label";
 import { type CatalogState, ModelPicker } from "./model-picker";
+import { ChoiceField, SettingsSection } from "./settings-section";
 import {
   autoMoveLimitMs,
   clockFromTimeControl,
@@ -46,95 +47,13 @@ import {
 } from "./time-control";
 import { TimeControlField } from "./time-control-field";
 
+/** The oRPC error code of a failed request, when it has one. */
+function errorCode(error: unknown) {
+  return error && typeof error === "object" && "code" in error ? error.code : undefined;
+}
+
 /** How often an open dialog asks again while its catalog copy is stale or its refresh failed. */
 const CATALOG_STALE_POLL_MS = 12_000;
-
-type FieldShape<TValue> = {
-  name: string;
-  state: { value: TValue; meta: { errors: readonly unknown[] } };
-  handleBlur: () => void;
-  handleChange: (value: TValue) => void;
-};
-
-/** A labelled native select whose hint explains the selected option. */
-function ChoiceField<TValue extends string>({
-  field,
-  label,
-  options,
-  optionLabel,
-  explain,
-}: {
-  field: FieldShape<TValue>;
-  label: string;
-  options: readonly TValue[];
-  optionLabel: (value: TValue) => string;
-  explain: (value: TValue) => ReactNode;
-}) {
-  const id = useId();
-  return (
-    <div className="cc-choice">
-      <label htmlFor={id} className="cc-field-label">
-        {label}
-      </label>
-      <select
-        id={id}
-        name={field.name}
-        value={field.state.value}
-        aria-describedby={`${id}-hint`}
-        onBlur={field.handleBlur}
-        onChange={(event) => {
-          const next = options.find((option) => option === event.target.value);
-          if (next !== undefined) field.handleChange(next);
-        }}
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {optionLabel(option)}
-          </option>
-        ))}
-      </select>
-      <p id={`${id}-hint`} className="cc-field-hint">
-        {explain(field.state.value)}
-      </p>
-    </div>
-  );
-}
-
-function Section({
-  id,
-  open,
-  onToggle,
-  title,
-  hint,
-  status,
-  children,
-}: {
-  id: SectionId;
-  open: boolean;
-  onToggle: (id: SectionId, open: boolean) => void;
-  title: string;
-  hint: string;
-  status: string;
-  children: ReactNode;
-}) {
-  return (
-    <details
-      className="cc-settings-section"
-      open={open}
-      data-section={id}
-      onToggle={(event) => onToggle(id, event.currentTarget.open)}
-    >
-      <summary>
-        <span className="cc-section-text">
-          <strong>{title}</strong>
-          <span>{open ? hint : status}</span>
-        </span>
-        <ChevronDown aria-hidden="true" size={16} className="cc-section-chevron" />
-      </summary>
-      <div className="cc-section-body">{children}</div>
-    </details>
-  );
-}
 
 export function CreateMatchDialog({
   disabled,
@@ -180,13 +99,18 @@ export function CreateMatchDialog({
     [i18n.language],
   );
   const mutation = useEntityMutation(
-    orpc.chess.create.mutationOptions({
-      onSuccess: (result) => {
-        setOpen(false);
-        onCreated(result.slug);
-      },
-    }),
-    { invalidateKey: orpc.chess.key() },
+    {
+      ...orpc.chess.create.mutationOptions({
+        onSuccess: (result) => {
+          setOpen(false);
+          onCreated(result.slug);
+        },
+      }),
+      // The sheet says what went wrong beside its action bar; a toast would cover that bar
+      // on phones and contradict the inline text.
+      meta: { skipGlobalErrorToast: true },
+    },
+    { invalidateKey: orpc.chess.key(), successMessage: t("create.started") },
   );
   const form = useForm({
     defaultValues: DEFAULT_VALUES,
@@ -243,7 +167,7 @@ export function CreateMatchDialog({
     mutation.reset();
   };
   return (
-    <Dialog
+    <Sheet
       open={open}
       onOpenChange={(next) => {
         if (mutation.isPending) return;
@@ -251,7 +175,7 @@ export function CreateMatchDialog({
         if (!next) reset();
       }}
     >
-      <DialogTrigger
+      <SheetTrigger
         render={
           <Button className="cc-button" disabled={disabled}>
             <Plus size={16} />
@@ -259,11 +183,11 @@ export function CreateMatchDialog({
           </Button>
         }
       />
-      <DialogContent className="cc-dialog-content cc-create-dialog">
-        <DialogHeader className="cc-create-header">
-          <DialogTitle>{t("create.title")}</DialogTitle>
-          <DialogDescription>{t("create.description")}</DialogDescription>
-        </DialogHeader>
+      <SheetContent side="right" className="cc-dialog-content cc-create-dialog">
+        <SheetHeader className="cc-create-header">
+          <SheetTitle>{t("create.title")}</SheetTitle>
+          <SheetDescription>{t("create.description")}</SheetDescription>
+        </SheetHeader>
         <form
           className="cc-create-form"
           noValidate
@@ -291,264 +215,275 @@ export function CreateMatchDialog({
                 </button>
               </p>
             )}
-            <div className="cc-create-players">
-              {(["white", "black"] as const).map((name) => (
-                <form.Field key={name} name={name}>
-                  {(field) => (
-                    <ModelPicker
-                      side={name === "white" ? "w" : "b"}
-                      value={field.state.value}
-                      onChange={(id) => field.handleChange(id)}
-                      catalog={catalog}
-                      catalogState={catalogState}
-                      onRetry={() => void retryCatalog()}
-                      errors={field.state.meta.errors}
-                      needsTools={needsTools}
-                    />
-                  )}
-                </form.Field>
-              ))}
-            </div>
-            <form.Field name="time">
-              {(field) => (
-                <TimeControlField
-                  value={field.state.value}
-                  onChange={(next) => field.handleChange(next)}
-                />
-              )}
-            </form.Field>
-            <form.Field name="title">
-              {(field) => (
-                <TextField
-                  field={field}
-                  label={t("create.titleLabel")}
-                  description={t("create.titleHint", { title: derivedTitle })}
-                  placeholder={derivedTitle}
-                  autoComplete="off"
-                  inputMode="text"
-                  maxLength={LIMITS.title}
-                />
-              )}
-            </form.Field>
-            <div className="cc-create-summary">
-              <span>{t("create.summaryLabel")}</span>
-              <p>{summary}</p>
-            </div>
-            <div className="cc-advanced">
-              <h3>{t("create.advanced")}</h3>
-              <p className="cc-field-hint">{t("create.advancedHint")}</p>
-              <Section
-                id="players"
-                open={sections.has("players")}
-                onToggle={toggle}
-                title={t("create.sections.players")}
-                hint={t("create.sections.playersHint")}
-                status={[
-                  protocolLabel("white")(values.whiteProtocol),
-                  protocolLabel("black")(values.blackProtocol),
-                  t(`identity.${values.identity}`),
-                ].join(" · ")}
-              >
-                {(["white", "black"] as const).map((side) => (
-                  <form.Field
-                    key={side}
-                    name={side === "white" ? "whiteProtocol" : "blackProtocol"}
-                  >
+            <div className="cc-create-quick">
+              <div className="cc-create-players">
+                {(["white", "black"] as const).map((name) => (
+                  <form.Field key={name} name={name}>
                     {(field) => (
-                      <ChoiceField
-                        field={field}
-                        label={t("create.protocolLabel", {
-                          side: t(`colors.${side === "white" ? "w" : "b"}`),
-                        })}
-                        options={PROTOCOL_CHOICES}
-                        optionLabel={protocolLabel(side)}
-                        explain={() => t("create.protocolHint")}
+                      <ModelPicker
+                        side={name === "white" ? "w" : "b"}
+                        value={field.state.value}
+                        onChange={(id) => field.handleChange(id)}
+                        catalog={catalog}
+                        catalogState={catalogState}
+                        onRetry={() => void retryCatalog()}
+                        errors={field.state.meta.errors}
+                        needsTools={needsTools}
                       />
                     )}
                   </form.Field>
                 ))}
-                <form.Field name="identity">
-                  {(field) => (
-                    <ChoiceField
-                      field={field}
-                      label={t("studio.identityLabel")}
-                      options={IDENTITY_MODES}
-                      optionLabel={(value) => t(`identity.${value}`)}
-                      explain={(value) => t(`create.explain.identity.${value}`)}
-                    />
-                  )}
-                </form.Field>
-              </Section>
-              <Section
-                id="rules"
-                open={sections.has("rules")}
-                onToggle={toggle}
-                title={t("create.sections.rules")}
-                hint={t("create.sections.rulesHint")}
-                status={[
-                  t(`context.${values.context}`),
-                  t(`tools.${values.tools}`),
-                  t(`moveFormats.${values.moveFormat}`),
-                  t(`engineModes.${values.engineEvaluation}`),
-                  t(`remarkTones.${values.remarks}`),
-                ].join(" · ")}
-              >
-                <form.Field name="context">
-                  {(field) => (
-                    <ChoiceField
-                      field={field}
-                      label={t("studio.contextLabel")}
-                      options={CONTEXT_MODES}
-                      optionLabel={(value) => t(`context.${value}`)}
-                      explain={(value) => t(`create.explain.context.${value}`)}
-                    />
-                  )}
-                </form.Field>
-                <form.Field name="tools">
-                  {(field) => (
-                    <ChoiceField
-                      field={field}
-                      label={t("studio.toolsLabel")}
-                      options={LEGAL_MOVE_MODES}
-                      optionLabel={(value) => t(`tools.${value}`)}
-                      explain={(value) => t(`create.explain.tools.${value}`)}
-                    />
-                  )}
-                </form.Field>
-                <form.Field name="moveFormat">
-                  {(field) => (
-                    <ChoiceField
-                      field={field}
-                      label={t("settings.moveFormat")}
-                      options={MOVE_FORMATS}
-                      optionLabel={(value) => t(`moveFormats.${value}`)}
-                      explain={(value) => t(`create.explain.moveFormat.${value}`)}
-                    />
-                  )}
-                </form.Field>
-                <form.Field name="engineEvaluation">
-                  {(field) => (
-                    <ChoiceField
-                      field={field}
-                      label={t("settings.engineEvaluation")}
-                      options={ENGINE_MODES}
-                      optionLabel={(value) => t(`engineModes.${value}`)}
-                      explain={(value) => (
-                        <>
-                          {t(`create.explain.engine.${value}`)}
-                          {value !== "off" && <> {t("settings.engineLimits")}</>}
-                        </>
+              </div>
+              <form.Field name="time">
+                {(field) => (
+                  <TimeControlField
+                    value={field.state.value}
+                    onChange={(next) => field.handleChange(next)}
+                  />
+                )}
+              </form.Field>
+              <form.Field name="title">
+                {(field) => (
+                  <TextField
+                    field={field}
+                    label={t("create.titleLabel")}
+                    description={t("create.titleHint", { title: derivedTitle })}
+                    placeholder={derivedTitle}
+                    autoComplete="off"
+                    inputMode="text"
+                    maxLength={LIMITS.title}
+                  />
+                )}
+              </form.Field>
+              <form.Field name="remarks">
+                {(field) => (
+                  <ChoiceField
+                    field={field}
+                    label={t("settings.remarks")}
+                    options={REMARK_TONES}
+                    optionLabel={(value) => t(`remarkTones.${value}`)}
+                    explain={(value) => (
+                      <>
+                        {t(`create.explain.remarks.${value}`)}
+                        {value !== "off" && <> {t("settings.anonymousCommentary")}</>}
+                      </>
+                    )}
+                  />
+                )}
+              </form.Field>
+            </div>
+            <div className="cc-create-side">
+              <div className="cc-create-summary">
+                <span>{t("create.summaryLabel")}</span>
+                <p>{summary}</p>
+              </div>
+              <div className="cc-advanced">
+                <h3>{t("create.advanced")}</h3>
+                <p className="cc-field-hint">{t("create.advancedHint")}</p>
+                <SettingsSection
+                  id="players"
+                  open={sections.has("players")}
+                  onToggle={toggle}
+                  title={t("create.sections.players")}
+                  hint={t("create.sections.playersHint")}
+                  status={[
+                    protocolLabel("white")(values.whiteProtocol),
+                    protocolLabel("black")(values.blackProtocol),
+                    t(`identity.${values.identity}`),
+                  ].join(" · ")}
+                >
+                  {(["white", "black"] as const).map((side) => (
+                    <form.Field
+                      key={side}
+                      name={side === "white" ? "whiteProtocol" : "blackProtocol"}
+                    >
+                      {(field) => (
+                        <ChoiceField
+                          field={field}
+                          label={t("create.protocolLabel", {
+                            side: t(`colors.${side === "white" ? "w" : "b"}`),
+                          })}
+                          options={PROTOCOL_CHOICES}
+                          optionLabel={protocolLabel(side)}
+                          explain={() => t("create.protocolHint")}
+                        />
                       )}
-                    />
-                  )}
-                </form.Field>
-                <form.Field name="remarks">
-                  {(field) => (
-                    <ChoiceField
-                      field={field}
-                      label={t("settings.remarks")}
-                      options={REMARK_TONES}
-                      optionLabel={(value) => t(`remarkTones.${value}`)}
-                      explain={(value) => (
-                        <>
-                          {t(`create.explain.remarks.${value}`)}
-                          {value !== "off" && <> {t("settings.anonymousCommentary")}</>}
-                        </>
-                      )}
-                    />
-                  )}
-                </form.Field>
-              </Section>
-              <Section
-                id="limits"
-                open={sections.has("limits")}
-                onToggle={toggle}
-                title={t("create.sections.limits")}
-                hint={t("create.sections.limitsHint")}
-                status={[
-                  t(`accounting.${values.tokenAccounting}`),
-                  t("create.summary.budget", {
-                    budget: Number.isFinite(Number(values.budget))
-                      ? currency.format(Number(values.budget))
-                      : values.budget,
-                  }),
-                  t("create.summary.moveLimit", { time: moveLimitText }),
-                ].join(" · ")}
-              >
-                <form.Field name="tokenAccounting">
-                  {(field) => (
-                    <ChoiceField
-                      field={field}
-                      label={t("settings.tokenAccounting")}
-                      options={TOKEN_ACCOUNTING}
-                      optionLabel={(value) => t(`accounting.${value}`)}
-                      explain={(value) => t(`create.explain.accounting.${value}`)}
-                    />
-                  )}
-                </form.Field>
-                <form.Field name="tokenBudget">
-                  {(field) => (
-                    <TextField
-                      field={field}
-                      type="number"
-                      inputMode="numeric"
-                      autoComplete="off"
-                      min={LIMITS.tokens.min}
-                      max={LIMITS.tokens.max}
-                      step={1}
-                      label={t("settings.tokenBudget")}
-                      description={t("create.explain.tokenBudget", {
-                        min: LIMITS.tokens.min.toLocaleString(i18n.language),
-                        max: LIMITS.tokens.max.toLocaleString(i18n.language),
-                      })}
-                    />
-                  )}
-                </form.Field>
-                <form.Field name="budget">
-                  {(field) => (
-                    <TextField
-                      field={field}
-                      type="number"
-                      inputMode="decimal"
-                      autoComplete="off"
-                      min={LIMITS.budgetUsd.min}
-                      max={LIMITS.budgetUsd.max}
-                      step={0.01}
-                      label={t("studio.budget")}
-                      description={t("create.explain.budget", {
-                        min: currency.format(LIMITS.budgetUsd.min),
-                        max: currency.format(LIMITS.budgetUsd.max),
-                      })}
-                    />
-                  )}
-                </form.Field>
-                <form.Field name="moveLimit">
-                  {(field) => (
-                    <TextField
-                      field={field}
-                      type="number"
-                      inputMode="numeric"
-                      autoComplete="off"
-                      min={MOVE_LIMIT_SECONDS.min}
-                      max={MOVE_LIMIT_SECONDS.max}
-                      step={1}
-                      placeholder={String(autoMoveLimit / 1000)}
-                      label={t("time.moveLimit")}
-                      description={t("create.explain.moveLimit", {
-                        auto: durationLabel(t, autoMoveLimit),
-                        min: MOVE_LIMIT_SECONDS.min,
-                        max: MOVE_LIMIT_SECONDS.max,
-                      })}
-                    />
-                  )}
-                </form.Field>
-              </Section>
+                    </form.Field>
+                  ))}
+                  <form.Field name="identity">
+                    {(field) => (
+                      <ChoiceField
+                        field={field}
+                        label={t("studio.identityLabel")}
+                        options={IDENTITY_MODES}
+                        optionLabel={(value) => t(`identity.${value}`)}
+                        explain={(value) => t(`create.explain.identity.${value}`)}
+                      />
+                    )}
+                  </form.Field>
+                </SettingsSection>
+                <SettingsSection
+                  id="rules"
+                  open={sections.has("rules")}
+                  onToggle={toggle}
+                  title={t("create.sections.rules")}
+                  hint={t("create.sections.rulesHint")}
+                  status={[
+                    t(`context.${values.context}`),
+                    t(`tools.${values.tools}`),
+                    t(`moveFormats.${values.moveFormat}`),
+                    t(`engineModes.${values.engineEvaluation}`),
+                  ].join(" · ")}
+                >
+                  <form.Field name="context">
+                    {(field) => (
+                      <ChoiceField
+                        field={field}
+                        label={t("studio.contextLabel")}
+                        options={CONTEXT_MODES}
+                        optionLabel={(value) => t(`context.${value}`)}
+                        explain={(value) => t(`create.explain.context.${value}`)}
+                      />
+                    )}
+                  </form.Field>
+                  <form.Field name="tools">
+                    {(field) => (
+                      <ChoiceField
+                        field={field}
+                        label={t("studio.toolsLabel")}
+                        options={LEGAL_MOVE_MODES}
+                        optionLabel={(value) => t(`tools.${value}`)}
+                        explain={(value) => t(`create.explain.tools.${value}`)}
+                      />
+                    )}
+                  </form.Field>
+                  <form.Field name="moveFormat">
+                    {(field) => (
+                      <ChoiceField
+                        field={field}
+                        label={t("settings.moveFormat")}
+                        options={MOVE_FORMATS}
+                        optionLabel={(value) => t(`moveFormats.${value}`)}
+                        explain={(value) => t(`create.explain.moveFormat.${value}`)}
+                      />
+                    )}
+                  </form.Field>
+                  <form.Field name="engineEvaluation">
+                    {(field) => (
+                      <ChoiceField
+                        field={field}
+                        label={t("settings.engineEvaluation")}
+                        options={ENGINE_MODES}
+                        optionLabel={(value) => t(`engineModes.${value}`)}
+                        explain={(value) => (
+                          <>
+                            {t(`create.explain.engine.${value}`)}
+                            {value !== "off" && <> {t("settings.engineLimits")}</>}
+                          </>
+                        )}
+                      />
+                    )}
+                  </form.Field>
+                </SettingsSection>
+                <SettingsSection
+                  id="limits"
+                  open={sections.has("limits")}
+                  onToggle={toggle}
+                  title={t("create.sections.limits")}
+                  hint={t("create.sections.limitsHint")}
+                  status={[
+                    t(`accounting.${values.tokenAccounting}`),
+                    t("create.summary.budget", {
+                      budget: Number.isFinite(Number(values.budget))
+                        ? currency.format(Number(values.budget))
+                        : values.budget,
+                    }),
+                    t("create.summary.moveLimit", { time: moveLimitText }),
+                  ].join(" · ")}
+                >
+                  <form.Field name="tokenAccounting">
+                    {(field) => (
+                      <ChoiceField
+                        field={field}
+                        label={t("settings.tokenAccounting")}
+                        options={TOKEN_ACCOUNTING}
+                        optionLabel={(value) => t(`accounting.${value}`)}
+                        explain={(value) => t(`create.explain.accounting.${value}`)}
+                      />
+                    )}
+                  </form.Field>
+                  <form.Field name="tokenBudget">
+                    {(field) => (
+                      <TextField
+                        field={field}
+                        type="number"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        min={LIMITS.tokens.min}
+                        max={LIMITS.tokens.max}
+                        step={1}
+                        label={t("settings.tokenBudget")}
+                        description={t("create.explain.tokenBudget", {
+                          min: LIMITS.tokens.min.toLocaleString(i18n.language),
+                          max: LIMITS.tokens.max.toLocaleString(i18n.language),
+                        })}
+                      />
+                    )}
+                  </form.Field>
+                  <form.Field name="budget">
+                    {(field) => (
+                      <TextField
+                        field={field}
+                        type="number"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        min={LIMITS.budgetUsd.min}
+                        max={LIMITS.budgetUsd.max}
+                        step={0.01}
+                        label={t("studio.budget")}
+                        description={t("create.explain.budget", {
+                          min: currency.format(LIMITS.budgetUsd.min),
+                          max: currency.format(LIMITS.budgetUsd.max),
+                        })}
+                      />
+                    )}
+                  </form.Field>
+                  <form.Field name="moveLimit">
+                    {(field) => (
+                      <TextField
+                        field={field}
+                        type="number"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        min={MOVE_LIMIT_SECONDS.min}
+                        max={MOVE_LIMIT_SECONDS.max}
+                        step={1}
+                        placeholder={String(autoMoveLimit / 1000)}
+                        label={t("time.moveLimit")}
+                        description={t("create.explain.moveLimit", {
+                          auto: durationLabel(t, autoMoveLimit),
+                          min: MOVE_LIMIT_SECONDS.min,
+                          max: MOVE_LIMIT_SECONDS.max,
+                        })}
+                      />
+                    )}
+                  </form.Field>
+                </SettingsSection>
+              </div>
             </div>
           </div>
-          <DialogFooter className="cc-create-footer">
+          <SheetFooter className="cc-create-footer">
             {(invalid || mutation.isError) && (
               <p role="alert" className="cc-error cc-create-error">
-                {t(invalid ? "create.errors.invalid" : "studio.error")}
+                {t(
+                  invalid
+                    ? "create.errors.invalid"
+                    : errorCode(mutation.error) === "SERVICE_UNAVAILABLE"
+                      ? "create.errors.unavailable"
+                      : errorCode(mutation.error) === "TOO_MANY_REQUESTS"
+                        ? "create.errors.rateLimited"
+                        : "studio.error",
+                )}
               </p>
             )}
             <Button
@@ -566,9 +501,9 @@ export function CreateMatchDialog({
             <Button className="cc-button min-h-11" type="submit" disabled={mutation.isPending}>
               {t(mutation.isPending ? "create.starting" : "create.start")}
             </Button>
-          </DialogFooter>
+          </SheetFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   );
 }

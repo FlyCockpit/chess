@@ -6,6 +6,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider } from "react-i18next";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
+const mutation = vi.hoisted(() => ({
+  meta: undefined as unknown,
+  state: { isError: false, error: null as unknown },
+}));
 const catalog = vi.hoisted(() => ({
   options: undefined as
     | undefined
@@ -36,21 +40,24 @@ vi.mock("@/utils/orpc", () => ({
   },
 }));
 vi.mock("@/hooks/use-entity-mutation", () => ({
-  useEntityMutation: () => ({ isPending: false, isError: false, mutate: vi.fn(), reset: vi.fn() }),
+  useEntityMutation: (options: { meta?: unknown }) => {
+    mutation.meta = options.meta;
+    return { isPending: false, mutate: vi.fn(), reset: vi.fn(), ...mutation.state };
+  },
 }));
 // Render the dialog as if open: the static renderer cannot open a portal.
-vi.mock("@cockpit-chess/ui/components/dialog", () => {
+vi.mock("@cockpit-chess/ui/components/sheet", () => {
   const Pass = ({ children, className }: { children?: ReactNode; className?: string }) => (
     <div className={className}>{children}</div>
   );
   return {
-    Dialog: ({ children }: { children: ReactNode }) => <>{children}</>,
-    DialogTrigger: () => null,
-    DialogContent: Pass,
-    DialogHeader: Pass,
-    DialogFooter: Pass,
-    DialogTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
-    DialogDescription: ({ children }: { children: ReactNode }) => <p>{children}</p>,
+    Sheet: ({ children }: { children: ReactNode }) => <>{children}</>,
+    SheetTrigger: () => null,
+    SheetContent: Pass,
+    SheetHeader: Pass,
+    SheetFooter: Pass,
+    SheetTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
+    SheetDescription: ({ children }: { children: ReactNode }) => <p>{children}</p>,
   };
 });
 
@@ -170,5 +177,45 @@ describe("CreateMatchDialog", () => {
     expect(html).toContain("The model list is unavailable. You can still type a model id.");
     expect(html).toContain(">Try again<");
     expect(html).toContain("openai/gpt-4.1-nano (typed id)");
+  });
+  it("is a wide side sheet: the quick path in one column, the summary and Advanced in the other", () => {
+    catalog.state = { data: { models, stale: false }, isError: false, refetch: () => undefined };
+    const html = render();
+    expect(html).toContain('class="cc-dialog-content cc-create-dialog"');
+    const quick = html.indexOf('class="cc-create-quick"');
+    const side = html.indexOf('class="cc-create-side"');
+    expect(quick).toBeGreaterThan(-1);
+    expect(side).toBeGreaterThan(quick);
+    const between = html.slice(quick, side);
+    for (const text of [
+      "White model",
+      "Black model",
+      "Time control",
+      "Match title (optional)",
+      ">Remarks<",
+      ">Trash talk<",
+    ])
+      expect(between).toContain(text);
+    const after = html.slice(side);
+    expect(after).toContain(enChess.create.summaryLabel);
+    expect(after).toContain(enChess.create.advanced);
+    // The primary action stays in the sticky footer, outside the scrolling body.
+    expect(after.indexOf("cc-create-footer")).toBeGreaterThan(
+      after.indexOf(enChess.create.advanced),
+    );
+  });
+  it("explains a failed start beside the action bar instead of a toast over it", () => {
+    catalog.state = { data: { models, stale: false }, isError: false, refetch: () => undefined };
+    mutation.state = { isError: true, error: { code: "SERVICE_UNAVAILABLE" } };
+    let html = render().replaceAll("&#x27;", "'");
+    expect(mutation.meta).toEqual({ skipGlobalErrorToast: true });
+    expect(html).toContain(enChess.create.errors.unavailable);
+    mutation.state = { isError: true, error: { code: "TOO_MANY_REQUESTS" } };
+    html = render().replaceAll("&#x27;", "'");
+    expect(html).toContain(enChess.create.errors.rateLimited);
+    mutation.state = { isError: true, error: new Error("network") };
+    html = render().replaceAll("&#x27;", "'");
+    expect(html).toContain(enChess.studio.error);
+    mutation.state = { isError: false, error: null };
   });
 });

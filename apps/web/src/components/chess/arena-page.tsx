@@ -142,6 +142,29 @@ function Arena({
     ? []
     : (list?.pages.flatMap((page) => page.items) ?? []);
   const current = selected?.archive ?? demo;
+  const replay = (
+    <>
+      {slug && gameError && selected && (
+        <button className="cc-error" type="button" onClick={() => void retryGame()}>
+          {t("arena.retry")}
+        </button>
+      )}
+      {slug && pendingGame ? (
+        <Skeleton className="h-96" />
+      ) : slug && (!selected || isQueryAccessError(selectedError)) ? (
+        <button className="cc-error" type="button" onClick={() => void retryGame()}>
+          {t("arena.retry")}
+        </button>
+      ) : (
+        <MatchReplay
+          key={selected?.id ?? "demonstration"}
+          match={current}
+          live={current.status === "running"}
+          spectator={selected ? { evaluations: selected.spectatorEvaluations } : undefined}
+        />
+      )}
+    </>
+  );
   return (
     <>
       {!slug && (
@@ -185,6 +208,10 @@ function Arena({
           {slug ? t("arena.published") : t("arena.demo")}
         </span>
       </div>
+      {/* An open game comes first, right under the section bar, so a deep link or a card click
+          shows it at once; the other games follow. Without one, the list leads and the
+          demonstration follows. */}
+      {slug && replay}
       {isError && (
         <button className="cc-error" type="button" onClick={() => void refetch()}>
           {t("arena.retry")}
@@ -204,6 +231,7 @@ function Arena({
                 type="button"
                 key={game.id}
                 className="cc-game-card"
+                aria-current={game.slug === slug ? "true" : undefined}
                 onClick={() => onNavigate("arena", game.slug)}
               >
                 <span className="cc-pill">{t(`arena.status.${game.status}`)}</span>
@@ -228,25 +256,7 @@ function Arena({
         hasNextPage={!isQueryAccessError(listError) && Boolean(hasNextPage)}
         isFetchingNextPage={isFetchingNextPage}
       />
-      {slug && gameError && selected && (
-        <button className="cc-error" type="button" onClick={() => void retryGame()}>
-          {t("arena.retry")}
-        </button>
-      )}
-      {slug && pendingGame ? (
-        <Skeleton className="h-96" />
-      ) : slug && (!selected || isQueryAccessError(selectedError)) ? (
-        <button className="cc-error" type="button" onClick={() => void retryGame()}>
-          {t("arena.retry")}
-        </button>
-      ) : (
-        <MatchReplay
-          key={selected?.id ?? "demonstration"}
-          match={current}
-          live={current.status === "running"}
-          spectator={selected ? { evaluations: selected.spectatorEvaluations } : undefined}
-        />
-      )}
+      {!slug && replay}
       {!slug && (
         <div className="cc-demo-notice">
           <span>{t("arena.demoNote")}</span>

@@ -1,11 +1,14 @@
 import { hasRole } from "@cockpit-chess/auth/roles";
 import { MAX_ARCHIVE_BYTES, type MatchArchive } from "@cockpit-chess/chess";
+import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
 import type { SpectatorEvaluations } from "@cockpit-chess/chess/spectator";
 import { Button } from "@cockpit-chess/ui/components/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -13,23 +16,31 @@ import {
 import { toast } from "@cockpit-chess/ui/components/sileo";
 import { Skeleton } from "@cockpit-chess/ui/components/skeleton";
 import { TextareaField } from "@cockpit-chess/ui/components/text-field";
-import { useForm } from "@tanstack/react-form";
+import { useForm, useStore } from "@tanstack/react-form";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Download, Upload } from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, Download, Upload } from "lucide-react";
+import { useReducer, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { z } from "zod";
 import { InlineRetry } from "@/components/inline-retry";
 import { LoadMore } from "@/components/load-more";
 import { QueryBoundary } from "@/components/query-boundary";
 import { useAuthSession } from "@/hooks/use-auth-session";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
+import { fileDropTargetRef } from "@/lib/file-drop-registry";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { orpc } from "@/utils/orpc";
 import { CreateMatchDialog } from "./create-match-dialog";
 import { endingHeadlineLabel } from "./ending-label";
 import { replayRefetch } from "./evaluation";
+import {
+  checkArchiveFile,
+  IMPORT_INITIAL,
+  importReducer,
+  landLatest,
+  pasteToggle,
+  readThenClear,
+} from "./import-archive";
 import { MatchReplay } from "./replay";
 import { drawShareCard, SHARE_HEIGHT, SHARE_WIDTH } from "./share-card";
 
@@ -110,6 +121,31 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
             <CreateMatchDialog disabled={!info?.hostedEnabled} onCreated={setSelected} />
             <ImportDialog onImported={setSelected} />
           </div>
+          {/* The previewed game (also where Create and Import land) comes first, so choosing
+              one shows it at once; the list follows. */}
+          {selected && detailError && (
+            <InlineRetry onRetry={() => void retryDetail()} message={t("studio.error")} />
+          )}
+          {selected && detailPending && <Skeleton className="h-96" />}
+          {selected && detail && (
+            <>
+              <div className="cc-section-bar">
+                <h2>{t("studio.preview")}</h2>
+                <ShareCard
+                  match={detail.archive}
+                  slug={selected}
+                  published={detail.published}
+                  spectator={detail.spectatorEvaluations}
+                />
+              </div>
+              <MatchReplay
+                key={detail.archive.id}
+                match={detail.archive}
+                live={detail.archive.status === "running"}
+                spectator={{ evaluations: detail.spectatorEvaluations }}
+              />
+            </>
+          )}
           <QueryBoundary
             query={{ data, error, isPending, isError, refetch }}
             skeleton={<Skeleton className="h-32" />}
@@ -125,7 +161,11 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                 {data.pages
                   .flatMap((page) => page.items)
                   .map((game) => (
-                    <article className="cc-game-card" key={game.id}>
+                    <article
+                      className="cc-game-card"
+                      key={game.id}
+                      aria-current={game.slug === selected ? "true" : undefined}
+                    >
                       <span className="cc-pill">
                         {game.published ? t(`arena.status.${game.status}`) : t("arena.unpublished")}
                       </span>
@@ -179,43 +219,26 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
               {t("studio.error")}
             </p>
           )}
-          {selected && detailError && (
-            <InlineRetry onRetry={() => void retryDetail()} message={t("studio.error")} />
-          )}
-          {selected && detailPending && <Skeleton className="h-96" />}
-          {selected && detail && (
-            <>
-              <div className="cc-section-bar">
-                <h2>{t("studio.preview")}</h2>
-                <ShareCard
-                  match={detail.archive}
-                  slug={selected}
-                  published={detail.published}
-                  spectator={detail.spectatorEvaluations}
-                />
-              </div>
-              <MatchReplay
-                key={detail.archive.id}
-                match={detail.archive}
-                live={detail.archive.status === "running"}
-                spectator={{ evaluations: detail.spectatorEvaluations }}
-              />
-            </>
-          )}
         </>
       )}
     </>
   );
 }
 function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
-  const { t } = useTranslation("chess");
+  const { t, i18n } = useTranslation("chess");
   const [open, setOpen] = useState(false);
-  const [tooLarge, setTooLarge] = useState(false);
+  const [state, dispatch] = useReducer(importReducer, IMPORT_INITIAL);
+  // Read generations: a read that finishes after a newer choice, a paste or a close is ignored.
+  const reads = useRef(0);
   const mutation = useEntityMutation(
     orpc.chess.importGame.mutationOptions({
       onSuccess: (result) => {
         setOpen(false);
-        if (result.duplicate) toast.message(t("studio.duplicate"));
+        // The next import starts fresh (reset otherwise runs only on a user close).
+        reads.current += 1;
+        dispatch({ type: "reset", generation: reads.current });
+        form.reset();
+        toast.message(t(result.duplicate ? "studio.duplicate" : "studio.imported"));
         onImported(result.slug);
       },
     }),
@@ -223,14 +246,55 @@ function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
   );
   const form = useForm({
     defaultValues: { json: "" },
-    validators: { onChange: z.object({ json: z.string().min(1).max(MAX_ARCHIVE_BYTES) }) },
     onSubmit: ({ value }) => mutation.mutate(value),
   });
+  const json = useStore(form.store, (current) => current.values.json);
+  const busy = mutation.isPending;
+  const reset = () => {
+    reads.current += 1;
+    dispatch({ type: "reset", generation: reads.current });
+    mutation.reset();
+    form.reset();
+  };
+  async function readFile(file: File | undefined) {
+    // While an import is in flight the choice is locked: resetting would drop its pending guard.
+    if (!file || busy) return;
+    mutation.reset();
+    form.resetField("json");
+    await landLatest(
+      reads,
+      () => checkArchiveFile(file),
+      (check, generation) => {
+        dispatch({ type: "read-done", generation, check });
+        form.setFieldValue("json", check.kind === "ok" ? check.json : "");
+      },
+      (generation) =>
+        dispatch({ type: "read-start", generation, name: file.name, size: file.size }),
+    );
+  }
+  const problem = state.problem
+    ? t(
+        state.problem === "too-large"
+          ? "lab.importTooLarge"
+          : state.problem === "running"
+            ? "studio.importRunning"
+            : "lab.importError",
+      )
+    : "";
+  const chosen = state.chosen;
+  const size = (bytes: number) =>
+    new Intl.NumberFormat(i18n.language, {
+      style: "unit",
+      unit: "kilobyte",
+      maximumFractionDigits: 1,
+    }).format(bytes / 1000);
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!mutation.isPending) setOpen(next);
+        if (mutation.isPending) return;
+        setOpen(next);
+        if (!next) reset();
       }}
     >
       <DialogTrigger
@@ -241,12 +305,13 @@ function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
           </Button>
         }
       />
-      <DialogContent className="cc-dialog-content sm:max-w-xl">
+      <DialogContent className="cc-dialog-content cc-import-dialog sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{t("studio.archiveTitle")}</DialogTitle>
-          <DialogDescription>{t("studio.description")}</DialogDescription>
+          <DialogDescription>{t("studio.importDescription")}</DialogDescription>
         </DialogHeader>
         <form
+          noValidate
           onSubmit={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -254,42 +319,122 @@ function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
           }}
           className="cc-form-grid"
         >
-          <input
-            type="file"
-            accept=".json,application/json"
-            aria-label={t("studio.import")}
-            onChange={async (event) => {
-              const input = event.currentTarget;
-              const file = input.files?.[0];
-              input.value = "";
-              if (!file) return;
-              setTooLarge(file.size > MAX_ARCHIVE_BYTES);
-              if (file.size <= MAX_ARCHIVE_BYTES) form.setFieldValue("json", await file.text());
-            }}
-          />
-          <form.Field name="json">
-            {(field) => (
-              <TextareaField
-                field={field}
-                autoComplete="off"
-                label={t("studio.jsonLabel")}
-                rows={8}
+          <div className="cc-import-pick">
+            <label
+              className="cc-file-drop"
+              data-disabled={busy || undefined}
+              ref={fileDropTargetRef((files) => void readFile(files[0]))}
+            >
+              <Upload size={18} aria-hidden="true" />
+              <span className="cc-file-drop-text">
+                <strong>{t(chosen ? "studio.importChooseAnother" : "studio.importChoose")}</strong>
+                <span>{t("studio.importDrop")}</span>
+              </span>
+              <input
+                className="sr-only"
+                type="file"
+                accept=".json,application/json"
+                disabled={busy}
+                aria-describedby="cc-import-status"
+                onChange={(event) => void readThenClear(event.currentTarget, readFile)}
               />
-            )}
-          </form.Field>
-          {tooLarge && (
-            <p role="alert" className="cc-error">
-              {t("lab.importTooLarge")}
-            </p>
-          )}
+            </label>
+            <div id="cc-import-status" aria-live="polite">
+              {chosen && (
+                <div className="cc-import-preview">
+                  <p className="cc-import-file">
+                    {chosen.name} · {size(chosen.size)}
+                  </p>
+                  {chosen.game && !problem && (
+                    <>
+                      <strong>{chosen.game.config.title}</strong>
+                      <p>
+                        {chosen.game.config.white.name} × {chosen.game.config.black.name}
+                      </p>
+                      <p>
+                        {endingHeadlineLabel(t, endingSummary(matchEnding(chosen.game)))} ·{" "}
+                        {chosen.game.result}
+                      </p>
+                      <p className="cc-field-hint">{t("studio.importNext")}</p>
+                    </>
+                  )}
+                </div>
+              )}
+              {problem && (
+                <p role="alert" className="cc-error">
+                  {problem}
+                </p>
+              )}
+            </div>
+          </div>
+          <details
+            className="cc-settings-section"
+            open={state.pasteOpen}
+            onToggle={(event) => {
+              const next = event.currentTarget.open;
+              // Paste and file are alternatives: opening the box drops a chosen file (and its
+              // JSON); text pasted earlier stays.
+              const effect = pasteToggle(state, next, busy);
+              if (!effect.apply) return;
+              reads.current += 1;
+              dispatch({ type: "paste", open: next, generation: reads.current });
+              if (effect.clearJson) {
+                mutation.reset();
+                form.resetField("json");
+              }
+            }}
+          >
+            <summary
+              onClick={(event) => {
+                // Locked while an import is in flight, like the file button.
+                if (busy) event.preventDefault();
+              }}
+            >
+              <span className="cc-section-text">
+                <strong>{t("studio.importPaste")}</strong>
+                <span>{t("studio.importPasteHint")}</span>
+              </span>
+              <ChevronDown aria-hidden="true" size={16} className="cc-section-chevron" />
+            </summary>
+            <div className="cc-section-body">
+              <form.Field
+                name="json"
+                validators={{
+                  // Empty is not an error (Import stays disabled); too large is.
+                  onChange: ({ value }) =>
+                    value.length > MAX_ARCHIVE_BYTES ? t("lab.importTooLarge") : undefined,
+                }}
+              >
+                {(field) => (
+                  <TextareaField
+                    field={field}
+                    autoComplete="off"
+                    label={t("studio.jsonLabel")}
+                    rows={8}
+                    disabled={busy}
+                    className="cc-import-json"
+                  />
+                )}
+              </form.Field>
+            </div>
+          </details>
           {mutation.isError && (
             <p role="alert" className="cc-error">
               {t("lab.importError")}
             </p>
           )}
-          <Button className="min-h-11 md:min-h-0" type="submit" disabled={mutation.isPending}>
-            {t(mutation.isPending ? "studio.pending" : "studio.import")}
-          </Button>
+          <DialogFooter className="cc-import-footer">
+            <DialogClose render={<Button variant="ghost" className="min-h-11" />}>
+              {t("create.cancel")}
+            </DialogClose>
+            <Button
+              className="cc-button"
+              type="submit"
+              disabled={busy || !json || json.length > MAX_ARCHIVE_BYTES}
+            >
+              {t(mutation.isPending ? "studio.pending" : "studio.importSubmit")}
+            </Button>
+          </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>

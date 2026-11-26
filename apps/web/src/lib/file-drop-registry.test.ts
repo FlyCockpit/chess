@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   dataTransferHasFiles,
+  fileDropTargetRef,
   findFileDropTarget,
   registerFileDropTarget,
 } from "./file-drop-registry";
@@ -128,5 +129,19 @@ describe("dataTransferHasFiles", () => {
 
   it("ignores a null dataTransfer", () => {
     expect(dataTransferHasFiles(null)).toBe(false);
+  });
+});
+
+describe("fileDropTargetRef", () => {
+  it("registers the mounted element and unregisters it in the returned cleanup", () => {
+    const zone = makeNode();
+    const child = makeNode(zone);
+    const onFiles = vi.fn();
+    const cleanup = fileDropTargetRef(onFiles)(zone);
+    expect(findFileDropTarget([child, zone] as unknown as EventTarget[])?.onFiles).toBe(onFiles);
+    cleanup?.();
+    expect(findFileDropTarget([child, zone] as unknown as EventTarget[])).toBeNull();
+    // React calls a ref with null on detach (no cleanup returned then).
+    expect(fileDropTargetRef(onFiles)(null)).toBeUndefined();
   });
 });
