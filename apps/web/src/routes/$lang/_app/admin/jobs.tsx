@@ -18,6 +18,7 @@ import { isQueryAccessError } from "@/lib/query-access-error";
 import { orpc } from "@/utils/orpc";
 
 export const Route = createFileRoute("/$lang/_app/admin/jobs")({
+  staticData: { pendingShape: "list", pendingWidth: "wide" },
   component: AdminJobsPage,
 });
 

@@ -30,6 +30,7 @@ import { orpc } from "@/utils/orpc";
  * keys. The CLI itself talks to `/api/cli/rpc`, never to these procedures.
  */
 export const Route = createFileRoute("/$lang/_app/_auth/settings/cli")({
+  staticData: { pendingShape: "list" },
   component: CliSettings,
 });
 

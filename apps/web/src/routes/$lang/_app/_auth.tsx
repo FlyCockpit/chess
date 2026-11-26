@@ -9,13 +9,13 @@ import {
 import { Input } from "@cockpit-chess/ui/components/input";
 import { Label } from "@cockpit-chess/ui/components/label";
 import { toast } from "@cockpit-chess/ui/components/sileo";
-import { Skeleton } from "@cockpit-chess/ui/components/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { InlineRetry } from "@/components/inline-retry";
+import { RouteContentSkeleton } from "@/components/route-content-skeleton";
 import { TwoFactorSetupDetails } from "@/components/two-factor-setup-details";
 import { authClient } from "@/lib/auth-client";
 import { decideProtectedRouteAccess } from "@/lib/route-session-access";
@@ -50,16 +50,9 @@ function AuthLayout() {
   const { t } = useTranslation(["common", "dashboard"]);
 
   if (isPending) {
-    return (
-      <div className="container mx-auto max-w-4xl px-4 py-8 space-y-4">
-        <Skeleton className="h-8 w-48" />
-        <Skeleton className="h-5 w-64" />
-        <div className="mt-8 space-y-3">
-          <Skeleton className="h-32 w-full rounded-lg" />
-          <Skeleton className="h-32 w-full rounded-lg" />
-        </div>
-      </div>
-    );
+    // Inside the app shell already: only the content area waits, in the
+    // shape of the page being opened.
+    return <RouteContentSkeleton />;
   }
 
   if (isError) {

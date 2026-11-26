@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { settingsNavItems } from "@/lib/nav-items";
 
 export const Route = createFileRoute("/$lang/_app/_auth/settings")({
+  staticData: { pendingFrame: "settings" },
   component: SettingsLayout,
 });
 

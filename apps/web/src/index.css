@@ -1033,6 +1033,11 @@
   background: var(--cc-raised);
   color: var(--cc-text);
 }
+/* A dialog's sticky header and action bar paint the popup's own surface. */
+.cc-dialog-content [data-slot="dialog-header"],
+.cc-dialog-content [data-slot="dialog-footer"] {
+  background: var(--cc-raised);
+}
 @media (max-width: 900px) {
   .cc-public-shell {
     --cc-panel-inset: 14px;

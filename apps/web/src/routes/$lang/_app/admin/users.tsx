@@ -24,7 +24,6 @@ import {
 } from "@cockpit-chess/ui/components/dropdown-menu";
 import { Input } from "@cockpit-chess/ui/components/input";
 import { Label } from "@cockpit-chess/ui/components/label";
-import { SelectItem } from "@cockpit-chess/ui/components/select";
 import { toast } from "@cockpit-chess/ui/components/sileo";
 import { SelectField, TextField } from "@cockpit-chess/ui/components/text-field";
 import { useDebounce } from "@cockpit-chess/ui/hooks/use-async-search";
@@ -71,6 +70,7 @@ function buildInviteSchema() {
 }
 
 export const Route = createFileRoute("/$lang/_app/admin/users")({
+  staticData: { pendingShape: "list", pendingWidth: "wide" },
   component: AdminUsers,
 });
 
@@ -498,10 +498,15 @@ function InviteUserDialog({
 
           <form.Field name="role">
             {(field) => (
-              <SelectField field={field} label={t("admin:users.roleLabel")} className="space-y-1.5">
-                <SelectItem value="user">{t("admin:users.roleUser")}</SelectItem>
-                <SelectItem value="admin">{t("admin:users.roleAdmin")}</SelectItem>
-              </SelectField>
+              <SelectField
+                field={field}
+                label={t("admin:users.roleLabel")}
+                className="space-y-1.5"
+                options={[
+                  { value: "user", label: t("admin:users.roleUser") },
+                  { value: "admin", label: t("admin:users.roleAdmin") },
+                ]}
+              />
             )}
           </form.Field>
 

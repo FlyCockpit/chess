@@ -396,27 +396,31 @@ function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
               </span>
               <ChevronDown aria-hidden="true" size={16} className="cc-section-chevron" />
             </summary>
-            <div className="cc-section-body">
-              <form.Field
-                name="json"
-                validators={{
-                  // Empty is not an error (Import stays disabled); too large is.
-                  onChange: ({ value }) =>
-                    value.length > MAX_ARCHIVE_BYTES ? t("lab.importTooLarge") : undefined,
-                }}
-              >
-                {(field) => (
-                  <TextareaField
-                    field={field}
-                    autoComplete="off"
-                    label={t("studio.jsonLabel")}
-                    rows={8}
-                    disabled={busy}
-                    className="cc-import-json"
-                  />
-                )}
-              </form.Field>
-            </div>
+            {/* Mounted only while open: a closed box's textarea would still have a layout box
+                (the dialog-fits check measures it). The JSON stays in the form either way. */}
+            {state.pasteOpen && (
+              <div className="cc-section-body">
+                <form.Field
+                  name="json"
+                  validators={{
+                    // Empty is not an error (Import stays disabled); too large is.
+                    onChange: ({ value }) =>
+                      value.length > MAX_ARCHIVE_BYTES ? t("lab.importTooLarge") : undefined,
+                  }}
+                >
+                  {(field) => (
+                    <TextareaField
+                      field={field}
+                      autoComplete="off"
+                      label={t("studio.jsonLabel")}
+                      rows={8}
+                      disabled={busy}
+                      className="cc-import-json"
+                    />
+                  )}
+                </form.Field>
+              </div>
+            )}
           </details>
           {mutation.isError && (
             <p role="alert" className="cc-error">

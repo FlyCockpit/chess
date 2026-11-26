@@ -54,6 +54,7 @@ vi.mock("@cockpit-chess/ui/components/sheet", () => {
     Sheet: ({ children }: { children: ReactNode }) => <>{children}</>,
     SheetTrigger: () => null,
     SheetContent: Pass,
+    SheetBody: Pass,
     SheetHeader: Pass,
     SheetFooter: Pass,
     SheetTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,

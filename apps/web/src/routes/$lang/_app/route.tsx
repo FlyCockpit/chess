@@ -3,33 +3,51 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
-import { useCallback } from "react";
+import { type ReactNode, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { AdminSetupBanner } from "@/components/admin-setup-banner";
 import BottomNav from "@/components/bottom-nav";
 import Header from "@/components/header";
 import PullToRefresh from "@/components/pull-to-refresh";
+import { RouteContentSkeleton } from "@/components/route-content-skeleton";
 import { SetupKeyBanner } from "@/components/setup-key-banner";
 import { useDocumentLang } from "@/hooks/use-document-lang";
 import { useMobileKeyboard } from "@/hooks/use-mobile-keyboard";
 import { useUserLocaleSync } from "@/hooks/use-user-locale-sync";
 import { MAIN_SCROLLER_ID } from "@/lib/main-scroller";
 
+/** The frame's last element: the first paint waits until it is parsed. */
+const APP_SHELL_END_ID = "app-shell-end";
+
 export const Route = createFileRoute("/$lang/_app")({
   // App/auth/admin surfaces depend on browser-only auth, PWA, viewport, and
   // navigation side effects. Keep this branch client-rendered while public
   // pages remain SSR-capable under `/$lang/_public`.
   ssr: false,
+  // What a hard refresh paints first. With `ssr: false` the server renders
+  // this route's pending component in place of the layout, and the client
+  // shows it again until the layout can mount (hydration, the auth check).
+  // So it is the real shell (header, bottom nav) around a skeleton of the
+  // page's content area only: no frame without the nav, and no layout jump
+  // when the page arrives; `pnpm check:shell-loading` measures it.
+  // See docs/design-system.md § Route pending states
+  pendingComponent: AppShellPending,
+  // A browser may paint a document it has only partly parsed (the HTML
+  // arrives in pieces on a slow network): a header without the scroller or
+  // the bottom nav. Hold the first paint until the whole frame is parsed
+  // (`#app-shell-end`, the frame's last element). Browsers without
+  // `rel="expect"` ignore it.
+  head: () => ({
+    links: [{ rel: "expect", href: `#${APP_SHELL_END_ID}`, blocking: "render" }],
+  }),
   component: AppShellLayout,
 });
 
 function AppShellLayout() {
   // Service-worker registration (useAppUpdate) lives in __root so public
   // pages get it too — don't re-add it here.
-  const { t } = useTranslation("nav");
   useDocumentLang();
   useUserLocaleSync();
-  const mobileKeyboardOpen = useMobileKeyboard();
   const queryClient = useQueryClient();
 
   // Every signed-in page gets pull-to-refresh: mark all cached data stale and
@@ -37,6 +55,40 @@ function AppShellLayout() {
   // `data-pull-to-refresh="off"` (see packages/api/src/lib/pagination.ts).
   const handleRefresh = useCallback(() => queryClient.invalidateQueries(), [queryClient]);
 
+  return (
+    <>
+      <AppShellFrame>
+        <PullToRefresh onRefresh={handleRefresh}>
+          <Outlet />
+        </PullToRefresh>
+      </AppShellFrame>
+      {import.meta.env.DEV && (
+        <>
+          <TanStackRouterDevtools position="bottom-left" />
+          <ReactQueryDevtools position="bottom" buttonPosition="bottom-right" />
+        </>
+      )}
+    </>
+  );
+}
+
+/** The shell around the loading page: same frame, content skeleton only. */
+function AppShellPending() {
+  return (
+    <AppShellFrame>
+      <RouteContentSkeleton />
+    </AppShellFrame>
+  );
+}
+
+/**
+ * The app frame, shared by the layout and its pending state so the two are
+ * the same boxes: the header and the bottom nav never move when the page
+ * replaces its skeleton.
+ */
+function AppShellFrame({ children }: { children: ReactNode }) {
+  const { t } = useTranslation("nav");
+  const mobileKeyboardOpen = useMobileKeyboard();
   return (
     <>
       <a
@@ -77,18 +129,11 @@ function AppShellLayout() {
           data-scroll-restoration-id={MAIN_SCROLLER_ID}
           className="relative min-h-0 min-w-0 overflow-y-auto overflow-x-clip overscroll-contain"
         >
-          <PullToRefresh onRefresh={handleRefresh}>
-            <Outlet />
-          </PullToRefresh>
+          {children}
         </main>
         <BottomNav hidden={mobileKeyboardOpen} />
+        <span id={APP_SHELL_END_ID} hidden />
       </div>
-      {import.meta.env.DEV && (
-        <>
-          <TanStackRouterDevtools position="bottom-left" />
-          <ReactQueryDevtools position="bottom" buttonPosition="bottom-right" />
-        </>
-      )}
     </>
   );
 }

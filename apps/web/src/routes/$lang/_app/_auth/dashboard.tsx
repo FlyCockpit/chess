@@ -19,6 +19,7 @@ import { PageHeader, PageShell } from "@/components/page-shell";
 import { orpc } from "@/utils/orpc";
 
 export const Route = createFileRoute("/$lang/_app/_auth/dashboard")({
+  staticData: { pendingShape: "dashboard", pendingWidth: "narrow" },
   component: DashboardPage,
 });
 

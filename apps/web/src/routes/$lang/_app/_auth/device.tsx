@@ -30,6 +30,7 @@ import { authClient } from "@/lib/auth-client";
  * the warning first.
  */
 export const Route = createFileRoute("/$lang/_app/_auth/device")({
+  staticData: { pendingShape: "form", pendingWidth: "narrow" },
   validateSearch: (search: Record<string, unknown>) => ({
     user_code: typeof search.user_code === "string" ? search.user_code : undefined,
   }),

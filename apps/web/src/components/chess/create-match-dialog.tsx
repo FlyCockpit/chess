@@ -1,6 +1,7 @@
 import { Button } from "@cockpit-chess/ui/components/button";
 import {
   Sheet,
+  SheetBody,
   SheetContent,
   SheetDescription,
   SheetFooter,
@@ -183,7 +184,7 @@ export function CreateMatchDialog({
           </Button>
         }
       />
-      <SheetContent side="right" className="cc-dialog-content cc-create-dialog">
+      <SheetContent side="right" size="wide" className="cc-dialog-content cc-create-dialog">
         <SheetHeader className="cc-create-header">
           <SheetTitle>{t("create.title")}</SheetTitle>
           <SheetDescription>{t("create.description")}</SheetDescription>
@@ -197,7 +198,7 @@ export function CreateMatchDialog({
             void form.handleSubmit();
           }}
         >
-          <div className="cc-create-body">
+          <SheetBody className="cc-create-body">
             {catalogStale && (
               <p className="cc-model-warn cc-catalog-notice" role="status">
                 {t("create.catalogStale", {
@@ -471,7 +472,7 @@ export function CreateMatchDialog({
                 </SettingsSection>
               </div>
             </div>
-          </div>
+          </SheetBody>
           <SheetFooter className="cc-create-footer">
             {(invalid || mutation.isError) && (
               <p role="alert" className="cc-error cc-create-error">

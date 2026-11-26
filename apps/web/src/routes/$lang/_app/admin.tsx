@@ -7,8 +7,10 @@ import { useTranslation } from "react-i18next";
 import { TwoFactorNudge } from "@/components/admin/two-factor-nudge";
 import { decideAdminRouteAccess } from "@/lib/route-session-access";
 import { getRouteSession } from "@/server/auth-session";
+import { orpc } from "@/utils/orpc";
 
 export const Route = createFileRoute("/$lang/_app/admin")({
+  staticData: { pendingFrame: "admin" },
   beforeLoad: async () => {
     const decision = decideAdminRouteAccess(await getRouteSession());
     if (decision.kind === "error") throw new Error("Route session unavailable");
@@ -19,12 +21,20 @@ export const Route = createFileRoute("/$lang/_app/admin")({
     if (decision.kind === "not-found") throw notFound();
     return { session: decision.session };
   },
+  // The 2FA nudge above every admin page decides from the app settings. Load
+  // them with the route, so the nudge arrives with the page instead of pushing
+  // it down afterwards (docs/design-system.md § Route pending states).
+  // prefetchQuery never throws: on a failure the nudge stays hidden, as before.
+  loader: ({ context }) => context.queryClient.prefetchQuery(orpc.settings.getAll.queryOptions()),
   component: AdminLayout,
 });
 
 function AdminLayout() {
   return (
-    <div className="min-h-full">
+    // `--page-sticky-top`: the sticky sub-nav's height (44px links + py-2), so
+    // a page's own sticky title row (FormPage) pins below it, not under it.
+    // A flex column, so a FormPage can grow into the remaining height.
+    <div className="flex min-h-full flex-col [--page-sticky-top:calc(2.75rem+1rem)]">
       <AdminNav />
       <TwoFactorNudge />
       <Outlet />

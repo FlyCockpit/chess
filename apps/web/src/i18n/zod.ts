@@ -82,6 +82,10 @@ function buildErrorMap(i18n: I18nInstance) {
         };
       }
       case "too_small": {
+        // `.min(1)` on a string is how a schema says "required": an empty
+        // field reads "This field is required.", not "at least 1 characters".
+        if (issue.origin === "string" && Number(issue.minimum) === 1)
+          return { message: t("required") };
         const key = `tooSmall.${sizeOriginKey(issue.origin)}`;
         return {
           message: t(key, { minimum: String(issue.minimum ?? "") }),

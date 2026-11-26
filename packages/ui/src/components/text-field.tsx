@@ -3,6 +3,7 @@ import { Label } from "@cockpit-chess/ui/components/label";
 import {
   Select,
   SelectContent,
+  SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@cockpit-chess/ui/components/select";
@@ -15,7 +16,7 @@ import { useId } from "react";
  * Narrow field shape so `@cockpit-chess/ui` does not depend on TanStack Form.
  * A `<form.Field>` render-prop object satisfies this structurally.
  */
-type FieldLike<TValue> = {
+export type FieldLike<TValue> = {
   name: string;
   state: {
     value: TValue;
@@ -294,6 +295,20 @@ function TextareaField({
   );
 }
 
+/** One choice in a {@link SelectField}. */
+export type SelectFieldOption<TValue extends string> = {
+  value: TValue;
+  /**
+   * What the user reads, in the list AND in the closed trigger. Always a
+   * human label (`t(...)`), never the raw value: `user`, `ACCOUNT` or `f16`
+   * on a closed select is the bug this type exists to prevent.
+   */
+  label: string;
+  /** Optional secondary text under the label in the open list only. */
+  description?: React.ReactNode;
+  disabled?: boolean;
+};
+
 type SelectFieldProps<TValue extends string> = {
   field: {
     name: string;
@@ -313,8 +328,12 @@ type SelectFieldProps<TValue extends string> = {
    * styles the wrapper.
    */
   triggerClassName?: string;
-  /** The `<SelectItem>`s. SelectField owns the surrounding Select plumbing. */
-  children: React.ReactNode;
+  /**
+   * The choices, in display order. SelectField renders the items itself and
+   * hands the same list to Base UI as its `items` map, so the closed trigger
+   * shows the chosen option's label instead of its raw value.
+   */
+  options: ReadonlyArray<SelectFieldOption<TValue>>;
 } & Omit<
   React.ComponentProps<typeof SelectTrigger>,
   "id" | "name" | "value" | "onValueChange" | "aria-invalid" | "aria-describedby" | "children"
@@ -326,10 +345,16 @@ type SelectFieldProps<TValue extends string> = {
  * `aria-describedby`, and the error message, so a field-bound `<Select>` never
  * hand-wires them (the `htmlFor={field.name}` policy rule enforces this).
  *
+ * Pass the choices as `options` (`{ value, label }`), not as `<SelectItem>`
+ * children. Base UI's `Select.Value` can only print a label it has been given
+ * through the root's `items`; without that map the closed select shows the raw
+ * value (`user` instead of "User"). Taking the options as data is what lets
+ * this component pass the map every time.
+ *
  * The trigger defaults to full width; most call sites need nothing beyond
- * `field`, `label`, `placeholder`, and the options. A `<SelectItem>` with
- * `value=""` is the conventional "unset" option — pair it with
- * `placeholder` so the empty state reads right.
+ * `field`, `label`, `options`, and maybe `placeholder`. An option with
+ * `value: ""` is the conventional "unset" choice; its label is what the closed
+ * trigger shows for it.
  */
 function SelectField<TValue extends string>({
   field,
@@ -338,7 +363,7 @@ function SelectField<TValue extends string>({
   placeholder,
   className,
   triggerClassName,
-  children,
+  options,
   ...triggerProps
 }: SelectFieldProps<TValue>) {
   const reactId = useId();
@@ -356,11 +381,12 @@ function SelectField<TValue extends string>({
       <Label htmlFor={id}>{label}</Label>
       <Select
         value={field.state.value}
+        items={options}
         // Base UI fires `null` when a clearable select is cleared; these
         // selects are not clearable, and a null is dropped rather than fed to
-        // the field. The `as TValue` is the field-boundary assertion the old
-        // hand-rolled call sites made: the string arriving here is one of the
-        // caller's own <SelectItem> values, which are TValue by construction.
+        // the field. The `as TValue` is the field-boundary assertion: the
+        // string arriving here is one of `options`' values, which are TValue
+        // by construction.
         onValueChange={(value) => {
           if (value !== null) field.handleChange(value as TValue);
         }}
@@ -374,7 +400,20 @@ function SelectField<TValue extends string>({
         >
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>
-        <SelectContent>{children}</SelectContent>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
+              {option.description ? (
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span>{option.label}</span>
+                  <span className="text-muted-foreground">{option.description}</span>
+                </span>
+              ) : (
+                option.label
+              )}
+            </SelectItem>
+          ))}
+        </SelectContent>
       </Select>
       {description ? (
         <div id={descriptionId} className="text-xs text-muted-foreground">
