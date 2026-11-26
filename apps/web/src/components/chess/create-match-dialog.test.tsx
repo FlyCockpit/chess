@@ -1,5 +1,6 @@
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
+import enErrors from "@cockpit-chess/locales/src/en-US/errors.json";
 import { createInstance } from "i18next";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -126,10 +127,14 @@ describe("CreateMatchDialog", () => {
     for (const name of ["Players", "Rules", "Limits"])
       expect(html).toContain(`<strong>${name}</strong>`);
     expect(html).toContain("Automatic (OpenAI Chat Completions)");
-    expect(html).toContain("OpenAI Responses · openai-responses");
+    // Protocol options name the protocol, never its raw id.
+    expect(html).toContain(">OpenAI Responses<");
+    expect(html).not.toContain("· openai-responses");
     expect(html).toContain("Neither side is told which model it is playing.");
     expect(html).toContain("The model can call a tool that lists the legal moves.");
-    expect(html).toContain("No Stockfish. The game view has no evaluation bar.");
+    expect(html).toContain(
+      "No Stockfish for the players. Spectators still see an evaluation bar, scored separately.",
+    );
     expect(html).not.toContain("half-moves");
     // The remark tone is one choice with an explanation of the selected tone.
     expect(html).toContain(">Remarks<");
@@ -241,5 +246,15 @@ describe("CreateMatchDialog", () => {
     html = render().replaceAll("&#x27;", "'");
     expect(html).toContain(enChess.studio.error);
     mutation.state = { isError: false, error: null };
+  });
+  it("says you're offline when the start failed for want of a network", () => {
+    catalog.state = { data: { models, stale: false }, isError: false, refetch: () => undefined };
+    vi.stubGlobal("navigator", { onLine: false });
+    mutation.state = { isError: true, error: new TypeError("Failed to fetch") };
+    const html = render().replaceAll("&#x27;", "'");
+    vi.unstubAllGlobals();
+    mutation.state = { isError: false, error: null };
+    expect(html).toContain(enErrors.offline);
+    expect(html).not.toContain(enChess.studio.error);
   });
 });

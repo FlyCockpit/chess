@@ -16,5 +16,16 @@
   "rateLimitedWithSeconds": "Too many attempts. Try again in {{seconds}} seconds.",
   "rootError": "This page didn't load. Try again, or reload.",
   "serverError": "Something didn't work on our end. Try again in a moment.",
-  "sessionEnded": "Your session has ended. Sign in again."
+  "sessionEnded": "Your session has ended. Sign in again.",
+  "offline": "You're offline. Check your connection and try again.",
+  "unreachable": "Couldn't reach the server. Check your connection and try again.",
+  "offlineContent": "You're offline. This will load when you reconnect.",
+  "offlinePage": {
+    "title": "You're offline",
+    "description": "This page will load when you reconnect."
+  },
+  "unreachablePage": {
+    "title": "Couldn't reach the server",
+    "description": "Check your connection and try again."
+  }
 }

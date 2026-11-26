@@ -29,13 +29,16 @@ import { useAuthSession } from "@/hooks/use-auth-session";
 import { useDocumentAdmits } from "@/hooks/use-document-admits";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
 import { fileDropTargetRef } from "@/lib/file-drop-registry";
+import { networkFailureKind } from "@/lib/network-failure";
 import { isQueryAccessError } from "@/lib/query-access-error";
+import { friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 import { CreateMatchDialog } from "./create-match-dialog";
 import { endingHeadlineLabel } from "./ending-label";
 import { replayRefetch } from "./evaluation";
 import {
   checkArchiveFile,
+  formatFileSize,
   IMPORT_INITIAL,
   importReducer,
   landLatest,
@@ -62,6 +65,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
     error,
     isPending,
     isError,
+    fetchStatus,
     refetch,
     fetchNextPage,
     hasNextPage,
@@ -166,7 +170,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
             </>
           )}
           <QueryBoundary
-            query={{ data, error, isPending, isError, refetch }}
+            query={{ data, error, isPending, isError, fetchStatus, refetch }}
             skeleton={<Skeleton className="h-32" />}
             isEmpty={(result) => !result.pages.some((page) => page.items.length)}
             empty={
@@ -251,6 +255,8 @@ function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
   const reads = useRef(0);
   const mutation = useEntityMutation(
     orpc.chess.importGame.mutationOptions({
+      // The dialog shows the failure inline, beside the archive; a toast would repeat it.
+      meta: { skipGlobalErrorToast: true },
       onSuccess: (result) => {
         setOpen(false);
         // The next import starts fresh (reset otherwise runs only on a user close).
@@ -301,12 +307,6 @@ function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
       )
     : "";
   const chosen = state.chosen;
-  const size = (bytes: number) =>
-    new Intl.NumberFormat(i18n.language, {
-      style: "unit",
-      unit: "kilobyte",
-      maximumFractionDigits: 1,
-    }).format(bytes / 1000);
   return (
     <Dialog
       open={open}
@@ -362,7 +362,7 @@ function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
               {chosen && (
                 <div className="cc-import-preview">
                   <p className="cc-import-file">
-                    {chosen.name} · {size(chosen.size)}
+                    {chosen.name} · {formatFileSize(chosen.size, i18n.language)}
                   </p>
                   {chosen.game && !problem && (
                     <>
@@ -443,7 +443,9 @@ function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
           </details>
           {mutation.isError && (
             <p role="alert" className="cc-error">
-              {t("lab.importError")}
+              {/* Offline the import fails at once (the offline mutation policy, router.tsx)
+                  and says so instead of blaming the file. */}
+              {networkFailureKind(mutation.error) ? friendly(mutation.error) : t("lab.importError")}
             </p>
           )}
           <DialogFooter className="cc-import-footer">

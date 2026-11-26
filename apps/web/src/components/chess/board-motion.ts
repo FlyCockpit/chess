@@ -6,11 +6,11 @@ import {
   type Square,
 } from "@cockpit-chess/chess";
 import type { TFunction } from "i18next";
-import { turnAction } from "./legal-lookup";
 
 /**
  * How the board moves between two adjacent events: a legal move slides (the rook too
- * when castling, a captured piece fades, a promotion swaps at the end), an illegal
+ * when castling, a captured piece fades, a promotion swaps at the end; stepping back,
+ * at the start), an illegal
  * attempt slides to the square it tried, shakes and slides back. Pure and
  * serializable: the DOM board plays it with CSS keyframes, the MP4 export draws it
  * frame by frame from `ghostPose`, so both show the same motion.
@@ -63,8 +63,8 @@ export type IllegalMark =
       from: Square;
       to: Square;
       piece: Piece | null;
-      /** "Nf3-e5": the attempt in words a chess reader knows. */
-      notation: string;
+      /** The piece a promoting attempt names (`a7a8q`), else null. */
+      promotion: PieceSymbol | null;
     }
   | {
       kind: "unreadable";
@@ -81,7 +81,6 @@ type Labels =
   | ((key: string, params?: Record<string, string | number>) => string);
 
 const UCI = /^([a-h][1-8])([a-h][1-8])([qrbn])?$/;
-const LETTERS: Record<PieceSymbol, string> = { p: "", n: "N", b: "B", r: "R", q: "Q", k: "K" };
 
 /** The rejected attempt at `index`, or undefined when the event is anything else. */
 export function illegalMark(
@@ -110,7 +109,6 @@ export function illegalMark(
     found = undefined;
   }
   const piece = found && found.color === event.side ? found : null;
-  const promotion = parts[3] ? `=${parts[3].toUpperCase()}` : "";
   return {
     kind: "illegal",
     index,
@@ -118,14 +116,15 @@ export function illegalMark(
     from,
     to,
     piece,
-    notation: `${piece ? LETTERS[piece.type] : ""}${from}-${to}${promotion}`,
+    promotion: (parts[3] as PieceSymbol | undefined) ?? null,
   };
 }
 
 /**
- * The rejected attempt the board shows at `index`: the turn's latest action, when it
- * is one. It stays until the side's next action or the turn's end, so stepping onto it
- * (or a live game waiting for the retry) keeps it in view. `fenAt(i)` is the position
+ * The rejected attempt the board shows at `index`: the turn's latest attempt, when it
+ * was rejected. It stays until the side's next attempt replaces it or its accepted move
+ * ends the turn; lookups and bookkeeping in between keep it, so stepping onto them (or
+ * a live game waiting for the retry) keeps it in view. `fenAt(i)` is the position
  * after event i; a rejected attempt leaves the position as it was.
  */
 export function rejectedAt(
@@ -133,11 +132,15 @@ export function rejectedAt(
   fenAt: (index: number) => string,
   index: number,
 ): IllegalMark | undefined {
-  const action = turnAction(events, index);
-  if (action === undefined) return undefined;
-  const event = events[action];
-  if (event?.type !== "attempt" || event.accepted) return undefined;
-  return illegalMark(fenAt(action), event, action);
+  const at = events[index];
+  if (!at) return undefined;
+  for (let i = index; i >= 0; i--) {
+    const event = events[i];
+    if (!event || event.ply !== at.ply || event.side !== at.side) return undefined;
+    if (event.type === "attempt")
+      return event.accepted ? undefined : illegalMark(fenAt(i), event, i);
+  }
+  return undefined;
 }
 
 /** A rejected attempt on the board: its outlined squares and the caption over the board. */
@@ -168,6 +171,21 @@ function shortRaw(raw: string, fromEnd: boolean, max = 40): string {
   return fromEnd ? `…${chars.slice(-(max - 1)).join("")}` : `${chars.slice(0, max - 1).join("")}…`;
 }
 
+/**
+ * "Nf3-e5", "e7-e8=Q": the attempt in words a chess reader knows, with the locale's
+ * piece letters (Spanish "Cf3-e5").
+ */
+export function illegalNotation(
+  t: Labels,
+  mark: Extract<IllegalMark, { kind: "illegal" }>,
+): string {
+  const translate = t as (key: string) => string;
+  const letter = (type: PieceSymbol) => (type === "p" ? "" : translate(`pieceLetters.${type}`));
+  const piece = mark.piece ? letter(mark.piece.type) : "";
+  const promotion = mark.promotion ? `=${letter(mark.promotion)}` : "";
+  return `${piece}${mark.from}-${mark.to}${promotion}`;
+}
+
 /** "Black tried Nf3-e5: not a legal move", for the board, the video and the PNG alike. */
 export function illegalCaption(t: Labels, mark: IllegalMark): string {
   const translate = t as (key: string, params?: Record<string, string | number>) => string;
@@ -179,9 +197,10 @@ export function illegalCaption(t: Labels, mark: IllegalMark): string {
       ? translate("motion.unreadable", { side, raw })
       : translate("motion.unreadableEmpty", { side });
   }
+  const move = illegalNotation(t, mark);
   return mark.piece
-    ? translate("motion.illegal", { side, move: mark.notation })
-    : translate("motion.noPiece", { side, move: mark.notation, square: mark.from });
+    ? translate("motion.illegal", { side, move })
+    : translate("motion.noPiece", { side, move, square: mark.from });
 }
 
 /** "+12 more illegal attempts". */
@@ -221,7 +240,6 @@ export function moveMotion(
     return null;
   }
   const mover: Piece = { type: move.piece, color: move.color };
-  const promoted: Piece = { type: move.promotion ?? move.piece, color: move.color };
   const rook = rookSquares(move.flags, move.color);
   const capturedAt = move.captured
     ? ((move.flags.includes("e") ? `${move.to[0]}${move.from[1]}` : move.to) as Square)
@@ -246,7 +264,9 @@ export function moveMotion(
       hide.push(rook[1]);
     }
   } else {
-    ghosts.push({ piece: promoted, from: move.to, to: move.from, effect: "slide" });
+    // The mirror of forward: a promoted piece turns back into its pawn at the start,
+    // and the pawn slides home (forward, the new piece shows once the pawn arrives).
+    ghosts.push({ piece: mover, from: move.to, to: move.from, effect: "slide" });
     hide.push(move.from);
     if (rook) {
       ghosts.push({

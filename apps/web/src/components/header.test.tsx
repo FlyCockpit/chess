@@ -60,6 +60,7 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: (options?: { queryKey?: readonly unknown[] }) => ({
     data: options?.queryKey?.[0] === "session-cookie-hint" ? authState.hint : undefined,
   }),
+  useQueryClient: () => ({}),
 }));
 vi.mock("@/server/auth-session", () => ({ getSessionCookieHint: vi.fn() }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -116,6 +117,23 @@ describe("Header controls group", () => {
     expect(classes).not.toContain("shrink-0");
   });
 
+  it.each(["anonymous", "authenticated"])(
+    "on its own line below sm, wraps and never overflows the leading edge when %s",
+    (status) => {
+      // A 32px browser font on a 320px phone: the three 44px (2.75rem) controls
+      // no longer fit one line. `justify-end` alone pushed them past the left edge.
+      authState.status = status;
+      expect(controlsGroupClasses()).toEqual(
+        expect.arrayContaining([
+          "max-sm:basis-full",
+          "max-sm:flex-wrap",
+          "max-sm:justify-end-safe",
+        ]),
+      );
+      expect(controlsGroupClasses()).not.toContain("max-sm:justify-end");
+    },
+  );
+
   it.each(["anonymous", "pending", "error"])(
     "wraps when %s, since Sign Up and Sign In cannot shrink",
     (status) => {
@@ -149,8 +167,9 @@ describe("app header: the app name gives way first", () => {
     expect(span?.[1]?.split(" ").sort()).toEqual(
       ["lg:max-w-80", "max-w-40", "min-w-0", "sm:max-w-56", "truncate"].sort(),
     );
-    expect(span?.[2]).toBe("Northwind Regional Logistics");
-    expect(title).toBe("Northwind Regional Logistics");
+    // The translated brand, the same key the arena header uses.
+    expect(span?.[2]).toBe("chess:brand");
+    expect(title).toBe("chess:brand");
   });
 });
 
@@ -211,6 +230,8 @@ describe("arena header: the tabs give way before the controls", () => {
     expect(css).toMatch(
       /\.cc-public-shell :is\([^)]*\.cc-nav\b[^)]*\) :focus-visible \{\s*outline-offset: -2px;/,
     );
+    // While it scrolls, the edge with more tabs past it fades (the SelectorRow cue).
+    expect(renderPublic()).toMatch(/<nav class="cc-nav scroll-fade-x scroll-px-6"/);
   });
 
   it("a tab never shrinks below its longest word, so labels cannot overlap (Codex round 3)", () => {

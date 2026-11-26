@@ -59,6 +59,8 @@ export type MatchEnding =
       accounting: Rules["tokenAccounting"];
     }
   /**
+   * Budget endings come from the check before each request (except shared-token
+   * accounting, which also counts mid-reply): what was left could not pay for one more.
    * `spentMicros`: the provider-reported cost of the side's calls. `settled` is false
    * when some call never reported its cost, so the side spent at least that much.
    */
@@ -343,6 +345,12 @@ export function endingHeadline(summary: EndingSummary): string {
   }
 }
 /**
+ * Why a budget ending can come before the budget is spent: each request reserves its
+ * worst case up front, and the game ends once what is left cannot pay for one. Only
+ * shared (cl100k_base) token accounting can also end mid-reply, on the count itself.
+ */
+const NO_ROOM_TEXT = "not enough left for another request";
+/**
  * The ending's detail, shown in brackets after the headline in the game view and the
  * PGN: the illegal moves and why, the limit that ran out, or that the game is unscored.
  */
@@ -359,10 +367,12 @@ export function endingDetail(ending: MatchEnding): string | null {
       return ending.clockMs === null ? null : `${formatDuration(ending.clockMs)} clock`;
     case "move-timeout":
       return `${formatDuration(ending.limitMs)} per-move limit`;
-    case "token-budget":
-      return `${ending.tokens.toLocaleString("en-US")} token budget`;
+    case "token-budget": {
+      const limit = `${ending.tokens.toLocaleString("en-US")} token budget`;
+      return ending.accounting === "provider" ? `${limit}; ${NO_ROOM_TEXT}` : limit;
+    }
     case "cost-budget":
-      return `spent ${ending.settled ? "" : "at least "}${formatUsd(ending.spentMicros)} of ${formatUsd(ending.budgetMicros)}`;
+      return `spent ${ending.settled ? "" : "at least "}${formatUsd(ending.spentMicros)} of ${formatUsd(ending.budgetMicros)}; ${NO_ROOM_TEXT}`;
     case "ply-limit":
       return `${ending.plies} plies`;
     case "cancelled":

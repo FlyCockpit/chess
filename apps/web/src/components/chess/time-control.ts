@@ -10,6 +10,8 @@ import { durationLabel } from "./ending-label";
 export type SideTime = { minutes: string; seconds: string };
 export type TimeControlValue = {
   timed: boolean;
+  /** Custom was picked: the typed times are the choice, even when they equal a preset. */
+  custom: boolean;
   /** Off: Black's clock mirrors White's. */
   uneven: boolean;
   white: SideTime;
@@ -18,6 +20,7 @@ export type TimeControlValue = {
 export const TIME_PRESETS_MINUTES = [5, 10, 30] as const;
 export const DEFAULT_TIME_CONTROL: TimeControlValue = {
   timed: false,
+  custom: false,
   uneven: false,
   white: { minutes: "10", seconds: "0" },
   black: { minutes: "10", seconds: "0" },
@@ -65,15 +68,20 @@ export function timeControlErrors(
 /** The preset a value matches ("untimed", a preset's minutes, or "custom"). */
 export function selectedPreset(value: TimeControlValue): "untimed" | "custom" | number {
   if (!value.timed) return "untimed";
+  if (value.custom) return "custom";
   const w = sideMs(value.white);
   if (value.uneven && sideMs(value.black) !== w) return "custom";
   const preset = TIME_PRESETS_MINUTES.find((minutes) => w === minutes * 60_000);
   return preset ?? "custom";
 }
 export function applyPreset(value: TimeControlValue, preset: "untimed" | number): TimeControlValue {
-  if (preset === "untimed") return { ...value, timed: false };
+  if (preset === "untimed") return { ...value, timed: false, custom: false };
   const side = { minutes: String(preset), seconds: "0" };
-  return { timed: true, uneven: false, white: side, black: side };
+  return { timed: true, custom: false, uneven: false, white: side, black: side };
+}
+/** Custom: a clock with the current times, kept as typed whatever they match. */
+export function applyCustom(value: TimeControlValue): TimeControlValue {
+  return { ...value, timed: true, custom: true };
 }
 
 /** The per-move limit's automatic value: one minute, never longer than the shorter clock. */

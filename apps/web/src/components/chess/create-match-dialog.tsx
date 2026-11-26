@@ -19,6 +19,8 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
 import { useRangeFieldLabels } from "@/hooks/use-form-field-labels";
+import { networkFailureKind } from "@/lib/network-failure";
+import { friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 import {
   autoTitle,
@@ -198,7 +200,7 @@ export function CreateMatchDialog({
       ? t("create.protocols.auto", {
           protocol: t(`create.protocols.${resolveProtocol("auto", values[side], catalog)}`),
         })
-      : `${t(`create.protocols.${choice}`)} · ${choice}`;
+      : t(`create.protocols.${choice}`);
   const reset = () => {
     form.reset(defaultValuesFor(limits));
     setInvalid(false);
@@ -569,15 +571,19 @@ export function CreateMatchDialog({
           <SheetFooter className="cc-create-footer">
             {(invalid || mutation.isError) && (
               <p role="alert" className="cc-error cc-create-error">
-                {t(
-                  invalid
-                    ? "create.errors.invalid"
-                    : errorCode(mutation.error) === "SERVICE_UNAVAILABLE"
-                      ? "create.errors.unavailable"
-                      : errorCode(mutation.error) === "TOO_MANY_REQUESTS"
-                        ? "create.errors.rateLimited"
-                        : "studio.error",
-                )}
+                {/* Offline the start fails at once (the offline mutation policy, router.tsx)
+                    and says so here, beside the action bar. */}
+                {!invalid && networkFailureKind(mutation.error)
+                  ? friendly(mutation.error)
+                  : t(
+                      invalid
+                        ? "create.errors.invalid"
+                        : errorCode(mutation.error) === "SERVICE_UNAVAILABLE"
+                          ? "create.errors.unavailable"
+                          : errorCode(mutation.error) === "TOO_MANY_REQUESTS"
+                            ? "create.errors.rateLimited"
+                            : "studio.error",
+                    )}
               </p>
             )}
             <Button

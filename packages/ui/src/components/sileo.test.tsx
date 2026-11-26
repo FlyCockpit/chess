@@ -84,3 +84,11 @@ describe("toast facade", () => {
     expect(titleOverflowsPill("x".repeat(41), () => null)).toBe(true);
   });
 });
+
+describe("defaultToastPosition", () => {
+  it("keeps phones centred and moves wide screens off centred form actions", async () => {
+    const { defaultToastPosition } = await import("./sileo");
+    expect(defaultToastPosition(false)).toBe("bottom-center");
+    expect(defaultToastPosition(true)).toBe("bottom-right");
+  });
+});

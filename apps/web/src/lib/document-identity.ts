@@ -8,7 +8,11 @@
  * When a confirmed identity differs from it (sign-out in another tab, session
  * expiry or revocation, another account signing in), the document is replaced
  * with a full load: the one reset that drops all of that state at once, and
- * leaves no late mutation callback a cache to write into. Two places observe
+ * leaves no late mutation callback a cache to write into. On a page that holds
+ * no account data (an allowlist, lib/account-free-pages.ts) the account state
+ * is dropped in place instead, and the full load waits for the first
+ * navigation to any other page, so the visitor's device-local work (the Lab's
+ * imported archive) survives. Two places observe
  * the identity: every session route guard (`resolveRouteSession`), before
  * anything under it renders, and the hosted root's watcher
  * (`IdentityBoundary` → `useReloadOnIdentityChange`), for a change while a
@@ -38,9 +42,28 @@ const documentIdentity = {
   epoch: 0,
   /** `replaceDocument` already started the reload. */
   reloading: false,
+  /**
+   * Replaced while the page on screen held no account data: the account state
+   * was dropped in place, and the full load waits for the next page that may
+   * hold some (`replaceDocument`).
+   */
+  discarded: false,
 };
 
 const replaceListeners = new Set<() => void>();
+const discardListeners = new Set<() => void>();
+
+/**
+ * Whether the page on screen, and the one being navigated to, hold no account
+ * data. Registered by the router (`holdsNoAccountData`,
+ * lib/account-free-pages.ts); until then every page counts as holding some.
+ */
+let accountFreePage: () => boolean = () => false;
+
+/** The router registers the account-free-page check. */
+export function setAccountFreePage(check: () => boolean): void {
+  accountFreePage = check;
+}
 
 /**
  * True when a signed-in user's in-memory state must be dropped: the last known
@@ -145,6 +168,32 @@ export function onDocumentReplaced(listener: () => void): () => void {
 }
 
 /**
+ * Run when the document is replaced on a page that holds no account data,
+ * instead of the reload: the router drops its QueryClient's account data here
+ * (`discardAccountQueries`). Returns the unsubscribe.
+ */
+export function onAccountStateDiscarded(listener: () => void): () => void {
+  discardListeners.add(listener);
+  return () => discardListeners.delete(listener);
+}
+
+/**
+ * Drop the previous identity's query data from a page that holds no account
+ * data, without a reload: every mutation, and every query no mounted
+ * component uses (Studio's lists, settings: whatever earlier pages cached),
+ * is removed; what is on screen is public (the allowlist's guarantee) and is
+ * refreshed, the header's session hint included. A late callback that writes
+ * the old identity's data back can only write into a cache no account-free
+ * page reads, and the first navigation to any other page replaces the
+ * document before that page renders.
+ */
+export function discardAccountQueries(queryClient: QueryClient): void {
+  queryClient.getMutationCache().clear();
+  queryClient.removeQueries({ predicate: (query) => query.getObserversCount() === 0 });
+  void queryClient.invalidateQueries();
+}
+
+/**
  * Drop a replaced document's query data and keep it empty until the reload
  * commits: every query and mutation is removed, and any query a late callback
  * (an A-era mutation's `onSuccess` → `setQueryData`) or a still-mounted
@@ -184,9 +233,22 @@ function quarantineDocument(): void {
  * explicit sign-out already owns the document's navigation (`leaveDocument`
  * to the sign-in page), so it is left to finish; `markExplicitSignOut`'s undo
  * reloads here instead if that sign-out fails.
+ *
+ * On a page that holds no account data (`setAccountFreePage`), the account
+ * state is dropped in place instead (`onAccountStateDiscarded`) and the page
+ * stays as it is. The router calls this again before every navigation of a
+ * replaced document (`isDocumentReplaced`), and the first one to a page that
+ * may hold account data gets the full load (the URL is already the
+ * destination's by then).
  */
 export function replaceDocument(): void {
   if (typeof window === "undefined") return;
+  if (!documentIdentity.leaving && !documentIdentity.quarantined && accountFreePage()) {
+    if (documentIdentity.discarded) return;
+    documentIdentity.discarded = true;
+    for (const listener of discardListeners) listener();
+    return;
+  }
   quarantineDocument();
   if (documentIdentity.leaving || documentIdentity.reloading) return;
   // Once: every watcher and guard that sees the change ends up here.
@@ -285,18 +347,48 @@ function isSessionRejection(error: unknown): boolean {
   return e.code === "UNAUTHORIZED" || e.status === 401;
 }
 
+/** A 404 answer: also what a hidden admin procedure answers a request whose session is gone. */
+function isNotFound(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const e = error as { code?: unknown; status?: unknown };
+  return e.code === "NOT_FOUND" || e.status === 404;
+}
+
+/** This document believes a user is signed in (a guard or the watcher recorded one). */
+const believesSignedIn = (): boolean => typeof documentIdentity.baseline === "string";
+
 /**
  * The global error toasts' identity filter. A query rejected for having no
  * session queues one session check instead of a toast (so a session lost
  * elsewhere ends in a document replacement, not one toast per mounted query);
  * a mutation still toasts, since an action must never fail silently. Nothing
  * toasts once the document is being replaced. True: skip the toast.
+ *
+ * Hidden admin procedures (`adminOr404Procedure`) answer a lost session with
+ * 404, by design, never 401: so while this document believes a user is signed
+ * in, a 404 checks the session too (it toasts, or not, as before). A still
+ * valid session changes nothing.
  */
 export function skipErrorToastForIdentity(error: unknown, kind: "query" | "mutation"): boolean {
   if (documentIdentity.replaced) return true;
+  if (isNotFound(error)) {
+    if (believesSignedIn()) reportSessionRejected();
+    return false;
+  }
   if (!isSessionRejection(error)) return false;
   reportSessionRejected();
   return kind === "query";
+}
+
+/**
+ * Better Auth answered one of this tab's requests with an error status (the
+ * auth client's `onError`). A 401 on an account action (Settings' profile
+ * save, `updateUser`, on a session lost elsewhere) checks the session like an
+ * oRPC 401. Only while this document believes a user is signed in: a wrong
+ * password on the sign-in page is a 401 too, and says nothing about a session.
+ */
+export function reportAuthErrorStatus(status: number): void {
+  if (status === 401 && believesSignedIn()) reportSessionRejected();
 }
 
 /**
@@ -369,10 +461,25 @@ function peerChannel(): IdentityChannel | undefined {
         if (check) void check();
         // The lazily loaded watcher is not connected yet: check once it is.
         else missedSessionCheck = true;
+        for (const listener of peerSessionListeners) listener();
       };
     }
   }
   return peers;
+}
+
+const peerSessionListeners = new Set<() => void>();
+
+/**
+ * Run whenever another tab announces a session change (a sign-in, a sign-out,
+ * another account), after the watcher's own check is queued: the public
+ * header refreshes its session hint, the sign-in page re-runs its guard.
+ * Opens the peer channel. Returns the unsubscribe.
+ */
+export function onPeerSessionChange(listener: () => void): () => void {
+  peerSessionListeners.add(listener);
+  peerChannel();
+  return () => peerSessionListeners.delete(listener);
 }
 
 /**
@@ -434,8 +541,12 @@ export function resetDocumentIdentityForTests(
     quarantined: false,
     epoch: 0,
     reloading: false,
+    discarded: false,
   });
   replaceListeners.clear();
+  discardListeners.clear();
+  peerSessionListeners.clear();
+  accountFreePage = () => false;
   identityListeners.clear();
   sessionChecks.length = 0;
   sessionCheckPending = false;

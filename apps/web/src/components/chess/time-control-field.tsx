@@ -1,8 +1,10 @@
 import { CLOCK_MAX_MS, CLOCK_MIN_MS } from "@cockpit-chess/chess";
+import { Switch } from "@cockpit-chess/ui/components/switch";
 import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { durationLabel } from "./ending-label";
 import {
+  applyCustom,
   applyPreset,
   type SideTime,
   selectedPreset,
@@ -99,7 +101,7 @@ export function TimeControlField({
     {
       key: "custom",
       label: t("time.custom"),
-      pick: () => onChange({ ...value, timed: true }),
+      pick: () => onChange(applyCustom(value)),
       pressed: preset === "custom",
     },
   ];
@@ -145,20 +147,20 @@ export function TimeControlField({
               />
             )}
           </div>
-          <label className="cc-check">
-            <input
-              type="checkbox"
+          <div className="cc-time-uneven">
+            <Switch
+              id={`${id}-uneven`}
               checked={value.uneven}
-              onChange={(event) =>
+              onCheckedChange={(checked) =>
                 onChange({
                   ...value,
-                  uneven: event.target.checked,
-                  black: event.target.checked ? value.white : value.black,
+                  uneven: checked,
+                  black: checked ? value.white : value.black,
                 })
               }
             />
-            {t("time.uneven")}
-          </label>
+            <label htmlFor={`${id}-uneven`}>{t("time.uneven")}</label>
+          </div>
           {value.uneven && <p className="cc-field-hint">{t("time.unevenHint")}</p>}
         </>
       )}

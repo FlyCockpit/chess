@@ -109,8 +109,10 @@ describe("MatchReplay", () => {
     expect(html).not.toContain("<b>tin can</b>");
     expect(html).toContain("[click](https://example.com)");
     expect(html).not.toContain('href="https://example.com"');
-    // The rejected attempt's remark is tied to the move it came with.
-    expect(html).toContain("Move 2 · a1a8");
+    // The rejected attempt's remark is tied to the move it came with, and marked
+    // rejected; remarks with played moves are not.
+    expect(html).toContain('Move 2 · a1a8 · <span class="cc-remark-rejected">rejected</span>');
+    expect(html.match(/class="cc-remark-rejected"/g)).toHaveLength(1);
   });
   it("shows the latest remark as a bubble on its speaker's side of the board", () => {
     const match = fixtureGame();
@@ -153,6 +155,15 @@ describe("MatchReplay", () => {
     let html = render(match);
     expect(html).toContain("White · spent at least $0.00 of $1.00 (usage still settling)");
     expect(html).toContain("Black · spent $0.00 of $1.00");
+    expect(html).toContain("at most 9000 tokens reserved for one request");
+    // Once the game has ended, a missing report will never arrive: final wording.
+    const ended = structuredClone(match);
+    finishMatch(ended, "0-1", "move-timeout");
+    const final = render(ended);
+    expect(final).toContain(
+      "White · spent at least $0.00 of $1.00 (one call&#x27;s usage was never reported)",
+    );
+    expect(final).not.toContain("still settling");
     match.events.push({
       ...base(),
       ply,
@@ -173,7 +184,9 @@ describe("MatchReplay", () => {
     finishMatch(match, "0-1", "cost-budget");
     const html = render(match);
     expect(html).toContain("<strong>White ran out of budget</strong>");
-    expect(html).toContain("<span>spent $0.00 of $1.00</span>");
+    expect(html).toContain(
+      "<span>spent $0.00 of $1.00; not enough left for another request</span>",
+    );
     // The fixture already holds one rejected Black move.
     expect(html).toContain("Illegal attempts: White 2 · Black 1");
     expect(html).toContain("<strong>2 / 1</strong>");
@@ -356,7 +369,7 @@ describe("MatchReplay", () => {
     // Still: no motion on a first render.
     expect(html).not.toContain("cc-motion-layer");
     void i18n.changeLanguage("es-MX");
-    expect(render(match)).toContain("Blanco intentó Nf3-e6: no es una jugada legal");
+    expect(render(match)).toContain("Blanco intentó Cf3-e6: no es una jugada legal");
     void i18n.changeLanguage("en-US");
     // A reply that is not a move: the caption and a red flash on the side's row.
     submitMove(match, chess, "Knight to e6, obviously");

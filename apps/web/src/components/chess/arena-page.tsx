@@ -17,6 +17,7 @@ import { useTranslation } from "react-i18next";
 import { LoadMore } from "@/components/load-more";
 import { QueryBoundary } from "@/components/query-boundary";
 import { WideContent } from "@/components/wide-content";
+import { useNetworkStatus } from "@/hooks/use-network-status";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { orpc } from "@/utils/orpc";
 import { endingHeadlineLabel } from "./ending-label";
@@ -107,6 +108,7 @@ function Arena({
     error: listError,
     isPending,
     isError,
+    fetchStatus: listFetchStatus,
     refetch,
     fetchNextPage,
     hasNextPage,
@@ -130,31 +132,47 @@ function Arena({
     error: selectedError,
     isPending: pendingGame,
     isError: gameError,
+    fetchStatus: gameFetchStatus,
     refetch: retryGame,
   } = useQuery({
     ...orpc.chess.get.queryOptions({ input: { slug: slug ?? "not-selected" } }),
     enabled: Boolean(slug),
     meta: { skipGlobalErrorToast: true },
+    // An unknown or unpublished slug stays that way: say so at once instead of retrying.
+    retry: (failures, error) => !isQueryAccessError(error) && failures < 3,
     refetchInterval: replayRefetch,
   });
+  const online = useNetworkStatus();
+  const listPaused = isPending && listFetchStatus === "paused";
   const selected = isQueryAccessError(selectedError) ? undefined : selectedData;
   const games = isQueryAccessError(listError)
     ? []
     : (list?.pages.flatMap((page) => page.items) ?? []);
   const current = selected?.archive ?? demo;
+  // Offline, TanStack pauses a first load (`fetchStatus: "paused"`) instead of failing it: say
+  // so where the skeleton would sit, with Try again. It loads by itself on reconnect.
+  // docs/design-system.md § Offline and network failures
+  const gamePaused = pendingGame && gameFetchStatus === "paused";
+  const gameRetry = (
+    <button className="cc-error" type="button" onClick={() => void retryGame()}>
+      {gamePaused || !online ? t("arena.offlineRetry") : t("arena.retry")}
+    </button>
+  );
   const replay = (
     <>
-      {slug && gameError && selected && (
-        <button className="cc-error" type="button" onClick={() => void retryGame()}>
-          {t("arena.retry")}
-        </button>
-      )}
-      {slug && pendingGame ? (
+      {slug && gameError && selected && gameRetry}
+      {slug && pendingGame && !gamePaused ? (
         <Skeleton className="h-96" />
-      ) : slug && (!selected || isQueryAccessError(selectedError)) ? (
-        <button className="cc-error" type="button" onClick={() => void retryGame()}>
-          {t("arena.retry")}
-        </button>
+      ) : slug && isQueryAccessError(selectedError) ? (
+        <div className="cc-empty" role="status">
+          <h3>{t("arena.gameNotFound")}</h3>
+          <p>{t("arena.gameNotFoundDescription")}</p>
+          <button type="button" className="cc-button mt-5" onClick={() => onNavigate("arena")}>
+            {t("arena.all")}
+          </button>
+        </div>
+      ) : slug && (gamePaused || !selected) ? (
+        gameRetry
       ) : (
         <MatchReplay
           key={selected?.id ?? "demonstration"}
@@ -212,12 +230,12 @@ function Arena({
           shows it at once; the other games follow. Without one, the list leads and the
           demonstration follows. */}
       {slug && replay}
-      {isError && (
+      {(isError || listPaused) && (
         <button className="cc-error" type="button" onClick={() => void refetch()}>
-          {t("arena.retry")}
+          {listPaused || !online ? t("arena.offlineRetry") : t("arena.retry")}
         </button>
       )}
-      {isPending ? (
+      {isPending && !listPaused ? (
         <div className="cc-card-grid">
           {[1, 2, 3].map((key) => (
             <Skeleton key={key} className="h-28" />
@@ -270,7 +288,7 @@ function Arena({
 }
 function Leaderboard() {
   const { t } = useTranslation("chess");
-  const { data, error, isPending, isError, refetch } = useQuery({
+  const { data, error, isPending, isError, fetchStatus, refetch } = useQuery({
     ...orpc.chess.leaderboard.queryOptions({ input: { limit: 100 } }),
     meta: { skipGlobalErrorToast: true },
   });
@@ -278,7 +296,7 @@ function Leaderboard() {
     <>
       <Intro title={t("leaderboard.title")} description={t("leaderboard.description")} />
       <QueryBoundary
-        query={{ data, error, isPending, isError, refetch }}
+        query={{ data, error, isPending, isError, fetchStatus, refetch }}
         skeleton={<Skeleton className="h-64" />}
         isEmpty={(result) => result.items.length === 0}
         empty={

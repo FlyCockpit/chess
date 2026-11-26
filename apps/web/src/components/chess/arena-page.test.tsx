@@ -12,12 +12,15 @@ const fixture = vi.hoisted(() => ({
     error: undefined as unknown,
     isPending: false,
     isError: false,
+    fetchStatus: "idle" as "fetching" | "paused" | "idle",
     refetch: vi.fn(),
   },
+  online: true,
   list: {
     data: { pages: [{ items: [] as Record<string, unknown>[] }] },
     isPending: false,
     isError: false,
+    fetchStatus: "idle" as "fetching" | "paused" | "idle",
     refetch: vi.fn(),
     fetchNextPage: vi.fn(),
     hasNextPage: false,
@@ -42,6 +45,7 @@ vi.mock("./replay", () => ({
     <div>{match.config.title}</div>
   ),
 }));
+vi.mock("@/hooks/use-network-status", () => ({ useNetworkStatus: () => fixture.online }));
 vi.mock("./chess-board", () => ({ ChessBoard: () => null }));
 vi.mock("./local-lab", () => ({ LocalLab: () => null }));
 vi.mock("@/components/consent/consent-preferences-button", () => ({
@@ -66,7 +70,9 @@ beforeEach(() => {
     error: undefined,
     isPending: false,
     isError: false,
+    fetchStatus: "idle",
   };
+  fixture.online = true;
 });
 function render(tab: "arena" | "leaderboard", slug?: string) {
   return renderToStaticMarkup(
@@ -95,12 +101,16 @@ it("retains a selected replay during a failed poll and exposes retry", () => {
   expect(html).toContain("Loaded replay");
   expect(html).toContain(enChess.arena.retry);
 });
-it("hides a selected replay on not-found or access loss", () => {
+it("hides a selected replay on not-found or access loss and says the game is not available", () => {
   loadedReplay();
   fixture.query.error = { code: "NOT_FOUND" };
   const html = render("arena", "published");
   expect(html).not.toContain("Loaded replay");
-  expect(html).toContain(enChess.arena.retry);
+  // Not a transient failure: no retry, a clear message and a way back to all games.
+  expect(html).not.toContain(enChess.arena.retry);
+  expect(html).toContain(enChess.arena.gameNotFound);
+  expect(html).toContain(enChess.arena.gameNotFoundDescription);
+  expect(html).toContain(`>${enChess.arena.all}</button>`);
 });
 it("retains a leaderboard table during transient refetch errors", () => {
   fixture.query.data = {
@@ -164,14 +174,58 @@ it("leads with the list and follows with the demonstration when no game is open"
   expect(html.indexOf("Card other")).toBeLessThan(html.indexOf(enChess.arena.demoTitle));
   expect(html).not.toContain('aria-current="true"');
 });
-it("puts a pending or failed open game (skeleton, retry) above the list too", () => {
+it("puts a pending, failed or missing open game (skeleton, retry, notice) above the list too", () => {
   listWith("other", "published");
   fixture.query = { ...fixture.query, data: undefined, isPending: true };
   let html = render("arena", "published");
   expect(html.indexOf("h-96")).toBeGreaterThan(-1);
   expect(html.indexOf("h-96")).toBeLessThan(html.indexOf("Card other"));
-  fixture.query = { ...fixture.query, isPending: false, error: { code: "NOT_FOUND" } };
+  fixture.query = { ...fixture.query, isPending: false, isError: true, error: new Error("down") };
   html = render("arena", "published");
   expect(html.indexOf(enChess.arena.retry)).toBeGreaterThan(-1);
   expect(html.indexOf(enChess.arena.retry)).toBeLessThan(html.indexOf("Card other"));
+  fixture.query = { ...fixture.query, error: { code: "NOT_FOUND" } };
+  html = render("arena", "published");
+  expect(html.indexOf(enChess.arena.gameNotFound)).toBeGreaterThan(-1);
+  expect(html.indexOf(enChess.arena.gameNotFound)).toBeLessThan(html.indexOf("Card other"));
+});
+it("offline: an open game whose load is paused says so with Try again, not a skeleton forever", () => {
+  listWith("other", "published");
+  fixture.online = false;
+  fixture.query = { ...fixture.query, data: undefined, isPending: true, fetchStatus: "paused" };
+  const html = render("arena", "published");
+  expect(html).not.toContain("h-96");
+  const offline = html.indexOf(enChess.arena.offlineRetry);
+  expect(offline).toBeGreaterThan(-1);
+  // At the same place: right under the section bar, above the other games.
+  expect(offline).toBeGreaterThan(html.indexOf(enChess.arena.title));
+  expect(offline).toBeLessThan(html.indexOf("Card other"));
+  expect(html).toMatch(/<button class="cc-error" type="button">You’re offline\./);
+});
+it("a paused load while the browser still reports online also leaves the skeleton", () => {
+  fixture.query = { ...fixture.query, data: undefined, isPending: true, fetchStatus: "paused" };
+  const html = render("arena", "published");
+  expect(html).not.toContain("h-96");
+  expect(html).toContain(enChess.arena.offlineRetry);
+});
+it("offline: a failed open game uses the offline copy too", () => {
+  fixture.online = false;
+  fixture.query = { ...fixture.query, isError: true, error: new TypeError("Failed to fetch") };
+  const html = render("arena", "published");
+  expect(html).toContain(enChess.arena.offlineRetry);
+  expect(html).not.toContain(enChess.arena.retry);
+});
+it("offline: a paused first load of the game list says so instead of skeleton cards", () => {
+  const list = fixture.list;
+  fixture.online = false;
+  fixture.list = {
+    ...list,
+    data: { pages: [] },
+    isPending: true,
+    fetchStatus: "paused",
+  };
+  const html = render("arena");
+  fixture.list = list;
+  expect(html).not.toContain("h-28");
+  expect(html).toContain(enChess.arena.offlineRetry);
 });

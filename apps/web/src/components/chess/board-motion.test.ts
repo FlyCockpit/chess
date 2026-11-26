@@ -17,6 +17,7 @@ import {
   illegalCaption,
   illegalMark,
   illegalMotion,
+  illegalNotation,
   MOVE_MS,
   markSquares,
   moreAttemptsCaption,
@@ -133,12 +134,13 @@ describe("legal moves", () => {
     expect(motion?.hide).toEqual(["a8"]);
   });
 
-  it("plays a step back in reverse: the promoted piece slides back, the captured one returns", () => {
+  it("plays a step back in reverse: the pawn slides back, the captured piece returns", () => {
     const fen = "1r2k3/P7/8/8/8/8/8/4K3 w - - 0 1";
     const motion = moveMotion(fen, "a7b8n", 4, "back");
+    // The promoted knight turns back into the pawn at once; the pawn slides home.
     expect(motion?.ghosts).toEqual([
       { piece: { type: "r", color: "b" }, from: "b8", to: "b8", effect: "appear" },
-      { piece: { type: "n", color: "w" }, from: "b8", to: "a7", effect: "slide" },
+      { piece: { type: "p", color: "w" }, from: "b8", to: "a7", effect: "slide" },
     ]);
     expect(motion?.hide).toEqual(["a7", "b8"]);
   });
@@ -178,7 +180,7 @@ describe("illegal attempts", () => {
       from: "g1",
       to: "e5",
       piece: { type: "n", color: "w" },
-      notation: "Ng1-e5",
+      promotion: null,
     });
     expect(markSquares(mark)).toEqual(["g1", "e5"]);
     expect(illegalMotion(mark as NonNullable<typeof mark>)).toEqual({
@@ -193,8 +195,9 @@ describe("illegal attempts", () => {
     expect(illegalCaption(en, mark as NonNullable<typeof mark>)).toBe(
       "White tried Ng1-e5: not a legal move",
     );
+    // Spanish captions use Spanish piece letters (C for caballo).
     expect(illegalCaption(es, mark as NonNullable<typeof mark>)).toBe(
-      "Blanco intentó Ng1-e5: no es una jugada legal",
+      "Blanco intentó Cg1-e5: no es una jugada legal",
     );
   });
 
@@ -211,11 +214,16 @@ describe("illegal attempts", () => {
       ReturnType<typeof illegalMark>
     >;
     expect(illegalCaption(en, mark)).toBe("White tried e7-e5: no White piece on e7");
+    expect(illegalCaption(es, mark)).toBe("Blanco intentó e7-e5: no tiene ninguna pieza en e7");
   });
 
   it("names a promotion piece in the attempt", () => {
     const mark = illegalMark(START, attempt("e2e4q", "w"), 0);
-    expect(mark).toMatchObject({ notation: "e2-e4=Q" });
+    expect(mark).toMatchObject({ promotion: "q" });
+    const illegal = mark as Extract<NonNullable<typeof mark>, { kind: "illegal" }>;
+    expect(illegalNotation(en, illegal)).toBe("e2-e4=Q");
+    expect(illegalNotation(es, illegal)).toBe("e2-e4=D");
+    expect(illegalNotation(es, { ...illegal, piece: { type: "k", color: "w" } })).toBe("Re2-e4=D");
   });
 
   it("captions a reply that is not a move, as plain one-line text, without a slide", () => {
@@ -271,7 +279,7 @@ describe("illegal attempts", () => {
     expect(moreAttemptsCaption(es, 12)).toBe("+12 intentos ilegales más");
   });
 
-  it("stays on the board until the side's next action", () => {
+  it("stays on the board until the side's next attempt or accepted move", () => {
     const match = game();
     const chess = new Chess();
     submitMove(match, chess, "g1e5");
@@ -283,18 +291,30 @@ describe("illegal attempts", () => {
       ply: 0,
       elapsedMs: 10,
     });
+    match.events.push({
+      type: "tool",
+      seq: match.events.length,
+      at: new Date(0).toISOString(),
+      side: "w",
+      ply: 0,
+      name: "legal_moves",
+      input: JSON.stringify({ square: "g1" }),
+      output: "f3 h3",
+    });
     submitMove(match, chess, "Nf3 please");
     submitMove(match, chess, "g1f3");
     const source = gameSource(match);
     expect(rejectedAt(match.events, source.fenAt, 0)).toMatchObject({ kind: "illegal", index: 0 });
-    // Bookkeeping after it keeps it.
+    // Bookkeeping after it keeps it, and so does the side's next lookup.
     expect(rejectedAt(match.events, source.fenAt, 1)).toMatchObject({ index: 0 });
-    expect(rejectedAt(match.events, source.fenAt, 2)).toMatchObject({
+    expect(rejectedAt(match.events, source.fenAt, 2)).toMatchObject({ index: 0 });
+    // The next attempt replaces it.
+    expect(rejectedAt(match.events, source.fenAt, 3)).toMatchObject({
       kind: "unreadable",
-      index: 2,
+      index: 3,
     });
     // The accepted move ends it.
-    expect(rejectedAt(match.events, source.fenAt, 3)).toBeUndefined();
+    expect(rejectedAt(match.events, source.fenAt, 4)).toBeUndefined();
     expect(rejectedAt(match.events, source.fenAt, -1)).toBeUndefined();
     const mark = rejectedAt(match.events, source.fenAt, 0) as NonNullable<
       ReturnType<typeof rejectedAt>

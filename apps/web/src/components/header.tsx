@@ -33,10 +33,14 @@ export default function Header() {
         {/* Below sm the group always takes a line of its own, ending on the trailing
             line: whether it fits beside the brand would otherwise depend on the account
             name, which the loading frame (before the session) cannot know, so the header
-            would change height when the session resolves. */}
+            would change height when the session resolves. On that line the
+            controls wrap rather than run off it (three 44px controls need about
+            156px at the default font, twice that with a 32px browser font on a
+            320px screen), and `justify-end-safe` starts a line that still
+            overflows at the leading edge, so nothing is ever cut off there. */}
         <div
           className={cn(
-            "ml-auto flex items-center gap-2 max-sm:basis-full max-sm:justify-end",
+            "ml-auto flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end-safe",
             isAuthenticated ? "min-w-0" : "max-w-full flex-wrap justify-end",
           )}
         >

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   type ArchiveCheck,
   checkArchiveFile,
+  formatFileSize,
   IMPORT_INITIAL,
   type ImportAction,
   type ImportState,
@@ -268,5 +269,17 @@ describe("landLatest with the import dialog's state", () => {
     await readA;
     expect(d.state).toMatchObject({ chosen: null, pasteOpen: true });
     expect(d.json).toBe("");
+  });
+});
+
+describe("formatFileSize", () => {
+  it("shows a small file in bytes, not as 0 kB, and larger ones in kB and MB", () => {
+    expect(formatFileSize(34, "en-US")).toBe("34 bytes");
+    expect(formatFileSize(1, "en-US")).toBe("1 byte");
+    expect(formatFileSize(999, "en-US")).toBe("999 bytes");
+    expect(formatFileSize(1_500, "en-US")).toBe("1.5 kB");
+    expect(formatFileSize(2_000_000, "en-US")).toBe("2 MB");
+    expect(formatFileSize(34, "es-MX")).toBe("34 bytes");
+    expect(formatFileSize(1_500, "es-MX")).toBe("1.5 kB");
   });
 });

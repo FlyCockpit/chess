@@ -10,13 +10,21 @@ import ErrorState from "./components/error-state";
 import { NotFoundPage } from "./components/not-found-page";
 import { RouteContentSkeleton } from "./components/route-content-skeleton";
 import i18n, { createRequestI18n } from "./i18n";
+import { holdsNoAccountData } from "./lib/account-free-pages";
 import {
+  discardAccountQueries,
+  isDocumentReplaced,
+  onAccountStateDiscarded,
   onDocumentReplaced,
+  replaceDocument,
   sealQueryClient,
+  setAccountFreePage,
   skipErrorToastForIdentity,
   watchDocumentRestore,
 } from "./lib/document-identity";
 import { MAIN_SCROLLER_SELECTOR } from "./lib/main-scroller";
+import { networkFailureKind } from "./lib/network-failure";
+import { installOfflineMutationPolicy } from "./lib/offline-mutations";
 import { routeTree } from "./routeTree.gen";
 import { friendly } from "./utils/friendly-error";
 import { orpc } from "./utils/orpc";
@@ -83,6 +91,9 @@ export function getRouter() {
         // cache below — so a flaky connection doesn't spam toasts on top of
         // the InlineRetry the page already shows.
         if (query.meta?.skipGlobalErrorToast) return;
+        // Offline, the band in the shell and the page's own offline state
+        // already explain it; one toast per failed query would pile up.
+        if (networkFailureKind(error) === "offline") return;
         toast.error(friendly(error), {
           action: {
             label: i18n.t("common:actions.tryAgain"),
@@ -113,6 +124,14 @@ export function getRouter() {
       },
     }),
   });
+  // Offline mutations fail fast with "You're offline…" (via friendly()), so
+  // creating a match or importing a game never spins on a paused request;
+  // `meta: { offline: "queue" }` opts a replay-safe write into waiting for the
+  // network, with a notice. See docs/design-system.md § Offline and network failures
+  installOfflineMutationPolicy(queryClient, {
+    queued: () => toast.info(i18n.t("common:offline.queued")),
+    sent: () => toast.success(i18n.t("common:offline.queuedSent")),
+  });
 
   // A signed-in copy of this document restored from the back/forward cache
   // reloads instead of showing a page nobody re-checked; and when another
@@ -121,6 +140,9 @@ export function getRouter() {
   watchDocumentRestore();
   if (typeof window !== "undefined") {
     onDocumentReplaced(() => sealQueryClient(queryClient));
+    // On a page that holds no account data the account state is dropped in
+    // place instead of reloading (lib/account-free-pages.ts).
+    onAccountStateDiscarded(() => discardAccountQueries(queryClient));
   }
 
   const router = createRouter({
@@ -156,6 +178,23 @@ export function getRouter() {
 
   setupRouterSsrQueryIntegration({ router, queryClient });
 
+  if (typeof window !== "undefined") {
+    // Account-free means both the page on screen and the one being loaded
+    // (a navigation already in flight) hold no account data.
+    setAccountFreePage(
+      () =>
+        holdsNoAccountData(router.latestLocation) &&
+        holdsNoAccountData(router.state.resolvedLocation ?? router.latestLocation),
+    );
+    // A document replaced in place (an account-free page) gets its full load
+    // before the first navigation to a page that may hold account data
+    // renders anything: the URL is already the destination's, so the reload
+    // lands there and the route guards decide as usual.
+    router.subscribe("onBeforeNavigate", () => {
+      if (isDocumentReplaced()) replaceDocument();
+    });
+  }
+
   return router;
 }
 
@@ -181,6 +220,12 @@ declare module "@tanstack/react-query" {
        * called `toast.error(friendly(err, t("ns:key")))`.
        */
       errorFallbackKey?: string;
+      /**
+       * `"queue"`: while offline, wait and send on reconnect (with a notice)
+       * instead of failing fast. Only for writes that are safe to replay. See
+       * docs/design-system.md § Offline and network failures
+       */
+      offline?: "queue";
     };
   }
 }

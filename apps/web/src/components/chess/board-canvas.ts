@@ -118,6 +118,15 @@ export function drawBoard(
   const to = lastMove?.slice(2, 4);
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
+  /** An edge square's file letter and rank number, in the square's opposite colour. */
+  const label = (file: number, rank: number) => {
+    const sx = x + file * square;
+    const sy = y + rank * square;
+    ctx.fillStyle = (rank + file) % 2 === 1 ? BOARD_COLORS.light : BOARD_COLORS.dark;
+    ctx.font = `bold ${Math.round(square * 0.16)}px ${COORD_FONT}`;
+    if (file === 0) ctx.fillText(String(8 - rank), sx + square * 0.06, sy + square * 0.22);
+    if (rank === 7) ctx.fillText("abcdefgh"[file] as string, sx + square * 0.8, sy + square * 0.94);
+  };
   new Chess(fen).board().forEach((row, rank) => {
     row.forEach((piece, file) => {
       const sx = x + file * square;
@@ -134,13 +143,8 @@ export function drawBoard(
         ctx.fillStyle = MARK_COLORS.lookupFill;
         ctx.fillRect(sx, sy, square, square);
       }
-      if (coordinates) {
-        ctx.fillStyle = dark ? BOARD_COLORS.light : BOARD_COLORS.dark;
-        ctx.font = `bold ${Math.round(square * 0.16)}px ${COORD_FONT}`;
-        if (file === 0) ctx.fillText(String(8 - rank), sx + square * 0.06, sy + square * 0.22);
-        if (rank === 7)
-          ctx.fillText("abcdefgh"[file] as string, sx + square * 0.8, sy + square * 0.94);
-      }
+      // A ringed square's label is drawn over its ring instead (below).
+      if (coordinates && !outline.includes(name)) label(file, rank);
       if (!piece || hide.includes(name)) return;
       drawPiece(ctx, piece, sx + square / 2, sy + square / 2, square);
     });
@@ -184,6 +188,8 @@ export function drawBoard(
     }
   }
   for (const name of outline) ring(name, MARK_COLORS.illegal, Math.max(3, square * 0.065));
+  // The red ring runs along the square's edge, where its coordinate sits: keep it readable.
+  if (coordinates) for (const name of outline) label(name.charCodeAt(0) - 97, 8 - Number(name[1]));
   for (const ghost of ghosts) {
     ctx.globalAlpha = Math.min(1, Math.max(0, ghost.alpha));
     drawPiece(

@@ -1,4 +1,11 @@
-import { type RemarkTone, type Rules, sideClockMs } from "@cockpit-chess/chess";
+import {
+  type MatchArchive,
+  type matchStats,
+  type RemarkTone,
+  type Rules,
+  type Side,
+  sideClockMs,
+} from "@cockpit-chess/chess";
 import {
   displayMove,
   type EndingSummary,
@@ -26,7 +33,7 @@ export function durationLabel(t: ChessT, ms: number) {
     : t("duration.minutes", { minutes });
 }
 
-export function usdLabel(locale: string, micros: number) {
+function usdLabel(locale: string, micros: number) {
   const dollars = micros / 1_000_000;
   const cents = Number.isInteger(micros / 10_000) && (dollars >= 0.01 || micros === 0);
   return new Intl.NumberFormat(locale, {
@@ -35,6 +42,33 @@ export function usdLabel(locale: string, micros: number) {
     minimumFractionDigits: cents ? 2 : 0,
     maximumFractionDigits: cents ? 2 : 4,
   }).format(dollars);
+}
+
+/**
+ * A model side's spend against its budget. While the game runs, a call without a usage
+ * report is still in flight ("still settling"); once it has ended, that report will
+ * never arrive, so the spend is final as a lower bound and says which part is missing.
+ */
+export function sideSpendLabel(
+  t: ChessT,
+  locale: string,
+  match: Pick<MatchArchive, "status" | "config">,
+  side: Side,
+  stats: Pick<
+    ReturnType<typeof matchStats>,
+    "costMicros" | "reportedCostMicros" | "unsettledDispatches"
+  >,
+) {
+  const values = {
+    side: t(`colors.${side}`),
+    spent: usdLabel(locale, stats.reportedCostMicros),
+    budget: usdLabel(locale, match.config.rules.costBudgetMicros),
+  };
+  if (stats.costMicros !== null) return t("replay.sideSpend", values);
+  if (match.status === "running") return t("replay.sideSpendSettling", values);
+  if (stats.unsettledDispatches > 0)
+    return t("replay.sideSpendUnreported", { ...values, count: stats.unsettledDispatches });
+  return t("replay.sideSpendUncosted", values);
 }
 
 export function endingHeadlineLabel(t: ChessT, summary: EndingSummary): string {
@@ -119,14 +153,18 @@ export function endingDetailLabel(t: ChessT, locale: string, ending: MatchEnding
         : t("endingDetail.clock", { time: durationLabel(t, ending.clockMs) });
     case "move-timeout":
       return t("endingDetail.moveLimit", { time: durationLabel(t, ending.limitMs) });
-    case "token-budget":
-      return t("endingDetail.tokens", {
+    case "token-budget": {
+      const limit = t("endingDetail.tokens", {
         tokens: new Intl.NumberFormat(locale).format(ending.tokens),
       });
+      return ending.accounting === "provider" ? t("endingDetail.noRoom", { limit }) : limit;
+    }
     case "cost-budget":
-      return t(ending.settled ? "endingDetail.spend" : "endingDetail.spendAtLeast", {
-        spent: usdLabel(locale, ending.spentMicros),
-        budget: usdLabel(locale, ending.budgetMicros),
+      return t("endingDetail.noRoom", {
+        limit: t(ending.settled ? "endingDetail.spend" : "endingDetail.spendAtLeast", {
+          spent: usdLabel(locale, ending.spentMicros),
+          budget: usdLabel(locale, ending.budgetMicros),
+        }),
       });
     case "ply-limit":
       return t("endingDetail.plies", { plies: ending.plies });

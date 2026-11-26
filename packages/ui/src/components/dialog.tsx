@@ -80,13 +80,15 @@ function DialogContent({
           <DialogPrimitive.Close
             data-slot="dialog-close"
             render={
-              // The hit area is a 44px square centred on the 28px button, whatever
-              // its border or size. An inset expansion would be measured from the
+              // The hit area is a 44px square centred on the button, whatever its
+              // border or size. An inset expansion would be measured from the
               // padding box, inside the 1px border (`-inset-2` gave 26 + 16 = 42px).
-              // At `right-2` the square ends exactly on the popup's edge.
+              // Phones draw the button at 36px so the target you see is close to
+              // the one you hit; from `md` (a pointer) it is 28px. Both centre on
+              // the title line (26px down) and stay inside the popup's edge.
               <Button
                 variant="ghost"
-                className="absolute top-3 right-2 z-20 after:absolute after:top-1/2 after:left-1/2 after:size-11 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']"
+                className="absolute top-2 right-2 z-20 size-9 after:absolute after:top-1/2 after:left-1/2 after:size-11 after:-translate-x-1/2 after:-translate-y-1/2 after:content-[''] md:top-3 md:size-7"
                 size="icon-sm"
               />
             }

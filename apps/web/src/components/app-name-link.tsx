@@ -1,10 +1,12 @@
-import { env } from "@cockpit-chess/env/web";
 import { Link } from "@tanstack/react-router";
+import { useTranslation } from "react-i18next";
 
 /**
  * The app shell header's brand: the app icon and the app name, linking home.
  * (The arena's `.cc-header` brand in `components/public-shell.tsx` follows the same
- * rule in plain CSS: `.cc-brand` in `index.css`.)
+ * rule in plain CSS: `.cc-brand` in `index.css`.) The name is the translated
+ * `chess:brand`, the one the arena header shows, so both shells name the app
+ * the same way in every locale ("Ajedrez Cockpit" in es-MX).
  *
  * The brand only takes the room the rest of the row leaves it, so it is the
  * first thing to give way and the controls never run past the header's
@@ -24,7 +26,8 @@ import { Link } from "@tanstack/react-router";
  * link's `title` and accessible name.
  */
 export function AppNameLink({ lang }: { lang: string }) {
-  const appName = env.VITE_APP_NAME;
+  const { t } = useTranslation("chess");
+  const appName = t("chess:brand");
   return (
     <Link
       to="/$lang"

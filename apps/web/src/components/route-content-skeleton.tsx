@@ -4,6 +4,7 @@ import { cn } from "@cockpit-chess/ui/lib/utils";
 import { useMatch, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
+import { TwoFactorNudge } from "@/components/admin/two-factor-nudge";
 import { SkeletonList } from "@/components/skeleton-list";
 import {
   type PendingFrame,
@@ -75,8 +76,9 @@ function FrameSkeleton({
   children: ReactNode;
 }) {
   if (frame === "admin") {
-    // The admin layout: a sticky, full-bleed sub-nav of four 44px links, then
-    // the page in its own `PageShell`.
+    // The admin layout: a sticky, full-bleed sub-nav of four 44px links, the
+    // 2FA band's slot (a placeholder band while the settings load, for an
+    // admin without 2FA), then the page in its own `PageShell`.
     return (
       <>
         <div className="border-b">
@@ -86,6 +88,7 @@ function FrameSkeleton({
             ))}
           </div>
         </div>
+        <TwoFactorNudge />
         <div className={cn("container mx-auto space-y-6 px-4 py-8", WIDTH_CLASS[width])}>
           {children}
         </div>

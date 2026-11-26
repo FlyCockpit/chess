@@ -11,6 +11,7 @@ import chessEn from "@locales/en-US/chess.json";
 import i18next from "i18next";
 import { describe, expect, it } from "vitest";
 import { ILLEGAL_MS } from "../board-motion";
+import { checkArchiveFile } from "../import-archive";
 import { videoFixtureGame, videoIllegalFixtureGame } from "./video-fixture";
 import {
   AUTO_MAX_SECONDS_PER_MOVE,
@@ -369,8 +370,13 @@ describe("illegal attempts and lookups", () => {
   const kinds = plan.scenes.map((scene) => scene.state.kind);
   const frames = (seconds: number) => Math.round(seconds * VIDEO_FPS);
 
-  it("is a valid archive under the keep-trying rule (it imports as a game)", () => {
-    expect(() => validateArchive(JSON.parse(JSON.stringify(match)))).not.toThrow();
+  it("is a valid archive under the keep-trying rule (it imports as a game)", async () => {
+    const json = JSON.stringify(match);
+    expect(() => validateArchive(JSON.parse(json))).not.toThrow();
+    // Studio imports only finished games.
+    expect(await checkArchiveFile({ size: json.length, text: async () => json })).toMatchObject({
+      kind: "ok",
+    });
   });
 
   it("turns both on by default when the game has them", () => {

@@ -14,6 +14,9 @@
     "published": "Juegos publicados",
     "watch": "Ver partida",
     "retry": "No se pudieron cargar los partidos. Inténtalo de nuevo.",
+    "offlineRetry": "No tienes conexión. Esto se cargará cuando te vuelvas a conectar. Inténtalo de nuevo.",
+    "gameNotFound": "Esta partida no está disponible",
+    "gameNotFoundDescription": "Puede que el enlace esté mal o que la partida no esté publicada.",
     "loading": "Cargando arena",
     "all": "Todos los partidos",
     "unpublished": "Borrador privado",
@@ -238,7 +241,7 @@
     "pgn": "Exportar PGN",
     "fen": "Copiar posición actual",
     "event": "",
-    "spend": "Costo estimado de uso: {{cost}} · {{reserved}} tokens reservados",
+    "spend": "Costo estimado de uso: {{cost}} · como máximo {{reserved}} tokens reservados para una solicitud",
     "unknownCost": "desconocido (uso incompleto del proveedor)",
     "rules": "Configuración exacta del experimento",
     "copyRules": "Copiar configuración del experimento",
@@ -251,6 +254,7 @@
     "commentaryEmpty": "Aún no hay comentarios.",
     "commentaryNote": "Comentarios de los modelos, mostrados como texto plano. Son salida no confiable.",
     "remarkMove": "Jugada {{move}} · {{san}}",
+    "remarkRejected": "rechazada",
     "evalBar": "Evaluación: {{score}}",
     "evalGraph": "Evaluación a lo largo de la partida",
     "evalGraphPoint": "Jugada {{move}}: {{score}}",
@@ -267,7 +271,10 @@
     "clockLabel": "Reloj de {{side}}: {{time}}",
     "chatTab": "Chat ({{count}})",
     "sideSpend": "{{side}} · gastó {{spent}} de {{budget}}",
-    "sideSpendUnknown": "{{side}} · gastó al menos {{spent}} de {{budget}} (el uso aún se está liquidando)",
+    "sideSpendSettling": "{{side}} · gastó al menos {{spent}} de {{budget}} (el uso aún se está liquidando)",
+    "sideSpendUnreported_one": "{{side}} · gastó al menos {{spent}} de {{budget}} (nunca se reportó el uso de una llamada)",
+    "sideSpendUnreported_other": "{{side}} · gastó al menos {{spent}} de {{budget}} (nunca se reportó el uso de {{count}} llamadas)",
+    "sideSpendUncosted": "{{side}} · gastó al menos {{spent}} de {{budget}} (nunca se reportó el costo de una llamada)",
     "illegalBySide": "Intentos ilegales: {{white}} {{w}} · {{black}} {{b}}",
     "cutOff": "Rechazada · sin espacio",
     "rejectedTruncated": "Rechazada: la respuesta se quedó sin espacio antes de dar una jugada. El tablero no cambia.",
@@ -445,7 +452,7 @@
       "rules": "Reglas",
       "rulesHint": "Memoria, ayuda de jugadas legales, formato de jugada, motor y jugadas ilegales",
       "limits": "Límites",
-      "limitsHint": "Conteo de tokens, asignaciones y duración de la partida"
+      "limitsHint": "Conteo de tokens, asignaciones y límite por jugada"
     },
     "protocolLabel": "Protocolo de conexión de {{side}}",
     "protocols": {
@@ -474,10 +481,10 @@
         "lenient": "También lee una jugada JSON dentro de prosa y convierte SAN legal a UCI. Se clasifica por separado."
       },
       "engine": {
-        "off": "Sin Stockfish. La vista de la partida no tiene barra de evaluación.",
+        "off": "Sin Stockfish para los jugadores. Los espectadores siguen viendo una barra de evaluación, calculada aparte.",
         "tool": "Los modelos pueden consultar a Stockfish sobre la posición, como máximo 2 llamadas por turno.",
-        "after-move": "Stockfish evalúa la posición después de cada jugada. Los jugadores ven la evaluación y la vista de la partida dibuja con ella la barra de evaluación.",
-        "both": "La herramienta del motor más una evaluación después de cada jugada (incluye la barra de evaluación)."
+        "after-move": "Stockfish evalúa la posición después de cada jugada y los jugadores ven la evaluación.",
+        "both": "La herramienta del motor más una evaluación después de cada jugada que los jugadores ven."
       },
       "accounting": {
         "provider": "Los tokens se cuentan con lo que informa el proveedor y se reservan antes de cada solicitud.",
@@ -528,7 +535,7 @@
   },
   "motion": {
     "illegal": "{{side}} intentó {{move}}: no es una jugada legal",
-    "noPiece": "{{side}} intentó {{move}}: no hay pieza de {{side}} en {{square}}",
+    "noPiece": "{{side}} intentó {{move}}: no tiene ninguna pieza en {{square}}",
     "unreadable": "La respuesta de {{side}} no se pudo leer como jugada: “{{raw}}”",
     "unreadableEmpty": "La respuesta de {{side}} no se pudo leer como jugada",
     "more_one": "+{{count}} intento ilegal más",
@@ -614,6 +621,7 @@
     "tokens": "presupuesto de {{tokens}} tokens",
     "spend": "gastó {{spent}} de {{budget}}",
     "spendAtLeast": "gastó al menos {{spent}} de {{budget}}",
+    "noRoom": "{{limit}}; no queda suficiente para otra solicitud",
     "plies": "{{plies}} medias jugadas",
     "unscored": "sin puntuar"
   },
@@ -632,6 +640,13 @@
     "cannotMove": "su {{piece}} de {{from}} no puede moverse legalmente a {{to}}",
     "promotion": "su peón de {{from}} debe indicar la pieza de promoción (q, r, b o n)",
     "truncated": "se quedó sin espacio antes de dar una jugada"
+  },
+  "pieceLetters": {
+    "n": "C",
+    "b": "A",
+    "r": "T",
+    "q": "D",
+    "k": "R"
   },
   "pieceNames": {
     "pawn": "peón",

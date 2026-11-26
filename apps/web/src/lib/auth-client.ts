@@ -10,7 +10,7 @@ import {
 import { createAuthClient } from "better-auth/react";
 
 import i18n from "@/i18n";
-import { announceSessionChange } from "@/lib/document-identity";
+import { announceSessionChange, reportAuthErrorStatus } from "@/lib/document-identity";
 
 export const authClient = createAuthClient({
   baseURL: env.VITE_SERVER_URL,
@@ -32,6 +32,11 @@ export const authClient = createAuthClient({
     onRequest(context) {
       context.headers.set(APP_LOCALE_HEADER, i18n.language);
       return context;
+    },
+    // A 401 on an account action (a session lost elsewhere) checks the
+    // session, like an oRPC 401 does (lib/document-identity.ts).
+    onError(context) {
+      reportAuthErrorStatus(context.response.status);
     },
   },
   sessionOptions: {

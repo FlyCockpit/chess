@@ -135,10 +135,14 @@ describe("how a match ended, in plain words", () => {
     );
     const tokens = game({ tokenBudget: 12000 });
     finishMatch(tokens, "0-1", "token-budget");
-    expect(describeMatch(tokens).text).toBe("White ran out of tokens (12,000 token budget)");
+    expect(describeMatch(tokens).text).toBe(
+      "White ran out of tokens (12,000 token budget; not enough left for another request)",
+    );
     const spend = play(game(), "e2e4");
     finishMatch(spend, "1-0", "cost-budget");
-    expect(describeMatch(spend).text).toBe("Black ran out of budget (spent $0.00 of $1.00)");
+    expect(describeMatch(spend).text).toBe(
+      "Black ran out of budget (spent $0.00 of $1.00; not enough left for another request)",
+    );
     const spent = play(game(), "e2e4");
     const turn = () => ({ seq: spent.events.length, at: new Date().toISOString(), side, ply: 1 });
     const side = "b" as const;
@@ -166,7 +170,7 @@ describe("how a match ended, in plain words", () => {
         spentMicros: 980_000,
         settled: true,
       },
-      text: "Black ran out of budget (spent $0.98 of $1.00)",
+      text: "Black ran out of budget (spent $0.98 of $1.00; not enough left for another request)",
     });
     // A later call that never reported its cost: the spend is a lower bound.
     const pending = play(game(), "e2e4");
@@ -183,7 +187,7 @@ describe("how a match ended, in plain words", () => {
     finishMatch(pending, "1-0", "cost-budget");
     expect(describeMatch(pending)).toMatchObject({
       ending: { spentMicros: 0, settled: false },
-      text: "Black ran out of budget (spent at least $0.00 of $1.00)",
+      text: "Black ran out of budget (spent at least $0.00 of $1.00; not enough left for another request)",
     });
   });
   it("names no clock for a cockpit-v1 timeout, which also covered the per-move limit", () => {

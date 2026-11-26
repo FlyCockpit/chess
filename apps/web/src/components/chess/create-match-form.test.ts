@@ -15,7 +15,13 @@ import {
   summaryParts,
   toMatchConfig,
 } from "./create-match-form";
-import { applyPreset, selectedPreset, timeControlErrors } from "./time-control";
+import {
+  applyCustom,
+  applyPreset,
+  clockFromTimeControl,
+  selectedPreset,
+  timeControlErrors,
+} from "./time-control";
 
 let t: TFunction<"chess">;
 beforeAll(async () => {
@@ -64,6 +70,7 @@ const errorsFor = (value: Partial<CreateMatchValues>, server = limits) =>
 /** An uneven clock: White minutes, Black minutes, optional Black seconds. */
 const uneven = (white: string, black: string, blackSeconds = "0") => ({
   timed: true,
+  custom: false,
   uneven: true,
   white: { minutes: white, seconds: "0" },
   black: { minutes: black, seconds: blackSeconds },
@@ -94,6 +101,16 @@ describe("time control", () => {
     expect(selectedPreset(uneven("15", "5"))).toBe("custom");
     expect(selectedPreset(DEFAULT_VALUES.time)).toBe("untimed");
     expect(selectedPreset(applyPreset(uneven("15", "5"), "untimed"))).toBe("untimed");
+  });
+  it("keeps Custom picked when its times equal a preset, until a preset is picked", () => {
+    const tenMinutes = applyPreset(DEFAULT_VALUES.time, 10);
+    const custom = applyCustom(tenMinutes);
+    expect(selectedPreset(custom)).toBe("custom");
+    expect(custom.white).toEqual(tenMinutes.white);
+    expect(clockFromTimeControl(custom)).toEqual({ w: 600000, b: 600000 });
+    expect(selectedPreset(applyPreset(custom, 10))).toBe(10);
+    expect(selectedPreset(applyPreset(custom, "untimed"))).toBe("untimed");
+    expect(selectedPreset(applyCustom(applyPreset(custom, "untimed")))).toBe("custom");
   });
   it("names the server's limits in its errors", () => {
     expect(timeControlErrors(t, uneven("0", "0", "20"))).toEqual({

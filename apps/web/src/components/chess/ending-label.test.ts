@@ -4,6 +4,7 @@ import {
   createMatch,
   finishMatch,
   type MatchArchive,
+  matchStats,
   rulesSchema,
   submitMove,
 } from "@cockpit-chess/chess";
@@ -24,6 +25,7 @@ import {
   endingHeadlineLabel,
   endingLabel,
   remarkToneLabel,
+  sideSpendLabel,
   timeControlLabel,
 } from "./ending-label";
 
@@ -158,8 +160,43 @@ describe("ending labels", () => {
   it("says a side spent at least its reported cost while a call never reported", () => {
     const ending = matchEnding(ended(reserved(play(game(), "e2e4")), "cost-budget", "1-0"));
     expect(endingLabel(t, "en-US", ending)).toBe(
-      "Black ran out of budget (spent at least $0.00 of $1.00)",
+      "Black ran out of budget (spent at least $0.00 of $1.00; not enough left for another request)",
     );
+  });
+  it("words a side's spend as settling only while the game runs", () => {
+    const running = reserved(play(game(), "e2e4"));
+    const stats = matchStats(running, "b");
+    expect(sideSpendLabel(t, "en-US", running, "b", stats)).toBe(
+      "Black · spent at least $0.00 of $1.00 (usage still settling)",
+    );
+    const over = ended(structuredClone(running), "move-timeout", "1-0");
+    expect(sideSpendLabel(t, "en-US", over, "b", stats)).toBe(
+      "Black · spent at least $0.00 of $1.00 (one call's usage was never reported)",
+    );
+    expect(sideSpendLabel(t, "en-US", over, "b", { ...stats, unsettledDispatches: 2 })).toBe(
+      "Black · spent at least $0.00 of $1.00 (2 calls' usage was never reported)",
+    );
+    expect(sideSpendLabel(t, "en-US", over, "b", { ...stats, unsettledDispatches: 0 })).toBe(
+      "Black · spent at least $0.00 of $1.00 (a call's cost was never reported)",
+    );
+    expect(sideSpendLabel(t, "en-US", over, "w", matchStats(over, "w"))).toBe(
+      "White · spent $0.00 of $1.00",
+    );
+  });
+  it("explains a budget ending that leaves part of the budget unspent", () => {
+    const ending = matchEnding(
+      ended(play(game({ costBudgetMicros: 10_000 }), "e2e4"), "cost-budget", "1-0"),
+    );
+    expect(endingLabel(t, "en-US", ending)).toBe(
+      "Black ran out of budget (spent $0.00 of $0.01; not enough left for another request)",
+    );
+    const es = i18n.getFixedT("es-MX", "chess") as TFunction<"chess">;
+    expect(endingLabel(es, "es-MX", ending)).toContain("no queda suficiente para otra solicitud");
+    // Shared-token accounting also ends mid-reply on the count, so it claims no reason.
+    const shared = matchEnding(
+      ended(game({ tokenAccounting: "cl100k_base", tokenBudget: 12000 }), "token-budget", "0-1"),
+    );
+    expect(endingLabel(t, "en-US", shared)).toBe("White ran out of tokens (12,000 token budget)");
   });
   it("renders Spanish from its own keys, with plurals", () => {
     const es = i18n.getFixedT("es-MX", "chess") as TFunction<"chess">;

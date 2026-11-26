@@ -107,6 +107,9 @@ describe("modal accessibility", () => {
       ])
         expect(className.split(" ")).toContain(part);
       expect(className).not.toMatch(/after:-?inset-/);
+      // Drawn at 36px on phones (close to the 44px it hits), 28px from `md`.
+      for (const part of ["size-9", "top-2", "md:size-7", "md:top-3"])
+        expect(className.split(" ")).toContain(part);
     } else {
       // A 44px box flush with the viewport edge, so its focus ring is drawn inside it.
       expect(size).toBe("icon-touch");

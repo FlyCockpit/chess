@@ -1,4 +1,4 @@
-import { MutationCache, QueryCache, QueryClient } from "@tanstack/react-query";
+import { MutationCache, QueryCache, QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -6,6 +6,7 @@ import {
   announceDocumentIdentity,
   announceSessionChange,
   connectIdentityPeers,
+  discardAccountQueries,
   documentAdmits,
   documentIdentityEpoch,
   isDocumentReplaced,
@@ -13,11 +14,15 @@ import {
   markExplicitSignOut,
   noteSignedInSession,
   observeDocumentIdentity,
+  onAccountStateDiscarded,
   onDocumentReplaced,
+  onPeerSessionChange,
   replaceDocument,
+  reportAuthErrorStatus,
   reportSessionRejected,
   resetDocumentIdentityForTests,
   sealQueryClient,
+  setAccountFreePage,
   shouldReloadForIdentity,
   skipErrorToastForIdentity,
   subscribeDocumentIdentity,
@@ -400,6 +405,95 @@ describe("global error toasts", () => {
   });
 });
 
+describe("pages that hold no account data", () => {
+  it("drop the account state in place, and reload at the first navigation to any other page", async () => {
+    const client = new QueryClient();
+    let accountFree = true;
+    setAccountFreePage(() => accountFree);
+    onDocumentReplaced(() => sealQueryClient(client));
+    onAccountStateDiscarded(() => discardAccountQueries(client));
+    observeDocumentIdentity("a");
+    // Studio's list, cached before the visitor opened the Lab tab.
+    client.setQueryData(["studio"], ["A's draft"]);
+    // The header's session hint, on screen.
+    const hint = vi.fn(async () => true);
+    const unsubscribe = new QueryObserver(client, { queryKey: ["hint"], queryFn: hint }).subscribe(
+      () => {},
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(hint).toHaveBeenCalledTimes(1);
+
+    // A signs out in another tab while the Lab is open.
+    expect(observeDocumentIdentity(null)).toBe(true);
+    replaceDocument();
+    expect(reload).not.toHaveBeenCalled();
+    expect(root.style.visibility).toBe("");
+    expect(client.getQueryData(["studio"])).toBeUndefined();
+    // What is on screen (public) stays, and is asked again.
+    expect(client.getQueryCache().find({ queryKey: ["hint"] })).toBeDefined();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(hint).toHaveBeenCalledTimes(2);
+    // Private UI outside a guard never admits anyone on this document.
+    expect(documentAdmits("a")).toBe(false);
+    // Another account later: still in place, nothing dropped twice.
+    replaceDocument();
+    expect(reload).not.toHaveBeenCalled();
+    expect(hint).toHaveBeenCalledTimes(2);
+
+    // The visitor opens Studio (or any page that may hold account data).
+    accountFree = false;
+    replaceDocument();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(root.style.visibility).toBe("hidden");
+    unsubscribe();
+  });
+
+  it("an explicit sign-out still owns its navigation", () => {
+    setAccountFreePage(() => true);
+    observeDocumentIdentity("a");
+    markExplicitSignOut();
+    expect(observeDocumentIdentity(null)).toBe(true);
+    replaceDocument();
+    expect(root.style.visibility).toBe("hidden");
+    expect(reload).not.toHaveBeenCalled();
+  });
+});
+
+describe("session checks for answers that are not 401", () => {
+  const notFound = () => Object.assign(new Error("Not found"), { code: "NOT_FOUND", status: 404 });
+
+  it("a hidden admin procedure's 404 checks the session while signed in, and still toasts", async () => {
+    const check = vi.fn();
+    connectIdentityPeers(check);
+    // Anonymous: a missing public game is only a 404.
+    observeDocumentIdentity(null);
+    expect(skipErrorToastForIdentity(notFound(), "query")).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(check).not.toHaveBeenCalled();
+    observeDocumentIdentity("a");
+    expect(skipErrorToastForIdentity(notFound(), "query")).toBe(false);
+    expect(skipErrorToastForIdentity(notFound(), "mutation")).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(check).toHaveBeenCalledTimes(1);
+  });
+
+  it("a Better Auth 401 checks the session only while signed in", async () => {
+    const check = vi.fn();
+    connectIdentityPeers(check);
+    // A wrong password on the sign-in page.
+    observeDocumentIdentity(null);
+    reportAuthErrorStatus(401);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(check).not.toHaveBeenCalled();
+    // Settings' profile save after a sign-out elsewhere.
+    observeDocumentIdentity("a");
+    reportAuthErrorStatus(400);
+    reportAuthErrorStatus(401);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(check).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("other tabs", () => {
   function fakeChannel() {
     return {
@@ -440,6 +534,19 @@ describe("other tabs", () => {
     connectIdentityPeers(vi.fn());
     announceDocumentIdentity("a");
     expect(channel.postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells listeners about a peer's session change, after queueing the watcher's check", () => {
+    const channel = fakeChannel();
+    resetDocumentIdentityForTests(() => channel);
+    const order: string[] = [];
+    connectIdentityPeers(() => order.push("check"));
+    const unsubscribe = onPeerSessionChange(() => order.push("listener"));
+    channel.onmessage?.({} as MessageEvent);
+    expect(order).toEqual(["check", "listener"]);
+    unsubscribe();
+    channel.onmessage?.({} as MessageEvent);
+    expect(order).toEqual(["check", "listener", "check"]);
   });
 
   it("a session change made here is announced before the flow navigates", () => {

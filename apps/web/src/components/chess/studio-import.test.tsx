@@ -6,6 +6,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider } from "react-i18next";
 import { beforeAll, expect, it, vi } from "vitest";
 
+const seen = vi.hoisted(() => ({
+  importOptions: undefined as { meta?: Record<string, unknown> } | undefined,
+}));
+
 vi.mock("@tanstack/react-query", () => ({
   useQuery: () => ({ data: { hostedEnabled: true } }),
   useInfiniteQuery: () => ({
@@ -25,7 +29,12 @@ vi.mock("@/utils/orpc", () => ({
       inspect: { queryOptions: () => ({}) },
       publish: { mutationOptions: () => ({}) },
       stop: { mutationOptions: () => ({}) },
-      importGame: { mutationOptions: () => ({}) },
+      importGame: {
+        mutationOptions: (options: { meta?: Record<string, unknown> }) => {
+          seen.importOptions = options;
+          return options;
+        },
+      },
     },
   },
 }));
@@ -90,4 +99,6 @@ it("offers a labelled file button first, JSON paste behind a closed disclosure, 
   expect(dialog).toContain(">Cancel<");
   // Nothing chosen yet: the primary action waits for a file (or pasted JSON).
   expect(dialog).toMatch(/<button[^>]*type="submit"[^>]*disabled=""[^>]*>Import<\/button>/);
+  // A rejected archive is reported inline in the dialog only, never also as a toast.
+  expect(seen.importOptions?.meta?.skipGlobalErrorToast).toBe(true);
 });

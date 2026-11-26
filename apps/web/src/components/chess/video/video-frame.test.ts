@@ -170,10 +170,20 @@ describe("motion frames", () => {
   it("draws the red rings, the caption with the model, and hides the piece in motion", () => {
     const { ctx, texts } = recordingContext();
     const strokes: string[] = [];
+    const order: string[] = [];
     const spy = new Proxy(ctx as object, {
       get(target, key: string) {
         if (key === "strokeRect")
-          return () => strokes.push(String(Reflect.get(target, "strokeStyle")));
+          return () => {
+            const style = String(Reflect.get(target, "strokeStyle"));
+            strokes.push(style);
+            if (style === "#e7000b") order.push("ring");
+          };
+        if (key === "fillText")
+          return (text: string) => {
+            texts.push(text);
+            order.push(text);
+          };
         return Reflect.get(target, key);
       },
       set(target, key, value) {
@@ -186,6 +196,11 @@ describe("motion frames", () => {
     expect(texts).toContain("White · GPT-4.1 Nano");
     // Both squares ringed in red.
     expect(strokes.filter((style) => style === "#e7000b")).toHaveLength(2);
+    // g1's file label is drawn once, over the rings, so the ring does not cover it.
+    expect(order.filter((text) => text === "g")).toHaveLength(1);
+    expect(order.indexOf("g")).toBeGreaterThan(order.lastIndexOf("ring"));
+    // Unringed squares keep their label under everything (drawn with the squares).
+    expect(order.indexOf("f")).toBeLessThan(order.indexOf("ring"));
     // 32 pieces: the knight is drawn once, as the ghost, not also on g1.
     expect(recorded.pieces).toHaveLength(32);
     const still = recordPieces(recordingContext().ctx);

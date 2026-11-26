@@ -1,22 +1,48 @@
+import { useSyncExternalStore } from "react";
 import { Toaster as SileoToaster, sileo } from "sileo";
 import "sileo/styles.css";
 
+type ToastPosition =
+  | "top-left"
+  | "top-center"
+  | "top-right"
+  | "bottom-left"
+  | "bottom-center"
+  | "bottom-right";
+
 interface ToasterProps {
-  position?:
-    | "top-left"
-    | "top-center"
-    | "top-right"
-    | "bottom-left"
-    | "bottom-center"
-    | "bottom-right";
+  position?: ToastPosition;
 }
+
+// Tailwind `md`. Below it the page is one column and the toast sits centred
+// above the thumb. From it on, forms and their submit buttons sit in centred
+// columns, so a bottom-centre toast (an expanded error stays up for seconds,
+// longer while hovered) lands on the action that raised it; the bottom-right
+// corner is outside every centred column.
+const WIDE_QUERY = "(min-width: 768px)";
+
+/** The default corner for a viewport. Exported for the tests. */
+export function defaultToastPosition(wide: boolean): ToastPosition {
+  return wide ? "bottom-right" : "bottom-center";
+}
+
+function subscribeWide(onChange: () => void): () => void {
+  const query = window.matchMedia?.(WIDE_QUERY);
+  query?.addEventListener("change", onChange);
+  return () => query?.removeEventListener("change", onChange);
+}
+const readWide = () => window.matchMedia?.(WIDE_QUERY).matches === true;
+const readWideOnServer = () => false;
 
 // No `theme`: sileo's themes invert the page (a light pill on a dark app).
 // The toast takes the app's popover tokens from globals.css instead, so it
 // follows `.dark` like every other surface, with no JS theme state.
-const Toaster = ({ position = "bottom-center", ...props }: ToasterProps) => (
-  <SileoToaster position={position} {...props} />
-);
+// sileo stamps each toast with the corner current when it is raised, so a
+// resize across the breakpoint moves only the toasts raised after it.
+const Toaster = ({ position, ...props }: ToasterProps) => {
+  const wide = useSyncExternalStore(subscribeWide, readWide, readWideOnServer);
+  return <SileoToaster position={position ?? defaultToastPosition(wide)} {...props} />;
+};
 
 type ToastOptions = {
   duration?: number;

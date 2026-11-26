@@ -80,5 +80,11 @@
         }
       }
     }
+  },
+  "offline": {
+    "band": "You're offline. Changes can't be sent until you reconnect; try them again then.",
+    "backOnline": "Back online.",
+    "queued": "You're offline. This change will be sent when you reconnect. Keep this tab open.",
+    "queuedSent": "Back online. Your offline change was sent."
   }
 }

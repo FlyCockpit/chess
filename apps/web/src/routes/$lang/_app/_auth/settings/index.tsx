@@ -45,7 +45,7 @@ function ProfileSettings() {
   const { session } = Route.useRouteContext();
   const { t } = useTranslation(["settings", "auth", "common"]);
   const queryClient = useQueryClient();
-  const { data, error, isPending, isError, refetch } = useQuery({
+  const { data, error, isPending, isError, fetchStatus, refetch } = useQuery({
     ...orpc.settings.myNotificationPreferences.queryOptions(),
     meta: { skipGlobalErrorToast: true },
   });
@@ -136,7 +136,7 @@ function ProfileSettings() {
         {hasAdminRole(session.user.role) ? (
           <div className="mt-6 border-t pt-6">
             <QueryBoundary
-              query={{ data, error, isPending, isError, refetch }}
+              query={{ data, error, isPending, isError, fetchStatus, refetch }}
               skeleton={
                 <div className="flex items-start gap-3">
                   <Skeleton className="size-4" />

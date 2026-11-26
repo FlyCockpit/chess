@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { AdminSetupBanner } from "@/components/admin-setup-banner";
 import BottomNav from "@/components/bottom-nav";
 import Header from "@/components/header";
+import { OfflineBand } from "@/components/offline-band";
 import PullToRefresh from "@/components/pull-to-refresh";
 import { RouteContentSkeleton } from "@/components/route-content-skeleton";
 import { SetupKeyBanner } from "@/components/setup-key-banner";
@@ -127,6 +128,9 @@ function AppShellFrame({ children }: { children: ReactNode }) {
           <Header />
           <AdminSetupBanner />
           <SetupKeyBanner />
+          {/* In the top row, above the scroller: it never covers the page,
+              the BottomNav or the cookie banner. */}
+          <OfflineBand />
         </div>
         {/* No `scrollbar-gutter: stable`: the banners and sticky sub-navs
             inside the scroller are full-bleed. This shell has no footer:

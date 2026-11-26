@@ -189,8 +189,9 @@ export type RangeInputOutcome =
  *   commits the nearest on-step value — each with a notice saying so;
  * - anything else commits as typed.
  *
- * A bare number is read in the unit the current value is shown in. Snap stops
- * are deliberately not consulted.
+ * A bare number is read in the unit the current value is shown in, unless it
+ * is above the allowed range there but within it in the base unit (then it was
+ * typed in the base unit). Snap stops are deliberately not consulted.
  */
 export function interpretRangeInput(
   text: string,
@@ -206,11 +207,22 @@ export function interpretRangeInput(
   const shownUnit = pickUnit(currentValue, units, { exact: true });
   const parsed = parseUnitValue(text, units, { defaultFactor: shownUnit?.factor });
   if (!parsed.ok) return { kind: "error", message: labels.errors.notANumber };
-  const typed = parsed.value;
+  const upper = effectiveMax(max, limit);
+  // A bare number too large in the shown unit, but in range in the base unit, was
+  // typed in the base unit: "1000000" into "10 M" tokens means a million tokens,
+  // not a million millions. (Read in the base unit, a bare number differs.)
+  const asBase = parseUnitValue(text, units);
+  const typed =
+    parsed.value > upper &&
+    asBase.ok &&
+    asBase.value !== parsed.value &&
+    asBase.value >= min &&
+    asBase.value <= upper
+      ? asBase.value
+      : parsed.value;
   const code = validateRangeValue(typed, { min, max, step, limit });
   if (code === null) return { kind: "commit", value: typed };
 
-  const upper = effectiveMax(max, limit);
   const highest = snapDownToStep(upper, step, min);
   // No value is allowed at all (the limit is below `min`): nothing to set.
   if (highest < min) return { kind: "error", message: rangeErrorMessage(code, context) };
@@ -295,7 +307,8 @@ function trackTicks(scale: RangeScale, min: number, max: number): Tick[] {
  *   `scale="log"` over log-spaced positions; otherwise linearly by `step`.
  * - **Typed input**: commits on blur or Enter (Escape reverts). Accepts unit
  *   suffixes ("4 GiB", "4096 MiB", "4g"); a bare number is read in the unit
- *   currently shown, since the `decimal` phone keyboard has no letters. Text
+ *   currently shown, since the `decimal` phone keyboard has no letters (one too
+ *   large there but in range in the base unit is read in the base unit). Text
  *   that is not a number shows an inline error and the input goes back to the
  *   field value. A number outside `min`/`max`/`limit` or off `step` commits
  *   the nearest allowed value with a polite notice ("… Set to 32 GiB."), so

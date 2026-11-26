@@ -25,6 +25,25 @@ export async function checkArchiveFile(file: Pick<File, "size" | "text">): Promi
   return game.status === "running" ? { kind: "running", game } : { kind: "ok", game, json };
 }
 
+/**
+ * A chosen file's size in the reader's locale: whole bytes under 1 kB ("34 bytes", not
+ * "0 kB"), then kB, then MB (decimal units, like MAX_ARCHIVE_BYTES).
+ */
+export function formatFileSize(bytes: number, locale: string): string {
+  const [unit, value, unitDisplay] =
+    bytes < 1000
+      ? (["byte", bytes, "long"] as const)
+      : bytes < 1_000_000
+        ? (["kilobyte", bytes / 1000, "short"] as const)
+        : (["megabyte", bytes / 1_000_000, "short"] as const);
+  return new Intl.NumberFormat(locale, {
+    style: "unit",
+    unit,
+    unitDisplay,
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
 /** The dialog's view of the chosen file. `generation` ties a finished read to the latest choice. */
 export type ImportState = {
   generation: number;

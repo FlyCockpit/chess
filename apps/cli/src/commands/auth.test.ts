@@ -1,6 +1,9 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createApiClient } from "../api";
 import { loadConfig, saveConfig } from "../config";
+import { pollForToken, requestDeviceCode } from "../device-flow";
+import { openUrl } from "../open-url";
 import { registerAuth } from "./auth";
 
 vi.mock("../config", async (importOriginal) => ({
@@ -9,6 +12,13 @@ vi.mock("../config", async (importOriginal) => ({
   saveConfig: vi.fn(),
 }));
 vi.mock("../output", () => ({ info: vi.fn(), printResult: vi.fn() }));
+vi.mock("../open-url", () => ({ openUrl: vi.fn() }));
+vi.mock("../device-flow", () => ({ requestDeviceCode: vi.fn(), pollForToken: vi.fn() }));
+// The real client unless a test stubs it (mockReset restores this implementation).
+vi.mock("../api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api")>();
+  return { ...actual, createApiClient: vi.fn(actual.createApiClient) };
+});
 
 beforeEach(() => {
   vi.mocked(saveConfig).mockResolvedValue(undefined);
@@ -66,4 +76,34 @@ it("forgets an API key without calling the network", async () => {
   await program.parseAsync(["--server", "https://app", "logout"], { from: "user" });
   expect(saveConfig).toHaveBeenCalledExactlyOnceWith({});
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it.each([
+  { args: [], opens: true },
+  { args: ["--no-browser"], opens: false },
+])("login $args opens the browser: $opens", async ({ args, opens }) => {
+  vi.mocked(loadConfig).mockResolvedValue({});
+  vi.mocked(requestDeviceCode).mockResolvedValue({
+    deviceCode: "test-device-code",
+    userCode: "ABCD-EFGH",
+    verificationUri: "https://app/en-US/device",
+    verificationUriComplete: "https://app/en-US/device?user_code=ABCD-EFGH",
+    expiresInSeconds: 600,
+    intervalSeconds: 5,
+  });
+  vi.mocked(pollForToken).mockResolvedValue("test-session");
+  vi.mocked(createApiClient).mockReturnValueOnce({
+    whoami: async () => ({ email: "user@example.com" }),
+  } as unknown as ReturnType<typeof createApiClient>);
+  const program = new Command().option("--server <url>");
+  registerAuth(program);
+  await program.parseAsync(["--server", "https://app", "login", ...args], { from: "user" });
+  if (opens) {
+    expect(openUrl).toHaveBeenCalledExactlyOnceWith("https://app/en-US/device?user_code=ABCD-EFGH");
+  } else {
+    expect(openUrl).not.toHaveBeenCalled();
+  }
+  expect(saveConfig).toHaveBeenCalledExactlyOnceWith({
+    credentials: { "https://app": { kind: "session", value: "test-session" } },
+  });
 });

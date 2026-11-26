@@ -21,6 +21,7 @@ import { authClient } from "@/lib/auth-client";
 import { resolveRouteSession } from "@/lib/route-session";
 import { decideProtectedRouteAccess } from "@/lib/route-session-access";
 import { setSessionHint } from "@/lib/session-hint";
+import { codeFailureMessage, friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 import { twoFactorEnrollmentState } from "@/utils/two-factor-policy";
 
@@ -115,7 +116,8 @@ function TwoFactorSetupRequired() {
       setStep("verify");
     } catch (err) {
       console.error("[_auth.twoFactor.enable]", err);
-      toast.error(t("twoFactor.couldNotStartSetup"));
+      // Offline / unreachable say so; anything else keeps the setup copy.
+      toast.error(friendly(err, t("twoFactor.couldNotStartSetup")));
     } finally {
       setIsLoading(false);
     }
@@ -129,14 +131,17 @@ function TwoFactorSetupRequired() {
       });
       if (result.error) {
         console.error("[_auth.twoFactor.verifyTotp]", result.error);
-        toast.error(t("errors.invalidTotp"));
+        // "That code didn't work" only when the code itself was rejected; the
+        // typed code stays for a retry either way.
+        toast.error(codeFailureMessage(result.error, t("errors.invalidTotp")));
         return;
       }
       toast.success(t("twoFactor.enabledSuccess"));
       window.location.reload();
     } catch (err) {
+      // The request itself failed (offline, server unreachable).
       console.error("[_auth.twoFactor.verifyTotp]", err);
-      toast.error(t("errors.invalidTotp"));
+      toast.error(codeFailureMessage(err, t("errors.invalidTotp")));
     } finally {
       setIsLoading(false);
     }

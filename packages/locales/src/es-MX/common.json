@@ -80,5 +80,11 @@
         }
       }
     }
+  },
+  "offline": {
+    "band": "No tienes conexión. Los cambios no se pueden enviar hasta que te vuelvas a conectar; inténtalos de nuevo entonces.",
+    "backOnline": "Conexión restablecida.",
+    "queued": "No tienes conexión. Este cambio se enviará cuando te vuelvas a conectar. Mantén esta pestaña abierta.",
+    "queuedSent": "Conexión restablecida. Se envió tu cambio pendiente."
   }
 }

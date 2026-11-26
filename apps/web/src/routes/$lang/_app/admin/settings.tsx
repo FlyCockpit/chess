@@ -34,6 +34,7 @@ function AdminSettings() {
     error: appSettingsError,
     isPending: appSettingsPending,
     isError: appSettingsIsError,
+    fetchStatus: appSettingsFetchStatus,
     refetch: refetchAppSettings,
   } = useQuery({ ...orpc.settings.getAll.queryOptions(), meta: { skipGlobalErrorToast: true } });
   const adminHas2FA = session.user.twoFactorEnabled === true;
@@ -62,6 +63,7 @@ function AdminSettings() {
           error: appSettingsError,
           isPending: appSettingsPending,
           isError: appSettingsIsError,
+          fetchStatus: appSettingsFetchStatus,
           refetch: refetchAppSettings,
         }}
         skeleton={<SettingsSkeleton />}

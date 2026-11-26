@@ -171,6 +171,10 @@ describe("authoritative chess and portable archives", () => {
     expect(matchStats(match)).toMatchObject({
       reservedTokens: 1900,
       reservedCostMicros: 90,
+      // One request at a time: the most ever reserved is the largest single reservation.
+      peakReservedTokens: 1000,
+      unsettledDispatches: 1,
+      uncostedReports: 0,
       committedTokens: 120 + 900,
       committedCostMicros: 3 + 40,
       costMicros: null,
@@ -187,6 +191,7 @@ describe("authoritative chess and portable archives", () => {
       committedTokens: 135,
       committedCostMicros: 4,
       costMicros: 4,
+      unsettledDispatches: 0,
     });
     const orphan = structuredClone(match);
     const usage = orphan.events.at(-1);

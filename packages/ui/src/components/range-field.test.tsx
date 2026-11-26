@@ -250,6 +250,44 @@ describe("interpretRangeInput", () => {
     });
   });
 
+  it("reads a bare number too large for the shown unit in the base unit when that fits", () => {
+    // "4096" while 8 GiB is shown: 4096 GiB is over the limit, 4096 MiB is allowed.
+    expect(interpretRangeInput("4096", { ...context, currentValue: 8192 })).toEqual({
+      kind: "commit",
+      value: 4096,
+    });
+    // Still snapped to step in the base unit.
+    expect(interpretRangeInput("1000", { ...context, currentValue: 8192 })).toEqual(
+      expect.objectContaining({ kind: "commit", value: 1024 }),
+    );
+    // Too small in the base unit as well: the shown unit stands and is clamped.
+    expect(interpretRangeInput("100", { ...context, currentValue: 8192 })).toEqual({
+      kind: "commit",
+      value: 16384,
+      notice: "This host allows at most 16 GiB. Set to 16384.",
+    });
+    // A suffix is always taken at its word.
+    expect(interpretRangeInput("4096 GiB", { ...context, currentValue: 8192 })).toEqual(
+      expect.objectContaining({ value: 16384 }),
+    );
+    // Token counts shown in millions: typing the plain count means that many tokens.
+    const tokens = {
+      ...context,
+      units: [
+        { factor: 1, label: "" },
+        { factor: 1000, label: "k" },
+        { factor: 1_000_000, label: "M" },
+      ],
+      min: 256,
+      max: 10_000_000,
+      step: 1,
+      limit: undefined,
+      currentValue: 10_000_000,
+    };
+    expect(interpretRangeInput("1000000", tokens)).toEqual({ kind: "commit", value: 1_000_000 });
+    expect(interpretRangeInput("2", tokens)).toEqual({ kind: "commit", value: 2_000_000 });
+  });
+
   it("accepts values between snap stops when on step", () => {
     expect(interpretRangeInput("12 GiB", { ...context, currentValue: 4096 })).toEqual({
       kind: "commit",

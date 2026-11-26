@@ -31,6 +31,9 @@
     "published": "Published games",
     "watch": "Watch match",
     "retry": "Couldn’t load matches. Try again.",
+    "offlineRetry": "You’re offline. This will load when you reconnect. Try again.",
+    "gameNotFound": "This game isn’t available",
+    "gameNotFoundDescription": "The link may be wrong, or the game isn’t published.",
     "loading": "Loading arena",
     "all": "All matches",
     "unpublished": "Private draft",
@@ -129,7 +132,7 @@
     "json": "Game archive",
     "pgn": "Export PGN",
     "fen": "Copy current position",
-    "spend": "Estimated usage cost: {{cost}} · {{reserved}} tokens reserved",
+    "spend": "Estimated usage cost: {{cost}} · at most {{reserved}} tokens reserved for one request",
     "unknownCost": "unknown (incomplete provider usage)",
     "rules": "Exact experiment settings",
     "copyRules": "Copy experiment settings",
@@ -142,6 +145,7 @@
     "commentaryEmpty": "No remarks yet.",
     "commentaryNote": "Model remarks, shown as plain text. They are untrusted output.",
     "remarkMove": "Move {{move}} · {{san}}",
+    "remarkRejected": "rejected",
     "evalBar": "Evaluation: {{score}}",
     "evalGraph": "Evaluation over the game",
     "evalGraphPoint": "Move {{move}}: {{score}}",
@@ -158,7 +162,10 @@
     "clockLabel": "{{side}} clock: {{time}}",
     "chatTab": "Chat ({{count}})",
     "sideSpend": "{{side}} · spent {{spent}} of {{budget}}",
-    "sideSpendUnknown": "{{side}} · spent at least {{spent}} of {{budget}} (usage still settling)",
+    "sideSpendSettling": "{{side}} · spent at least {{spent}} of {{budget}} (usage still settling)",
+    "sideSpendUnreported_one": "{{side}} · spent at least {{spent}} of {{budget}} (one call's usage was never reported)",
+    "sideSpendUnreported_other": "{{side}} · spent at least {{spent}} of {{budget}} ({{count}} calls' usage was never reported)",
+    "sideSpendUncosted": "{{side}} · spent at least {{spent}} of {{budget}} (a call's cost was never reported)",
     "illegalBySide": "Illegal attempts: {{white}} {{w}} · {{black}} {{b}}",
     "cutOff": "Rejected · ran out of space",
     "rejectedTruncated": "Rejected: the reply ran out of space before giving a move. The board stays unchanged.",
@@ -445,7 +452,7 @@
       "rules": "Rules",
       "rulesHint": "Memory, legal-move help, move format, engine and illegal moves",
       "limits": "Limits",
-      "limitsHint": "Token accounting, allowances and game length"
+      "limitsHint": "Token accounting, allowances and the per-move limit"
     },
     "protocolLabel": "{{side}} wire protocol",
     "protocols": {
@@ -474,10 +481,10 @@
         "lenient": "Also reads a JSON move inside prose and converts legal SAN to UCI. Ranked separately."
       },
       "engine": {
-        "off": "No Stockfish. The game view has no evaluation bar.",
+        "off": "No Stockfish for the players. Spectators still see an evaluation bar, scored separately.",
         "tool": "Models may ask Stockfish about the position, at most 2 calls per turn.",
-        "after-move": "Stockfish scores the position after every move. Players see the score, and the game view draws the evaluation bar from it.",
-        "both": "The engine tool plus a score after every move (evaluation bar included)."
+        "after-move": "Stockfish scores the position after every move, and the players see the score.",
+        "both": "The engine tool plus a score after every move that the players see."
       },
       "accounting": {
         "provider": "Tokens are counted from what the provider reports, reserved before each request.",
@@ -614,6 +621,7 @@
     "tokens": "{{tokens}} token budget",
     "spend": "spent {{spent}} of {{budget}}",
     "spendAtLeast": "spent at least {{spent}} of {{budget}}",
+    "noRoom": "{{limit}}; not enough left for another request",
     "plies": "{{plies}} plies",
     "unscored": "unscored"
   },
@@ -632,6 +640,13 @@
     "cannotMove": "its {{piece}} on {{from}} cannot legally move to {{to}}",
     "promotion": "its pawn on {{from}} must name a promotion piece (q, r, b or n)",
     "truncated": "ran out of space before giving a move"
+  },
+  "pieceLetters": {
+    "n": "N",
+    "b": "B",
+    "r": "R",
+    "q": "Q",
+    "k": "K"
   },
   "pieceNames": {
     "pawn": "pawn",

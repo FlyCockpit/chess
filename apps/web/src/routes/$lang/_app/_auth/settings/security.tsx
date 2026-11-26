@@ -21,7 +21,7 @@ import z from "zod";
 
 import { TwoFactorSetupDetails } from "@/components/two-factor-setup-details";
 import { authClient } from "@/lib/auth-client";
-import { friendly, isRateLimit } from "@/utils/friendly-error";
+import { codeFailureMessage, friendly, isRateLimit } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 
 export const Route = createFileRoute("/$lang/_app/_auth/settings/security")({
@@ -273,7 +273,8 @@ function Enable2FASection() {
       setStep("setup");
     } catch (err) {
       console.error("[settings.security.twoFactor.enable]", err);
-      toast.error(t("settings:security.couldNotStartSetup"));
+      // Offline / unreachable say so; anything else keeps the setup copy.
+      toast.error(friendly(err, t("settings:security.couldNotStartSetup")));
     } finally {
       setIsLoading(false);
     }
@@ -287,14 +288,18 @@ function Enable2FASection() {
       });
       if (result.error) {
         console.error("[settings.security.twoFactor.verifyTotp]", result.error);
-        toast.error(t("auth:errors.invalidTotp"));
+        // "That code didn't work" only when the code itself was rejected; the
+        // typed code stays for a retry either way.
+        toast.error(codeFailureMessage(result.error, t("auth:errors.invalidTotp")));
         return;
       }
       toast.success(t("settings:security.enabledSuccess"));
       window.location.reload();
     } catch (err) {
+      // The request itself failed (offline, server unreachable): the code was
+      // never checked.
       console.error("[settings.security.twoFactor.verifyTotp]", err);
-      toast.error(t("auth:errors.invalidTotp"));
+      toast.error(codeFailureMessage(err, t("auth:errors.invalidTotp")));
     } finally {
       setIsLoading(false);
     }
@@ -409,7 +414,7 @@ function Disable2FASection() {
       window.location.reload();
     } catch (err) {
       console.error("[settings.security.twoFactor.disable]", err);
-      toast.error(t("settings:security.couldNotDisable"));
+      toast.error(friendly(err, t("settings:security.couldNotDisable")));
     } finally {
       setIsLoading(false);
     }

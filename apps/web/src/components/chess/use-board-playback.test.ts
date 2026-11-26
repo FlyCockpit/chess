@@ -4,6 +4,7 @@ import { LOOKUP_HOLD_MS } from "./board-motion";
 import {
   afterMotion,
   gameSource,
+  isHurried,
   MAX_QUEUE,
   type PlaybackSource,
   type PlaybackState,
@@ -129,6 +130,59 @@ describe("retarget", () => {
     expect(retarget(still(-1, 0), 1, true, source).motion).toMatchObject({
       kind: "hold",
       ms: LOOKUP_HOLD_MS,
+    });
+  });
+
+  it("hurries only while another event that shows something waits", () => {
+    // The lookup, the attempt and the move arrive together: the lookup's hold and the
+    // attempt hurry (more to show after them); the move is last of what shows.
+    let state = retarget(still(-1, 0), 3, true, source);
+    const hurried: boolean[] = [];
+    while (state.motion) {
+      hurried.push(isHurried(state, source));
+      state = end(state);
+    }
+    expect(hurried).toEqual([true, true, false]);
+    // An attempt that arrives with bookkeeping only (the timing after it): full length.
+    const attempt = retarget(still(0, 1), 2, true, source);
+    expect(attempt).toMatchObject({ shown: 1, target: 2, motion: { kind: "illegal" } });
+    expect(isHurried(attempt, source)).toBe(false);
+    expect(end(attempt)).toEqual(still(2));
+    // A move followed by bookkeeping in the same poll is not hurried either.
+    const booked = game();
+    booked.events.push({
+      type: "timing",
+      seq: booked.events.length,
+      at: new Date(0).toISOString(),
+      side: "w",
+      ply: 2,
+      elapsedMs: 5,
+    });
+    const bookedSource = gameSource(booked);
+    const move = retarget(still(3, 4), 5, true, bookedSource);
+    expect(move).toMatchObject({ shown: 4, motion: { kind: "move" } });
+    expect(isHurried(move, bookedSource)).toBe(false);
+    // A new move arriving mid-motion hurries the running one.
+    const running = retarget(still(2, 3), 3, true, source);
+    const queued = retarget(running, 4, true, source);
+    expect(isHurried(queued, source)).toBe(true);
+    // A single step the viewer takes never hurries.
+    expect(isHurried(retarget(still(2), 3, false, source), source)).toBe(false);
+  });
+
+  it("snaps a scrubber drag, even one event at a time, but still plays arrivals", () => {
+    expect(retarget(still(2), 3, false, source, true)).toEqual(still(3));
+    expect(retarget(still(3), 2, false, source, true)).toEqual(still(2));
+    expect(retarget(still(0), 1, false, source, true)).toEqual(still(1));
+    // Dragged to the end (following again) with no new events: snaps too.
+    expect(retarget(still(3), 4, true, source, true)).toEqual(still(4));
+    // A drag that replaces a running step ends it.
+    const running = retarget(still(2), 3, false, source);
+    expect(retarget(running, 4, false, source, true)).toEqual(still(4));
+    // Events that arrive while following after a drag still play in order.
+    expect(retarget(still(2, 3), 3, true, source, true)).toMatchObject({
+      shown: 3,
+      motion: { kind: "move" },
     });
   });
 

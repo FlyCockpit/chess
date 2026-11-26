@@ -1,17 +1,21 @@
 import { buttonVariants } from "@cockpit-chess/ui/components/button";
-import { useQuery } from "@tanstack/react-query";
+import { revealFocusedItem } from "@cockpit-chess/ui/components/selector-row";
+import { edgeAttributes, useScrollEdges } from "@cockpit-chess/ui/hooks/use-scroll-edges";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import { User } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { ModeToggle } from "@/components/mode-toggle";
 import { NotFoundPage } from "@/components/not-found-page";
+import { OfflineBand } from "@/components/offline-band";
 import { PublicFooter } from "@/components/public-footer";
 import { useMobileKeyboard } from "@/hooks/use-mobile-keyboard";
+import { usePeerSessionChange } from "@/hooks/use-peer-session-change";
 import { DEFAULT_LOCALE, isSupportedLocale } from "@/i18n/config";
 import { MAIN_SCROLLER_ID } from "@/lib/main-scroller";
-import { sessionHintQueryOptions } from "@/lib/session-hint";
+import { SESSION_HINT_QUERY_KEY, sessionHintQueryOptions } from "@/lib/session-hint";
 
 /**
  * The arena's public shell: header, the one page scroller and the footer. The
@@ -34,7 +38,12 @@ export function PublicShell({ children }: { children: ReactNode }) {
       >
         {t("skipToContent")}
       </a>
-      <PublicHeader />
+      {/* The top row: header, then the offline band, which takes its own
+          space above the scroller instead of covering the page. */}
+      <div className="min-w-0">
+        <PublicHeader />
+        <OfflineBand columnClassName="cc-app" />
+      </div>
       {/* No `scrollbar-gutter: stable`: a reserved gutter stops the footer's
           and every other full-bleed rule inside the scroller short of the
           viewport edge with classic scrollbars. */}
@@ -69,7 +78,22 @@ function PublicHeader() {
   // route) asks on the client. A presence hint, never an access check: the
   // link's `_auth` gate does the real one. Signed out there is no Sign In
   // here: Studio's own page offers it to administrators.
-  const { data: signedIn = false } = useQuery(sessionHintQueryOptions());
+  const { data: signedIn = false } = useQuery({
+    ...sessionHintQueryOptions(),
+    // A sign-in or sign-out in another tab shows here as soon as this tab is
+    // back in front, not once the minute is up.
+    refetchOnWindowFocus: "always",
+  });
+  // ...and at once when the other tab announces it.
+  const queryClient = useQueryClient();
+  usePeerSessionChange(
+    useCallback(
+      () => void queryClient.invalidateQueries({ queryKey: SESSION_HINT_QUERY_KEY }),
+      [queryClient],
+    ),
+  );
+  const navRef = useRef<HTMLElement>(null);
+  const navEdges = useScrollEdges(navRef);
   return (
     // The rule is the full-bleed header's border; the row inside keeps the
     // 1440px maximum (`.cc-header-row`), so the line reaches both viewport
@@ -95,7 +119,16 @@ function PublicHeader() {
           />
           <span className="cc-brand-name">{t("chess:brand")}</span>
         </Link>
-        <nav className="cc-nav" aria-label={t("nav:mainNav.ariaLabel")}>
+        {/* When the tabs scroll sideways (651–700px in es-MX, for one), the edge
+            with more tabs past it fades, as in every SelectorRow, and a tab
+            reached by keyboard scrolls clear of the fade. */}
+        <nav
+          ref={navRef}
+          className="cc-nav scroll-fade-x scroll-px-6"
+          aria-label={t("nav:mainNav.ariaLabel")}
+          {...edgeAttributes(navEdges)}
+          onFocus={revealFocusedItem}
+        >
           {(["arena", "leaderboard", "lab", "methodology"] as const).map((tab) => (
             <Link
               key={tab}

@@ -617,6 +617,18 @@ export function matchStats(match: MatchArchive, side?: Side) {
     /** Raw sum of every reservation, for the record; budgets use `committed*`. */
     reservedTokens: reservations.reduce((n, event) => n + event.tokens, 0),
     reservedCostMicros: reservations.reduce((n, event) => n + event.costMicros, 0),
+    /**
+     * The largest reservation one request took. Dispatches run one at a time and a usage
+     * report replaces its reservation, so the raw sum overstates what was ever held.
+     */
+    peakReservedTokens: reservations.reduce((n, event) => Math.max(n, event.tokens), 0),
+    /**
+     * Reservations no usage report settled: in flight while the game runs, never
+     * reported once it has ended.
+     */
+    unsettledDispatches: reservations.filter((event) => !settled.has(event.dispatch)).length,
+    /** Usage reports that came without a cost. */
+    uncostedReports: usage.filter((event) => event.costMicros === null).length,
     /** Reported usage plus reservations not settled by a usage report. */
     committedTokens,
     committedCostMicros,

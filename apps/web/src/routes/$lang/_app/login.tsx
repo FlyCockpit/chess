@@ -6,20 +6,26 @@ import { TextField } from "@cockpit-chess/ui/components/text-field";
 import { cn } from "@cockpit-chess/ui/lib/utils";
 import { useForm } from "@tanstack/react-form";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { createFileRoute, Link, redirect, useNavigate, useRouter } from "@tanstack/react-router";
+import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import z from "zod";
 
 import { AuthConfigGate } from "@/components/auth/auth-config-gate";
 import { AuthCard } from "@/components/auth/auth-screen";
 import { useAuthSession } from "@/hooks/use-auth-session";
+import { usePeerSessionChange } from "@/hooks/use-peer-session-change";
 import { APP_HOME, appHomeHref } from "@/lib/app-home";
 import { authClient } from "@/lib/auth-client";
 import { resolveRouteSession } from "@/lib/route-session";
 import { decideAnonymousOnlyRouteAccess } from "@/lib/route-session-access";
 import { setSessionHint } from "@/lib/session-hint";
-import { friendly, isRateLimit } from "@/utils/friendly-error";
+import {
+  codeFailureMessage,
+  friendly,
+  isRateLimit,
+  signInFailureMessage,
+} from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 import { safeRedirectTo } from "@/utils/safe-redirect";
 
@@ -60,6 +66,11 @@ function LoginPage() {
   const { redirectTo } = Route.useSearch();
   const [twoFactor, setTwoFactor] = useState(initialTwoFactorState);
   const authSession = useAuthSession();
+  // Another tab signed in: re-run this page's guard, which sends a signed-in
+  // visitor on (`redirect-authenticated`) instead of leaving the form up
+  // beside the new account's menu.
+  const router = useRouter();
+  usePeerSessionChange(useCallback(() => void router.invalidate(), [router]));
   const {
     data: configData,
     isPending: configPending,
@@ -94,6 +105,8 @@ function LoginPage() {
   };
 
   const handle2FAVerify = async () => {
+    // Enter and the button both land here; one verification at a time.
+    if (twoFactor.verifying) return;
     setTwoFactor((s) => ({ ...s, verifying: true }));
     try {
       // When the user requested an emailed code we verify against the OTP
@@ -103,11 +116,18 @@ function LoginPage() {
         : await authClient.twoFactor.verifyTotp({ code: twoFactor.code });
       if (result.error) {
         console.error("[login.twoFactor.verify]", result.error);
-        toast.error(t("auth:errors.invalidTotp"));
+        // "That code didn't work" only when the code itself was rejected; a
+        // server, network or rate-limit failure says so. The code stays as
+        // typed either way, so the same one can be sent again.
+        toast.error(codeFailureMessage(result.error, t("auth:errors.invalidTotp")));
       } else {
         toast.success(t("auth:signedInSuccess"));
         window.location.assign(postAuthRedirect);
       }
+    } catch (err) {
+      // The request itself failed (offline, server unreachable).
+      console.error("[login.twoFactor.verify]", err);
+      toast.error(codeFailureMessage(err, t("auth:errors.invalidTotp")));
     } finally {
       setTwoFactor((s) => ({ ...s, verifying: false }));
     }
@@ -137,6 +157,10 @@ function LoginPage() {
       }
       setTwoFactor((s) => ({ ...s, otpSent: true, code: "" }));
       toast.success(t("auth:twoFactor.codeSent"));
+    } catch (err) {
+      // The request itself failed (offline, server unreachable).
+      console.error("[login.twoFactor.sendOtp]", err);
+      toast.error(friendly(err, t("auth:twoFactor.couldNotSendCode")));
     } finally {
       setTwoFactor((s) => ({ ...s, sendingOtp: false }));
     }
@@ -282,10 +306,19 @@ function SignInForm({
   const form = useForm({
     defaultValues: { email: "", password: "" },
     onSubmit: async ({ value }) => {
-      const result = await authClient.signIn.email({
-        email: value.email,
-        password: value.password,
-      });
+      let result: Awaited<ReturnType<typeof authClient.signIn.email>>;
+      try {
+        result = await authClient.signIn.email({
+          email: value.email,
+          password: value.password,
+        });
+      } catch (err) {
+        // The request itself failed (offline, server unreachable): say so,
+        // and the same credentials can be sent again.
+        console.error("[login.signIn]", err);
+        toast.error(signInFailureMessage(err, t("auth:errors.invalidCredentials")));
+        return;
+      }
       if (result.error) {
         // `requireEmailVerification` rejects correct credentials on an
         // unverified account. Better-Auth distinguishes this itself, so say so
@@ -313,9 +346,10 @@ function SignInForm({
           });
           return;
         }
-        toast.error(
-          isRateLimit(result.error) ? friendly(result.error) : t("auth:errors.invalidCredentials"),
-        );
+        // "Doesn't match" only for a true credential rejection; a rate limit,
+        // a 5xx or a 401 FAILED_TO_CREATE_SESSION (the credentials were
+        // right) gets the shared failure copy instead.
+        toast.error(signInFailureMessage(result.error, t("auth:errors.invalidCredentials")));
         return;
       }
       if ((result.data as Record<string, unknown>)?.twoFactorRedirect) {

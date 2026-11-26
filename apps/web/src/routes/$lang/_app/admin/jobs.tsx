@@ -34,6 +34,7 @@ function AdminJobsPage() {
     isPending: failedJobsPending,
     isError: failedJobsIsError,
     isFetching: failedJobsFetching,
+    fetchStatus: failedJobsFetchStatus,
     refetch: refetchFailedJobs,
   } = useQuery({
     ...orpc.queue.listFailed.queryOptions({
@@ -82,6 +83,7 @@ function AdminJobsPage() {
               error: failedJobsError,
               isPending: failedJobsPending,
               isError: failedJobsIsError,
+              fetchStatus: failedJobsFetchStatus,
               refetch: refetchFailedJobs,
             }}
             skeleton={<JobsSkeleton />}

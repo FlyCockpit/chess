@@ -37,8 +37,8 @@ import {
   endingHeadlineLabel,
   endingLabel,
   remarkToneLabel,
+  sideSpendLabel,
   timeControlLabel,
-  usdLabel,
 } from "./ending-label";
 
 /** Hosted model players spend against a budget; random and human players do not. */
@@ -64,7 +64,15 @@ function modelLine(player: { name: string; model: string }) {
   return player.model.trim() && player.model !== player.name ? player.model : null;
 }
 
-type Remark = { index: number; side: Color; move: number; label: string; comment: string };
+type Remark = {
+  index: number;
+  side: Color;
+  move: number;
+  label: string;
+  comment: string;
+  /** The remark came with a rejected attempt: the move it names was not played. */
+  rejected: boolean;
+};
 
 /**
  * One remark: the chat bubble beside its player and each chat-log entry are this same
@@ -90,6 +98,12 @@ function RemarkButton({
         <span aria-hidden="true" className={`cc-swatch cc-swatch-${remark.side}`} />
         {t(`colors.${remark.side}`)} ·{" "}
         {t("replay.remarkMove", { move: remark.move, san: remark.label })}
+        {remark.rejected && (
+          <>
+            {" · "}
+            <span className="cc-remark-rejected">{t("replay.remarkRejected")}</span>
+          </>
+        )}
       </span>
       <span className="cc-remark-text">{remark.comment}</span>
     </button>
@@ -181,6 +195,7 @@ function remarksOf(match: MatchArchive): Remark[] {
         move,
         label: event.accepted && event.san ? event.san : event.move,
         comment: event.comment,
+        rejected: !event.accepted,
       });
     if (event.accepted) plies += 1;
   }
@@ -357,6 +372,8 @@ export function MatchReplay({
 }) {
   const { t, i18n } = useTranslation("chess");
   const [cursor, setCursor] = useState<number | null>(null);
+  // The scrubber moved the cursor last: the board snaps instead of animating a step.
+  const [scrubbed, setScrubbed] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [flipped, setFlipped] = useState(false);
   // With remarks on, the chat log is what most viewers come for; the move list is one tab away.
@@ -367,7 +384,10 @@ export function MatchReplay({
   const index = cursor === null ? lastIndex : Math.min(cursor, lastIndex);
   // Reaching the last event resumes live-follow (cursor === null) instead of
   // pinning a number that stops tracking new events.
-  const seek = (target: number) => setCursor(target >= lastIndex ? null : target);
+  const seek = (target: number, scrub = false) => {
+    setScrubbed(scrub);
+    setCursor(target >= lastIndex ? null : target);
+  };
   const shownEvent = match.events[index];
   // Autoplay leaves a rejected attempt on screen until its motion has played.
   const autoplayDelay =
@@ -435,10 +455,11 @@ export function MatchReplay({
   // The board catches up with `index` one animated step at a time (single steps and
   // autoplay; new events of a followed game play in order, the poll that ends it
   // included); everything else follows `index` at once.
-  const playback = useBoardPlayback(index, cursor === null, source);
+  const playback = useBoardPlayback(index, cursor === null, source, scrubbed);
   const finishPlayback = playback.finish;
   const selectEvent = useCallback(
     (target: number | null) => {
+      setScrubbed(false);
       setCursor(target);
       setPlaying(false);
       // Asking for the latest event mid catch-up shows it now.
@@ -489,7 +510,7 @@ export function MatchReplay({
   const boardOverlay = boardFinished
     ? undefined
     : overlayAt(match.events, replay.lookups, boardIndex);
-  // A rejected attempt stays outlined until the side's next action (or the turn's end).
+  // A rejected attempt stays outlined until the side's next attempt or accepted move.
   const rejected = useMemo(() => {
     const mark = rejectedAt(match.events, source.fenAt, boardIndex);
     return mark ? { mark, board: boardIllegal(t, mark) } : null;
@@ -604,7 +625,7 @@ export function MatchReplay({
             aria-label={t("replay.previous")}
             disabled={index < 0}
             onClick={() => {
-              setCursor(Math.max(-1, index - 1));
+              seek(Math.max(-1, index - 1));
               setPlaying(false);
             }}
           >
@@ -649,7 +670,7 @@ export function MatchReplay({
           value={index}
           aria-label={t("replay.scrub")}
           onChange={(e) => {
-            seek(Number(e.target.value));
+            seek(Number(e.target.value), true);
             setPlaying(false);
           }}
         />
@@ -713,11 +734,7 @@ export function MatchReplay({
           .filter(([side]) => isModelPlayer(side === "w" ? match.config.white : match.config.black))
           .map(([side, spent]) => (
             <p key={side} className="cc-muted mb-2 text-xs cc-side-spend">
-              {t(spent.costMicros === null ? "replay.sideSpendUnknown" : "replay.sideSpend", {
-                side: t(`colors.${side}`),
-                spent: usdLabel(i18n.language, spent.reportedCostMicros),
-                budget: usdLabel(i18n.language, match.config.rules.costBudgetMicros),
-              })}
+              {sideSpendLabel(t, i18n.language, match, side, spent)}
             </p>
           ))}
         <p className="cc-muted mb-4 text-xs">
@@ -726,7 +743,7 @@ export function MatchReplay({
               stats.costMicros === null
                 ? t("replay.unknownCost")
                 : currency.format(stats.costMicros / 1000000),
-            reserved: stats.reservedTokens,
+            reserved: stats.peakReservedTokens,
           })}
         </p>
         <details className="cc-muted mb-4 text-xs">

@@ -1,4 +1,10 @@
-import { Chess, createMatch, type MatchArchive, submitMove } from "@cockpit-chess/chess";
+import {
+  Chess,
+  createMatch,
+  finishMatch,
+  type MatchArchive,
+  submitMove,
+} from "@cockpit-chess/chess";
 
 /**
  * Scholar's mate with everything the video draws: remarks (one with markup
@@ -128,6 +134,9 @@ export function videoIllegalFixtureGame(): MatchArchive {
     reject(`${from}${from[0]}3`);
   }
   play("d7d6");
+  // A finished record, so Studio imports it as is (it refuses games still running);
+  // the live checks slice it and mark the slice running themselves.
+  finishMatch(match, "*", "cancelled", "stopped");
   return match;
 }
 
