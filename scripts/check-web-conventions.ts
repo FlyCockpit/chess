@@ -11,6 +11,12 @@
  *        and no prefers-color-scheme query, outside the token file
  *        packages/ui/src/styles/globals.css. A deliberate fixed colour carries
  *        `theme-exempt: <reason>`.
+ *   G10 — text scales and stays at least 12px: no px font size in a class
+ *        list anywhere in web source (className, cva() variants, constants),
+ *        which does not follow the root viewport scale, no rem size below
+ *        0.75, no em size below 1, and no other size expression without a
+ *        0.75rem floor (max()/clamp()). See
+ *        docs/design-system.md § Viewport scale
  *
  * Tests: scripts/check-web-conventions.test.ts (run by the check-agent-rules
  * self-test, `pnpm policy:checks:self-test`).
@@ -405,6 +411,61 @@ function isArbitraryColor(base: string): boolean {
 }
 const THEME_MESSAGE =
   "follows the OS or a fixed colour instead of the app theme (stored choice > OS, the `.dark` class). Fix: use the theme tokens (bg-popover, text-foreground, var(--state-*)…) and `dark:` variants; new colours become tokens in packages/ui/src/styles/globals.css (docs/design-system.md § Shell rules).";
+/**
+ * G10: an arbitrary font size that is not provably at least 12px and scaling:
+ * a px size (`text-[13px]`, `text-[10px]/4`), which does not follow the root
+ * viewport scale; rem below 0.75 (12px); em below 1, which drops under 12px
+ * inside 12px text; and any other expression holding a length unless it has a
+ * rem floor of at least 0.75: `max(…, 0.75rem)` or `clamp(0.75rem, …, …)`
+ * (`text-[length:max(0.9em,0.75rem)]` passes, `calc(0.9em)`, `1vw`, `1cqi`,
+ * `50%` and a unitless `0` don't). The arbitrary property `[font-size:…]` is
+ * judged the same way. Values without a length (variables, colours) are not font sizes
+ * it can judge.
+ */
+function fixedOrTinyText(base: string): boolean {
+  // `text-[…]` (optionally `text-[length:…]`, a `/line-height`) or the arbitrary
+  // property `[font-size:…]`.
+  const match =
+    /^text-\[(?:length:)?(.+?)\](?:\/[\w.%[\]()-]+)?$/.exec(base) ??
+    /^\[font-size:(.+)\]$/.exec(base);
+  const value = match?.[1]?.replaceAll("_", " ").trim();
+  // A colour (`#…`, `rgb(… / 50%)`, a `color:` hint) or a bare variable is not a size.
+  if (!value || /^(?:#|[a-z-]+:|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|var)\()/i.test(value))
+    return false;
+  // A unitless zero is a valid length: no text at all.
+  if (/^[+-]?0*\.?0+$/.test(value)) return true;
+  // Any length or percentage: px, rem, em, but also vw, cqi, ch, % and the rest,
+  // which have no 12px floor either (`text-[1vw]` is 3.9px on a phone).
+  if (!/\d(?:%|[a-z]+\b)/i.test(value)) return false;
+  const plain = /^(\d*\.?\d+)(px|rem|em)$/.exec(value);
+  if (plain) {
+    const size = Number(plain[1]);
+    return (
+      plain[2] === "px" || (plain[2] === "rem" && size < 0.75) || (plain[2] === "em" && size < 1)
+    );
+  }
+  const fn = /^(max|clamp)\((.*)\)$/.exec(value);
+  if (!fn?.[2]) return true;
+  const args: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const char of fn[2]) {
+    if (char === "(") depth++;
+    else if (char === ")") depth--;
+    if (char === "," && depth === 0) {
+      args.push(current.trim());
+      current = "";
+    } else current += char;
+  }
+  args.push(current.trim());
+  const floors = fn[1] === "max" ? args : args.length === 3 ? [args[0] ?? ""] : [];
+  return !floors.some((arg) => {
+    const rem = /^(\d*\.?\d+)rem$/.exec(arg);
+    return rem !== null && Number(rem[1]) >= 0.75;
+  });
+}
+const FIXED_TEXT_MESSAGE =
+  "a px size does not grow with the large-screen root scale, and no text is smaller than 12px. Fix: use the type scale, text-xs (12px) at the smallest, or give a relative size a floor (text-[max(0.9em,0.75rem)]); a label that does not fit wraps or ends in an ellipsis (docs/design-system.md § Viewport scale).";
 function isThemeScanned(file: string): boolean {
   return (
     /^(apps\/web|packages\/ui)\/src\//.test(file) &&
@@ -518,6 +579,20 @@ export function scanWebSource(file: string, source: string): Finding[] {
           "G8",
           "A route renders a site footer, which follows the page content instead of sitting at the bottom of a short page and repeats per page. Fix: put footer content in the public shell's footer (apps/web/src/components/public-footer.tsx); a footer that belongs to an <article>, <section> or similar stays inside that element (docs/design-system.md § Shell rules).",
         );
+    }
+    // G10 looks at every string in web source, not only className values: class
+    // lists also live in cva() variants, shared constants and other *ClassName
+    // props, and a text-[…] token means the same wherever it is written.
+    if (isThemeScanned(file) && (n.type === "StringLiteral" || n.type === "TemplateElement")) {
+      const text =
+        n.type === "StringLiteral" ? String(n.value) : String((n.value as { raw?: string })?.raw);
+      const fixed = text
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((token) => utility(token).base)
+        .filter(fixedOrTinyText);
+      if (fixed.length)
+        add(n, "G10", `Fixed or sub-12px text size (${fixed.join(", ")}): ${FIXED_TEXT_MESSAGE}`);
     }
     if (
       isThemeScanned(file) &&

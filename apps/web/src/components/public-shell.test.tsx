@@ -110,7 +110,7 @@ describe("public shell", () => {
     expect(footer).toContain("preferences");
   });
 
-  it("the header's rule is on the full-width header, the 1440px row inside it", () => {
+  it("the header's rule is on the full-width header, the 90rem (1440px) row inside it", () => {
     // index.css: `.cc-header` carries the border, `.cc-header-row` the max-width.
     expect(render(PublicRoute)).toMatch(/<header class="cc-header"><div class="cc-header-row">/);
   });

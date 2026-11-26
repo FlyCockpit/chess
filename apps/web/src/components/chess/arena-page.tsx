@@ -302,7 +302,12 @@ function Leaderboard() {
                       "stats.score",
                       "stats.rejected",
                     ].map((key) => (
-                      <th key={key}>{t(key)}</th>
+                      <th
+                        key={key}
+                        className={key === "leaderboard.ruleset" ? "cc-lb-rules" : undefined}
+                      >
+                        {t(key)}
+                      </th>
                     ))}
                   </tr>
                 </thead>
@@ -318,12 +323,13 @@ function Leaderboard() {
                             ? t(`create.protocols.${row.protocol}`)
                             : row.protocol}
                         </p>
+                        {/* Phones show the ruleset here instead of in its own column. */}
+                        <div className="cc-lb-rules-inline">
+                          <RulesetLabel rulesKey={row.rulesKey} moveFormat={row.moveFormat} />
+                        </div>
                       </td>
-                      <td>
-                        {row.rulesKey}
-                        {(row.moveFormat === "strict" || row.moveFormat === "lenient") && (
-                          <p className="cc-muted">{t(`moveFormats.${row.moveFormat}`)}</p>
-                        )}
+                      <td className="cc-lb-rules">
+                        <RulesetLabel rulesKey={row.rulesKey} moveFormat={row.moveFormat} />
                       </td>
                       <td>{row.games}</td>
                       <td>{Math.round((100 * (row.wins + row.draws / 2)) / row.games)}%</td>
@@ -339,6 +345,25 @@ function Leaderboard() {
           </>
         )}
       </QueryBoundary>
+    </>
+  );
+}
+/**
+ * A ruleset is identified by a 16-hex hash of its rules (no name in the data): the
+ * first 8 characters on screen, the whole key in the title (on hover) and, for a
+ * screen reader, in the text itself.
+ */
+function RulesetLabel({ rulesKey, moveFormat }: { rulesKey: string; moveFormat: string | null }) {
+  const { t } = useTranslation("chess");
+  return (
+    <>
+      <abbr className="cc-lb-key" title={rulesKey}>
+        <span aria-hidden="true">{rulesKey.slice(0, 8)}</span>
+        <span className="sr-only">{rulesKey}</span>
+      </abbr>
+      {(moveFormat === "strict" || moveFormat === "lenient") && (
+        <p className="cc-muted">{t(`moveFormats.${moveFormat}`)}</p>
+      )}
     </>
   );
 }

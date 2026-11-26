@@ -54,14 +54,20 @@ export default function BottomNav({ hidden }: { hidden?: boolean }) {
             to={toLangRoute(item.path)}
             params={{ lang }}
             activeOptions={{ exact: item.exact }}
-            className="flex flex-col items-center justify-center gap-0.5 px-3 py-1.5 text-muted-foreground transition-colors min-w-[64px] min-h-[44px]"
+            className="flex flex-col items-center justify-center gap-0.5 px-1 py-1.5 text-muted-foreground transition-colors min-w-[44px] shrink min-h-[44px]"
             activeProps={{
               className:
-                "flex flex-col items-center justify-center gap-0.5 px-3 py-1.5 text-primary transition-colors dark:text-state-info min-w-[64px] min-h-[44px]",
+                "flex flex-col items-center justify-center gap-0.5 px-1 py-1.5 text-primary transition-colors dark:text-state-info min-w-[44px] shrink min-h-[44px]",
             }}
           >
             <item.icon className="size-5" />
-            <span className="text-[10px] font-medium leading-tight">{t(item.labelKey)}</span>
+            {/* Labels are at least 12px. Tabs shrink together down to the 44px
+                touch floor (px, so a large browser font size doesn't raise it
+                past the screen); a label that still doesn't fit truncates. See
+                docs/design-system.md § Viewport scale */}
+            <span className="max-w-full truncate text-xs font-medium leading-tight">
+              {t(item.labelKey)}
+            </span>
           </Link>
         ))}
       </div>

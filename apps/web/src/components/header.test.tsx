@@ -172,7 +172,7 @@ describe("arena header: the brand gives way first", () => {
     const brand = rule(".cc-brand");
     expect(brand).toContain("flex: 1 1 0;");
     expect(brand).toContain("max-width: fit-content;");
-    expect(brand).toContain("min-width: 88px;");
+    expect(brand).toContain("min-width: 5.5rem;");
     expect(brand).not.toMatch(/flex-shrink/);
     const name = rule(".cc-brand-name");
     expect(name).toContain("min-width: 0;");

@@ -20,7 +20,7 @@
   /* One horizontal inset for the bordered arena panels (game, board, sidebar and
    * rule cards), so stacked and side-by-side panels share their inner text line. It is the board panel's own padding, so the playable board keeps
    * its size. Block padding stays per panel. See docs/design-system.md § Edge lines. */
-  --cc-panel-inset: 20px;
+  --cc-panel-inset: 1.25rem;
   background: var(--cc-bg);
   color: var(--cc-text);
   height: 100svh;
@@ -51,7 +51,7 @@
   scroll-padding-bottom: var(--keyboard-inset, 0px);
 }
 /* The header's rule is full-bleed: the border sits on the full-width header,
- * and the row inside keeps the 1440px maximum. */
+ * and the row inside keeps the 90rem (1440px at a 16px root) maximum. */
 .cc-header {
   min-width: 0;
   border-bottom: 1px solid var(--cc-line);
@@ -59,31 +59,31 @@
 .cc-header-row {
   width: 100%;
   min-width: 0;
-  max-width: 1440px;
+  max-width: 90rem;
   margin: 0 auto;
   display: flex;
   align-items: center;
-  gap: 32px;
-  padding: 22px 40px;
+  gap: 2rem;
+  padding: 1.375rem 2.5rem;
 }
 .cc-brand {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  gap: 10px;
-  font-size: 17px;
+  gap: 0.625rem;
+  font-size: 1.0625rem;
   font-weight: 700;
-  letter-spacing: -0.5px;
+  letter-spacing: -0.0313rem;
   white-space: nowrap;
   /* The first thing in the row to give way: a zero basis, so it grows only
    * into what the nav and the controls leave, up to its own width, and never
-   * below 88px (the icon, its gap and about "Co…", never a lone clipped
+   * below 5.5rem, 88px (the icon, its gap and about "Co…", never a lone clipped
    * letter). The name ends in an ellipsis; the full name is the link's title.
    * Below that floor the row wraps and the controls take their own line. Same
    * rule as the app header's AppNameLink. */
   flex: 1 1 0;
   max-width: fit-content;
-  min-width: 88px;
+  min-width: 5.5rem;
 }
 .cc-brand-name {
   min-width: 0;
@@ -103,9 +103,9 @@
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
-  gap: 24px;
+  gap: 1.5rem;
   align-items: center;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--cc-muted);
 }
 .cc-nav a {
@@ -121,7 +121,7 @@
    * tab. The 44px hit-box floor is on the label instead, so a tab shrinks only
    * to max(44px, its longest word); below that the strip scrolls. */
   min-height: 44px;
-  padding: 12px 0;
+  padding: 0.75rem 0;
   transition: color 150ms;
 }
 .cc-nav-label {
@@ -133,70 +133,72 @@
 }
 .cc-signin {
   min-height: 44px;
-  padding: 11px 18px;
+  padding: 0.6875rem 1.125rem;
   border: 1px solid var(--cc-line-strong);
   border-radius: 7px;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 /* `width: 100%`: in the public shell this is a flex item of the scroller's
  * column, where auto margins alone would shrink it to its content. */
 .cc-app {
   width: 100%;
-  max-width: 1360px;
+  max-width: 85rem;
   margin: 0 auto;
-  padding: 0 40px;
+  padding: 0 2.5rem;
 }
 .cc-hero {
   display: grid;
-  grid-template-columns: 1fr 0.8fr;
-  gap: 56px;
+  grid-template-columns: minmax(0, 1fr) 0.8fr;
+  gap: 3.5rem;
   align-items: center;
-  padding: 68px 0 60px;
+  padding: 4.25rem 0 3.75rem;
 }
 .cc-eyebrow {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 0.5625rem;
   font-family: ui-monospace, monospace;
   color: var(--cc-accent-text);
-  font-size: 10px;
-  letter-spacing: 2px;
+  font-size: 0.75rem;
+  letter-spacing: 0.125rem;
   text-transform: uppercase;
 }
 .cc-hero h1 {
   white-space: pre-line;
-  font-size: clamp(48px, 6.5vw, 88px);
+  font-size: clamp(3rem, 6.5vw, 5.5rem);
   font-weight: 650;
   line-height: 1.02;
-  letter-spacing: -4px;
-  margin: 21px 0;
+  letter-spacing: -0.25rem;
+  margin: 1.3125rem 0;
   text-wrap: balance;
+  /* A large browser font size on a phone: a word wider than the column breaks. */
+  overflow-wrap: anywhere;
 }
 .cc-hero p {
   color: var(--cc-muted);
-  max-width: 460px;
-  font-size: 15px;
+  max-width: 28.75rem;
+  font-size: 0.9375rem;
   line-height: 1.8;
 }
 .cc-hero-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 26px;
+  gap: 0.75rem;
+  margin-top: 1.625rem;
 }
 .cc-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 9px;
+  gap: 0.5625rem;
   min-height: 44px;
-  padding: 12px 20px;
+  padding: 0.75rem 1.25rem;
   background: var(--cc-accent);
   color: var(--cc-accent-fg);
   border: 1px solid transparent;
   border-radius: 6px;
   font-weight: 650;
-  font-size: 13px;
+  font-size: 0.8125rem;
   cursor: pointer;
   transition:
     background 150ms,
@@ -217,12 +219,12 @@
   border-color: var(--cc-line-strong);
 }
 .cc-hero-note {
-  margin-top: 20px;
+  margin-top: 1.25rem;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 0.4375rem;
   color: var(--cc-subtle);
-  font-size: 11px;
+  font-size: 0.75rem;
 }
 /* The landing board: tilted, with its caption below it (never over a square). Pieces
    and coordinates scale with the board itself (container units), so the corner labels
@@ -230,12 +232,12 @@
 .cc-hero-figure {
   display: grid;
   justify-items: center;
-  gap: 28px;
+  gap: 1.75rem;
   width: 100%;
-  max-width: clamp(260px, 30vw, 560px);
+  max-width: clamp(16.25rem, 30vw, 35rem);
   margin: auto;
   /* Room for the tilted corners: nothing around it clips them. */
-  padding: 18px;
+  padding: 1.125rem;
 }
 .cc-hero-board {
   width: 100%;
@@ -249,20 +251,19 @@
 .cc-hero-board .cc-board {
   border-radius: 3px;
   overflow: hidden;
-  container-type: inline-size;
 }
 .cc-hero-sticker {
   justify-self: end;
   transform: rotate(2deg);
-  padding: 12px 18px;
+  padding: 0.75rem 1.125rem;
   /* theme-exempt: the hero board art, the same in both themes */
   background: oklch(0.83 0.12 85);
   /* theme-exempt: the hero board art, the same in both themes */
   color: oklch(0.22 0.03 100);
   font:
-    700 10px ui-monospace,
+    700 0.75rem ui-monospace,
     monospace;
-  letter-spacing: 1px;
+  letter-spacing: 0.0625rem;
   /* theme-exempt: the hero board art, the same in both themes */
   box-shadow: 0 8px 30px oklch(0.05 0 0 / 0.3);
   border-radius: 3px;
@@ -272,45 +273,46 @@
   flex-wrap: wrap;
   align-items: end;
   justify-content: space-between;
-  gap: 16px;
+  gap: 1rem;
   border-top: 1px solid var(--cc-line);
-  padding: 26px 0 22px;
+  padding: 1.625rem 0 1.375rem;
 }
 .cc-section-bar h2 {
-  font-size: 23px;
+  font-size: 1.4375rem;
   font-weight: 600;
-  letter-spacing: -0.6px;
+  letter-spacing: -0.0375rem;
 }
 .cc-section-bar p,
 .cc-muted {
-  margin-top: 5px;
+  margin-top: 0.3125rem;
   color: var(--cc-muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.7;
 }
 .cc-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 0.375rem;
   background: var(--cc-chip);
   border: 1px solid var(--cc-pill-line);
   color: var(--cc-pill-fg);
   border-radius: 5px;
-  padding: 5px 9px;
+  padding: 0.3125rem 0.5625rem;
   font:
-    10px ui-monospace,
+    0.75rem ui-monospace,
     monospace;
 }
 .cc-card-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 24px;
+  /* As many 20rem columns as fit: three in the 1920 column, more as it grows, one on a phone. */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
 }
 .cc-game-card {
   text-align: left;
-  padding: 22px var(--cc-panel-inset);
+  padding: 1.375rem var(--cc-panel-inset);
   border: 1px solid var(--cc-line);
   border-radius: 8px;
   background: var(--cc-surface);
@@ -324,23 +326,23 @@
   box-shadow: inset 0 0 0 1px var(--cc-accent-line);
 }
 .cc-game-card h3 {
-  font-size: 16px;
-  margin: 16px 0 8px;
+  font-size: 1rem;
+  margin: 1rem 0 0.5rem;
   font-weight: 600;
 }
 .cc-game-card p {
   color: var(--cc-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .cc-replay-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.75fr);
-  gap: 24px;
+  grid-template-columns: minmax(0, 1.1fr) minmax(17.5rem, 0.75fr);
+  gap: 1.5rem;
   align-items: start;
 }
 .cc-board-panel {
   min-width: 0;
-  padding: 20px var(--cc-panel-inset);
+  padding: 1.25rem var(--cc-panel-inset);
   background: var(--cc-surface);
   border: 1px solid var(--cc-line);
   border-radius: 10px;
@@ -355,6 +357,9 @@
   aspect-ratio: 1;
   border-radius: 4px;
   overflow: hidden;
+  /* Pieces and coordinates size from the square (container units), so the
+   * board stays in proportion at every size, from a phone to 4K. */
+  container-type: inline-size;
 }
 .cc-square {
   position: relative;
@@ -368,6 +373,7 @@
   cursor: pointer;
 }
 .cc-playable-board {
+  /* A floor, not a size: px, so a large browser font size can't push it past a phone. */
   min-width: 352px;
 }
 /* One arena focus ring (the global outline-ring/50 is about 1.4:1 on the light page):
@@ -415,7 +421,8 @@
 .cc-piece {
   line-height: 1;
   font-family: Georgia, "Times New Roman", serif;
-  font-size: clamp(24px, 5.4vw, 62px);
+  /* 80 % of a square, so a piece keeps its proportion on every board size. */
+  font-size: calc(100cqi / 8 * 0.8);
   transform: translateY(-1px);
   user-select: none;
   z-index: 1;
@@ -443,31 +450,33 @@
 }
 .cc-hero-board .cc-rank,
 .cc-hero-board .cc-file {
-  font-size: max(6px, calc(100cqi / 8 * 0.15));
+  /* The landing art's corner labels follow its small squares (decorative, aria-hidden);
+   * a 12px floor would put them over the pieces on a phone. */
+  font-size: max(0.375rem, calc(100cqi / 8 * 0.15));
 }
 .cc-hero-board .cc-rank {
   top: 2px;
-  left: 3px;
+  left: 0.1875rem;
 }
 .cc-hero-board .cc-file {
   bottom: 1px;
-  right: 3px;
+  right: 0.1875rem;
 }
 .cc-rank,
 .cc-file {
   position: absolute;
   font:
-    600 10px ui-monospace,
+    600 max(0.75rem, calc(100cqi / 8 * 0.15)) ui-monospace,
     monospace;
   z-index: 2;
 }
 .cc-rank {
-  top: 4px;
-  left: 4px;
+  top: 0.25rem;
+  left: 0.25rem;
 }
 .cc-file {
-  bottom: 3px;
-  right: 4px;
+  bottom: 0.1875rem;
+  right: 0.25rem;
 }
 .cc-target {
   width: 24%;
@@ -521,11 +530,11 @@
 .cc-lookup-note {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 0.5rem;
   height: calc(2 * 1.4em);
   overflow: hidden;
-  margin: 8px 0 0;
-  font-size: 13px;
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
   line-height: 1.4;
   color: var(--cc-text-soft);
 }
@@ -539,8 +548,8 @@
 }
 .cc-lookup-key {
   flex: none;
-  width: 10px;
-  height: 10px;
+  width: 0.625rem;
+  height: 0.625rem;
   margin-top: 0.3em;
   border-radius: 50%;
   background: var(--cc-lookup-mark);
@@ -561,50 +570,60 @@
 .cc-promotion {
   position: absolute;
   inset: 30% 10%;
-  padding: 14px;
+  padding: 0.875rem;
   background: var(--cc-raised);
   border: 1px solid var(--cc-accent);
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 0.5rem;
   border-radius: 8px;
   z-index: 4;
 }
 .cc-promotion button {
-  padding: 12px;
+  padding: 0.75rem;
   min-height: 44px;
   background: var(--cc-hover);
   border-radius: 5px;
 }
 .cc-player {
   display: flex;
+  /* A large browser font size on a phone: the clock and side label wrap under the
+     name instead of running past the edge. */
+  flex-wrap: wrap;
   align-items: center;
-  gap: 11px;
-  padding: 0 0 14px;
+  gap: 0.6875rem;
+  padding: 0 0 0.875rem;
+}
+.cc-player > div {
+  flex: 1 1 8rem;
+}
+.cc-player > :is(div, strong) {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .cc-board-wrap + .cc-player {
-  padding: 14px 0;
+  padding: 0.875rem 0;
 }
 .cc-player strong {
   display: block;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
 }
 .cc-player div > span {
   display: block;
-  font-size: 10px;
+  font-size: 0.75rem;
   color: var(--cc-subtle);
-  margin-top: 3px;
+  margin-top: 0.1875rem;
 }
 .cc-avatar {
-  width: 34px;
-  height: 34px;
+  width: 2.125rem;
+  height: 2.125rem;
   border: 1px solid var(--cc-line-strong);
   display: grid;
   place-items: center;
   background: var(--cc-sunken);
   border-radius: 7px;
-  font-size: 24px;
+  font-size: 1.5rem;
 }
 .cc-avatar-light {
   /* theme-exempt: the White player's piece token */
@@ -615,7 +634,7 @@
 .cc-side-label {
   margin-left: auto;
   font:
-    10px ui-monospace,
+    0.75rem ui-monospace,
     monospace;
   color: var(--cc-subtle);
   text-transform: uppercase;
@@ -625,7 +644,7 @@
   align-items: center;
   gap: 2px;
   border-top: 1px solid var(--cc-line);
-  padding-top: 8px;
+  padding-top: 0.5rem;
 }
 .cc-replay-controls button {
   display: grid;
@@ -644,7 +663,7 @@
 .cc-replay-counter {
   margin-left: auto;
   font:
-    10px ui-monospace,
+    0.75rem ui-monospace,
     monospace;
   color: var(--cc-subtle);
   white-space: nowrap;
@@ -652,12 +671,12 @@
 .cc-scrubber {
   width: 100%;
   accent-color: var(--cc-accent);
-  height: 22px;
+  height: 1.375rem;
   cursor: pointer;
 }
 .cc-match-sidebar {
   min-width: 0;
-  padding: 22px var(--cc-panel-inset);
+  padding: 1.375rem var(--cc-panel-inset);
   border: 1px solid var(--cc-line);
   border-radius: 10px;
   background: var(--cc-surface);
@@ -665,12 +684,12 @@
 .cc-section-heading {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 0.4375rem;
   color: var(--cc-muted);
   font:
-    10px ui-monospace,
+    0.75rem ui-monospace,
     monospace;
-  letter-spacing: 1px;
+  letter-spacing: 0.0625rem;
   text-transform: uppercase;
 }
 .cc-section-heading .cc-pill {
@@ -678,8 +697,8 @@
 }
 .cc-live-dot,
 .cc-dot {
-  width: 6px;
-  height: 6px;
+  width: 0.375rem;
+  height: 0.375rem;
   border-radius: 50%;
   background: var(--cc-accent);
   display: inline-block;
@@ -689,68 +708,68 @@
   background: var(--cc-dot);
 }
 .cc-match-sidebar h2 {
-  font-size: 22px;
+  font-size: 1.375rem;
   line-height: 1.3;
   font-weight: 600;
-  margin: 20px 0 12px;
-  letter-spacing: -0.5px;
+  margin: 1.25rem 0 0.75rem;
+  letter-spacing: -0.0313rem;
 }
 .cc-rule-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .cc-rule-tags span {
-  font-size: 9px;
+  font-size: 0.75rem;
   background: var(--cc-chip);
   color: var(--cc-muted);
   border-radius: 4px;
-  padding: 5px 7px;
+  padding: 0.3125rem 0.4375rem;
 }
 .cc-mini-stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  margin: 24px 0;
-  padding: 18px 0;
+  margin: 1.5rem 0;
+  padding: 1.125rem 0;
   border-block: 1px solid var(--cc-line);
 }
 .cc-mini-stats strong {
   display: block;
   font:
-    500 22px ui-monospace,
+    500 1.375rem ui-monospace,
     monospace;
 }
 .cc-mini-stats span {
   display: block;
-  font-size: 10px;
+  font-size: 0.75rem;
   color: var(--cc-subtle);
-  margin-top: 5px;
+  margin-top: 0.3125rem;
 }
 .cc-event-caption {
   border-left: 2px solid var(--cc-accent);
-  padding: 8px 12px;
+  padding: 0.5rem 0.75rem;
   background: var(--cc-tint);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.7;
-  min-height: 52px;
+  min-height: 3.25rem;
 }
 .cc-timeline {
-  max-height: 290px;
+  max-height: 18.125rem;
   overflow-y: auto;
   overflow-x: clip;
-  margin: 14px 0;
+  margin: 0.875rem 0;
   list-style: none;
   padding: 0;
 }
 .cc-timeline button {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 0.6875rem;
   width: 100%;
   min-height: 44px;
   text-align: left;
-  padding: 10px 8px;
-  font-size: 12px;
+  padding: 0.625rem 0.5rem;
+  font-size: 0.75rem;
   border-bottom: 1px solid var(--cc-line-soft);
   border-radius: 3px;
 }
@@ -764,7 +783,7 @@
 .cc-event-num,
 .cc-event-side {
   font:
-    9px ui-monospace,
+    0.75rem ui-monospace,
     monospace;
   color: var(--cc-subtle);
 }
@@ -773,93 +792,97 @@
 }
 .cc-timeline small {
   display: block;
-  margin-top: 5px;
+  /* Not the reset's 80 % of the row's 0.75rem: the 12px text floor. */
+  font-size: 0.75rem;
+  margin-top: 0.3125rem;
   line-height: 1.6;
   color: var(--cc-muted);
 }
 .cc-export-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  margin: 16px 0;
+  gap: 0.625rem;
+  margin: 1rem 0;
 }
 .cc-export-row button {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
   min-height: 44px;
-  padding: 8px 12px;
+  padding: 0.5rem 0.75rem;
   border: 1px solid var(--cc-line-strong);
   border-radius: 5px;
-  font-size: 11px;
+  font-size: 0.75rem;
 }
 .cc-demo-notice {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: 1rem;
   flex-wrap: wrap;
-  margin: 16px 0;
+  margin: 1rem 0;
   color: var(--cc-muted);
-  font-size: 11px;
+  font-size: 0.75rem;
   align-items: center;
 }
 .cc-demo-notice button {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 0.25rem;
   min-height: 44px;
 }
 .cc-empty {
-  padding: 46px 24px;
+  padding: 2.875rem 1.5rem;
   border: 1px dashed var(--cc-line-strong);
   border-radius: 8px;
   text-align: center;
 }
 .cc-empty h3 {
-  font-size: 20px;
-  margin-bottom: 10px;
+  font-size: 1.25rem;
+  margin-bottom: 0.625rem;
   font-weight: 550;
 }
 .cc-empty p {
   color: var(--cc-muted);
-  max-width: 550px;
+  max-width: 34.375rem;
   margin: auto;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.8;
 }
 .cc-page-intro {
-  padding: 48px 0 32px;
+  padding: 3rem 0 2rem;
 }
 .cc-page-intro h1 {
-  font-size: clamp(32px, 4vw, 48px);
+  font-size: clamp(2rem, 4vw, 3rem);
   font-weight: 600;
-  letter-spacing: -1.8px;
-  margin-bottom: 14px;
+  letter-spacing: -0.1125rem;
+  margin-bottom: 0.875rem;
+  /* A large browser font size on a phone: a word wider than the column breaks. */
+  overflow-wrap: anywhere;
 }
 .cc-page-intro p {
-  max-width: 650px;
+  max-width: 40.625rem;
   color: var(--cc-muted);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.8;
 }
 .cc-rules-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
+  gap: 1.25rem;
 }
 .cc-rule-card {
   border: 1px solid var(--cc-line);
   border-radius: 8px;
-  padding: 26px var(--cc-panel-inset);
+  padding: 1.625rem var(--cc-panel-inset);
   background: var(--cc-surface);
 }
 .cc-rule-card h2 {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 600;
-  margin: 12px 0;
+  margin: 0.75rem 0;
 }
 .cc-rule-card p {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--cc-muted);
   line-height: 1.9;
 }
@@ -868,38 +891,38 @@
  * rule is full-bleed; its row keeps the page content's column and lines. */
 .cc-footer {
   border-top: 1px solid var(--cc-line);
-  margin-top: 54px;
-  font-size: 11px;
+  margin-top: 3.375rem;
+  font-size: 0.75rem;
   color: var(--cc-subtle);
 }
 .cc-footer-row {
-  max-width: 1360px;
+  max-width: 85rem;
   margin: 0 auto;
-  padding: 28px 40px 48px;
+  padding: 1.75rem 2.5rem 3rem;
   display: flex;
-  gap: 16px;
+  gap: 1rem;
   flex-wrap: wrap;
   justify-content: space-between;
 }
 .cc-footer p {
-  max-width: 550px;
+  max-width: 34.375rem;
   line-height: 1.7;
 }
 .cc-table {
   width: 100%;
   text-align: left;
-  font-size: 12px;
+  font-size: 0.75rem;
   border-collapse: collapse;
 }
 .cc-table th {
   color: var(--cc-subtle);
-  font-size: 10px;
+  font-size: 0.75rem;
   font-weight: 500;
-  padding: 14px;
+  padding: 0.875rem;
   border-bottom: 1px solid var(--cc-line-strong);
 }
 .cc-table td {
-  padding: 18px 14px;
+  padding: 1.125rem 0.875rem;
   border-bottom: 1px solid var(--cc-line-soft);
   font-variant-numeric: tabular-nums;
 }
@@ -911,58 +934,69 @@
 .cc-table :is(th, td):last-child {
   padding-right: 0;
 }
+/* Leaderboard: the ruleset's short key; the full one is its title. */
+.cc-lb-key {
+  font-family: ui-monospace, monospace;
+  text-decoration: none;
+}
+.cc-table strong {
+  overflow-wrap: anywhere;
+}
+.cc-lb-rules-inline {
+  display: none;
+}
 .cc-baseline-layout {
   display: grid;
-  grid-template-columns: minmax(0, 600px) 1fr;
-  gap: 32px;
+  grid-template-columns: minmax(0, 37.5rem) 1fr;
+  gap: 2rem;
 }
 .cc-lab-instructions {
   /* Not on --cc-panel-inset: this padding sets the lab grid's minimum second
    * column (`1fr`), so changing it would resize the playable board. */
-  padding: 26px;
+  padding: 1.625rem;
   border: 1px solid var(--cc-line);
   border-radius: 8px;
   background: var(--cc-surface);
 }
 .cc-lab-instructions h2 {
-  font-size: 20px;
-  margin-bottom: 12px;
+  font-size: 1.25rem;
+  margin-bottom: 0.75rem;
   font-weight: 600;
 }
 .cc-lab-instructions p {
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.8;
   color: var(--cc-muted);
-  margin-bottom: 20px;
+  margin-bottom: 1.25rem;
 }
 .cc-form-grid {
   display: grid;
-  gap: 18px;
+  gap: 1.125rem;
 }
 .cc-form-grid label {
-  font-size: 12px;
+  font-size: 0.75rem;
   display: grid;
-  gap: 7px;
+  gap: 0.4375rem;
 }
 .cc-form-grid input:not(.sr-only),
 .cc-form-grid select,
 .cc-form-grid textarea {
   min-height: 44px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 0.625rem 0.75rem;
   border: 1px solid var(--cc-line-strong);
   border-radius: 5px;
   background: var(--cc-raised);
   color: var(--cc-text);
-  font-size: 16px;
+  font-size: 1rem;
 }
 /* Import local archive: one file button that is also the drop target, then a preview. */
 .cc-form-grid .cc-file-drop {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 64px;
-  padding: 12px 16px;
+  gap: 0.75rem;
+  min-height: 4rem;
+  padding: 0.75rem 1rem;
   border: 1px dashed var(--cc-line-strong);
   border-radius: 6px;
   background: var(--cc-raised);
@@ -989,29 +1023,29 @@
   min-width: 0;
 }
 .cc-file-drop-text strong {
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 .cc-file-drop-text span {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--cc-muted);
 }
 .cc-import-pick {
   display: grid;
-  gap: 10px;
+  gap: 0.625rem;
 }
 .cc-import-preview {
   display: grid;
-  gap: 4px;
-  padding: 12px 14px;
+  gap: 0.25rem;
+  padding: 0.75rem 0.875rem;
   border-left: 3px solid var(--cc-accent-line);
   border-radius: 4px;
   background: var(--cc-surface);
-  font-size: 13px;
+  font-size: 0.8125rem;
   overflow-wrap: anywhere;
 }
 .cc-import-file {
   color: var(--cc-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 /* Paste and preview are alternatives and long names are clamped, so the dialog fits 390x844. */
 .cc-import-dialog .cc-section-body {
@@ -1033,18 +1067,18 @@
   overflow-x: hidden;
   overflow-y: auto;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .cc-import-footer {
-  margin-top: 4px;
+  margin-top: 0.25rem;
 }
 .cc-form-grid option {
   background: var(--cc-raised);
 }
 .cc-error {
   color: var(--cc-error-text);
-  font-size: 13px;
-  padding: 14px 0;
+  font-size: 0.8125rem;
+  padding: 0.875rem 0;
 }
 .cc-dialog-content {
   background: var(--cc-raised);
@@ -1055,53 +1089,52 @@
 .cc-dialog-content [data-slot="dialog-footer"] {
   background: var(--cc-raised);
 }
-@media (max-width: 900px) {
+/* Layout breakpoints are em (the browser's default size, not the scaled root), so they
+ * match 900/650px at a 16px default and move with a larger user font size. */
+@media (max-width: 56.25em) {
   .cc-public-shell {
-    --cc-panel-inset: 14px;
+    --cc-panel-inset: 0.875rem;
   }
   .cc-header-row {
-    gap: 20px;
-    padding: 16px 24px;
+    gap: 1.25rem;
+    padding: 1rem 1.5rem;
   }
   .cc-nav {
-    gap: 16px;
+    gap: 1rem;
   }
   .cc-app,
   .cc-footer-row {
-    padding-inline: 24px;
+    padding-inline: 1.5rem;
   }
   .cc-hero {
-    gap: 24px;
-    padding: 48px 0;
+    gap: 1.5rem;
+    padding: 3rem 0;
   }
   .cc-hero h1 {
-    letter-spacing: -2.5px;
+    letter-spacing: -0.1563rem;
   }
   .cc-hero-figure {
-    max-width: 320px;
+    max-width: 20rem;
   }
   .cc-replay-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(250px, 0.8fr);
-    gap: 16px;
-  }
-  .cc-card-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr) minmax(15.625rem, 0.8fr);
+    gap: 1rem;
   }
   .cc-board-panel {
-    padding-block: 14px;
+    padding-block: 0.875rem;
   }
   .cc-match-sidebar {
-    padding-block: 16px;
+    padding-block: 1rem;
   }
 }
-@media (max-width: 650px) {
+@media (max-width: 40.625em) {
   .cc-header-row {
-    gap: 12px;
+    gap: 0.75rem;
     flex-wrap: wrap;
-    padding: 14px 16px 0;
+    padding: 0.875rem 1rem 0;
   }
   .cc-brand {
-    font-size: 16px;
+    font-size: 1rem;
   }
   .cc-signin {
     margin-left: auto;
@@ -1111,73 +1144,82 @@
     width: 100%;
     flex-basis: 100%;
     justify-content: space-between;
-    gap: 10px;
-    font-size: 12px;
+    gap: 0.625rem;
+    font-size: 0.75rem;
   }
   .cc-app,
   .cc-footer-row {
-    padding-inline: 16px;
+    padding-inline: 1rem;
   }
   .cc-hero {
-    grid-template-columns: 1fr;
-    padding: 40px 0 36px;
-    gap: 40px;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 2.5rem 0 2.25rem;
+    gap: 2.5rem;
   }
   .cc-hero h1 {
-    font-size: 62px;
-    letter-spacing: -3px;
+    font-size: 3.875rem;
+    letter-spacing: -0.1875rem;
   }
   .cc-hero-figure {
-    max-width: 300px;
+    max-width: 18.75rem;
   }
   .cc-eyebrow {
-    font-size: 9px;
-    letter-spacing: 1.4px;
+    font-size: 0.75rem;
+    letter-spacing: 0.0875rem;
   }
   .cc-hero p {
-    font-size: 14px;
+    font-size: 0.875rem;
   }
   .cc-hero-note {
-    font-size: 10px;
+    font-size: 0.75rem;
   }
   .cc-replay-grid,
   .cc-baseline-layout {
     grid-template-columns: minmax(0, 1fr);
   }
-  .cc-piece {
-    font-size: clamp(25px, 8vw, 46px);
-  }
-  .cc-card-grid,
   .cc-rules-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .cc-timeline {
-    max-height: 220px;
+    max-height: 13.75rem;
   }
   .cc-section-bar h2 {
-    font-size: 21px;
+    font-size: 1.3125rem;
   }
   .cc-board-panel {
     padding: 0;
-    margin-inline: -14px;
+    margin-inline: -0.875rem;
   }
   .cc-player,
   .cc-bubble-slot,
   .cc-result-banner,
   .cc-lookup-note {
-    margin-inline: 12px;
+    margin-inline: 0.75rem;
   }
   .cc-replay-controls {
-    margin-inline: 8px;
+    margin-inline: 0.5rem;
     flex-wrap: wrap;
   }
   .cc-scrubber {
-    width: calc(100% - 16px);
-    height: 44px;
-    margin-inline: 8px;
+    width: calc(100% - 1rem);
+    height: 2.75rem;
+    margin-inline: 0.5rem;
   }
   .cc-rule-card {
-    padding-block: 22px;
+    padding-block: 1.375rem;
+  }
+  /* Phone leaderboard: the ruleset moves under the model, so the numbers fit the screen. */
+  .cc-table .cc-lb-rules {
+    display: none;
+  }
+  .cc-lb-rules-inline {
+    display: block;
+    margin-top: 0.25rem;
+    color: var(--cc-muted);
+  }
+  .cc-table th,
+  .cc-table td {
+    padding-inline: 0.5rem;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1193,20 +1235,20 @@
   display: flex;
   align-items: center;
   min-height: 44px;
-  gap: 12px;
+  gap: 0.75rem;
 }
 .cc-form-grid input[type="checkbox"] {
-  width: 20px;
-  height: 20px;
-  min-height: 20px;
+  width: 1.25rem;
+  height: 1.25rem;
+  min-height: 1.25rem;
   accent-color: var(--cc-accent);
 }
 .cc-engine-summary {
-  padding: 14px;
-  margin: 12px 0;
+  padding: 0.875rem;
+  margin: 0.75rem 0;
   border-left: 3px solid var(--cc-accent);
   background: var(--cc-tint);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 /* Create match: a wide side sheet (form-surface rule: longer than a short form, so not a
@@ -1229,15 +1271,15 @@
 .cc-create-quick,
 .cc-create-side {
   display: grid;
-  gap: 20px;
+  gap: 1.25rem;
   align-content: start;
   min-width: 0;
 }
-@media (min-width: 1024px) {
+@media (min-width: 64em) {
   .cc-create-body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: start;
-    column-gap: 32px;
+    column-gap: 2rem;
   }
   .cc-create-body > .cc-catalog-notice {
     grid-column: 1 / -1;
@@ -1255,8 +1297,8 @@
   grid-template-columns: minmax(0, 1fr);
 }
 .cc-create-header {
-  padding: 20px 24px 14px;
-  padding-right: 56px;
+  padding: 1.25rem 1.5rem 0.875rem;
+  padding-right: 3.5rem;
   border-bottom: 1px solid var(--cc-line);
 }
 .cc-create-form {
@@ -1266,9 +1308,9 @@
 }
 .cc-create-body {
   display: grid;
-  gap: 20px;
+  gap: 1.25rem;
   min-height: 0;
-  padding: 20px 24px 24px;
+  padding: 1.25rem 1.5rem 1.5rem;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1276,45 +1318,45 @@
 .cc-create-players {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: 1rem;
 }
 .cc-model-picker,
 .cc-choice {
   display: grid;
-  gap: 6px;
+  gap: 0.375rem;
   min-width: 0;
   align-content: start;
 }
 .cc-field-label {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  gap: 0.5rem;
+  font-size: 0.75rem;
   font-weight: 600;
 }
 .cc-field-hint {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
-  font-size: 12px;
+  gap: 0.25rem 0.625rem;
+  font-size: 0.75rem;
   line-height: 1.5;
   color: var(--cc-muted);
 }
 .cc-field-error {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--cc-error-text);
 }
 .cc-model-trigger {
   min-height: 44px;
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 .cc-model-row {
   display: grid;
   align-content: center;
   gap: 2px;
   min-width: 0;
-  min-height: 36px;
-  padding-block: 4px;
+  min-height: 2.25rem;
+  padding-block: 0.25rem;
 }
 /* Every picker option is a full 44px target, the one-line typed-id escape included. */
 [data-slot="command-item"]:has(> .cc-model-row) {
@@ -1322,19 +1364,19 @@
 }
 .cc-model-name {
   font-weight: 600;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .cc-model-id {
   font-family: ui-monospace, monospace;
-  font-size: 11px;
+  font-size: 0.75rem;
   color: var(--cc-subtle);
   overflow-wrap: anywhere;
 }
 .cc-model-facts {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 10px;
-  font-size: 11px;
+  gap: 2px 0.625rem;
+  font-size: 0.75rem;
   color: var(--cc-muted);
 }
 .cc-model-warn {
@@ -1342,14 +1384,14 @@
 }
 .cc-link-button {
   min-height: 44px;
-  padding: 0 4px;
+  padding: 0 0.25rem;
   text-decoration: underline;
   color: var(--cc-accent-text);
 }
 .cc-swatch {
   display: inline-block;
-  inline-size: 12px;
-  block-size: 12px;
+  inline-size: 0.75rem;
+  block-size: 0.75rem;
   border-radius: 3px;
   border: 1px solid var(--cc-line-strong);
   flex: none;
@@ -1364,29 +1406,29 @@
 }
 .cc-create-summary {
   display: grid;
-  gap: 4px;
-  padding: 12px 14px;
+  gap: 0.25rem;
+  padding: 0.75rem 0.875rem;
   border: 1px solid var(--cc-line);
   border-left: 3px solid var(--cc-accent);
   border-radius: 6px;
   background: var(--cc-tint);
 }
 .cc-create-summary span {
-  font-size: 11px;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--cc-muted);
 }
 .cc-create-summary p {
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 .cc-advanced {
   display: grid;
-  gap: 10px;
+  gap: 0.625rem;
 }
 .cc-advanced h3 {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 .cc-settings-section {
@@ -1397,9 +1439,9 @@
 .cc-settings-section > summary {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 52px;
-  padding: 10px 14px;
+  gap: 0.75rem;
+  min-height: 3.25rem;
+  padding: 0.625rem 0.875rem;
   cursor: pointer;
   list-style: none;
 }
@@ -1413,10 +1455,10 @@
   flex: 1;
 }
 .cc-section-text strong {
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .cc-section-text span {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--cc-muted);
   overflow-wrap: anywhere;
 }
@@ -1430,8 +1472,8 @@
 .cc-section-body {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px 20px;
-  padding: 4px 14px 16px;
+  gap: 1.125rem 1.25rem;
+  padding: 0.25rem 0.875rem 1rem;
 }
 .cc-choice-wide {
   grid-column: 1 / -1;
@@ -1442,12 +1484,12 @@
 .cc-create-body input:not([type]) {
   min-height: 44px;
   width: 100%;
-  padding: 8px 12px;
+  padding: 0.5rem 0.75rem;
   border: 1px solid var(--cc-line-strong);
   border-radius: 5px;
   background: var(--cc-raised);
   color: var(--cc-text);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .cc-choice option {
   background: var(--cc-raised);
@@ -1455,13 +1497,13 @@
 .cc-choice label.cc-check {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 0.75rem;
   min-height: 44px;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .cc-choice input[type="checkbox"] {
-  inline-size: 20px;
-  block-size: 20px;
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
   accent-color: var(--cc-accent);
 }
 .cc-create-footer {
@@ -1470,9 +1512,9 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px 12px;
+  gap: 0.5rem 0.75rem;
   margin: 0;
-  padding: 12px 24px calc(12px + var(--safe-area-bottom, 0px));
+  padding: 0.75rem 1.5rem calc(0.75rem + var(--safe-area-bottom, 0px));
   border-top: 1px solid var(--cc-line);
   background: var(--cc-raised);
 }
@@ -1480,20 +1522,20 @@
   flex: 1 1 100%;
   padding: 0;
 }
-@media (max-width: 639px) {
+@media (max-width: 39.9375em) {
   .cc-create-header {
-    padding: 16px 16px 12px;
-    padding-right: 52px;
+    padding: 1rem 1rem 0.75rem;
+    padding-right: 3.25rem;
   }
   .cc-create-body {
-    padding: 16px;
+    padding: 1rem;
   }
   .cc-create-players,
   .cc-section-body {
     grid-template-columns: minmax(0, 1fr);
   }
   .cc-create-footer {
-    padding-inline: 16px;
+    padding-inline: 1rem;
   }
   .cc-create-footer button {
     flex: 1;
@@ -1503,8 +1545,9 @@
 /* Evaluation bar and graph. */
 .cc-board-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 8px;
+  /* Wide enough for a 12px score ("−M12"). */
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: 0.5rem;
   align-items: stretch;
 }
 .cc-board-cell {
@@ -1532,34 +1575,34 @@
   position: absolute;
   inset-inline: 0;
   font:
-    600 9px ui-monospace,
+    600 0.75rem ui-monospace,
     monospace;
   letter-spacing: -0.02em;
   text-align: center;
   white-space: nowrap;
 }
 .cc-eval-score-white {
-  bottom: 4px;
+  bottom: 0.25rem;
   /* theme-exempt: a White/Black depiction, fixed in both themes */
   color: oklch(0.25 0.01 190);
 }
 .cc-eval-score-black {
-  top: 4px;
+  top: 0.25rem;
   /* theme-exempt: a White/Black depiction, fixed in both themes */
   color: oklch(0.92 0.01 95);
 }
 .cc-eval-flipped .cc-eval-score-white {
-  top: 4px;
+  top: 0.25rem;
   bottom: auto;
 }
 .cc-eval-flipped .cc-eval-score-black {
-  bottom: 4px;
+  bottom: 0.25rem;
   top: auto;
 }
 .cc-eval-graph {
   position: relative;
-  block-size: 64px;
-  margin-top: 12px;
+  block-size: 4rem;
+  margin-top: 0.75rem;
   border-radius: 4px;
   overflow: hidden;
   border: 1px solid var(--cc-line);
@@ -1602,18 +1645,18 @@
   outline-offset: 2px;
 }
 .cc-eval-note {
-  margin-top: 12px;
-  font-size: 12px;
+  margin-top: 0.75rem;
+  font-size: 0.75rem;
 }
 
 /* Opponent commentary: untrusted model text, rendered as plain text. */
 .cc-remark-bubble,
 .cc-remark {
   display: grid;
-  gap: 4px;
+  gap: 0.25rem;
   inline-size: 100%;
   min-height: 44px;
-  padding: 10px 12px;
+  padding: 0.625rem 0.75rem;
   text-align: start;
   border: 1px solid var(--cc-line);
   border-radius: 10px;
@@ -1627,22 +1670,22 @@
 .cc-bubble-slot {
   /* A fixed height that holds the bubble's one meta line, two text lines, padding and
      tail, so a bubble appearing or changing never moves the board. */
-  block-size: 88px;
+  block-size: 5.5rem;
   display: flex;
   align-items: flex-end;
   min-width: 0;
 }
 .cc-bubble-slot-bottom {
   align-items: flex-start;
-  margin-block-end: 8px;
+  margin-block-end: 0.5rem;
 }
 .cc-bubble-slot-top {
-  margin-block-end: 8px;
+  margin-block-end: 0.5rem;
 }
 .cc-remark-bubble {
   position: relative;
-  max-block-size: calc(100% - 8px);
-  max-inline-size: min(100%, 520px);
+  max-block-size: calc(100% - 0.5rem);
+  max-inline-size: min(100%, 32.5rem);
   inline-size: auto;
   animation: cc-bubble-in 180ms ease-out;
 }
@@ -1685,19 +1728,19 @@
 .cc-remark-bubble::after {
   content: "";
   position: absolute;
-  inset-inline-start: 22px;
-  width: 10px;
-  height: 10px;
+  inset-inline-start: 1.375rem;
+  width: 0.625rem;
+  height: 0.625rem;
   background: inherit;
   border: inherit;
   border-width: 0 1px 1px 0;
   transform: rotate(45deg);
 }
 .cc-bubble-slot-top .cc-remark-bubble::after {
-  bottom: -6px;
+  bottom: -0.375rem;
 }
 .cc-bubble-slot-bottom .cc-remark-bubble::after {
-  top: -6px;
+  top: -0.375rem;
   transform: rotate(-135deg);
 }
 @keyframes cc-bubble-in {
@@ -1710,11 +1753,11 @@
 }
 .cc-clock {
   margin-left: auto;
-  padding: 4px 8px;
-  min-inline-size: 64px;
+  padding: 0.25rem 0.5rem;
+  min-inline-size: 4rem;
   text-align: center;
   font:
-    600 15px ui-monospace,
+    600 0.9375rem ui-monospace,
     monospace;
   font-variant-numeric: tabular-nums;
   border: 1px solid var(--cc-line);
@@ -1737,10 +1780,10 @@
 .cc-result-banner {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 12px;
+  gap: 2px 0.75rem;
   align-items: center;
-  margin-block: 4px 12px;
-  padding: 12px 14px;
+  margin-block: 0.25rem 0.75rem;
+  padding: 0.75rem 0.875rem;
   border: 1px solid var(--cc-line-strong);
   border-inline-start-width: 4px;
   border-radius: 8px;
@@ -1748,19 +1791,19 @@
   overflow-wrap: anywhere;
 }
 .cc-result-banner strong {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 650;
 }
 .cc-result-banner span:not(.cc-result-score) {
   grid-column: 1;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--cc-text-soft);
 }
 .cc-result-score {
   grid-column: 2;
   grid-row: 1 / span 2;
   font:
-    700 22px ui-monospace,
+    700 1.375rem ui-monospace,
     monospace;
 }
 .cc-result-w {
@@ -1779,14 +1822,14 @@
 }
 .cc-tabs {
   display: flex;
-  gap: 4px;
-  margin-block: 12px 8px;
+  gap: 0.25rem;
+  margin-block: 0.75rem 0.5rem;
   border-bottom: 1px solid var(--cc-line);
 }
 .cc-tab {
   min-height: 44px;
-  padding: 0 14px;
-  font-size: 13px;
+  padding: 0 0.875rem;
+  font-size: 0.8125rem;
   color: var(--cc-muted);
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
@@ -1807,28 +1850,28 @@
 .cc-remark-meta {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11px;
+  gap: 0.375rem;
+  font-size: 0.75rem;
   color: var(--cc-muted);
   white-space: normal;
 }
 .cc-remark-text {
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.5;
 }
 .cc-commentary {
   display: grid;
-  gap: 8px;
-  margin-block: 12px 16px;
+  gap: 0.5rem;
+  margin-block: 0.75rem 1rem;
 }
 .cc-commentary h3 {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 .cc-commentary ol {
   display: grid;
-  gap: 8px;
-  max-block-size: 280px;
+  gap: 0.5rem;
+  max-block-size: 17.5rem;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1849,13 +1892,13 @@
   opacity: 0.35;
 }
 .cc-catalog-notice {
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 /* Time control (create dialog and Local lab). */
 .cc-time-control {
   display: grid;
-  gap: 8px;
+  gap: 0.5rem;
   min-width: 0;
   margin: 0;
   padding: 0;
@@ -1864,17 +1907,17 @@
 .cc-time-presets {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .cc-time-preset {
   min-height: 44px;
   min-width: 44px;
-  padding: 8px 14px;
+  padding: 0.5rem 0.875rem;
   border: 1px solid var(--cc-line-strong);
   border-radius: 999px;
   background: var(--cc-raised);
   color: var(--cc-text);
-  font-size: 14px;
+  font-size: 0.875rem;
   transition:
     background-color 120ms ease,
     border-color 120ms ease;
@@ -1890,8 +1933,8 @@
 }
 .cc-time-sides {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12.5rem), 1fr));
+  gap: 0.75rem;
 }
 .cc-time-side {
   min-width: 0;
@@ -1902,31 +1945,31 @@
 .cc-time-inputs {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 0.5rem;
 }
 .cc-time-inputs label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
   min-width: 0;
   color: var(--cc-muted);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 .cc-time-inputs input {
   min-height: 44px;
   width: 100%;
   min-width: 0;
-  padding: 8px 10px;
+  padding: 0.5rem 0.625rem;
   border: 1px solid var(--cc-line-strong);
   border-radius: 5px;
   background: var(--cc-raised);
   color: var(--cc-text);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .cc-card-ending {
-  margin-top: 6px;
+  margin-top: 0.375rem;
   color: var(--cc-text-soft);
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 @media (prefers-reduced-motion: reduce) {
