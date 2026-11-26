@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import postcss from "postcss";
 import { describe, expect, it } from "vitest";
@@ -30,11 +30,15 @@ function oklchToSrgb(l: number, c: number, hue: number): Rgb {
 }
 
 function token(scope: string, name: string): Rgb {
-  const block = postcss
+  // A scope may span several blocks (the shadcn tokens, then the --cc-* arena
+  // palette); the last declaration wins, as in the cascade.
+  const blocks = postcss
     .parse(css)
-    .nodes.find((node) => node.type === "rule" && node.selector === scope);
-  if (block?.type !== "rule") throw new Error(`Missing theme ${scope}`);
-  const declaration = block.nodes.find((node) => node.type === "decl" && node.prop === `--${name}`);
+    .nodes.filter((node) => node.type === "rule" && node.selector === scope);
+  if (blocks.length === 0) throw new Error(`Missing theme ${scope}`);
+  const declaration = blocks
+    .flatMap((block) => (block.type === "rule" ? block.nodes : []))
+    .findLast((node) => node.type === "decl" && node.prop === `--${name}`);
   const value = declaration?.type === "decl" ? declaration.value : "";
   const alias = /^var\(--([\w-]+)\)$/.exec(value);
   if (alias?.[1]) return token(scope, alias[1]);
@@ -85,6 +89,64 @@ describe("theme contrast (WCAG AA)", () => {
     }
   });
 
+  it.each(scopes)(
+    "%s field outlines (--input) reach 3:1 on every surface a field sits on",
+    (scope) => {
+      // WCAG 1.4.11 non-text contrast: the border is what shows where to type.
+      // --border is decorative (dividers, cards) and is not held to this.
+      // Shared fields also sit on the arena's page and panels (--cc-*).
+      const surfaces = [
+        "background",
+        "card",
+        "popover",
+        "muted",
+        "cc-bg",
+        "cc-surface",
+        "cc-raised",
+      ].map((name): [string, Rgb] => [name, token(scope, name)]);
+      // The dark arena repaints --muted (`.dark .cc-public-shell`).
+      if (scope === ".dark")
+        surfaces.push(["arena muted", token(".dark .cc-public-shell", "muted")]);
+      for (const [name, surface] of surfaces) {
+        expect(
+          contrast(token(scope, "input"), surface),
+          `${scope} input on ${name}`,
+        ).toBeGreaterThanOrEqual(3);
+      }
+      // The dark field fill (bg-input/30) must keep placeholder text readable.
+      if (scope === ".dark") {
+        for (const surface of ["background", "card", "popover"]) {
+          const fill = over(token(scope, "input"), 0.3, token(scope, surface));
+          expect(
+            contrast(token(scope, "muted-foreground"), fill),
+            `${scope} placeholder on input fill over ${surface}`,
+          ).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    },
+  );
+
+  it("rejects the original low-contrast --input", () => {
+    // The original light --input was 1.25:1 on white.
+    expect(contrast(oklchToSrgb(0.925, 0.005, 214.3), token(":root", "background"))).toBeLessThan(
+      3,
+    );
+  });
+
+  it("an Off switch fills its track with the opaque --input, which the 3:1 checks cover", () => {
+    // A translucent track (dark:bg-input/80) composites below 3:1 on a card.
+    const source = readFileSync(resolve(ui, "components/switch.tsx"), "utf8");
+    expect(source).toContain("data-unchecked:bg-input ");
+    expect(source).not.toMatch(/data-unchecked:bg-input\/\d+/);
+  });
+
+  it("draws dropdown menus on an opaque popover surface", () => {
+    // A translucent menu (bg-popover/70 + blur) let a banner tint it.
+    const menu = readFileSync(resolve(ui, "components/dropdown-menu.tsx"), "utf8");
+    expect(menu).toContain(" bg-popover ");
+    expect(menu).not.toMatch(/bg-popover\/\d+|backdrop-blur/);
+  });
+
   it.each(scopes)("%s toasts are a popover surface with 4.5:1 inks", (scope) => {
     // sileo's own palette inverts the theme; globals.css repaints it from the
     // tokens. Every state ink it maps and its text colour must hold up on the
@@ -129,5 +191,113 @@ describe("theme contrast (WCAG AA)", () => {
       expect(text, selector).toBe("popover-foreground");
     }
     expect(contrast(token(scope, "popover-foreground"), surface)).toBeGreaterThanOrEqual(4.5);
+    // A long title must not outgrow sileo's 350px pill (the icon ended up
+    // half outside it): the header row is capped and the title ellipsised.
+    expect(
+      declarations(":root [data-sileo-viewport] [data-sileo-header-inner]").get("max-width"),
+    ).toBe("calc(var(--sileo-width) - 1rem - 10px)");
+    expect(
+      declarations(":root [data-sileo-viewport] [data-sileo-header-inner] [data-sileo-title]").get(
+        "text-overflow",
+      ),
+    ).toBe("ellipsis");
+    // The action button ("Try again") writes --popover-foreground on an 8%
+    // (14% on hover) tint of itself over the pill.
+    const button = declarations(":root [data-sileo-viewport] [data-sileo-button][data-state]");
+    expect(alias(button.get("--sileo-btn-color"))).toBe("popover-foreground");
+    for (const key of ["--sileo-btn-bg", "--sileo-btn-bg-hover"]) {
+      const mix = /^color-mix\(in oklch, var\(--popover-foreground\) (\d+)%, transparent\)$/.exec(
+        button.get(key) ?? "",
+      );
+      expect(mix, key).not.toBeNull();
+      const fillColor = over(token(scope, "popover-foreground"), Number(mix?.[1]) / 100, surface);
+      expect(
+        contrast(token(scope, "popover-foreground"), fillColor),
+        `${scope} toast button text on ${key}`,
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+});
+
+describe("search fields in menus and pickers", () => {
+  it.each(scopes)("%s muted-foreground reaches 4.5:1 on muted", (scope) => {
+    const pairs: [string, Rgb, Rgb][] = [
+      ["muted", token(scope, "muted-foreground"), token(scope, "muted")],
+    ];
+    // The dark arena repaints --muted and --muted-foreground (`.dark .cc-public-shell`).
+    if (scope === ".dark")
+      pairs.push([
+        "arena muted",
+        token(".dark .cc-public-shell", "muted-foreground"),
+        token(".dark .cc-public-shell", "muted"),
+      ]);
+    for (const [name, ink, fill] of pairs) {
+      expect(contrast(ink, fill), `${scope} muted-foreground on ${name}`).toBeGreaterThanOrEqual(
+        4.5,
+      );
+    }
+  });
+
+  it.each(["command.tsx", "async-combobox.tsx", "multi-async-combobox.tsx"])(
+    "%s: the placeholder is muted-foreground on an opaque muted fill",
+    (file) => {
+      // Tailwind's default placeholder is the text colour at 50%, and a
+      // translucent bg-input fill moves with the --input outline token: the
+      // Create Match model search fell to ~4.23:1 in dark when --input
+      // reached 3:1.
+      const source = readFileSync(resolve(ui, "components", file), "utf8");
+      expect(source).toContain("placeholder:text-muted-foreground");
+      // Unprefixed and dark: InputGroup's own `dark:bg-input/30` would
+      // otherwise win in the dark theme.
+      expect(source).toMatch(/InputGroup className="[^"]*(?<![\w:-])bg-muted[^"]*dark:bg-muted/);
+      expect(source).not.toMatch(/InputGroup className="[^"]*bg-input\/\d+/);
+    },
+  );
+});
+
+describe("hovered field fills", () => {
+  it("keep placeholder text readable on every hovered --input fill", () => {
+    // Select and outline triggers hover to a stronger `bg-input/NN` while they
+    // still show a muted placeholder; at /50 the dark fill fell below 4.5:1
+    // once --input reached 3:1. Every `hover:bg-input/NN` in the ui package
+    // and the app is checked in the themes it applies to.
+    const roots = [ui, resolve(import.meta.dirname, "..")];
+    const fills: string[] = [];
+    for (const root of roots) {
+      for (const file of readdirSync(root, { recursive: true, encoding: "utf8" })) {
+        if (!/\.tsx?$/.test(file) || /\.test\.tsx?$/.test(file)) continue;
+        const source = readFileSync(resolve(root, file), "utf8");
+        for (const match of source.matchAll(/(?<![\w-])((?:[\w-]+:)*hover:)bg-input\/(\d+)/g)) {
+          const alpha = Number(match[2]) / 100;
+          fills.push(`${file}: ${match[0]}`);
+          const themes = (match[1] ?? "").split(":").includes("dark")
+            ? [".dark"]
+            : [":root", ".dark"];
+          for (const scope of themes) {
+            // Triggers also sit in the arena (the header's language switcher),
+            // whose dark theme repaints --muted-foreground.
+            const inks: [string, Rgb][] = [["", token(scope, "muted-foreground")]];
+            if (scope === ".dark")
+              inks.push([" (arena)", token(".dark .cc-public-shell", "muted-foreground")]);
+            for (const surface of ["background", "card", "popover", "cc-bg", "cc-surface"]) {
+              const fill = over(token(scope, "input"), alpha, token(scope, surface));
+              for (const [where, ink] of inks) {
+                expect(
+                  contrast(ink, fill),
+                  `${scope} placeholder${where} on ${match[0]} over ${surface} (${file})`,
+                ).toBeGreaterThanOrEqual(4.5);
+              }
+            }
+          }
+        }
+      }
+    }
+    // The select, outline-button and language-switcher hovers.
+    expect(fills.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("measures the old /50 dark hover as failing, so the check discriminates", () => {
+    const fill = over(token(".dark", "input"), 0.5, token(".dark", "card"));
+    expect(contrast(token(".dark", "muted-foreground"), fill)).toBeLessThan(4.5);
   });
 });

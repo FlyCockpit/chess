@@ -19,7 +19,7 @@
   --secondary: oklch(0.967 0.001 286.375);
   --secondary-foreground: oklch(0.21 0.006 285.885);
   --muted: oklch(0.963 0.002 197.1);
-  --muted-foreground: oklch(0.56 0.021 213.5);
+  --muted-foreground: oklch(0.54 0.021 213.5);
   --accent: oklch(0.963 0.002 197.1);
   --accent-foreground: oklch(0.218 0.008 223.9);
   --destructive: oklch(0.577 0.245 27.325);
@@ -39,7 +39,11 @@
   --state-loading-foreground: var(--foreground);
   --state-loading-bg: color-mix(in oklch, var(--muted-foreground) 12%, transparent);
   --border: oklch(0.925 0.005 214.3);
-  --input: oklch(0.925 0.005 214.3);
+  /* Field outlines (input, textarea, select, checkbox, switch track) are
+     non-text UI: >= 3:1 on every surface a field sits on, the arena's --cc-*
+     panels included (WCAG 1.4.11, apps/web/src/lib/theme-contrast.test.ts).
+     --border stays decorative and light. */
+  --input: oklch(0.62 0.012 214.3);
   --ring: oklch(0.723 0.014 214.4);
   --grey-50: oklch(0.985 0.002 228);
   --grey-100: oklch(0.96 0.004 228);
@@ -117,7 +121,7 @@
   --state-loading-foreground: var(--foreground);
   --state-loading-bg: color-mix(in oklch, var(--muted-foreground) 15%, transparent);
   --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
+  --input: oklch(0.56 0.012 220);
   --ring: oklch(0.56 0.021 213.5);
   --grey-50: oklch(0.25 0.004 228);
   --grey-100: oklch(0.3 0.006 228);
@@ -390,6 +394,39 @@
     display: none;
   }
 
+  /* Edge fade for a horizontal scroller (SelectorRow, CopyField, CodeSnippet).
+     `useScrollEdges` sets data-overflow-start / data-overflow-end while more
+     content lies past that edge; the content fades out there and the surface
+     behind shows through, so it matches any theme. A mask, so no layout shift
+     and no animation (nothing for reduced motion to stop). */
+  .scroll-fade-x:is([data-overflow-start], [data-overflow-end]) {
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      #000 var(--scroll-fade-start, 0px),
+      #000 calc(100% - var(--scroll-fade-end, 0px)),
+      transparent
+    );
+  }
+
+  .scroll-fade-x:dir(rtl):is([data-overflow-start], [data-overflow-end]) {
+    mask-image: linear-gradient(
+      to left,
+      transparent,
+      #000 var(--scroll-fade-start, 0px),
+      #000 calc(100% - var(--scroll-fade-end, 0px)),
+      transparent
+    );
+  }
+
+  .scroll-fade-x[data-overflow-start] {
+    --scroll-fade-start: 1.5rem;
+  }
+
+  .scroll-fade-x[data-overflow-end] {
+    --scroll-fade-end: 1.5rem;
+  }
+
   .skeleton-shimmer {
     position: relative;
     overflow: hidden;
@@ -446,6 +483,20 @@
 }
 :root [data-sileo-viewport] [data-sileo-description] {
   color: var(--popover-foreground);
+}
+/* sileo sizes the pill from the header's measured width but draws it inside a
+   fixed 350px SVG whose filter region clips anything wider: a long title used
+   to push the badge icon half outside a square-cut pill. Cap the header row to
+   the pill's maximum (350px - the header's 1rem padding - sileo's 10px pill
+   padding) and end the title with an ellipsis; the facade (sileo.tsx) also
+   puts long messages in the description, so the full text is still shown. */
+:root [data-sileo-viewport] [data-sileo-header-inner] {
+  max-width: calc(var(--sileo-width) - 1rem - 10px);
+}
+:root [data-sileo-viewport] [data-sileo-header-inner] [data-sileo-title] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 :root [data-sileo-viewport] [data-sileo-button][data-state] {
   --sileo-btn-color: var(--popover-foreground);

@@ -659,6 +659,7 @@ export function MatchReplay({
             <CodeSnippet
               code={`${toolEvent.input}\n${toolEvent.output}`}
               copyLabel={t("replay.copyTool")}
+              wrap
             />
           </details>
         )}
