@@ -17,6 +17,7 @@ const BASE_ENV: EnvMap = {
   BETTER_AUTH_SECRET: "kV3mQ7xZ2bN9wL5pR8tY4cJ6hF1dS0gU",
   // https, so the production-only http:// guards stay out of the way.
   BETTER_AUTH_URL: "https://app.example.com",
+  BETTER_AUTH_SECRET_PREVIOUS: undefined,
   // Every optional key the startup guards read starts explicitly undefined,
   // so a value exported in the developer's shell cannot skew a case.
   ADMIN_EMAILS: undefined,
@@ -389,5 +390,23 @@ describe("shared env — independent backup monitoring", () => {
     const mod = await importServerEnv({ BACKUP_ENABLED: "false" });
     expect(mod.env.BACKUP_ENABLED).toBe(false);
     expect(warn.mock.calls.some((call) => call.join(" ").includes("BACKUP_"))).toBe(false);
+  });
+});
+
+describe("previous password pepper secret", () => {
+  it("rejects the current secret as previous", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(
+      importServerEnv({ BETTER_AUTH_SECRET_PREVIOUS: BASE_ENV.BETTER_AUTH_SECRET }),
+    ).rejects.toThrow(/must differ/);
+  });
+  it("rejects a weak previous secret in production", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(
+      importServerEnv({
+        NODE_ENV: "production",
+        BETTER_AUTH_SECRET_PREVIOUS: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ).rejects.toThrow(/PREVIOUS is weak/);
   });
 });

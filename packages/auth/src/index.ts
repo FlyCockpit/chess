@@ -20,6 +20,7 @@ import { prismaAdapter } from "better-auth/adapters/prisma";
 import { createAuthMiddleware } from "better-auth/api";
 import { admin, deviceAuthorization, genericOAuth, twoFactor } from "better-auth/plugins";
 import { deviceFlowSessionData } from "./device-session-origin.js";
+import { createPasswordPepper } from "./password-pepper.js";
 import { resolveSignupLocale } from "./signup-locale.js";
 import { neutralizeSignUpResponse, SIGN_UP_EMAIL_PATH } from "./signup-response.js";
 import { TWO_FACTOR_ALLOW_PASSWORDLESS_ENROLLMENT } from "./two-factor-policy.js";
@@ -43,6 +44,11 @@ const webOrigin = env.CORS_ORIGIN ?? env.BETTER_AUTH_URL;
 // signal-y. Anything we don't recognize keeps its original level.
 const USER_INPUT_ERROR_PATTERN =
   /invalid (password|email|credentials|token|otp|two[- ]?factor)|user not found|email not verified|password is incorrect|account not found|failed to verify|already exists|too many (requests|attempts)/i;
+
+export const passwordPepper = createPasswordPepper({
+  secret: env.BETTER_AUTH_SECRET,
+  previousSecret: env.BETTER_AUTH_SECRET_PREVIOUS,
+});
 
 export const auth = betterAuth({
   database: prismaAdapter(prisma, {
@@ -89,6 +95,7 @@ export const auth = betterAuth({
     // since an account created under an older policy must still be able to
     // authenticate.
     minPasswordLength: 12,
+    password: { hash: passwordPepper.hash, verify: passwordPepper.verify },
     sendResetPassword: async ({ user, url }) => {
       // Same locale-resolution dance as sendVerificationEmail: Better-Auth's
       // callback `user` is typed against the base user shape, so `locale`

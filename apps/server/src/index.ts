@@ -5,7 +5,8 @@ import "@cockpit-chess/env/load-dotenv";
 import { createHash } from "node:crypto";
 import { type CredentialKind, createContext } from "@cockpit-chess/api/context";
 import { appRouter } from "@cockpit-chess/api/routers/index";
-import { auth, type Session } from "@cockpit-chess/auth";
+import { auth, passwordPepper, type Session } from "@cockpit-chess/auth";
+import { syncPasswordPepper } from "@cockpit-chess/auth/password-pepper-store";
 import { ORPC_BATCH_MAX_SIZE } from "@cockpit-chess/config/orpc-batch";
 import { THEME_INIT_SCRIPT } from "@cockpit-chess/config/theme-init";
 import prisma from "@cockpit-chess/db";
@@ -574,6 +575,8 @@ if (env.NODE_ENV === "production") {
     return c.text("OK");
   });
 }
+
+await syncPasswordPepper(prisma, passwordPepper);
 
 await lifecycle.start((onListening) =>
   serve(

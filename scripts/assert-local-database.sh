@@ -180,6 +180,8 @@ if [[ "$CMD" == "--self-test" ]]; then
   self_test_guard db:reset:local "postgresql://db.example.com:5432/prod" 1 "db:reset:local refuses the per-command escape" ALLOW_NONLOCAL_DB_RESET_LOCAL="$esc"
   self_test_guard db:reset:local "postgresql://db.example.com:5432/prod" 1 "db:reset:local refuses the generic escape" ASSERT_LOCAL_DB_ESCAPE="$esc"
   self_test_guard db:migrate+shadow "postgresql://db.example.com:5432/prod" 1 "shadow commands refuse the escape" ASSERT_LOCAL_DB_ESCAPE="$esc"
+  self_test_guard auth:pepper:reset-unusable "postgresql://localhost:5432/$here" 0 "pepper recovery accepts exact local database"
+  self_test_guard auth:pepper:reset-unusable "postgresql://db.example.com:5432/$here" 1 "pepper recovery refuses remote escape" ASSERT_LOCAL_DB_ESCAPE="$esc"
   self_test_guard db:seed "postgresql://localhost:5432/$here" 1 "removed seed command rejected"
   self_test_guard db:push "postgresql://localhost:5432/$here" 1 "removed command db:push rejected"
   self_test_guard db:reset:local "postgresql://localhost:5432/$here?host=db.example.com" 1 "?host= override rejected"
@@ -207,11 +209,11 @@ fi
 ESCAPABLE=0
 case "$CMD" in
   db:studio | db:migrate:apply) ESCAPABLE=1 ;;
-  db:migrate | db:migrate:rebase | db:worktree | db:reset:local) ESCAPABLE=0 ;;
+  db:migrate | db:migrate:rebase | db:worktree | db:reset:local | auth:pepper:reset-unusable) ESCAPABLE=0 ;;
   *)
     echo "FATAL: usage: $0 <COMMAND_NAME> [--shadow]" >&2
     echo "       COMMAND_NAME is db:studio | db:migrate | db:migrate:apply |" >&2
-    echo "       db:migrate:rebase | db:worktree | db:reset:local" >&2
+    echo "       db:migrate:rebase | db:worktree | db:reset:local | auth:pepper:reset-unusable" >&2
     exit 1
     ;;
 esac

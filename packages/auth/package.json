@@ -7,6 +7,9 @@
     ".": {
       "default": "./src/index.ts"
     },
+    "./password-pepper-store": {
+      "default": "./src/password-pepper-store.ts"
+    },
     "./ban": {
       "default": "./src/ban.ts"
     },

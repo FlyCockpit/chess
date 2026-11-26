@@ -29,7 +29,11 @@ vi.mock("@cockpit-chess/env/server", () => ({
     return envState.signupEnabled;
   },
   SSO_ENABLED: false,
-  env: { BETTER_AUTH_URL: "https://app.example.test", NODE_ENV: "test" },
+  env: {
+    BETTER_AUTH_URL: "https://app.example.test",
+    BETTER_AUTH_SECRET: "disposable-unit-test-key-for-password-pepper",
+    NODE_ENV: "test",
+  },
 }));
 vi.mock("@cockpit-chess/mailer", () => ({
   isEmailConfigured: () => false,
@@ -39,7 +43,7 @@ vi.mock("@cockpit-chess/mailer", () => ({
   sendEmail: vi.fn(),
 }));
 
-await import("./index");
+const { passwordPepper } = await import("./index");
 
 type CapturedOptions = {
   emailAndPassword?: Record<string, unknown>;
@@ -49,6 +53,13 @@ type CapturedOptions = {
 };
 
 const options = betterAuth.mock.calls[0]?.[0] as CapturedOptions;
+
+it("uses the pepper password hooks", () => {
+  expect(options.emailAndPassword?.password).toEqual({
+    hash: passwordPepper.hash,
+    verify: passwordPepper.verify,
+  });
+});
 
 // `/sign-up/email` must not tell a free address from a registered one. Runs the
 // production auth options (user fields, requireEmailVerification, hooks,

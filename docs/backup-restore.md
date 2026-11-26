@@ -4,6 +4,8 @@
 
 **Backups are opt-in and default off.** New deployments need no backup settings, storage or sidecar; migrations and readiness work normally. Startup logs one notice with enablement instructions. To opt in, enable exactly one daily logical-backup schedule, or choose provider backups/PITR with retention and alerts. Set `BACKUP_ENABLED=true` for automatic snapshots before migrations and freshness monitoring. Restore and restore drills run inside the target network; agents prepare commands and the owner runs them.
 
+Back up `BETTER_AUTH_SECRET` separately from the database and retain the keys needed for older backups. A restored database may need its original key for [password pepper rotation or recovery](./auth-and-routing.md#password-pepper).
+
 ## Daily backups
 
 ### Dokploy with the generated compose (the default) — recommended

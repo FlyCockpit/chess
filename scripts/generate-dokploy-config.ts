@@ -292,6 +292,7 @@ function composeEnvironments(options: Options): Record<string, Record<string, st
       // Optional (COMPOSE_OPTIONAL_VARIABLES): passed through so the email-free
       // first-admin bootstrap works on the compose path; unset = route absent.
       SETUP_KEY: composeVar("SETUP_KEY"),
+      BETTER_AUTH_SECRET_PREVIOUS: composeVar("BETTER_AUTH_SECRET_PREVIOUS"),
       BETTER_AUTH_URL: new URL(options.url).origin,
       WORKER_MODE: worker ? "external" : "embedded",
       MIGRATE_ON_START: "true",
@@ -329,7 +330,7 @@ function composeEnvironments(options: Options): Record<string, Record<string, st
  * production value, so they are not on the checklist of variables to fill.
  * SETUP_KEY is set only for the first-admin bootstrap, then removed.
  */
-const COMPOSE_OPTIONAL_VARIABLES = new Set(["SETUP_KEY"]);
+const COMPOSE_OPTIONAL_VARIABLES = new Set(["SETUP_KEY", "BETTER_AUTH_SECRET_PREVIOUS"]);
 
 function composeChecklist(options: Options) {
   return {

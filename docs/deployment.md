@@ -48,6 +48,7 @@ For Dokploy-managed PostgreSQL or Valkey, use the native Application checklist w
 |---|---|
 | `DATABASE_URL`, `REDIS_URL` | Server and external worker; the same environment-specific targets |
 | `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `ADMIN_EMAILS` | Server only; unique strong auth secret and exact public origin |
+| `BETTER_AUTH_SECRET_PREVIOUS` | Server only; optional old secret during [password pepper rotation](./auth-and-routing.md#password-pepper) |
 | `SETUP_KEY` | Server only, optional, 32–512 characters: lets `pnpm deploy:generate-admin` create the first admin without email. Remove it once that admin has signed in ([First admin user](#first-admin-user)) |
 | `SMTP_*` | Server for verification; selected worker runtime for operational alerts |
 | `MIGRATE_ON_START` | Server `true`; external worker `false`; app replicas `false` when using a prior one-shot migration job |

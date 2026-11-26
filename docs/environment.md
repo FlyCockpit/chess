@@ -18,6 +18,7 @@ before workspace source is copied.
 | `apps/server/src/index.ts` | side effect | Hono process under `tsx` (`pnpm dev`), where plain ESM order applies |
 | `apps/worker/src/index.ts` | side effect | BullMQ worker under `tsx`, same reason |
 | `scripts/doctor.ts` | side effect | `pnpm doctor:app` |
+| `scripts/auth-pepper-reset-unusable.ts` | side effect | Owner-run password recovery |
 | `scripts/translate-locale-bundles.ts` | side effect | `pnpm i18n:translate` → `@cockpit-chess/i18n-translate` → `@cockpit-chess/env/shared` |
 | `apps/web/vite.config.ts` | `loadRootDotenv()` | Config-time only — TanStack Start server functions during `vite dev` run in the Vite process, not `apps/server`. **Not** in the client/SSR output graph. Uses parsed root values for config-time defaults. |
 

@@ -373,3 +373,16 @@ test("the backup healthcheck's script ships in the image it probes", () => {
   const schedule = readFileSync(new URL("./backup/schedule.mjs", import.meta.url), "utf8");
   assert.match(schedule, /command === "health"\) process\.exitCode = health\(\)/);
 });
+
+test("previous pepper secret is an optional server-only compose setting", () => {
+  for (const topology of ["app", "app-worker"] as const) {
+    const config = generateDokployConfig({ ...defaults, topology });
+    const compose = generateDokployCompose({ ...defaults, topology });
+    assert.match(block(compose, "server"), /BETTER_AUTH_SECRET_PREVIOUS/);
+    assert.doesNotMatch(block(compose, "worker"), /BETTER_AUTH_SECRET_PREVIOUS/);
+    assert.doesNotMatch(
+      JSON.stringify(config.environmentVariablesToSetOnce),
+      /BETTER_AUTH_SECRET_PREVIOUS/,
+    );
+  }
+});

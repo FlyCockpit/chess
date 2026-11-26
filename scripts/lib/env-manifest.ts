@@ -559,11 +559,23 @@ export const ENV_VARS: EnvVar[] = [
       "REQUIRED, minimum 32 characters. The env validator rejects weak and",
       "placeholder values in production. Rotating this invalidates every",
       "existing session — generate once per environment and keep it stable.",
+      "Rotation also requires the old secret in BETTER_AUTH_SECRET_PREVIOUS;",
+      "see docs/auth-and-routing.md § Password pepper and retain old backup keys.",
       "",
       "For LOCAL dev this is filled in for you by `pnpm setup:app`; to mint one",
       "by hand use `pnpm generate:secret` and paste it below. For a PRODUCTION",
       "environment prefer `pnpm generate:secrets`, which generates this along",
       "with the rest of the block and validates the result.",
+    ],
+  },
+  {
+    key: "BETTER_AUTH_SECRET_PREVIOUS",
+    group: "auth",
+    source: "manual",
+    hidden: true,
+    secret: true,
+    comment: [
+      "Set only during secret rotation to re-wrap password hashes; see docs/auth-and-routing.md.",
     ],
   },
   {

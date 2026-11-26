@@ -73,6 +73,7 @@
     "policy:access-matrix:self-test": "node scripts/check-access-matrix.ts --self-test",
     "setup:app": "tsx scripts/setup.ts",
     "test:setup": "node --import tsx --test scripts/lib/admin-email-env.test.ts scripts/lib/smtp-env.test.ts",
+    "auth:pepper:reset-unusable": "tsx scripts/auth-pepper-reset-unusable.ts",
     "doctor:app": "tsx scripts/doctor.ts",
     "doctor:react": "react-doctor . --offline -y",
     "doctor:react:diff": "react-doctor . --scope changed --base origin/main --offline -y",

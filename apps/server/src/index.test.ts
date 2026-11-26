@@ -6,6 +6,8 @@ const state = vi.hoisted(() => ({
   getSession: vi.fn(),
   authHandler: vi.fn(),
   mutate: vi.fn(() => ({ ok: true })),
+  passwordPepper: {},
+  syncPasswordPepper: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Import the real app/handlers without loading dotenv, starting a listener,
@@ -22,6 +24,10 @@ vi.mock("@cockpit-chess/db", async () => {
 });
 vi.mock("@cockpit-chess/auth", () => ({
   auth: { api: { getSession: state.getSession }, handler: state.authHandler },
+  passwordPepper: state.passwordPepper,
+}));
+vi.mock("@cockpit-chess/auth/password-pepper-store", () => ({
+  syncPasswordPepper: state.syncPasswordPepper,
 }));
 vi.mock("@cockpit-chess/queue", () => ({ QUEUE_NAMES: {}, redisConnection: {} }));
 vi.mock("@cockpit-chess/queue/consumer-health", () => ({ hasExternalConsumer: vi.fn() }));
@@ -82,7 +88,24 @@ vi.mock("./two-factor-otp-limit.js", () => ({
   twoFactorOtpLimit: () => async (_c: Context, next: Next) => next(),
 }));
 
-await import("./index");
+let releasePepperSync!: () => void;
+let notifyPepperSync!: () => void;
+const pepperSyncStarted = new Promise<void>((resolve) => {
+  notifyPepperSync = resolve;
+});
+const pepperSyncPending = new Promise<void>((resolve) => {
+  releasePepperSync = resolve;
+});
+state.syncPasswordPepper.mockImplementationOnce(() => {
+  notifyPepperSync();
+  return pepperSyncPending;
+});
+const startup = import("./index");
+await pepperSyncStarted;
+const listenerBeforePepperSyncCompleted = state.fetch;
+const pepperSyncCalls = [...state.syncPasswordPepper.mock.calls];
+releasePepperSync();
+await startup;
 
 function request(path: string, init?: RequestInit) {
   if (!state.fetch) throw new Error("App fetch was not captured");
@@ -99,6 +122,13 @@ beforeEach(() => {
   vi.spyOn(console, "log").mockImplementation(() => {});
 });
 afterEach(() => vi.restoreAllMocks());
+
+it("awaits password pepper synchronization before listening", async () => {
+  const { default: prisma } = await import("@cockpit-chess/db");
+  expect(pepperSyncCalls).toEqual([[prisma, state.passwordPepper]]);
+  expect(listenerBeforePepperSyncCompleted).toBeUndefined();
+  expect(state.fetch).toBeDefined();
+});
 
 describe.each(["/rpc", "/api-reference"])(
   "%s cookie CSRF protection without CORS_ORIGIN",
