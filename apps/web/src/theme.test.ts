@@ -96,3 +96,11 @@ describe("arena palette", () => {
     }
   });
 });
+
+describe("toasts", () => {
+  it("keep the case their titles were written in (sileo capitalises every word)", () => {
+    expect(globals).toMatch(
+      /:root \[data-sileo-viewport\] \[data-sileo-title\] \{[^}]*text-transform: none;/,
+    );
+  });
+});

@@ -490,6 +490,12 @@
 :root [data-sileo-viewport] [data-sileo-title][data-state] {
   color: var(--popover-foreground);
 }
+/* sileo capitalises every word of a title (`text-transform: capitalize`). Our
+   titles are sentences ("Match started. It plays in the background…"), often
+   with a command or a name in them, so they keep the case they were written in. */
+:root [data-sileo-viewport] [data-sileo-title] {
+  text-transform: none;
+}
 :root [data-sileo-viewport] [data-sileo-description] {
   color: var(--popover-foreground);
 }
