@@ -18,7 +18,11 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   redirect: () => undefined,
   useParams: () => ({ lang: "en-US" }),
 }));
-vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({}) }));
+vi.mock("@tanstack/react-query", () => ({
+  queryOptions: (options: unknown) => options,
+  useQuery: () => ({ data: undefined }),
+  useQueryClient: () => ({}),
+}));
 vi.mock("@tanstack/react-query-devtools", () => ({ ReactQueryDevtools: () => null }));
 vi.mock("@tanstack/react-router-devtools", () => ({ TanStackRouterDevtools: () => null }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -39,6 +43,7 @@ vi.mock("@/components/consent/consent-preferences-button", () => ({
 }));
 vi.mock("@/hooks/use-document-lang", () => ({ useDocumentLang: () => {} }));
 vi.mock("@/hooks/use-user-locale-sync", () => ({ useUserLocaleSync: () => {} }));
+vi.mock("@/hooks/use-session-hint-sync", () => ({ useSessionHintSync: () => {} }));
 vi.mock("@/hooks/use-mobile-keyboard", () => ({ useMobileKeyboard: () => false }));
 vi.mock("@/i18n", () => ({ loadLocaleInto: async () => {} }));
 

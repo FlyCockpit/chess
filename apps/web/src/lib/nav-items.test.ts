@@ -19,7 +19,8 @@ describe("nav-items", () => {
       role: "user",
     }).map((item) => item.path);
 
-    expect(items).toEqual(["/", "/dashboard", "/settings"]);
+    // No dashboard: the arena (Home) is the signed-in home too (lib/app-home.ts).
+    expect(items).toEqual(["/", "/settings"]);
     expect(items).not.toContain("/admin");
   });
 
@@ -51,7 +52,7 @@ describe("nav-items", () => {
     }).map((item) => item.path);
 
     expect(signedOutItems).toEqual(["/"]);
-    expect(adminItems).toEqual(["/", "/dashboard", "/settings", "/admin"]);
+    expect(adminItems).toEqual(["/", "/settings", "/admin"]);
   });
 
   it("derives user-menu destinations from the shared nav model", () => {
@@ -72,6 +73,6 @@ describe("nav-items", () => {
 
   it("builds typed locale-prefixed routes", () => {
     expect(toLangRoute("/")).toBe("/$lang");
-    expect(toLangRoute("/dashboard")).toBe("/$lang/dashboard");
+    expect(toLangRoute("/settings")).toBe("/$lang/settings");
   });
 });

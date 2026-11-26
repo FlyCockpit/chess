@@ -2,7 +2,6 @@
   "skipToContent": "Saltar al contenido",
   "items": {
     "home": "Inicio",
-    "dashboard": "Panel de control",
     "settings": "Configuración",
     "admin": "Administración"
   },
@@ -18,8 +17,12 @@
   },
   "userMenu": {
     "myAccount": "Mi cuenta",
+    "open": "Abrir el menú de la cuenta",
+    "openFor": "{{name}}, menú de la cuenta",
+    "account": "Tu cuenta y configuración",
     "signIn": "Iniciar sesión",
     "signOut": "Cerrar sesión",
+    "signOutFailed": "No se pudo cerrar la sesión. Revisa tu conexión e inténtalo de nuevo.",
     "signUp": "Registrarse"
   }
 }

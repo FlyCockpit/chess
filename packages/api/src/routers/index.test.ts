@@ -1,4 +1,5 @@
 import { createRouterClient } from "@orpc/server";
+import type { MockInstance } from "vitest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Context } from "../context";
@@ -86,6 +87,9 @@ vi.mock("@cockpit-chess/mailer", () => ({
 }));
 
 const { appRouter } = await import("./index");
+const { resetAdminPresenceCache } = await import("../lib/admin-presence");
+const { default: prisma } = await import("@cockpit-chess/db");
+const db = prisma as unknown as { $queryRaw: MockInstance };
 
 const publicContext: Context = { session: null, clientIp: "127.0.0.1" };
 
@@ -113,6 +117,8 @@ describe("appConfig", () => {
     envMock.SIGNUP_ENABLED = true;
     envMock.SSO_PROVIDER_NAME = "SSO";
     adminEmailsMock.clear();
+    db.$queryRaw.mockReset();
+    resetAdminPresenceCache();
   });
 
   it("reports emailEnabled=false when SMTP_HOST is unset", async () => {
@@ -160,13 +166,49 @@ describe("appConfig", () => {
     });
   });
 
-  it("surfaces the admin bootstrap signup carve-out when signup is otherwise disabled", async () => {
+  it("offers the admin bootstrap while sign-up is closed and no admin exists yet", async () => {
     envMock.SIGNUP_ENABLED = false;
     adminEmailsMock.add("admin@example.com");
+    db.$queryRaw.mockResolvedValue([{ exists: false }]);
 
     const client = createRouterClient(appRouter, { context: publicContext });
     const config = await client.appConfig();
 
     expect(config.adminBootstrapSignupEnabled).toBe(true);
+  });
+
+  it("turns the bootstrap off once an admin exists, and reuses that answer", async () => {
+    envMock.SIGNUP_ENABLED = false;
+    adminEmailsMock.add("admin@example.com");
+    db.$queryRaw.mockResolvedValue([{ exists: true }]);
+
+    const client = createRouterClient(appRouter, { context: publicContext });
+    expect((await client.appConfig()).adminBootstrapSignupEnabled).toBe(false);
+    expect((await client.appConfig()).adminBootstrapSignupEnabled).toBe(false);
+    // A public procedure every sign-in page asks: "an admin exists" is cached.
+    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("never caches 'no admin yet', so bootstrap flips to closed on the next call", async () => {
+    envMock.SIGNUP_ENABLED = false;
+    adminEmailsMock.add("admin@example.com");
+    db.$queryRaw.mockResolvedValueOnce([{ exists: false }]);
+    db.$queryRaw.mockResolvedValueOnce([{ exists: true }]);
+
+    const client = createRouterClient(appRouter, { context: publicContext });
+    expect((await client.appConfig()).adminBootstrapSignupEnabled).toBe(true);
+    expect((await client.appConfig()).adminBootstrapSignupEnabled).toBe(false);
+  });
+
+  it("does not query for an admin when the env rules bootstrap out", async () => {
+    envMock.SIGNUP_ENABLED = true;
+    adminEmailsMock.add("admin@example.com");
+    const client = createRouterClient(appRouter, { context: publicContext });
+    expect((await client.appConfig()).adminBootstrapSignupEnabled).toBe(false);
+
+    envMock.SIGNUP_ENABLED = false;
+    adminEmailsMock.clear();
+    expect((await client.appConfig()).adminBootstrapSignupEnabled).toBe(false);
+    expect(db.$queryRaw).not.toHaveBeenCalled();
   });
 });

@@ -18,6 +18,7 @@ import {
 } from "@/i18n/config";
 import { LOCALE_LABELS } from "@/i18n/labels";
 import { orpc } from "@/utils/orpc";
+import { LABEL_HIDDEN_BELOW, type LabelHiddenBelow } from "./language-switcher-label";
 
 /**
  * The real Base UI locale Select. Lazy-loaded by `language-switcher.tsx` on
@@ -25,7 +26,11 @@ import { orpc } from "@/utils/orpc";
  * bundle. It mounts `defaultOpen` so the click that triggered the load opens
  * the list immediately — no effect, no second click.
  */
-export default function LanguageSwitcherSelect() {
+export default function LanguageSwitcherSelect({
+  labelHiddenBelow = "sm",
+}: {
+  labelHiddenBelow?: LabelHiddenBelow;
+} = {}) {
   const { i18n, t } = useTranslation();
   const router = useRouter();
   const authSession = useAuthSession();
@@ -97,7 +102,10 @@ export default function LanguageSwitcherSelect() {
         className="gap-2 px-3"
       >
         <Languages className="size-4" aria-hidden="true" />
-        <SelectValue>{LOCALE_LABELS[current]}</SelectValue>
+        {/* Icon-only below the same breakpoint as the shell (language-switcher.tsx). */}
+        <SelectValue className={LABEL_HIDDEN_BELOW[labelHiddenBelow]}>
+          {LOCALE_LABELS[current]}
+        </SelectValue>
       </SelectTrigger>
       <SelectContent>
         {SUPPORTED_LOCALES.map((locale) => (

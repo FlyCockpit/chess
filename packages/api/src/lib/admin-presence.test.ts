@@ -27,3 +27,22 @@ describe("adminUserExists", () => {
     expect(sql).toContain("~* '^\\s*admin\\s*$'");
   });
 });
+
+describe("adminExistsForAppConfig", () => {
+  it("caches only a positive answer, for a minute", async () => {
+    const { adminExistsForAppConfig, resetAdminPresenceCache } = await import("./admin-presence");
+    resetAdminPresenceCache();
+    db.$queryRaw.mockReset();
+    db.$queryRaw.mockResolvedValueOnce([{ exists: false }]);
+    expect(await adminExistsForAppConfig(0)).toBe(false);
+    db.$queryRaw.mockResolvedValueOnce([{ exists: true }]);
+    expect(await adminExistsForAppConfig(1_000)).toBe(true);
+    // Within the TTL: no query.
+    expect(await adminExistsForAppConfig(60_000)).toBe(true);
+    expect(db.$queryRaw).toHaveBeenCalledTimes(2);
+    // After it: asks again, and sees a demoted last admin.
+    db.$queryRaw.mockResolvedValueOnce([{ exists: false }]);
+    expect(await adminExistsForAppConfig(61_001)).toBe(false);
+    expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+  });
+});

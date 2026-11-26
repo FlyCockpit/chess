@@ -209,6 +209,7 @@
     "title": "From experiment to headline.",
     "description": "Configure matches, import local games, preview drafts, and publish evidence.",
     "signIn": "Sign in with an administrator account to open the studio.",
+    "adminOnly": "The studio is for administrators. Your account can watch, compare and replay every published match, and run games in the Local lab.",
     "disabled": "Hosted inference is off. An operator must enable CHESS_HOSTED_ENABLED and configure a provider key before paid games can run.",
     "create": "Create match",
     "import": "Import local archive",

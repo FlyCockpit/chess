@@ -54,7 +54,7 @@ const FORM_HYDRATED = `(async () => {
 /** After the sign-in submit: "app" once the app opens, "code" at the second-factor step. */
 const SIGN_IN_STEP = `(async () => {
   for (let i = 0; i < 40; i++) {
-    if (location.pathname.endsWith("/dashboard")) return "app";
+    if (location.pathname.endsWith("/settings")) return "app";
     if (document.getElementById("totp-code")) return "code";
     await new Promise((r) => setTimeout(r, 500));
   }
@@ -92,7 +92,9 @@ export async function signIn(
     throw new Error(
       "sign-in needs --login <admin email> and the password in CHECK_LAYOUT_PASSWORD",
     );
-  await browser.run(["open", `${base}/en-US/login`]);
+  // Straight to Settings, an app-shell page: the signed-in home is the public
+  // arena (apps/web/src/lib/app-home.ts), so a plain sign-in leaves the app shell.
+  await browser.run(["open", `${base}/en-US/login?redirectTo=%2Fen-US%2Fsettings`]);
   // A dev server's first load can outlast agent-browser's 25s limit for one wait.
   for (let attempt = 1; ; attempt++) {
     try {
@@ -129,7 +131,7 @@ export async function signIn(
   } else if (step !== "app") {
     throw new Error(`sign-in did not open the app (${String(step)})`);
   }
-  await browser.run(["wait", "--url", "**/dashboard"]);
+  await browser.run(["wait", "--url", "**/settings"]);
   await browser.run([
     "eval",
     "localStorage.setItem('cockpit-chess.consent.v1', JSON.stringify({ v: 1, analytics: false, decidedAt: Date.now() })); true",
@@ -258,12 +260,6 @@ export interface ShellPage {
 
 /** Signed-in pages `check:shell-loading` hard-reloads (pick two or more different shapes). */
 export const SHELL_PAGES: ShellPage[] = [
-  {
-    name: "dashboard",
-    path: "/en-US/dashboard",
-    role: "admin",
-    ready: 'main a[href$="tab=studio"]',
-  },
   {
     name: "settings",
     path: "/en-US/settings",

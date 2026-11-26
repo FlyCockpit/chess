@@ -12,7 +12,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * its classes; the real widths are checked in a browser.
  */
 
-const authState = vi.hoisted(() => ({ status: "anonymous" as string }));
+const authState = vi.hoisted(() => ({
+  status: "anonymous" as string,
+  /** The public pages' session-cookie hint (lib/session-hint.ts). */
+  hint: false,
+}));
 
 vi.mock("@cockpit-chess/env/web", () => ({
   env: { VITE_APP_NAME: "Northwind Regional Logistics" },
@@ -25,21 +29,39 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
     options,
     useParams: () => ({ lang: "en-US" }),
   }),
+  // Only a named link (an icon-only control) also carries its target, so the
+  // brand and nav links render exactly as before.
   Link: ({
+    to,
     className,
     title,
+    "aria-label": ariaLabel,
     children,
   }: {
+    to?: string;
     className?: string;
     title?: string;
+    "aria-label"?: string;
     children?: ReactNode;
   }) => (
-    <a className={className} title={title}>
+    <a
+      className={className}
+      title={title}
+      aria-label={ariaLabel}
+      data-to={ariaLabel ? to : undefined}
+    >
       {children}
     </a>
   ),
   useParams: () => ({ lang: "en-US" }),
 }));
+vi.mock("@tanstack/react-query", () => ({
+  queryOptions: (options: unknown) => options,
+  useQuery: (options?: { queryKey?: readonly unknown[] }) => ({
+    data: options?.queryKey?.[0] === "session-cookie-hint" ? authState.hint : undefined,
+  }),
+}));
+vi.mock("@/server/auth-session", () => ({ getSessionCookieHint: vi.fn() }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/components/consent/consent-preferences-button", () => ({
   ConsentPreferencesButton: () => null,
@@ -51,7 +73,9 @@ vi.mock("@/hooks/use-auth-session", () => ({
 vi.mock("./main-nav", () => ({ MainNav: () => null }));
 vi.mock("./language-switcher", () => ({ LanguageSwitcher: () => <i data-control="language" /> }));
 vi.mock("@/components/language-switcher", () => ({
-  LanguageSwitcher: () => <i data-control="language" />,
+  LanguageSwitcher: ({ labelHiddenBelow }: { labelHiddenBelow?: string }) => (
+    <i data-control="language" data-label-hidden-below={labelHiddenBelow} />
+  ),
 }));
 vi.mock("./mode-toggle", () => ({ ModeToggle: () => <i data-control="mode" /> }));
 vi.mock("./user-menu", () => ({ default: () => <i data-control="user-menu" /> }));
@@ -130,13 +154,13 @@ describe("app header: the app name gives way first", () => {
   });
 });
 
-describe("arena header: the brand gives way first", () => {
-  const css = readFileSync(resolve(import.meta.dirname, "../index.css"), "utf8");
-  const rule = (selector: string) => {
-    const start = css.indexOf(`\n${selector} {`);
-    return start < 0 ? "" : css.slice(start, css.indexOf("}", start));
-  };
+const css = readFileSync(resolve(import.meta.dirname, "../index.css"), "utf8");
+const rule = (selector: string) => {
+  const start = css.indexOf(`\n${selector} {`);
+  return start < 0 ? "" : css.slice(start, css.indexOf("}", start));
+};
 
+describe("arena header: the brand gives way first", () => {
   it("renders the brand name in its own span, with the full name as the title", () => {
     const html = renderPublic();
     expect(html).toMatch(
@@ -158,7 +182,72 @@ describe("arena header: the brand gives way first", () => {
 
   it("keeps the controls whole and on the trailing line", () => {
     const html = renderPublic();
-    const match = html.match(/<div class="([^"]*)"><i data-control="language"/);
-    expect(match?.[1]?.split(" ")).toEqual(expect.arrayContaining(["ml-auto", "shrink-0"]));
+    const match = html.match(
+      /<div data-header-controls="" class="([^"]*)"><i data-control="language"/,
+    );
+    // `max-w-full flex-wrap`: a group wider than the row wraps inside itself
+    // instead of running past the trailing edge (check:layout measures it).
+    expect(match?.[1]?.split(" ")).toEqual(
+      expect.arrayContaining(["ml-auto", "shrink-0", "max-w-full", "flex-wrap", "justify-end"]),
+    );
+  });
+});
+
+/**
+ * The translated tabs, not the controls, give way once the brand is at its
+ * floor: otherwise es-MX's tabs pushed the signed-in account link (the only
+ * way to Settings, Admin and Sign out) off a 651–1279px screen. The widths are
+ * in public-shell.tsx's PublicHeader and the home-nav handoff; `pnpm
+ * check:layout` measures them in a browser.
+ */
+describe("arena header: the tabs give way before the controls", () => {
+  it("the tab strip shrinks after the brand and then scrolls sideways", () => {
+    const nav = rule(".cc-nav");
+    // An `auto` basis: the brand (zero basis) reaches its floor first.
+    expect(nav).toContain("flex: 1 1 auto;");
+    expect(nav).toContain("min-width: 0;");
+    expect(nav).toContain("overflow-x: auto;");
+    // A tab's focus ring is drawn inside the strip, which would clip it outside.
+    expect(css).toMatch(
+      /\.cc-public-shell :is\([^)]*\.cc-nav\b[^)]*\) :focus-visible \{\s*outline-offset: -2px;/,
+    );
+  });
+
+  it("a tab never shrinks below its longest word, so labels cannot overlap (Codex round 3)", () => {
+    // An explicit min-width on the link replaces its automatic minimum (the
+    // min-content width), and the strip squeezed every tab to 44px.
+    expect(rule(".cc-nav a")).not.toMatch(/min-width:/);
+    // The 44px hit-box floor sits on the label, so the link's automatic
+    // minimum is max(44px, its longest word).
+    expect(rule(".cc-nav-label")).toContain("min-width: 44px;");
+    const html = renderPublic();
+    for (const tab of ["arena", "leaderboard", "lab", "methodology"])
+      expect(html).toContain(`<span class="cc-nav-label">chess:nav.${tab}</span>`);
+  });
+
+  it("the language trigger is icon-only below xl in the arena header", () => {
+    expect(renderPublic()).toContain('<i data-control="language" data-label-hidden-below="xl">');
+  });
+});
+
+describe("arena header: the session hint", () => {
+  beforeEach(() => {
+    authState.hint = false;
+  });
+
+  it("signed in: an account link to the app shell, never Sign In", () => {
+    authState.hint = true;
+    const html = renderPublic();
+    expect(html).toContain('aria-label="nav:userMenu.account" data-to="/$lang/settings"');
+    expect(html).not.toContain("userMenu.signIn");
+    // Studio stays: it is part of the arena, for everyone.
+    expect(html).toContain("chess:nav.studio");
+  });
+
+  it("signed out (or unseeded, as on the 404): no account link and no Sign In", () => {
+    const html = renderPublic();
+    expect(html).not.toContain("nav:userMenu.account");
+    expect(html).not.toContain("userMenu.signIn");
+    expect(html).toContain("chess:nav.studio");
   });
 });

@@ -177,7 +177,7 @@ For scripts and CI, pass `--url` and `--email` and pipe the key on stdin: `print
 
 ### With `ADMIN_EMAILS` (needs SMTP)
 
-Set `ADMIN_EMAILS` on the server, sign up with that exact address, and click the verification link; the account carries the admin role. SSO-created users are never promoted from `ADMIN_EMAILS`.
+Set `ADMIN_EMAILS` on the server, sign up with that exact address, and click the verification link; the account carries the admin role. SSO-created users are never promoted from `ADMIN_EMAILS`. The sign-up page (and the header's Sign Up) is offered only until the first administrator exists (`appConfig.adminBootstrapSignupEnabled`, [packages/api/src/routers/index.ts](../packages/api/src/routers/index.ts)); after that, an administrator invites further accounts from Admin → Users.
 
 ## Backups before real data
 

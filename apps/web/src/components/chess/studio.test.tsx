@@ -2,11 +2,18 @@ import { createMatch } from "@cockpit-chess/chess";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
 import { createInstance } from "i18next";
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider } from "react-i18next";
 import { beforeAll, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
+  auth: {
+    state: { status: "authenticated", session: { user: { role: "admin" } } } as {
+      status: string;
+      session?: { user: { role: string } };
+    },
+  },
   detail: {
     data: undefined as unknown,
     error: undefined as unknown,
@@ -40,10 +47,9 @@ vi.mock("@/utils/orpc", () => ({
     },
   },
 }));
-vi.mock("@/hooks/use-auth-session", () => ({
-  useAuthSession: () => ({
-    state: { status: "authenticated", session: { user: { role: "admin" } } },
-  }),
+vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => fixture.auth }));
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ to, children }: { to: string; children: ReactNode }) => <a data-to={to}>{children}</a>,
 }));
 vi.mock("@/hooks/use-entity-mutation", () => ({
   useEntityMutation: () => ({ isPending: false, isError: false, mutate: vi.fn() }),
@@ -113,4 +119,26 @@ it("retains a private preview during transient failure and hides it on denial", 
   expect(render()).toContain("Private preview");
   fixture.detail.error = { code: "FORBIDDEN" };
   expect(render()).not.toContain("Private preview");
+});
+
+it("tells a signed-in non-admin what the studio is, without a Sign In", () => {
+  fixture.auth = { state: { status: "authenticated", session: { user: { role: "user" } } } };
+  try {
+    const html = render();
+    expect(html).toContain(enChess.studio.adminOnly);
+    expect(html).not.toContain(enChess.studio.signIn);
+    expect(html).not.toContain('data-to="/$lang/login"');
+  } finally {
+    fixture.auth = { state: { status: "authenticated", session: { user: { role: "admin" } } } };
+  }
+});
+it("offers a signed-out visitor the administrator sign-in", () => {
+  fixture.auth = { state: { status: "anonymous" } };
+  try {
+    const html = render();
+    expect(html).toContain('data-to="/$lang/login"');
+    expect(html).not.toContain(enChess.studio.adminOnly);
+  } finally {
+    fixture.auth = { state: { status: "authenticated", session: { user: { role: "admin" } } } };
+  }
 });

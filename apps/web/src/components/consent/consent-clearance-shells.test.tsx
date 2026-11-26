@@ -28,7 +28,11 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
   Outlet: () => null,
 }));
-vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({}) }));
+vi.mock("@tanstack/react-query", () => ({
+  queryOptions: (options: unknown) => options,
+  useQuery: () => ({ data: undefined }),
+  useQueryClient: () => ({}),
+}));
 vi.mock("@tanstack/react-query-devtools", () => ({ ReactQueryDevtools: () => null }));
 vi.mock("@tanstack/react-router-devtools", () => ({ TanStackRouterDevtools: () => null }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -42,6 +46,7 @@ vi.mock("@/components/pull-to-refresh", () => ({
 vi.mock("@/components/language-switcher", () => ({ LanguageSwitcher: () => null }));
 vi.mock("@/hooks/use-document-lang", () => ({ useDocumentLang: () => {} }));
 vi.mock("@/hooks/use-user-locale-sync", () => ({ useUserLocaleSync: () => {} }));
+vi.mock("@/hooks/use-session-hint-sync", () => ({ useSessionHintSync: () => {} }));
 vi.mock("@/components/consent/consent-preferences-button", () => ({
   ConsentPreferencesButton: () => null,
 }));

@@ -10,6 +10,7 @@ import {
 } from "@cockpit-chess/ui/components/dropdown-menu";
 import { toast } from "@cockpit-chess/ui/components/sileo";
 import { useNavigate, useParams } from "@tanstack/react-router";
+import { LogOut, User } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAuthSession } from "@/hooks/use-auth-session";
 import { markExplicitSignOut } from "@/hooks/use-reload-on-identity-change";
@@ -46,30 +47,41 @@ export default function UserMenuContent() {
 
   return (
     <DropdownMenu defaultOpen>
-      {/* Shrinks to 44px and truncates the name before the header controls
-          run past the trailing line (same as UserMenu's eager trigger). */}
+      {/* A 44px icon below `md:`. From `md:` the name, at most 192px, shrinking
+          (to 44px) before the header controls run past the trailing line;
+          the name truncates and the full name is the title (same as
+          UserMenu's eager trigger). */}
       <DropdownMenuTrigger
+        // The visible name starts the accessible name (WCAG 2.5.3): voice
+        // control users say what they see.
+        aria-label={t("userMenu.openFor", { name: session.user.name })}
         render={
           <Button
             variant="outline"
             size="touch"
-            className="min-w-11 max-w-48 shrink"
+            className="w-11 px-0! md:w-auto md:min-w-11 md:max-w-48 md:shrink md:px-3.5!"
             title={session.user.name}
           />
         }
       >
-        <span className="truncate">{session.user.name}</span>
+        <User className="size-4 md:hidden" aria-hidden="true" />
+        <span className="hidden truncate md:block">{session.user.name}</span>
       </DropdownMenuTrigger>
       {/* At least 224px so the email fits; `end` keeps the menu's trailing
           edge on the trigger's, the header's trailing line. */}
       <DropdownMenuContent align="end" className="min-w-56 bg-card">
         <DropdownMenuGroup>
-          <DropdownMenuLabel>{t("userMenu.myAccount")}</DropdownMenuLabel>
+          {/* Who is signed in, as a label: not an item, so nothing in it
+              looks pressable. A very long name or address ends in an
+              ellipsis; the full address stays in the tooltip. */}
+          <DropdownMenuLabel className="space-y-0.5">
+            <span className="block text-muted-foreground">{t("userMenu.myAccount")}</span>
+            <span className="block truncate text-foreground">{session.user.name}</span>
+            <span className="block truncate font-normal" title={session.user.email}>
+              {session.user.email}
+            </span>
+          </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          {/* A very long address ends in an ellipsis; the full one stays in the tooltip. */}
-          <DropdownMenuItem title={session.user.email}>
-            <span className="min-w-0 truncate">{session.user.email}</span>
-          </DropdownMenuItem>
           {userMenuItems.map((item) => (
             <DropdownMenuItem
               key={item.id}
@@ -81,28 +93,32 @@ export default function UserMenuContent() {
           ))}
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            inset
             variant="destructive"
             onClick={async () => {
               // Dynamic import keeps the sign-out path out of the menu chunk's
               // critical path; the auth client is already warm once the menu
               // is reachable for a signed-in user.
               const { authClient } = await import("@/lib/auth-client");
-              const cancelSignOut = markExplicitSignOut();
+              const undoSignOutMark = markExplicitSignOut();
+              // Still signed in after a failure: undo the mark (so a later
+              // identity change still reloads) and say so.
+              const failed = (error: unknown) => {
+                undoSignOutMark();
+                toast.error(friendly(error, t("userMenu.signOutFailed")));
+              };
               try {
                 const result = await authClient.signOut();
                 if (result.error) {
-                  cancelSignOut();
-                  toast.error(friendly(result.error));
+                  failed(result.error);
                   return;
                 }
                 window.location.assign(`/${lang}/login`);
               } catch (error) {
-                cancelSignOut();
-                toast.error(friendly(error));
+                failed(error);
               }
             }}
           >
+            <LogOut className="size-4" />
             {t("userMenu.signOut")}
           </DropdownMenuItem>
         </DropdownMenuGroup>

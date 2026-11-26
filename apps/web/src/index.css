@@ -90,9 +90,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The tabs take the room the brand's floor and the controls leave and give way
+ * after the brand: an `auto` basis (their one-line width), so the brand (zero
+ * basis) is at its 88px floor before they shrink. Then the labels wrap, and below
+ * that the strip scrolls sideways (`min-width: 0`), so the translated tabs never
+ * push the controls (language, theme, Studio, the account link) past the row's
+ * trailing edge. The width budget is in public-shell.tsx's PublicHeader. */
 .cc-nav {
   display: flex;
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
   gap: 24px;
   align-items: center;
   font-size: 13px;
@@ -105,10 +115,17 @@
    * inside it, so when the nav wraps to its own row (650px and below) the first
    * label sits on the header's leading line. */
   justify-content: flex-start;
-  min-width: 44px;
+  /* No explicit min-width here: an explicit one replaces the flex item's
+   * automatic minimum (its min-content), so a shrinking strip squeezed every tab
+   * to 44px and long words ("clasificación", "Laboratorio") ran into the next
+   * tab. The 44px hit-box floor is on the label instead, so a tab shrinks only
+   * to max(44px, its longest word); below that the strip scrolls. */
   min-height: 44px;
   padding: 12px 0;
   transition: color 150ms;
+}
+.cc-nav-label {
+  min-width: 44px;
 }
 .cc-nav a:hover,
 .cc-nav a[aria-current="page"] {
@@ -361,7 +378,7 @@
   outline: 2px solid var(--cc-accent-text);
   outline-offset: 2px;
 }
-.cc-public-shell :is(.cc-timeline, .cc-tabs, .cc-commentary ol) :focus-visible {
+.cc-public-shell :is(.cc-nav, .cc-timeline, .cc-tabs, .cc-commentary ol) :focus-visible {
   outline-offset: -2px;
 }
 .cc-square:disabled {

@@ -20,7 +20,7 @@
  *
  * At 390×844, 1280×800, 1440×1600 and 390×300 (where every page scrolls), on
  * the arena, the rules, the leaderboard and the studio (the arena's public
- * tabs), the 404, the sign-in page and (signed in) the dashboard and admin
+ * tabs), the 404, the sign-in page and (signed in) the settings and admin
  * users pages, it checks that:
  * - the document never scrolls and the shell's `<main>` is the scroller;
  * - the public shell's footer is the scroller's last box: scrolled to the end,
@@ -41,10 +41,20 @@
  *   set to the other one, renders in the stored theme and is filled with its
  *   popover colour (not inverted) and its title and badge reach 4.5:1 on it.
  *
+ * And the arena header's controls (language, theme, Studio and, signed in,
+ * the account link) in every shipped locale (packages/locales/src/*) at
+ * HEADER_WIDTHS from 320 to 3840px, signed out and (with `--login`) signed
+ * in: every control lies inside the viewport, the signed-in account link is
+ * there, the header row itself does not overflow (the tabs scroll inside
+ * `.cc-nav` instead), and no tab label runs out of its tab or into the next
+ * one (a squeezed strip must scroll, not overlap its labels).
+ *
  * Classic (non-overlay) scrollbars are what expose a reserved gutter; headless
  * Chromium on Linux draws them, overlay scrollbars on macOS hide the defect.
  */
 import { execFileSync, spawn } from "node:child_process";
+import { readdirSync } from "node:fs";
+import { resolve } from "node:path";
 
 // One session per run: two checks running at once (two checkouts, two agents) must not share a browser.
 const SESSION = `check-layout-${process.pid}`;
@@ -139,6 +149,105 @@ export function judgeLayout(page: string, probe: Probe, expect: Expect): string[
   }
   return bad;
 }
+
+/** What the arena-header probe reports. Pure data, so `judgeHeader` is testable. */
+export interface HeaderProbe {
+  vw: number;
+  /** The `[data-header-controls]` group's box, or null when the header has none. */
+  controls: { left: number; right: number } | null;
+  /** Each control in the group, by name (`account` is the signed-in account link). */
+  items: { name: string; left: number; right: number; width: number }[];
+  /** How far the header row's content runs past its box (scrollWidth − clientWidth). */
+  rowOverflow: number;
+  /** How far the tab strip scrolls sideways (reported, not judged: it may). */
+  navOverflow: number;
+  /**
+   * Each tab link in `.cc-nav`, in order: its box, and the extent of its label
+   * text (a Range over the link's contents, so a word overflowing the box shows).
+   */
+  tabs: { name: string; left: number; right: number; labelLeft: number; labelRight: number }[];
+}
+
+/**
+ * One message per broken header rule: the controls never run past the
+ * viewport's edges (a control pushed off-screen is unreachable; signed in, the
+ * account link is the only way to Settings, Admin and Sign out), and the row
+ * never overflows. Rounded boxes, so a 1px tolerance for subpixel layout.
+ */
+export function judgeHeader(page: string, probe: HeaderProbe, signedIn: boolean): string[] {
+  if (!probe.controls) return [`${page}: no [data-header-controls] in the arena header`];
+  const bad: string[] = [];
+  if (probe.controls.left < -1 || probe.controls.right > probe.vw + 1)
+    bad.push(
+      `${page}: the header controls span ${probe.controls.left}…${probe.controls.right}px, outside the ${probe.vw}px viewport`,
+    );
+  for (const item of probe.items) {
+    if (item.width <= 0) bad.push(`${page}: the header's ${item.name} control has no width`);
+    else if (item.left < -1 || item.right > probe.vw + 1)
+      bad.push(
+        `${page}: the header's ${item.name} control spans ${item.left}…${item.right}px, past the ${probe.vw}px viewport`,
+      );
+  }
+  if (signedIn && !probe.items.some((item) => item.name === "account"))
+    bad.push(`${page}: signed in, but the header has no account link`);
+  if (probe.rowOverflow > 1)
+    bad.push(
+      `${page}: the header row overflows by ${probe.rowOverflow}px; only the tab strip may scroll`,
+    );
+  probe.tabs.forEach((tab, i) => {
+    if (tab.labelLeft < tab.left - 1 || tab.labelRight > tab.right + 1)
+      bad.push(
+        `${page}: the "${tab.name}" tab's label spans ${tab.labelLeft}…${tab.labelRight}px, past its ${tab.left}…${tab.right}px tab`,
+      );
+    const next = probe.tabs[i + 1];
+    if (next && Math.max(tab.right, tab.labelRight) > Math.min(next.left, next.labelLeft) + 1)
+      bad.push(
+        `${page}: the "${tab.name}" and "${next.name}" tabs overlap (${tab.right}px past ${next.left}px); the strip must scroll instead`,
+      );
+  });
+  return bad;
+}
+
+/** The widths the header is measured at (the phone, the breakpoints around 640/650, tablets, desktops, 4K). */
+export const HEADER_WIDTHS = [
+  320, 390, 640, 650, 651, 768, 1024, 1279, 1280, 1440, 1920, 3840,
+] as const;
+
+/** Every shipped locale bundle, so a new one is measured without editing this file. */
+export function shippedLocales(root = resolve(import.meta.dirname, "..")): string[] {
+  return readdirSync(resolve(root, "packages/locales/src"), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^[a-z]{2}(-[A-Z]{2})?$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+// Runs in the page (agent-browser eval). Self-contained: no closures.
+const HEADER_PROBE = `(async () => {
+  await document.fonts.ready;
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const vw = document.documentElement.clientWidth;
+  const group = document.querySelector("header [data-header-controls]");
+  const row = group ? group.parentElement : null;
+  const nav = row ? row.querySelector("nav") : null;
+  const box = (el) => { const r = el.getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width) }; };
+  const name = (el) => el.hasAttribute("data-account-link") ? "account" : el.classList.contains("cc-signin") ? "studio" : el.dataset.slot === "select-trigger" ? "language" : (el.getAttribute("aria-label") || el.tagName.toLowerCase());
+  const items = group ? [...group.children].map((el) => ({ name: name(el), ...box(el) })) : [];
+  const tabs = nav ? [...nav.querySelectorAll("a")].map((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const text = range.getBoundingClientRect();
+    const { left, right } = box(el);
+    return { name: (el.textContent || "").trim(), left, right, labelLeft: Math.round(text.left), labelRight: Math.round(text.right) };
+  }) : [];
+  return JSON.stringify({
+    vw,
+    controls: group ? (({ left, right }) => ({ left, right }))(box(group)) : null,
+    items,
+    rowOverflow: row ? row.scrollWidth - row.clientWidth : 0,
+    navOverflow: nav ? nav.scrollWidth - nav.clientWidth : 0,
+    tabs,
+  });
+})()`;
 
 /** The banner-reserve probe: the same boxes measured without and with the reserve. */
 export interface ReserveProbe {
@@ -376,10 +485,10 @@ const PAGES: Page[] = [
   },
   { name: "sign-in", path: "/en-US/login", expect: { footer: false }, ready: "form" },
   {
-    name: "dashboard",
-    path: "/en-US/dashboard",
+    name: "settings",
+    path: "/en-US/settings",
     expect: { footer: false },
-    ready: "main h1",
+    ready: 'main input[autocomplete="name"]',
     signedIn: true,
   },
   {
@@ -422,7 +531,7 @@ function fillScript(selector: string, value: string): string {
 const SIGN_IN_STEP = `(async () => {
   // 20s: under agent-browser's own 25s limit for one evaluation.
   for (let i = 0; i < 40; i++) {
-    if (location.pathname.endsWith("/dashboard")) return "app";
+    if (location.pathname.endsWith("/settings")) return "app";
     if (document.getElementById("totp-code")) return "code";
     await new Promise((r) => setTimeout(r, 500));
   }
@@ -450,7 +559,9 @@ const FORM_HYDRATED = `(async () => {
 })()`;
 
 async function signIn(base: string, email: string, password: string): Promise<void> {
-  await browser(["open", `${base}/en-US/login`]);
+  // Straight to Settings, an app-shell page: the signed-in home is the public
+  // arena (apps/web/src/lib/app-home.ts), so a plain sign-in leaves the app shell.
+  await browser(["open", `${base}/en-US/login?redirectTo=%2Fen-US%2Fsettings`]);
   await browser(["wait", "input[autocomplete=current-password]"]);
   if (JSON.parse(await browser(["eval", "--stdin"], FORM_HYDRATED)) !== true)
     throw new Error("check:layout: the sign-in form did not hydrate within 20s");
@@ -483,7 +594,7 @@ async function signIn(base: string, email: string, password: string): Promise<vo
   } else if (step !== "app") {
     throw new Error(`check:layout: sign-in did not open the app (${step})`);
   }
-  await browser(["wait", "--url", "**/dashboard"]);
+  await browser(["wait", "--url", "**/settings"]);
 }
 
 async function main(): Promise<number> {
@@ -548,13 +659,34 @@ async function main(): Promise<number> {
         }
       }
     };
+    // The arena header in every shipped locale, at every width from 320 to 3840px.
+    const locales = shippedLocales();
+    const measureHeader = async (signedInNow: boolean) => {
+      for (const w of HEADER_WIDTHS) {
+        await browser(["set", "viewport", String(w), "800"]);
+        for (const locale of locales) {
+          await browser(["open", `${base}/${locale}`]);
+          // The `_public` layout seeds the session hint, so a signed-in account
+          // link is in the first HTML; its absence is judged, not waited for.
+          await browser(["wait", "header [data-header-controls]"]);
+          const label = `header ${locale} ${w}px signed ${signedInNow ? "in" : "out"}`;
+          const probe = await evalJson<HeaderProbe>(HEADER_PROBE);
+          failures.push(...judgeHeader(label, probe, signedInNow));
+          console.log(
+            `check:layout: ${label} measured${probe.navOverflow > 0 ? ` (tabs scroll ${probe.navOverflow}px)` : ""}`,
+          );
+        }
+      }
+    };
     // Signed-in pages first, while a CHECK_LAYOUT_TOTP code is still current; then sign out.
     if (email && password && signedIn.length) {
       await signIn(base, email, password);
       await measure(signedIn);
+      await measureHeader(true);
       await browser(["cookies", "clear"]);
     }
     await measure(anonymous);
+    await measureHeader(false);
     // Toasts, light and dark at one width, each with the OS set to the other.
     await browser(["set", "viewport", "1280", "800"]);
     for (const theme of ["light", "dark"] as const) {

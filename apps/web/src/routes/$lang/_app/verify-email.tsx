@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { AuthCard } from "@/components/auth/auth-screen";
 import { ResendVerification } from "@/components/auth/resend-verification";
 import { useAuthSession } from "@/hooks/use-auth-session";
+import { APP_HOME } from "@/lib/app-home";
 import { parseVerifyEmailSearch } from "@/lib/verify-email-search";
 import { orpc } from "@/utils/orpc";
 
@@ -133,7 +134,7 @@ function VerifyEmailPage() {
     >
       {isAuthenticated ? (
         <Link
-          to="/$lang/dashboard"
+          to={APP_HOME}
           params={{ lang }}
           className={cn(buttonVariants(), "min-h-[44px] w-full")}
         >

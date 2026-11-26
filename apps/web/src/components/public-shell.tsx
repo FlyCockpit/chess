@@ -1,4 +1,7 @@
+import { buttonVariants } from "@cockpit-chess/ui/components/button";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
+import { User } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -8,6 +11,7 @@ import { PublicFooter } from "@/components/public-footer";
 import { useMobileKeyboard } from "@/hooks/use-mobile-keyboard";
 import { DEFAULT_LOCALE, isSupportedLocale } from "@/i18n/config";
 import { MAIN_SCROLLER_ID } from "@/lib/main-scroller";
+import { sessionHintQueryOptions } from "@/lib/session-hint";
 
 /**
  * The arena's public shell: header, the one page scroller and the footer. The
@@ -59,6 +63,13 @@ function PublicHeader() {
   const langParam = useParams({ strict: false, select: (p) => p.lang });
   const lang = isSupportedLocale(langParam) ? langParam : DEFAULT_LOCALE;
   const { t } = useTranslation(["chess", "nav"]);
+  // Signed in (the session-cookie hint, lib/session-hint.ts): an account link
+  // to the app shell, where Settings, Admin and Sign Out live. The `_public`
+  // layout seeds the hint, so it is in the SSR HTML; the 404 (no `_public`
+  // route) asks on the client. A presence hint, never an access check: the
+  // link's `_auth` gate does the real one. Signed out there is no Sign In
+  // here: Studio's own page offers it to administrators.
+  const { data: signedIn = false } = useQuery(sessionHintQueryOptions());
   return (
     // The rule is the full-bleed header's border; the row inside keeps the
     // 1440px maximum (`.cc-header-row`), so the line reaches both viewport
@@ -93,16 +104,43 @@ function PublicHeader() {
               search={{ tab }}
               activeOptions={{ includeSearch: true }}
             >
-              {t(`chess:nav.${tab}`)}
+              <span className="cc-nav-label">{t(`chess:nav.${tab}`)}</span>
             </Link>
           ))}
         </nav>
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          <LanguageSwitcher />
+        {/* Never pushed past the row's trailing edge, at any width and in any
+            locale (signed in, the account link is the only way to Settings,
+            Admin and Sign out). The tabs give way instead (`.cc-nav` scrolls
+            sideways once its labels have wrapped), so the row needs only the
+            brand's 88px floor, the gaps and this group. Worst case, signed
+            in, es-MX: language icon-only below `xl` 66 (with "Español
+            (México)" about 190), theme 44, "Estudio" about 93, account 44,
+            three 8px gaps: 271px below 1280 (395 from 1280), against 288px at
+            320 (on its own line under the brand), 603 at 651 and 1200 at
+            1280. `max-w-full flex-wrap` is the backstop: a longer future
+            label wraps inside the group instead of overflowing it. Pinned in
+            public-shell.test.tsx, measured by `pnpm check:layout`. */}
+        <div
+          data-header-controls=""
+          className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2"
+        >
+          <LanguageSwitcher labelHiddenBelow="xl" />
           <ModeToggle />
           <Link to="/$lang" params={{ lang }} search={{ tab: "studio" }} className="cc-signin">
             {t("chess:nav.studio")}
           </Link>
+          {signedIn && (
+            <Link
+              to="/$lang/settings"
+              params={{ lang }}
+              aria-label={t("nav:userMenu.account")}
+              title={t("nav:userMenu.account")}
+              data-account-link=""
+              className={buttonVariants({ variant: "outline", size: "icon-touch" })}
+            >
+              <User className="size-4" aria-hidden="true" />
+            </Link>
+          )}
         </div>
       </div>
     </header>
@@ -113,7 +151,8 @@ function PublicHeader() {
  * The 404 for an unknown URL, which matches no layout: `$lang`'s
  * `notFoundComponent`, so it renders in `$lang`'s outlet with nothing around
  * it. Wrapped in the public shell, it keeps the header (language, theme,
- * Studio), the footer and the scroller like every other page.
+ * Studio, and the account link when signed in), the footer and the scroller
+ * like every other page.
  */
 export function PublicNotFoundPage() {
   return (

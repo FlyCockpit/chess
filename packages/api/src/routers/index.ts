@@ -9,6 +9,7 @@ import { isEmailConfigured } from "@cockpit-chess/mailer";
 import type { RouterClient } from "@orpc/server";
 
 import { protectedProcedure, publicProcedure } from "../index";
+import { adminExistsForAppConfig } from "../lib/admin-presence";
 import { authRouter } from "./auth";
 import { chessRouter } from "./chess";
 import { cliAccessRouter } from "./cli-access";
@@ -27,13 +28,22 @@ export const appRouter = {
       return "OK";
     }),
   },
-  appConfig: publicProcedure.handler(() => {
+  appConfig: publicProcedure.handler(async () => {
     return {
       ssoEnabled: SSO_ENABLED,
       forceSso: FORCE_SSO,
       ssoProviderName: env.SSO_PROVIDER_NAME,
       signupEnabled: SIGNUP_ENABLED,
-      adminBootstrapSignupEnabled: !SIGNUP_ENABLED && ADMIN_EMAILS.size > 0,
+      // Sign-up is closed, `ADMIN_EMAILS` names the operator, and no admin
+      // exists yet: sign-in offers "Sign up" so the operator can create the
+      // first account. Once an admin exists this turns false and the pages
+      // show the invite-only state, so an established server never offers a
+      // sign-up nobody else can use. Revealing "no admin yet" is acceptable:
+      // such a server is not usable by anyone else either. The DB read is
+      // skipped unless the env makes bootstrap possible, and a "yes" is cached
+      // (lib/admin-presence.ts).
+      adminBootstrapSignupEnabled:
+        !SIGNUP_ENABLED && ADMIN_EMAILS.size > 0 && !(await adminExistsForAppConfig()),
       // Gates the login challenge's "email me a code" affordance. The delivery
       // unreliability of Better-Auth's send-otp endpoint (it swallows SMTP
       // failures) is handled separately by the `auth.verifyEmailTransport`

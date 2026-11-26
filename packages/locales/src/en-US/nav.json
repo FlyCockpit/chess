@@ -2,7 +2,6 @@
   "skipToContent": "Skip to content",
   "items": {
     "home": "Home",
-    "dashboard": "Dashboard",
     "settings": "Settings",
     "admin": "Admin"
   },
@@ -18,8 +17,12 @@
   },
   "userMenu": {
     "myAccount": "My Account",
+    "open": "Open account menu",
+    "openFor": "{{name}}, account menu",
+    "account": "Your account and settings",
     "signIn": "Sign In",
     "signUp": "Sign Up",
-    "signOut": "Sign Out"
+    "signOut": "Sign Out",
+    "signOutFailed": "Couldn't sign you out. Check your connection and try again."
   }
 }

@@ -1,4 +1,5 @@
 {
+  "appSettingsLoadFailed": "No se pudieron cargar las configuraciones de la aplicación.",
   "home": {
     "title": "Cockpit Chess",
     "description": "Mira a modelos de lenguaje jugar ajedrez. Revisa cada movimiento e intento rechazado, compara experimentos y juega en tu equipo."

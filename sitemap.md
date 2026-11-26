@@ -10,7 +10,8 @@ Only indexable content pages belong in `apps/server/src/seo.ts` `PUBLIC_PATHS` f
 
 | Path | Description |
 |------|-------------|
-| `/{lang}/` | Cockpit Chess arena, published live/historical replay (`?game=<slug>`), leaderboard (`?tab=leaderboard`), local baseline lab (`?tab=lab`) and methodology (`?tab=methodology`). Copy lives in the `chess` locale namespace. Studio (`?tab=studio`) exposes operator controls only after admin authentication; all writes enforce server permissions. Only the canonical arena is in `PUBLIC_PATHS`. |
+| `/{lang}/` | Cockpit Chess arena, published live/historical replay (`?game=<slug>`), leaderboard (`?tab=leaderboard`), local baseline lab (`?tab=lab`) and methodology (`?tab=methodology`). Copy lives in the `chess` locale namespace. Studio (`?tab=studio`) exposes operator controls only after admin authentication (signed out it offers an administrator sign-in; signed in without the admin role it says the studio is for administrators); all writes enforce server permissions. Only the canonical arena is in `PUBLIC_PATHS`. This is also the signed-in home (`APP_HOME` in [apps/web/src/lib/app-home.ts](./apps/web/src/lib/app-home.ts)): signing in without a `redirectTo` lands here, and the header shows a signed-in visitor an account link to `/{lang}/settings` (session-cookie hint, [apps/web/src/lib/session-hint.ts](./apps/web/src/lib/session-hint.ts)). |
+| `/{lang}/dashboard` | Redirect only (no page): forwards old bookmarks to `/{lang}/` |
 | `/{lang}/login` | Sign in page with SSO, email/password, and 2FA support. Shows a "Sign Up" link to `/{lang}/signup` when `SIGNUP_ENABLED=true` |
 | `/{lang}/signup` | Create-account page (email/password). Gated on `SIGNUP_ENABLED`; redirects to `/{lang}/login` when signup is disabled or the visitor is already signed in |
 | `/{lang}/forgot-password` | Request a password-reset link (email/password). Always shows the same "check your email" success state (no account enumeration); deflects to `/{lang}/login` when `FORCE_SSO` or SMTP is unconfigured |
@@ -23,7 +24,6 @@ All require an active session (enforced by the `_auth` layout).
 
 | Path | Description |
 |------|-------------|
-| `/{lang}/dashboard` | Main dashboard page: the welcome and the next step (Arena for everyone; Studio, the match-creation surface on the arena page, for admins) |
 | `/{lang}/settings` | Profile settings (name, email display) |
 | `/{lang}/settings/security` | Two-factor authentication enable/disable |
 | `/{lang}/settings/cli` | Command-line access — a freshly minted copy-paste install/update command for the companion CLI (macOS/Linux/WSL and PowerShell; the embedded token expires after 15 minutes) and API key management (create shows the key once; revoke is type-to-confirm). See [packages/api/src/routers/cli.ts](./packages/api/src/routers/cli.ts). |
@@ -46,9 +46,10 @@ Navigation destinations are defined once in `apps/web/src/lib/nav-items.ts` and 
 audience (`public`, `authenticated`, `admin`) plus placement (`desktop`, `mobile`,
 `userMenu`).
 
-- **Desktop**: Header main nav shows Home to everyone. Signed-in users also see Dashboard and Settings. Admins also see Admin.
-- **Mobile**: Bottom tab bar stays compact and task-focused, and renders the same set as desktop — Home for everyone, plus Dashboard and Settings when signed in, plus Admin for admins.
-- **User menu**: Signed-out visitors get Sign In / Sign Up actions. Signed-in users get Settings; Admin appears only for admins.
+- **Desktop**: Header main nav shows Home (the arena) to everyone. Signed-in users also see Settings. Admins also see Admin.
+- **Mobile**: Bottom tab bar stays compact and task-focused, and renders the same set as desktop — Home for everyone, plus Settings when signed in, plus Admin for admins.
+- **User menu**: Signed-out visitors get Sign In, and Sign Up while sign-up or the first-admin bootstrap is open (44px icons below `sm`). Signed-in users get a menu headed by My Account, their name and email, then Settings, Admin (admins only) and Sign Out; its trigger is a 44px icon below `md` and the name from `md`.
+- **Arena header** (public pages and the 404): the arena tabs, Language, theme and Studio for everyone, plus the account link (to Settings) for a signed-in visitor. It never shows Sign In.
 - **Cookie banner**: global UI, not a page, and off: it appears only when analytics is configured (`ANALYTICS_PROVIDER`), and the app ships none; strictly necessary cookies need no consent. When on, it is mounted once in `__root.tsx`, so it appears on every route (public and authenticated) until the visitor allows or rejects analytics. It never covers the page: `#main-content` reserves its height at the bottom. "Cookie preferences" brings it back — from the public footer for anonymous visitors and from `/{lang}/settings` for signed-in users. See [apps/web/src/lib/analytics.ts](./apps/web/src/lib/analytics.ts).
 
 ## Notes
@@ -56,4 +57,4 @@ audience (`public`, `authenticated`, `admin`) plus placement (`desktop`, `mobile
 - Keep this file updated as new pages are added.
 - The `_auth` layout also enforces mandatory 2FA setup when the role-scoped 2FA policy requires it.
 - The `admin` layout returns 404 for non-admins; do not add admin links to navigation visible to all users.
-- All client-side links should preserve the current locale segment — use `<Link to="/$lang/dashboard" params={{ lang }} />` rather than hardcoded `/dashboard` strings. See [apps/web/src/i18n/index.ts](./apps/web/src/i18n/index.ts).
+- All client-side links should preserve the current locale segment — use `<Link to="/$lang/settings" params={{ lang }} />` rather than hardcoded `/settings` strings. See [apps/web/src/i18n/index.ts](./apps/web/src/i18n/index.ts).

@@ -102,7 +102,13 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
         <h1>{t("studio.title")}</h1>
         <p>{t("studio.description")}</p>
       </div>
-      {!admin ? (
+      {/* Signed in without the admin role: say what the account can do here,
+          never "Sign in" (it already is). */}
+      {state.status === "authenticated" && !admin ? (
+        <div className="cc-empty">
+          <p>{t("studio.adminOnly")}</p>
+        </div>
+      ) : !admin ? (
         <div className="cc-empty">
           <p>{t("studio.signIn")}</p>
           <Link

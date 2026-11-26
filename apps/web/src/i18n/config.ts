@@ -19,7 +19,6 @@ export const NAMESPACES = [
   "admin",
   "chess",
   "consent",
-  "dashboard",
   "settings",
   "nav",
 ] as const;

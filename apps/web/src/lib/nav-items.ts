@@ -1,19 +1,12 @@
 import { isAdminRole } from "@cockpit-chess/auth/roles";
 import type { LucideIcon } from "lucide-react";
-import { Home, LayoutDashboard, Settings, Shield, SquareTerminal } from "lucide-react";
+import { Home, Settings, Shield, SquareTerminal } from "lucide-react";
 
 type NavAudience = "public" | "authenticated" | "admin";
 type NavPlacement = "desktop" | "mobile" | "userMenu";
-export type AppNavPath =
-  | "/"
-  | "/dashboard"
-  | "/settings"
-  | "/admin"
-  | "/settings/security"
-  | "/settings/cli";
+export type AppNavPath = "/" | "/settings" | "/admin" | "/settings/security" | "/settings/cli";
 export type LangNavRoute =
   | "/$lang"
-  | "/$lang/dashboard"
   | "/$lang/settings"
   | "/$lang/admin"
   | "/$lang/settings/security"
@@ -31,7 +24,7 @@ export type RouteNavItem = {
 };
 
 export type AppNavItem = RouteNavItem & {
-  id: "home" | "dashboard" | "settings" | "admin";
+  id: "home" | "settings" | "admin";
   audience: NavAudience;
   placements: readonly NavPlacement[];
 };
@@ -50,15 +43,6 @@ const appNavItems: AppNavItem[] = [
     icon: Home,
     exact: true,
     audience: "public",
-    placements: ["desktop", "mobile"],
-  },
-  {
-    id: "dashboard",
-    path: "/dashboard",
-    labelKey: "items.dashboard",
-    icon: LayoutDashboard,
-    exact: false,
-    audience: "authenticated",
     placements: ["desktop", "mobile"],
   },
   {

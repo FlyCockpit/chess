@@ -1,4 +1,5 @@
 {
+  "appSettingsLoadFailed": "Failed to load app settings.",
   "home": {
     "title": "Cockpit Chess",
     "description": "Watch language models play chess. Replay every move and rejected attempt, compare controlled experiments, and run games locally."

@@ -1,7 +1,9 @@
-import { Button } from "@cockpit-chess/ui/components/button";
+import { Button, buttonVariants } from "@cockpit-chess/ui/components/button";
 import { Skeleton } from "@cockpit-chess/ui/components/skeleton";
+import { cn } from "@cockpit-chess/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
+import { LogIn, User, UserPlus } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -29,33 +31,76 @@ export default function UserMenu() {
   const authSession = useAuthSession();
   const { data: configData, isPending: configPending } = useQuery(orpc.appConfig.queryOptions());
   const { t } = useTranslation("nav");
-  const [mounted, setMounted] = useState(false);
+  // The user the real menu was opened for. Keyed by user id (not a plain
+  // boolean) so signing out and back in as someone else — the component stays
+  // mounted in the header — returns to the closed shell instead of reusing the
+  // lazy menu, which mounts `defaultOpen`, already open for the new user.
+  const [openedFor, setOpenedFor] = useState<string | null>(null);
+  // Whether an identity was ever confirmed in this mount, so a later error
+  // shows the account control (disabled) instead of a loading skeleton.
+  const [hadIdentity, setHadIdentity] = useState(false);
+  const state = authSession.state;
+  if (state.status === "authenticated" && !hadIdentity) setHadIdentity(true);
 
-  if (authSession.state.status === "pending" || authSession.state.status === "error") {
+  if (state.status === "pending") {
     return <Skeleton className="h-11 w-24" />;
   }
 
-  if (authSession.state.status === "anonymous") {
+  // A known identity whose session check is failing (offline, server
+  // unreachable): the account control stays where it was, disabled. It is not
+  // loading, so no skeleton; and it is not signed out, so no Sign In.
+  if (state.status === "error") {
+    if (!hadIdentity) return <Skeleton className="h-11 w-24" />;
+    return (
+      <Button variant="outline" size="icon-touch" disabled aria-label={t("userMenu.open")}>
+        <User className="size-4" aria-hidden="true" />
+      </Button>
+    );
+  }
+
+  if (state.status === "anonymous") {
     // Default to NOT showing Sign Up until the flag is known, so it never
-    // flashes when signup is disabled.
-    const showSignUp = !configPending && configData?.signupEnabled === true;
+    // flashes when signup is disabled. The admin bootstrap counts: it is on
+    // only until an administrator exists (appConfig), and then the operator
+    // needs this way in.
+    const showSignUp =
+      !configPending &&
+      (configData?.signupEnabled === true || configData?.adminBootstrapSignupEnabled === true);
     return (
       <div className="flex items-center gap-2">
+        {/* Below `sm:` both are 44px icon buttons, named by `aria-label`, so
+            the row never runs past its trailing line at 320px; the text
+            labels show from `sm:` up. */}
         {showSignUp && (
-          <Link to="/$lang/signup" params={{ lang }} search={{ redirectTo: undefined }}>
-            <Button size="touch">{t("userMenu.signUp")}</Button>
+          <Link
+            to="/$lang/signup"
+            params={{ lang }}
+            search={{ redirectTo: undefined }}
+            aria-label={t("userMenu.signUp")}
+            className={cn(buttonVariants({ size: "touch" }), "w-11 px-0 sm:w-auto sm:px-3.5")}
+          >
+            <UserPlus className="size-4 sm:hidden" aria-hidden="true" />
+            <span className="hidden sm:inline">{t("userMenu.signUp")}</span>
           </Link>
         )}
-        <Link to="/$lang/login" params={{ lang }} search={{ redirectTo: undefined }}>
-          <Button size="touch" variant="outline">
-            {t("userMenu.signIn")}
-          </Button>
+        <Link
+          to="/$lang/login"
+          params={{ lang }}
+          search={{ redirectTo: undefined }}
+          aria-label={t("userMenu.signIn")}
+          className={cn(
+            buttonVariants({ size: "touch", variant: "outline" }),
+            "w-11 px-0 sm:w-auto sm:px-3.5",
+          )}
+        >
+          <LogIn className="size-4 sm:hidden" aria-hidden="true" />
+          <span className="hidden sm:inline">{t("userMenu.signIn")}</span>
         </Link>
       </div>
     );
   }
 
-  const session = authSession.state.session;
+  const session = state.session;
 
   // The eager placeholder: visually identical to UserMenuContent's trigger so
   // there is no layout shift when the real control loads. `inert` while the
@@ -65,28 +110,31 @@ export default function UserMenu() {
     <Button
       variant="outline"
       size="touch"
-      // Same as UserMenuContent's trigger: it shrinks (to 44px) before the
-      // header controls run past the trailing line, and truncates the name.
-      className="min-w-11 max-w-48 shrink"
-      title={session.user.name}
+      aria-label={t("userMenu.openFor", { name: session.user.name })}
       aria-haspopup="menu"
+      // Same as UserMenuContent's trigger: a 44px icon below `md:`; from
+      // `md:` the name, at most 192px, shrinking (to 44px) before the header
+      // controls run past the trailing line, truncated.
+      className="w-11 px-0! md:w-auto md:min-w-11 md:max-w-48 md:shrink md:px-3.5!"
+      title={session.user.name}
       inert={inert}
       onPointerEnter={prefetchMenu}
       onFocus={prefetchMenu}
       onClick={() => {
         prefetchMenu();
-        setMounted(true);
+        setOpenedFor(session.user.id);
       }}
     >
-      <span className="truncate">{session.user.name}</span>
+      <User className="size-4 md:hidden" aria-hidden="true" />
+      <span className="hidden truncate md:block">{session.user.name}</span>
     </Button>
   );
 
-  if (!mounted) return shell(false);
+  if (openedFor !== session.user.id) return shell(false);
 
   return (
     <Suspense fallback={shell(true)}>
-      <UserMenuContent />
+      <UserMenuContent key={session.user.id} />
     </Suspense>
   );
 }

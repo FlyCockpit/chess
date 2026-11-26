@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { isSupportedLocale, type Locale } from "@/i18n/config";
 import { LOCALE_LABELS } from "@/i18n/labels";
+import { LABEL_HIDDEN_BELOW, type LabelHiddenBelow } from "./language-switcher-label";
 
 // Lazy so the shared Base UI overlay chunk (Select/focus-guards/floating-ui)
 // leaves the eager first-paint bundle. The shell below reproduces SelectTrigger's
@@ -22,7 +23,11 @@ function prefetchSelect() {
 const TRIGGER_CLASS =
   "flex w-fit items-center justify-between gap-1.5 rounded-none border border-input bg-transparent py-2 pr-2 pl-2.5 text-xs whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-1 aria-invalid:ring-destructive/20 data-placeholder:text-muted-foreground data-[size=default]:h-8 data-[size=sm]:h-7 data-[size=sm]:rounded-none data-[size=touch]:h-11 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-1.5 dark:bg-input/30 dark:hover:bg-input/35 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 gap-2 px-3";
 
-export function LanguageSwitcher() {
+export function LanguageSwitcher({
+  labelHiddenBelow = "sm",
+}: {
+  labelHiddenBelow?: LabelHiddenBelow;
+}) {
   const { i18n, t } = useTranslation();
   const [mounted, setMounted] = useState(false);
 
@@ -49,7 +54,14 @@ export function LanguageSwitcher() {
       }}
     >
       <Languages className="size-4" aria-hidden="true" />
-      <span data-slot="select-value" className="flex flex-1 text-left">
+      {/* Icon-only below `labelHiddenBelow` (the name stays for screen
+          readers): with the full "Español (México)" the arena header's
+          controls (language, theme, Studio, account) are wider than a 320px
+          phone, and below 1280px they crowd its translated tabs. */}
+      <span
+        data-slot="select-value"
+        className={cn("flex flex-1 text-left", LABEL_HIDDEN_BELOW[labelHiddenBelow])}
+      >
         {LOCALE_LABELS[current]}
       </span>
       <ChevronDownIcon className="pointer-events-none size-4 text-muted-foreground" />
@@ -60,7 +72,7 @@ export function LanguageSwitcher() {
 
   return (
     <Suspense fallback={shell(true)}>
-      <LanguageSwitcherSelect />
+      <LanguageSwitcherSelect labelHiddenBelow={labelHiddenBelow} />
     </Suspense>
   );
 }

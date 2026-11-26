@@ -13,6 +13,7 @@ import { RouteContentSkeleton } from "@/components/route-content-skeleton";
 import { SetupKeyBanner } from "@/components/setup-key-banner";
 import { useDocumentLang } from "@/hooks/use-document-lang";
 import { useMobileKeyboard } from "@/hooks/use-mobile-keyboard";
+import { useSessionHintSync } from "@/hooks/use-session-hint-sync";
 import { useUserLocaleSync } from "@/hooks/use-user-locale-sync";
 import { MAIN_SCROLLER_ID } from "@/lib/main-scroller";
 
@@ -48,6 +49,7 @@ function AppShellLayout() {
   // pages get it too — don't re-add it here.
   useDocumentLang();
   useUserLocaleSync();
+  useSessionHintSync();
   const queryClient = useQueryClient();
 
   // Every signed-in page gets pull-to-refresh: mark all cached data stale and

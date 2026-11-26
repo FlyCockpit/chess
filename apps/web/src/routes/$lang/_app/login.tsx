@@ -5,7 +5,7 @@ import { toast } from "@cockpit-chess/ui/components/sileo";
 import { TextField } from "@cockpit-chess/ui/components/text-field";
 import { cn } from "@cockpit-chess/ui/lib/utils";
 import { useForm } from "@tanstack/react-form";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -14,8 +14,10 @@ import z from "zod";
 import { AuthConfigGate } from "@/components/auth/auth-config-gate";
 import { AuthCard } from "@/components/auth/auth-screen";
 import { useAuthSession } from "@/hooks/use-auth-session";
+import { APP_HOME, appHomeHref } from "@/lib/app-home";
 import { authClient } from "@/lib/auth-client";
 import { decideAnonymousOnlyRouteAccess } from "@/lib/route-session-access";
+import { setSessionHint } from "@/lib/session-hint";
 import { getRouteSession } from "@/server/auth-session";
 import { friendly, isRateLimit } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
@@ -271,6 +273,7 @@ function SignInForm({
   onNeeds2FA: () => void;
 }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { t } = useTranslation(["auth"]);
 
   const form = useForm({
@@ -317,8 +320,12 @@ function SignInForm({
         return;
       }
       toast.success(t("auth:signedInSuccess"));
-      if (redirectTo === `/${lang}/dashboard`) {
-        navigate({ to: "/$lang/dashboard", params: { lang } });
+      if (redirectTo === appHomeHref(lang)) {
+        // The home is the public arena: its header reads the session-cookie
+        // hint (lib/session-hint.ts), which may still hold this tab's
+        // signed-out answer. It is signed in now.
+        setSessionHint(queryClient, true);
+        navigate({ to: APP_HOME, params: { lang } });
       } else {
         window.location.assign(redirectTo);
       }

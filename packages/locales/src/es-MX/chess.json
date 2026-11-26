@@ -280,6 +280,7 @@
     "title": "De experimento a titular.",
     "description": "Configura partidas, importa juegos locales, previsualiza borradores y publica evidencia.",
     "signIn": "Inicia sesión con una cuenta de administrador para abrir el estudio.",
+    "adminOnly": "El estudio es para administradores. Con tu cuenta puedes ver, comparar y repetir cada partida publicada, y jugar partidas en el Laboratorio local.",
     "disabled": "La inferencia alojada está desactivada. Un operador debe habilitar CHESS_HOSTED_ENABLED y configurar una clave de proveedor antes de que puedan ejecutarse partidas pagadas.",
     "create": "Crear partida",
     "import": "Importar archivo local",

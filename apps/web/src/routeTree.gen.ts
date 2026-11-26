@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as LangRouteImport } from './routes/$lang'
 import { Route as LangAppRouteRouteImport } from './routes/$lang/_app/route'
 import { Route as LangPublicRouteRouteImport } from './routes/$lang/_public/route'
+import { Route as LangDashboardRouteImport } from './routes/$lang/dashboard'
 import { Route as LangAppAuthRouteImport } from './routes/$lang/_app/_auth'
 import { Route as LangAppAdminRouteImport } from './routes/$lang/_app/admin'
 import { Route as LangAppForgotPasswordRouteImport } from './routes/$lang/_app/forgot-password'
@@ -21,7 +22,6 @@ import { Route as LangAppResetPasswordRouteImport } from './routes/$lang/_app/re
 import { Route as LangAppSignupRouteImport } from './routes/$lang/_app/signup'
 import { Route as LangAppVerifyEmailRouteImport } from './routes/$lang/_app/verify-email'
 import { Route as LangPublicIndexRouteImport } from './routes/$lang/_public/index'
-import { Route as LangAppAuthDashboardRouteImport } from './routes/$lang/_app/_auth/dashboard'
 import { Route as LangAppAuthDeviceRouteImport } from './routes/$lang/_app/_auth/device'
 import { Route as LangAppAuthSettingsRouteImport } from './routes/$lang/_app/_auth/settings'
 import { Route as LangAppAdminIndexRouteImport } from './routes/$lang/_app/admin/index'
@@ -48,6 +48,11 @@ const LangAppRouteRoute = LangAppRouteRouteImport.update({
 } as any)
 const LangPublicRouteRoute = LangPublicRouteRouteImport.update({
   id: '/_public',
+  getParentRoute: () => LangRoute,
+} as any)
+const LangDashboardRoute = LangDashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
   getParentRoute: () => LangRoute,
 } as any)
 const LangAppAuthRoute = LangAppAuthRouteImport.update({
@@ -88,11 +93,6 @@ const LangPublicIndexRoute = LangPublicIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => LangPublicRouteRoute,
-} as any)
-const LangAppAuthDashboardRoute = LangAppAuthDashboardRouteImport.update({
-  id: '/dashboard',
-  path: '/dashboard',
-  getParentRoute: () => LangAppAuthRoute,
 } as any)
 const LangAppAuthDeviceRoute = LangAppAuthDeviceRouteImport.update({
   id: '/device',
@@ -145,6 +145,7 @@ const LangAppAuthSettingsSecurityRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/$lang': typeof LangRouteWithChildren
+  '/$lang/dashboard': typeof LangDashboardRoute
   '/$lang/admin': typeof LangAppAdminRouteWithChildren
   '/$lang/forgot-password': typeof LangAppForgotPasswordRoute
   '/$lang/login': typeof LangAppLoginRoute
@@ -152,7 +153,6 @@ export interface FileRoutesByFullPath {
   '/$lang/signup': typeof LangAppSignupRoute
   '/$lang/verify-email': typeof LangAppVerifyEmailRoute
   '/$lang/': typeof LangPublicIndexRoute
-  '/$lang/dashboard': typeof LangAppAuthDashboardRoute
   '/$lang/device': typeof LangAppAuthDeviceRoute
   '/$lang/settings': typeof LangAppAuthSettingsRouteWithChildren
   '/$lang/admin/jobs': typeof LangAppAdminJobsRoute
@@ -166,12 +166,12 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/$lang': typeof LangPublicIndexRoute
+  '/$lang/dashboard': typeof LangDashboardRoute
   '/$lang/forgot-password': typeof LangAppForgotPasswordRoute
   '/$lang/login': typeof LangAppLoginRoute
   '/$lang/reset-password': typeof LangAppResetPasswordRoute
   '/$lang/signup': typeof LangAppSignupRoute
   '/$lang/verify-email': typeof LangAppVerifyEmailRoute
-  '/$lang/dashboard': typeof LangAppAuthDashboardRoute
   '/$lang/device': typeof LangAppAuthDeviceRoute
   '/$lang/admin/jobs': typeof LangAppAdminJobsRoute
   '/$lang/admin/settings': typeof LangAppAdminSettingsRoute
@@ -187,6 +187,7 @@ export interface FileRoutesById {
   '/$lang': typeof LangRouteWithChildren
   '/$lang/_app': typeof LangAppRouteRouteWithChildren
   '/$lang/_public': typeof LangPublicRouteRouteWithChildren
+  '/$lang/dashboard': typeof LangDashboardRoute
   '/$lang/_app/_auth': typeof LangAppAuthRouteWithChildren
   '/$lang/_app/admin': typeof LangAppAdminRouteWithChildren
   '/$lang/_app/forgot-password': typeof LangAppForgotPasswordRoute
@@ -195,7 +196,6 @@ export interface FileRoutesById {
   '/$lang/_app/signup': typeof LangAppSignupRoute
   '/$lang/_app/verify-email': typeof LangAppVerifyEmailRoute
   '/$lang/_public/': typeof LangPublicIndexRoute
-  '/$lang/_app/_auth/dashboard': typeof LangAppAuthDashboardRoute
   '/$lang/_app/_auth/device': typeof LangAppAuthDeviceRoute
   '/$lang/_app/_auth/settings': typeof LangAppAuthSettingsRouteWithChildren
   '/$lang/_app/admin/jobs': typeof LangAppAdminJobsRoute
@@ -211,6 +211,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/$lang'
+    | '/$lang/dashboard'
     | '/$lang/admin'
     | '/$lang/forgot-password'
     | '/$lang/login'
@@ -218,7 +219,6 @@ export interface FileRouteTypes {
     | '/$lang/signup'
     | '/$lang/verify-email'
     | '/$lang/'
-    | '/$lang/dashboard'
     | '/$lang/device'
     | '/$lang/settings'
     | '/$lang/admin/jobs'
@@ -232,12 +232,12 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/$lang'
+    | '/$lang/dashboard'
     | '/$lang/forgot-password'
     | '/$lang/login'
     | '/$lang/reset-password'
     | '/$lang/signup'
     | '/$lang/verify-email'
-    | '/$lang/dashboard'
     | '/$lang/device'
     | '/$lang/admin/jobs'
     | '/$lang/admin/settings'
@@ -252,6 +252,7 @@ export interface FileRouteTypes {
     | '/$lang'
     | '/$lang/_app'
     | '/$lang/_public'
+    | '/$lang/dashboard'
     | '/$lang/_app/_auth'
     | '/$lang/_app/admin'
     | '/$lang/_app/forgot-password'
@@ -260,7 +261,6 @@ export interface FileRouteTypes {
     | '/$lang/_app/signup'
     | '/$lang/_app/verify-email'
     | '/$lang/_public/'
-    | '/$lang/_app/_auth/dashboard'
     | '/$lang/_app/_auth/device'
     | '/$lang/_app/_auth/settings'
     | '/$lang/_app/admin/jobs'
@@ -305,6 +305,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/$lang'
       preLoaderRoute: typeof LangPublicRouteRouteImport
+      parentRoute: typeof LangRoute
+    }
+    '/$lang/dashboard': {
+      id: '/$lang/dashboard'
+      path: '/dashboard'
+      fullPath: '/$lang/dashboard'
+      preLoaderRoute: typeof LangDashboardRouteImport
       parentRoute: typeof LangRoute
     }
     '/$lang/_app/_auth': {
@@ -362,13 +369,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/$lang/'
       preLoaderRoute: typeof LangPublicIndexRouteImport
       parentRoute: typeof LangPublicRouteRoute
-    }
-    '/$lang/_app/_auth/dashboard': {
-      id: '/$lang/_app/_auth/dashboard'
-      path: '/dashboard'
-      fullPath: '/$lang/dashboard'
-      preLoaderRoute: typeof LangAppAuthDashboardRouteImport
-      parentRoute: typeof LangAppAuthRoute
     }
     '/$lang/_app/_auth/device': {
       id: '/$lang/_app/_auth/device'
@@ -452,13 +452,11 @@ const LangAppAuthSettingsRouteWithChildren =
   LangAppAuthSettingsRoute._addFileChildren(LangAppAuthSettingsRouteChildren)
 
 interface LangAppAuthRouteChildren {
-  LangAppAuthDashboardRoute: typeof LangAppAuthDashboardRoute
   LangAppAuthDeviceRoute: typeof LangAppAuthDeviceRoute
   LangAppAuthSettingsRoute: typeof LangAppAuthSettingsRouteWithChildren
 }
 
 const LangAppAuthRouteChildren: LangAppAuthRouteChildren = {
-  LangAppAuthDashboardRoute: LangAppAuthDashboardRoute,
   LangAppAuthDeviceRoute: LangAppAuthDeviceRoute,
   LangAppAuthSettingsRoute: LangAppAuthSettingsRouteWithChildren,
 }
@@ -524,11 +522,13 @@ const LangPublicRouteRouteWithChildren = LangPublicRouteRoute._addFileChildren(
 interface LangRouteChildren {
   LangAppRouteRoute: typeof LangAppRouteRouteWithChildren
   LangPublicRouteRoute: typeof LangPublicRouteRouteWithChildren
+  LangDashboardRoute: typeof LangDashboardRoute
 }
 
 const LangRouteChildren: LangRouteChildren = {
   LangAppRouteRoute: LangAppRouteRouteWithChildren,
   LangPublicRouteRoute: LangPublicRouteRouteWithChildren,
+  LangDashboardRoute: LangDashboardRoute,
 }
 
 const LangRouteWithChildren = LangRoute._addFileChildren(LangRouteChildren)
