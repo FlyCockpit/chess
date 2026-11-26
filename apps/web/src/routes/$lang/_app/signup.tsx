@@ -14,6 +14,7 @@ import { AuthCard } from "@/components/auth/auth-screen";
 import { ResendVerification } from "@/components/auth/resend-verification";
 import { useAuthSession } from "@/hooks/use-auth-session";
 import { authClient } from "@/lib/auth-client";
+import { ensureRouteQuery } from "@/lib/route-query";
 import { resolveRouteSession } from "@/lib/route-session";
 import { decideAnonymousOnlyRouteAccess } from "@/lib/route-session-access";
 import { friendly } from "@/utils/friendly-error";
@@ -31,7 +32,9 @@ export const Route = createFileRoute("/$lang/_app/signup")({
     if (decision.kind === "redirect-authenticated") {
       throw redirect({ href: safeRedirectTo(search.redirectTo, params.lang) });
     }
-    const cfg = await context.queryClient.ensureQueryData(orpc.appConfig.queryOptions());
+    const cfg = await ensureRouteQuery(context.queryClient, orpc.appConfig.queryKey(), () =>
+      orpc.appConfig.call(),
+    );
     if (cfg.forceSso || (!cfg.signupEnabled && !cfg.adminBootstrapSignupEnabled)) {
       throw redirect({ to: "/$lang/login", params: { lang: params.lang }, search });
     }
