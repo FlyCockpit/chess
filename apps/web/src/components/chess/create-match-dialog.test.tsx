@@ -85,6 +85,7 @@ const models = [
     name: "GPT-4.1 Nano",
     provider: "OpenAI",
     contextLength: 1047576,
+    maxOutputTokens: 32768,
     promptPerMillion: 0.1,
     completionPerMillion: 0.4,
     tools: true,

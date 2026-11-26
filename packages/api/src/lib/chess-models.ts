@@ -1,4 +1,4 @@
-import { type ModelProtocol, protocolForModel } from "@cockpit-chess/chess";
+import { catalogOutputLimits, type ModelProtocol, protocolForModel } from "@cockpit-chess/chess";
 import { z } from "zod";
 
 /**
@@ -19,6 +19,8 @@ export type CatalogModel = {
   name: string;
   provider: string;
   contextLength: number | null;
+  /** The model's own maximum output per reply in tokens, when OpenRouter lists one. */
+  maxOutputTokens: number | null;
   /** USD per million tokens, as OpenRouter quotes them. */
   promptPerMillion: number;
   completionPerMillion: number;
@@ -39,6 +41,7 @@ const entrySchema = z.object({
   architecture: z.object({ output_modalities: z.array(z.string()).optional() }).nullish(),
   pricing: z.object({ prompt: z.unknown(), completion: z.unknown() }).nullish(),
   supported_parameters: z.array(z.string()).nullish(),
+  top_provider: z.unknown().optional(),
 });
 
 /** Same rule as the worker: a finite, non-negative per-token quote, or the model cannot run. */
@@ -81,6 +84,7 @@ export function parseCatalog(body: unknown): CatalogModel[] {
         typeof contextLength === "number" && Number.isFinite(contextLength) && contextLength > 0
           ? Math.round(contextLength)
           : null,
+      maxOutputTokens: catalogOutputLimits(entry.data).maxOutputTokens,
       // OpenRouter quotes USD per token; round away float noise at the per-million scale.
       promptPerMillion: Math.round(prompt * 1e6 * 1e6) / 1e6,
       completionPerMillion: Math.round(completion * 1e6 * 1e6) / 1e6,

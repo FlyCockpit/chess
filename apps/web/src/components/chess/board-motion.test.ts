@@ -237,6 +237,34 @@ describe("illegal attempts", () => {
     expect(illegalCaption(en, empty)).toBe("White's reply couldn't be read as a move");
   });
 
+  it("captions a cut-off reply as out of space, and an unreadable one by its recorded end", () => {
+    const cut: AttemptEvent = {
+      ...attempt("[truncated]", "w"),
+      reason: "truncated",
+      reply: "Let me think about e2e4 and",
+      stopReason: "output-truncated",
+    };
+    const mark = illegalMark(START, cut, 1);
+    expect(mark).toMatchObject({ kind: "unreadable", cutOff: true });
+    expect(illegalCaption(en, mark as NonNullable<typeof mark>)).toBe(
+      "White's reply ran out of space before giving a move",
+    );
+    expect(illegalCaption(es, mark as NonNullable<typeof mark>)).toBe(
+      "La respuesta de Blanco se quedó sin espacio antes de dar una jugada",
+    );
+    expect(illegalMotion(mark as NonNullable<typeof mark>)).toMatchObject({ kind: "unreadable" });
+    // A finished reply that named no move: the caption quotes the end of what it said.
+    const prose: AttemptEvent = {
+      ...attempt("[unparseable]", "b"),
+      reply: `…${"x".repeat(100)} so I play the knight`,
+      stopReason: "completed",
+    };
+    const proseMark = illegalMark(START, prose, 2) as NonNullable<ReturnType<typeof illegalMark>>;
+    expect(illegalCaption(en, proseMark)).toMatch(
+      /^Black's reply couldn't be read as a move: “…x+ so I play the knight”$/,
+    );
+  });
+
   it("counts the attempts a long run leaves out", () => {
     expect(moreAttemptsCaption(en, 12)).toBe("+12 more illegal attempts");
     expect(moreAttemptsCaption(en, 1)).toBe("+1 more illegal attempt");

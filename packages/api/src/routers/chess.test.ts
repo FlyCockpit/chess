@@ -108,6 +108,8 @@ function row() {
     blackProtocol: null,
     whiteIllegal: null,
     blackIllegal: null,
+    whiteTruncated: null,
+    blackTruncated: null,
     whiteCostMicros: null,
     blackCostMicros: null,
     moveFormat: null,
@@ -124,6 +126,8 @@ type StatsRow = {
   blackProtocol: string | null;
   whiteIllegal: number | null;
   blackIllegal: number | null;
+  whiteTruncated: number | null;
+  blackTruncated: number | null;
   whiteCostMicros: bigint | null;
   blackCostMicros: bigint | null;
   moveFormat: string | null;
@@ -137,6 +141,8 @@ const statsRow = (overrides: Partial<StatsRow> = {}): StatsRow => ({
   blackProtocol: "random",
   whiteIllegal: 0,
   blackIllegal: 0,
+  whiteTruncated: 0,
+  blackTruncated: 0,
   whiteCostMicros: 10n,
   blackCostMicros: 0n,
   moveFormat: "strict",
@@ -409,7 +415,7 @@ describe("chess public projection and operator boundaries", () => {
   it("aggregates leaderboard rows from typed stats columns, per side", async () => {
     db.chessMatch.findMany.mockResolvedValue([
       // model-a wins as white, draws as black, loses as white
-      statsRow({ result: "1-0", whiteIllegal: 2, whiteCostMicros: 100n }),
+      statsRow({ result: "1-0", whiteIllegal: 2, whiteTruncated: 1, whiteCostMicros: 100n }),
       statsRow({
         result: "1/2-1/2",
         whiteModel: "model-b",
@@ -448,6 +454,7 @@ describe("chess public projection and operator boundaries", () => {
         draws: 0,
         losses: 0,
         illegalAttempts: 0,
+        truncatedAttempts: 0,
         estimatedCostMicros: 1,
       },
       {
@@ -460,6 +467,7 @@ describe("chess public projection and operator boundaries", () => {
         draws: 1,
         losses: 0,
         illegalAttempts: 0,
+        truncatedAttempts: 0,
         estimatedCostMicros: 12,
       },
       {
@@ -472,6 +480,7 @@ describe("chess public projection and operator boundaries", () => {
         draws: 1,
         losses: 1,
         illegalAttempts: 3,
+        truncatedAttempts: 1,
         estimatedCostMicros: null,
       },
     ]);

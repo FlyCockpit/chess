@@ -125,10 +125,12 @@ export interface ResultStore {
 
 /**
  * What `onBeforeDispatch` may return. `undefined` means "carry on"; `{ veto }`
- * stops the loop cleanly. Not exported: consumers satisfy it structurally, and
- * an exported-but-unreferenced type is what `pnpm knip` flags.
+ * stops the loop cleanly; `{ maxOutputTokens }` carries on with that output ceiling
+ * for this dispatch only (every model candidate), in place of the loop's
+ * `maxOutputTokens`. Not exported: consumers satisfy it structurally, and an
+ * exported-but-unreferenced type is what `pnpm knip` flags.
  */
-type BeforeDispatchResult = { veto: { reason: string } } | undefined;
+type BeforeDispatchResult = { veto: { reason: string } } | { maxOutputTokens: number } | undefined;
 
 export interface AgentLoopOptions {
   model: AgentModel;

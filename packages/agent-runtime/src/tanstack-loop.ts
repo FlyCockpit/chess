@@ -279,16 +279,20 @@ export const executeTanstackLoop = async (
     0,
     MAX_FAILOVER_CANDIDATES,
   );
+  const candidates = modelCandidates.map((model) => {
+    const bundle = createModelAdapter(model, cacheOpts);
+    const ceiling = outputTokenOptions(model, maxOutputTokens);
+    return {
+      ...bundle,
+      ...(ceiling ? { modelOptions: { ...bundle.modelOptions, ...ceiling } } : {}),
+      modelId: model.model,
+      /** Options without a per-dispatch ceiling override, restored before each dispatch. */
+      loopModelOptions: ceiling ? { ...bundle.modelOptions, ...ceiling } : bundle.modelOptions,
+      model,
+    };
+  });
   const { adapter, modelOptions, getServingModelId } = createRetryFailoverAdapter({
-    candidates: modelCandidates.map((model) => {
-      const bundle = createModelAdapter(model, cacheOpts);
-      const ceiling = outputTokenOptions(model, maxOutputTokens);
-      return {
-        ...bundle,
-        ...(ceiling ? { modelOptions: { ...bundle.modelOptions, ...ceiling } } : {}),
-        modelId: model.model,
-      };
-    }),
+    candidates,
     abortSignal: abortController.signal,
     onFailover: (serving, primary) => {
       console.warn(`[agent-runtime] model failover: primary=${primary} serving=${serving}`);
@@ -366,6 +370,23 @@ export const executeTanstackLoop = async (
       // during them: do not start a dispatch the run no longer wants.
       if (settleStop()) break;
 
+      // A per-dispatch output ceiling replaces the loop's for this dispatch only. The
+      // retry adapter reads each fallback's options when it fails over, so they are
+      // rewritten too; the primary's travel in the chat() call below.
+      const dispatchCeiling =
+        hookResult && typeof hookResult === "object" && "maxOutputTokens" in hookResult
+          ? resolveMaxOutputTokens(hookResult.maxOutputTokens)
+          : undefined;
+      for (const candidate of candidates)
+        candidate.modelOptions =
+          dispatchCeiling === undefined
+            ? candidate.loopModelOptions
+            : {
+                ...candidate.loopModelOptions,
+                ...outputTokenOptions(candidate.model, dispatchCeiling),
+              };
+      const dispatchModelOptions = candidates[0]?.modelOptions ?? modelOptions;
+
       lastDispatchAt = Date.now();
       // Per-dispatch state: a previous dispatch's finish must never be mistaken for
       // this one's (e.g. a stale "tool-calls" from a stream that ended silently).
@@ -419,7 +440,7 @@ export const executeTanstackLoop = async (
             error: logDiagnostic,
           },
         },
-        ...(modelOptions ? { modelOptions } : {}),
+        ...(dispatchModelOptions ? { modelOptions: dispatchModelOptions } : {}),
       });
 
       async function* observe(): AsyncIterable<StreamChunk> {

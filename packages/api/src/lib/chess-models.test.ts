@@ -16,6 +16,7 @@ const body = {
       architecture: { output_modalities: ["text"] },
       pricing: { prompt: "0.0000001", completion: "0.0000004" },
       supported_parameters: ["tools", "temperature"],
+      top_provider: { max_completion_tokens: 32768 },
     },
     {
       id: "anthropic/claude-haiku-4.5",
@@ -50,12 +51,15 @@ describe("parseCatalog", () => {
       name: "GPT-4.1 Nano",
       provider: "OpenAI",
       contextLength: 1047576,
+      maxOutputTokens: 32768,
       promptPerMillion: 0.1,
       completionPerMillion: 0.4,
       tools: true,
       protocol: "openai-chat",
     });
     expect(models[0]?.protocol).toBe("anthropic");
+    // Not listed: the runner falls back to its own default.
+    expect(models[0]?.maxOutputTokens).toBeNull();
     expect(models[1]).toMatchObject({ name: "meta/llama-free", provider: "meta", tools: false });
   });
   it("tolerates a malformed body", () => {

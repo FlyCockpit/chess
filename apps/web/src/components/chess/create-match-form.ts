@@ -6,6 +6,8 @@ import {
   type ModelProtocol,
   matchConfigSchema,
   protocolForModel,
+  REPLY_CAP_MAX,
+  REPLY_CAP_MIN,
   type RemarkTone,
   type Rules,
   remarkTones,
@@ -34,6 +36,8 @@ export type CatalogModel = {
   name: string;
   provider: string;
   contextLength: number | null;
+  /** The model's own maximum output per reply, when the catalog lists one. */
+  maxOutputTokens: number | null;
   promptPerMillion: number;
   completionPerMillion: number;
   tools: boolean;
@@ -59,6 +63,7 @@ export const LIMITS = {
   /** `max` bounds the local lab's own token field; hosted maxima come from the server. */
   tokens: { min: 256, max: 1_000_000 },
   attempts: { min: 1, max: 10 },
+  replyCap: { min: REPLY_CAP_MIN, max: REPLY_CAP_MAX },
 } as const;
 
 /** The server's per-side operator limits (`chess.info`, from `CHESS_MAX_*`). */
@@ -103,6 +108,8 @@ export type CreateMatchValues = {
   maxAttempts: number;
   /** Per-move safety limit in seconds; "" = automatic (1 min, never above a clock). */
   moveLimit: string;
+  /** Optional reply cap in tokens, for experiments; "" = none (the model's own maximum). */
+  replyCap: string;
 };
 
 /** The same defaults the form always started from; only the protocol is now derived. */
@@ -125,6 +132,7 @@ export const DEFAULT_VALUES: CreateMatchValues = {
   illegalPolicy: "forfeit",
   maxAttempts: 3,
   moveLimit: "",
+  replyCap: "",
 };
 
 /** The defaults within the server's limits (a server capped below them starts at its cap). */
@@ -148,6 +156,7 @@ export const FIELD_SECTION: Partial<Record<keyof CreateMatchValues, SectionId>> 
   engineEvaluation: "rules",
   illegalPolicy: "rules",
   maxAttempts: "rules",
+  replyCap: "rules",
   tokenAccounting: "limits",
   tokenBudget: "limits",
   budget: "limits",
@@ -227,6 +236,13 @@ export function createMatchSchema(t: TFunction<"chess">, limits: HostedLimits = 
       illegalPolicy: z.enum(ILLEGAL_POLICIES),
       maxAttempts: numberInRange(t, LIMITS.attempts, 1),
       moveLimit: z.string(),
+      replyCap: z.string().superRefine((value, context) => {
+        if (replyCapTokens(value) === undefined)
+          context.addIssue({
+            code: "custom",
+            message: t("create.errors.integerRange", LIMITS.replyCap),
+          });
+      }),
     })
     .superRefine((value, context) => {
       if (Object.keys(timeControlErrors(t, value.time)).length) return;
@@ -237,6 +253,17 @@ export function createMatchSchema(t: TFunction<"chess">, limits: HostedLimits = 
           message: t("time.errors.moveLimit", MOVE_LIMIT_SECONDS),
         });
     });
+}
+
+/**
+ * The reply cap a field value sets: null when blank (no cap), the whole number of
+ * tokens when in range, undefined when it is not a valid cap.
+ */
+export function replyCapTokens(raw: string): number | null | undefined {
+  const text = raw.trim();
+  if (!text) return null;
+  const value = Number(text);
+  return inRange(value, LIMITS.replyCap, 1) ? value : undefined;
 }
 
 export function findModel(catalog: readonly CatalogModel[] | undefined, id: string) {
@@ -284,6 +311,8 @@ export function toMatchConfig(
   const clock = clockFromTimeControl(value.time);
   const turnTimeoutMs = moveLimitMs(value.moveLimit, clock);
   if (turnTimeoutMs === null) return { success: false };
+  const replyCap = replyCapTokens(value.replyCap);
+  if (replyCap === undefined) return { success: false };
   const parsed = matchConfigSchema.safeParse({
     title,
     white: {
@@ -312,6 +341,8 @@ export function toMatchConfig(
       moveFormat: value.moveFormat,
       clock,
       turnTimeoutMs,
+      // No cap is recorded by omission: each reply may use the model's own maximum.
+      ...(replyCap === null ? {} : { maxOutputTokens: replyCap }),
     },
   });
   return parsed.success ? { success: true, data: parsed.data } : { success: false };
@@ -339,6 +370,8 @@ export function summaryParts(
   if (value.illegalPolicy === "retry") parts.push(t("create.summary.retry"));
   else if (value.maxAttempts !== DEFAULT_VALUES.maxAttempts)
     parts.push(t("create.summary.forfeitAfter", { count: value.maxAttempts }));
+  const replyCap = replyCapTokens(value.replyCap);
+  if (typeof replyCap === "number") parts.push(t("create.summary.replyCap", { count: replyCap }));
   return parts;
 }
 

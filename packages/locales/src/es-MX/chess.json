@@ -141,7 +141,9 @@
     "model": "Modelo / protocolo",
     "ruleset": "Conjunto de reglas",
     "note": "Puntuación provisional = victorias + la mitad de los empates, dividida por partidas. Últimos {{limit}} partidos elegibles; {{count}} incluidos. Estas no son calificaciones Elo humanas.",
-    "window": "Ventana de resultados"
+    "window": "Ventana de resultados",
+    "truncated_one": "{{count}} sin espacio",
+    "truncated_other": "{{count}} sin espacio"
   },
   "local": {
     "private": "Proceso local",
@@ -176,13 +178,13 @@
     "title": "Las reglas son parte del resultado.",
     "intro": "La puntuación de un modelo solo tiene sentido cuando sabes cómo jugó.",
     "legalTitle": "Un tablero autorizado",
-    "legalBody": "El motor de reglas acepta movimientos legales UCI. Los intentos ilegales y no analizables permanecen en la línea de tiempo; nunca mueven una pieza. La cantidad de intentos configurados determina las penalizaciones.",
+    "legalBody": "El motor de reglas acepta movimientos legales UCI. Los intentos ilegales, no analizables y cortados permanecen en la línea de tiempo con el final de la respuesta del modelo; nunca mueven una pieza, y una respuesta cortada en su límite de salida nunca cuenta como jugada. La cantidad de intentos configurados determina las penalizaciones.",
     "contextTitle": "La memoria es un experimento",
     "contextBody": "Las jugadas de contexto fresco reciben la posición actual, el lado a mover, información de empate, reglas y la cantidad restante. Las jugadas persistentes mantienen la conversación de ese jugador. Ningún jugador ve la conversación privada del otro.",
     "identityTitle": "La identidad es independiente",
     "identityBody": "Las partidas anónimas omiten la identidad configurada del rival. Los comentarios se habilitan por separado y pueden dar pistas. Las partidas con identidad revelada nombran al rival; ningún modo garantiza que un modelo no pueda adivinarlo.",
     "budgetTitle": "Inferencia limitada y responsable",
-    "budgetBody": "Cada despacho reserva una cantidad conservadora de tokens y costos, incluyendo reintentos de transporte, antes de la inferencia. El uso reportado y las estimaciones de costos basadas en precios son independientes de las reservas. La falta de uso del proveedor no prueba costo cero.",
+    "budgetBody": "Cada despacho reserva una cantidad conservadora de tokens y costos, incluyendo reintentos de transporte, antes de la inferencia. No hay un límite fijo de respuesta: cada respuesta puede usar la salida máxima del propio modelo, limitada por lo que los presupuestos del lado aún pueden pagar, salvo que las reglas fijen uno para un experimento. El uso reportado y las estimaciones de costos basadas en precios son independientes de las reservas. La falta de uso del proveedor no prueba costo cero.",
     "rankTitle": "Experimentos comparables",
     "rankBody": "Las clasificaciones separan conjuntos de reglas exactas y protocolos de comunicación. Los juegos importados son experimentos locales, nunca evidencia automática de la identidad del modelo. Las muestras pequeñas siguen siendo provisionales. El rendimiento en ajedrez no es una puntuación de inteligencia general.",
     "privacyTitle": "Tus claves permanecen contigo",
@@ -266,7 +268,20 @@
     "chatTab": "Chat ({{count}})",
     "sideSpend": "{{side}} · gastó {{spent}} de {{budget}}",
     "sideSpendUnknown": "{{side}} · gastó al menos {{spent}} de {{budget}} (el uso aún se está liquidando)",
-    "illegalBySide": "Intentos ilegales: {{white}} {{w}} · {{black}} {{b}}"
+    "illegalBySide": "Intentos ilegales: {{white}} {{w}} · {{black}} {{b}}",
+    "cutOff": "Rechazada · sin espacio",
+    "rejectedTruncated": "Rechazada: la respuesta se quedó sin espacio antes de dar una jugada. El tablero no cambia.",
+    "replyDetails": "La respuesta del modelo",
+    "replyNote": "Se muestra como texto plano; es salida no confiable del modelo, y de las respuestas largas solo se conserva el final.",
+    "replyEmpty": "(sin texto)",
+    "copyReply": "Copiar la respuesta",
+    "truncatedBySide": "Sin espacio: {{white}} {{w}} · {{black}} {{b}}",
+    "stopReasons": {
+      "completed": "La respuesta terminó sin una jugada legible.",
+      "output-truncated": "La respuesta se cortó en su límite de salida antes de dar una jugada.",
+      "max-iterations": "La respuesta usó todas las rondas del modelo del intento sin dar una jugada.",
+      "illegal": "La respuesta terminó; su jugada no es legal en esta posición."
+    }
   },
   "stats": {
     "plies": "Movimientos legales",
@@ -363,7 +378,8 @@
     "moveFormatNote": "El modo flexible también lee un movimiento JSON dentro de texto y convierte SAN legal a UCI. Cada formato se clasifica por separado.",
     "remarks": "Comentarios",
     "illegalPolicy": "Ante jugadas ilegales repetidas",
-    "maxAttempts": "Jugadas ilegales antes de perder"
+    "maxAttempts": "Jugadas ilegales antes de perder",
+    "replyCap": "Límite de respuesta (tokens)"
   },
   "accounting": {
     "provider": "Reservas de tokens del proveedor",
@@ -416,7 +432,10 @@
       "autoMoveLimit": "{{time}} (automático)",
       "retry": "Sigue intentando ante jugadas ilegales",
       "forfeitAfter_one": "Pierde tras {{count}} jugada ilegal",
-      "forfeitAfter_other": "Pierde tras {{count}} jugadas ilegales"
+      "forfeitAfter_other": "Pierde tras {{count}} jugadas ilegales",
+      "replyCap_one": "Límite de respuesta de {{count}} token",
+      "replyCap_other": "Límite de respuesta de {{count}} tokens",
+      "noReplyCap": "Sin límite de respuesta"
     },
     "advanced": "Configuración avanzada",
     "advancedHint": "Opcional. Una sección cerrada conserva los valores del resumen de arriba.",
@@ -477,7 +496,8 @@
         "forfeit": "Tras este número de jugadas rechazadas en un mismo turno, ese bando pierde la partida.",
         "retry": "Sin derrota: el bando sigue intentando hasta jugar una jugada legal, y cada jugada rechazada queda registrada. El límite por jugada, el reloj y los presupuestos de tokens y de gasto del bando siguen aplicando y terminan la partida cuando uno se agota."
       },
-      "maxAttempts": "Jugadas rechazadas permitidas en un turno (de {{min}} a {{max}})."
+      "maxAttempts": "Jugadas rechazadas permitidas en un turno (de {{min}} a {{max}}).",
+      "replyCap": "Desactivado por defecto: cada respuesta puede usar la salida máxima del propio modelo (Blanco {{white}}, Negro {{black}} tokens), limitada por lo que sus presupuestos aún pueden pagar. Fija un límite ({{min}} a {{max}}) solo para experimentos: en muchos proveedores el razonamiento oculto cuenta contra él, y una respuesta cortada en el límite se rechaza por falta de espacio. El límite es parte de las reglas, así que las partidas con límite se clasifican aparte."
     },
     "start": "Iniciar partida",
     "starting": "Iniciando…",
@@ -501,7 +521,10 @@
       "usd": "USD",
       "thousand": "k",
       "million": "M"
-    }
+    },
+    "replyCapOff": "Desactivado",
+    "modelMax": "hasta {{tokens}}",
+    "modelMaxUnknown": "no indicado, así que {{tokens}}"
   },
   "motion": {
     "illegal": "{{side}} intentó {{move}}: no es una jugada legal",
@@ -509,7 +532,8 @@
     "unreadable": "La respuesta de {{side}} no se pudo leer como jugada: “{{raw}}”",
     "unreadableEmpty": "La respuesta de {{side}} no se pudo leer como jugada",
     "more_one": "+{{count}} intento ilegal más",
-    "more_other": "+{{count}} intentos ilegales más"
+    "more_other": "+{{count}} intentos ilegales más",
+    "cutOff": "La respuesta de {{side}} se quedó sin espacio antes de dar una jugada"
   },
   "video": {
     "open": "Exportar video",
@@ -575,7 +599,11 @@
     "interrupted": "Interrumpida por el servidor",
     "provider-error": "Falló un proveedor de modelos",
     "engine-error": "Falló el motor de ajedrez",
-    "event-limit": "El registro de la partida alcanzó su tamaño máximo"
+    "event-limit": "El registro de la partida alcanzó su tamaño máximo",
+    "truncatedForfeit_one": "{{side}} perdió: {{count}} respuesta se quedó sin espacio",
+    "truncatedForfeit_other": "{{side}} perdió: {{count}} respuestas se quedaron sin espacio",
+    "mixedForfeit_one": "{{side}} perdió por {{count}} jugada rechazada ({{truncated}} sin espacio)",
+    "mixedForfeit_other": "{{side}} perdió por {{count}} jugadas rechazadas ({{truncated}} sin espacio)"
   },
   "endingDetail": {
     "withDetail": "{{headline}} ({{detail}})",
@@ -602,7 +630,8 @@
     "empty": "no hay ninguna pieza en {{square}}",
     "opponentPiece": "en {{square}} hay una pieza rival",
     "cannotMove": "su {{piece}} de {{from}} no puede moverse legalmente a {{to}}",
-    "promotion": "su peón de {{from}} debe indicar la pieza de promoción (q, r, b o n)"
+    "promotion": "su peón de {{from}} debe indicar la pieza de promoción (q, r, b o n)",
+    "truncated": "se quedó sin espacio antes de dar una jugada"
   },
   "pieceNames": {
     "pawn": "peón",

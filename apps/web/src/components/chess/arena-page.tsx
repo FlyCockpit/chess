@@ -333,7 +333,14 @@ function Leaderboard() {
                       </td>
                       <td>{row.games}</td>
                       <td>{Math.round((100 * (row.wins + row.draws / 2)) / row.games)}%</td>
-                      <td>{row.illegalAttempts}</td>
+                      <td>
+                        {row.illegalAttempts}
+                        {row.truncatedAttempts > 0 && (
+                          <p className="cc-muted">
+                            {t("leaderboard.truncated", { count: row.truncatedAttempts })}
+                          </p>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

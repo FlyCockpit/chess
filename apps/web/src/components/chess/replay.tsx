@@ -282,7 +282,11 @@ const TimelineRow = memo(function TimelineRow({
         <span>
           {entry.type === "attempt" ? (
             <>
-              {entry.accepted ? entry.san : t("replay.illegal", { move: entry.move })}
+              {entry.accepted
+                ? entry.san
+                : entry.reason === "truncated"
+                  ? t("replay.cutOff")
+                  : t("replay.illegal", { move: entry.move })}
               {entry.comment && <small>{entry.comment}</small>}
               {entry.normalizedFrom !== undefined && (
                 <small title={entry.normalizedFrom}>{t("replay.normalized")}</small>
@@ -368,7 +372,7 @@ export function MatchReplay({
   // Autoplay leaves a rejected attempt on screen until its motion has played.
   const autoplayDelay =
     shownEvent?.type === "attempt" && !shownEvent.accepted
-      ? Math.max(700, (shownEvent.reason === "unparseable" ? UNREADABLE_MS : ILLEGAL_MS) + 400)
+      ? Math.max(700, (shownEvent.reason === "illegal" ? ILLEGAL_MS : UNREADABLE_MS) + 400)
       : 700;
   useReplayClock(
     playing,
@@ -538,6 +542,16 @@ export function MatchReplay({
                   w: sideStats[0][1].illegalAttempts,
                   black: t("colors.b"),
                   b: sideStats[1][1].illegalAttempts,
+                })}
+              </span>
+            )}
+            {sideStats.some(([, side]) => side.truncatedAttempts > 0) && (
+              <span className="cc-result-illegal">
+                {t("replay.truncatedBySide", {
+                  white: t("colors.w"),
+                  w: sideStats[0][1].truncatedAttempts,
+                  black: t("colors.b"),
+                  b: sideStats[1][1].truncatedAttempts,
                 })}
               </span>
             )}
@@ -819,13 +833,31 @@ export function MatchReplay({
               {event?.type === "attempt"
                 ? event.accepted
                   ? t("replay.accepted", { move: event.san })
-                  : t("replay.rejected", { move: event.move })
+                  : event.reason === "truncated"
+                    ? t("replay.rejectedTruncated")
+                    : t("replay.rejected", { move: event.move })
                 : lookup
                   ? lookupLabel(t, lookup)
                   : event
                     ? t(`events.${event.type}`)
                     : t("replay.initial")}
             </div>
+            {event?.type === "attempt" && event.reply !== undefined && (
+              <details className="cc-muted mb-4 text-xs">
+                <summary className="cursor-pointer py-3">{t("replay.replyDetails")}</summary>
+                <p>
+                  {event.reason === "illegal"
+                    ? t("replay.stopReasons.illegal")
+                    : t(`replay.stopReasons.${event.stopReason ?? "completed"}`)}{" "}
+                  {t("replay.replyNote")}
+                </p>
+                {/* Untrusted model text: rendered as escaped plain text only. */}
+                <CodeSnippet
+                  code={event.reply || t("replay.replyEmpty")}
+                  copyLabel={t("replay.copyReply")}
+                />
+              </details>
+            )}
             <ol className="cc-timeline">
               {match.events.map((entry, i) => (
                 <TimelineRow

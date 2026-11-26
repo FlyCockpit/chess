@@ -1,3 +1,4 @@
+import { FALLBACK_MAX_OUTPUT_TOKENS } from "@cockpit-chess/chess";
 import { Button } from "@cockpit-chess/ui/components/button";
 import { RangeField } from "@cockpit-chess/ui/components/range-field";
 import {
@@ -30,6 +31,7 @@ import {
   ENGINE_MODES,
   FALLBACK_LIMITS,
   FIELD_SECTION,
+  findModel,
   type HostedLimits,
   IDENTITY_MODES,
   ILLEGAL_POLICIES,
@@ -39,6 +41,7 @@ import {
   maxBudgetUsd,
   PROTOCOL_CHOICES,
   REMARK_TONES,
+  replyCapTokens,
   resolveProtocol,
   type SectionId,
   summaryParts,
@@ -176,6 +179,16 @@ export function CreateMatchDialog({
     ? t("duration.seconds", { seconds: values.moveLimit.trim() })
     : t("create.summary.autoMoveLimit", { time: durationLabel(t, autoMoveLimit) });
   const derivedTitle = autoTitle(values, catalog, t);
+  const replyCap = replyCapTokens(values.replyCap);
+  /** What one reply may use without a cap: the model's own maximum, or the fallback. */
+  const modelMax = (side: "white" | "black") => {
+    const max = findModel(catalog, values[side])?.maxOutputTokens;
+    return max
+      ? t("create.modelMax", { tokens: max.toLocaleString(i18n.language) })
+      : t("create.modelMaxUnknown", {
+          tokens: FALLBACK_MAX_OUTPUT_TOKENS.toLocaleString(i18n.language),
+        });
+  };
   const needsTools =
     values.tools === "tool" ||
     values.engineEvaluation === "tool" ||
@@ -364,6 +377,9 @@ export function CreateMatchDialog({
                     values.illegalPolicy === "retry"
                       ? t("create.summary.retry")
                       : t("create.summary.forfeitAfter", { count: values.maxAttempts }),
+                    typeof replyCap === "number"
+                      ? t("create.summary.replyCap", { count: replyCap })
+                      : t("create.summary.noReplyCap"),
                   ].join(" · ")}
                 >
                   <form.Field name="context">
@@ -442,6 +458,27 @@ export function CreateMatchDialog({
                       )}
                     </form.Field>
                   )}
+                  <form.Field name="replyCap">
+                    {(field) => (
+                      <TextField
+                        field={field}
+                        type="number"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        min={LIMITS.replyCap.min}
+                        max={LIMITS.replyCap.max}
+                        step={1}
+                        placeholder={t("create.replyCapOff")}
+                        label={t("settings.replyCap")}
+                        description={t("create.explain.replyCap", {
+                          white: modelMax("white"),
+                          black: modelMax("black"),
+                          min: LIMITS.replyCap.min.toLocaleString(i18n.language),
+                          max: LIMITS.replyCap.max.toLocaleString(i18n.language),
+                        })}
+                      />
+                    )}
+                  </form.Field>
                 </SettingsSection>
                 <SettingsSection
                   id="limits"

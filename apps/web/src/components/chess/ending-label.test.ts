@@ -72,6 +72,17 @@ const reserved = (match: MatchArchive) => {
   });
   return match;
 };
+/** Rejected replies cut off at their output limit, then the given moves. */
+const cutOff = (match: MatchArchive, count: number, ...moves: string[]) => {
+  const chess = boardAt(match);
+  for (let index = 0; index < count; index += 1)
+    submitMove(match, chess, "[truncated]", "", undefined, {
+      text: "Let me think",
+      stopReason: "output-truncated",
+    });
+  for (const move of moves) submitMove(match, chess, move);
+  return match;
+};
 const sicilian = ["e2e4", "c7c5", "g1f3", "d7d6", "d2d4", "c5d4", "f3d4", "e7e5"];
 const shuffle = ["g1f3", "g8f6", "f3g1", "f6g8"];
 /** One match per termination (and every draw kind and illegal-move reason). */
@@ -88,6 +99,9 @@ const fixtures = (): Array<[string, MatchArchive]> => [
     play(game({ maxAttempts: 5 }), "g1f3", "e7e5", "g1h3", "e5e4", "a3a4", "f3f6", "hello"),
   ],
   ["single forfeit", play(game({ maxAttempts: 1 }), "e2e5")],
+  ["cut-off forfeit", cutOff(game(), 3)],
+  ["single cut-off forfeit", cutOff(game({ maxAttempts: 1 }), 1)],
+  ["cut-off and illegal forfeit", cutOff(game(), 2, "e2e5")],
   ["clock", ended(game({ clock: { w: 600000, b: 600000 } }), "timeout", "0-1")],
   ["uneven clock", ended(play(game({ clock: { w: 900000, b: 90000 } }), "e2e4"), "timeout", "1-0")],
   ["move limit", ended(play(game(), "e2e4"), "move-timeout", "1-0")],

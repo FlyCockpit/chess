@@ -290,7 +290,7 @@ Rules include fresh/persistent memory, hidden/disclosed identities, FEN/ASCII/pi
 representations, hidden/tool/provided legal moves, a remark tone in either
 identity mode, attempt limits, a time control, tokens and costs.
 
-Rules are versioned (`rules.version`). New matches use `cockpit-v2`; archives
+Rules are versioned (`rules.version`). New matches use `cockpit-v3`; archives
 recorded under `cockpit-v1` (a move cap, one shared time allowance and an on/off
 remark switch) still replay, validate and display as they were played.
 
@@ -305,7 +305,24 @@ remark switch) still replay, validate and display as they were played.
   sides may differ (`{ "w": 900000, "b": 300000 }`). `turnTimeoutMs` (1–300 s) is the
   per-move safety limit and may not exceed either clock. Running out of clock is
   `timeout` ("White ran out of time"); missing the per-move limit is `move-timeout`.
-- **Illegal moves.** Every rejected attempt is recorded. `illegalPolicy` is
+- **Rejected replies.** Every rejected attempt is recorded with its reason:
+  `illegal` (a well-formed UCI move the position does not allow), `unparseable` (a
+  finished reply that names no move) or `truncated` (the reply was cut off at its
+  output limit before it gave a move: "ran out of space"). A rejected model attempt
+  also keeps the end of the reply text (at most 2 KB, model names redacted when
+  identities are withheld) and how it stopped (`completed`, `output-truncated`,
+  `max-iterations`); the replay shows it as plain, untrusted text. A cut-off reply
+  is never played, even when it began with a move. The retry tells the model it was
+  cut off, at which token limit, and asks for only the JSON move object.
+- **Reply length.** There is no fixed reply cap. Each request's output limit is the
+  model's own maximum (OpenRouter's `top_provider.max_completion_tokens`; 8,192 when
+  the catalog lists none), kept inside the context window and limited to what the
+  side's remaining token and cost budgets can pay for one attempt, so hidden
+  reasoning, which many providers count against that limit, has room. When the
+  budgets cannot pay for a 256-token reply, the side has run out of that budget. The
+  optional `maxOutputTokens` (64–131,072, "Reply cap" in the create form) caps it
+  lower for experiments; it is part of the rules, so capped games rank separately.
+- **Illegal moves.** `illegalPolicy` is
   `forfeit` (the default, also when the key is absent: `maxAttempts` rejections, 1–10,
   on one turn lose the game as `illegal-forfeit`) or `retry` (no forfeit: the side
   keeps trying until it submits a legal move). A retrying turn is still bounded by
@@ -313,7 +330,7 @@ remark switch) still replay, validate and display as they were played.
   limit.
 - **Budgets.** Each side has a `tokenBudget` and a `costBudgetMicros`. Before each
   request the runner reserves its worst case from the request size, the model's price
-  and `maxOutputTokens` (every transport attempt). When that no longer fits but one
+  and the request's output limit (every transport attempt). When that no longer fits but one
   attempt still does, the request runs with the reservation capped to what remains;
   when not even one attempt fits, the side has run out ("White ran out of budget
   (spent $0.98 of $1.00)"). Reported usage then replaces each reservation. Hosted

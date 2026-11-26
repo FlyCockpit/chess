@@ -1,4 +1,9 @@
-import type { ArchivedConfig, MatchArchive, MatchConfig } from "@cockpit-chess/chess";
+import {
+  type ArchivedConfig,
+  catalogOutputLimits,
+  type MatchArchive,
+  type MatchConfig,
+} from "@cockpit-chess/chess";
 import type { ProviderCredentials } from "@cockpit-chess/chess/runner";
 import { z } from "zod";
 import { t } from "./chess-i18n";
@@ -112,6 +117,9 @@ const catalogSchema = z.object({
         pricing: z
           .object({ prompt: z.string().optional(), completion: z.string().optional() })
           .optional(),
+        // Read by catalogOutputLimits: the model's maximum output and context window.
+        context_length: z.unknown().optional(),
+        top_provider: z.unknown().optional(),
       }),
     )
     .optional(),
@@ -182,7 +190,8 @@ export async function localCredentials(
     const player = side === "w" ? match.config.white : match.config.black;
     if (player.protocol === "random" || player.protocol === "human") continue;
     const apiKey = resolveApiKey(endpoint, player.protocol);
-    const pricing = catalog?.data?.find((entry) => entry.id === player.model)?.pricing;
+    const entry = catalog?.data?.find((item) => item.id === player.model);
+    const pricing = entry?.pricing;
     const inputPrice = isOpenRouter
       ? Number(pricing?.prompt) * 1e12
       : Number(options.inputPrice) * 1e6;
@@ -204,6 +213,8 @@ export async function localCredentials(
       anthropicAuth: isOpenRouter ? "bearer" : "api-key",
       inputMicrosPerMillion: local ? 0 : Math.ceil(inputPrice),
       outputMicrosPerMillion: local ? 0 : Math.ceil(outputPrice),
+      // OpenRouter lists each model's maximum output; elsewhere the runner's fallback applies.
+      ...catalogOutputLimits(entry),
     };
   }
   return output;

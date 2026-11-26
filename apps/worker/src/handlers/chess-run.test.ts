@@ -1,4 +1,4 @@
-import { boardAt, createMatch, validateArchive } from "@cockpit-chess/chess";
+import { boardAt, createMatch, finishMatch, validateArchive } from "@cockpit-chess/chess";
 import { advanceMatch, MATCH_INTERRUPTED } from "@cockpit-chess/chess/runner";
 import { asCockpitV1 } from "@cockpit-chess/chess/testing";
 import type prismaInstance from "@cockpit-chess/db";
@@ -97,6 +97,8 @@ function row() {
     blackProtocol: null,
     whiteIllegal: null,
     blackIllegal: null,
+    whiteTruncated: null,
+    blackTruncated: null,
     whiteCostMicros: null,
     blackCostMicros: null,
     moveFormat: null,
@@ -160,7 +162,7 @@ describe("durable chess worker", () => {
       record.events.filter((event) => event.type === "attempt" && event.accepted),
     ).toHaveLength(2);
   });
-  it("plays a cockpit-v2 baseline to the rules engine's own ending, with no move cap", async () => {
+  it("plays a cockpit-v3 baseline to the rules engine's own ending, with no move cap", async () => {
     // Twenty plies short of the fifty-move rule: the engine's own ending comes quickly.
     const v2 = createMatch(
       { white: player, black: player, rules: {}, initialFen: "7k/8/8/8/8/8/8/R6K w - - 80 80" },
@@ -173,7 +175,7 @@ describe("durable chess worker", () => {
       ([input]) => input.data.status === "completed",
     )?.[0];
     const record = validateArchive(terminal?.data.archive);
-    expect(record.config.rules.version).toBe("cockpit-v2");
+    expect(record.config.rules.version).toBe("cockpit-v3");
     expect(record.termination).toBe(result?.termination);
   });
   it("evaluates every committed position for spectators, outside the archive", async () => {
@@ -361,6 +363,46 @@ describe("durable chess worker", () => {
         }),
       }),
     );
+  });
+  it("hands the runner each model's own output limits from the catalog", async () => {
+    env.CHESS_HOSTED_ENABLED = true;
+    env.OPENROUTER_API_KEY = "test-only";
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        data: [
+          {
+            id: "vendor/model",
+            pricing: { prompt: "0.000001", completion: "0.000002" },
+            context_length: 163840,
+            top_provider: { max_completion_tokens: 65536 },
+          },
+        ],
+      }),
+    );
+    let seen: unknown;
+    runner.override = async (match, options) => {
+      seen = options?.credentials?.w;
+      finishMatch(match, "*", "cancelled", "stopped");
+      return match;
+    };
+    try {
+      const record = row();
+      record.archive = createMatch(
+        {
+          white: { name: "Model", model: "vendor/model", protocol: "openai-chat" },
+          black: player,
+          rules: {},
+        },
+        "hosted",
+      );
+      db.chessMatch.findUnique.mockResolvedValue(record);
+      await handleChessRunJob({ data: { matchId: "match-id" } });
+      expect(seen).toMatchObject({ maxOutputTokens: 65536, contextLength: 163840 });
+    } finally {
+      fetch.mockRestore();
+      env.CHESS_HOSTED_ENABLED = false;
+      env.OPENROUTER_API_KEY = undefined;
+    }
   });
   it("names no side when Black's model has no price and the run fails before play", async () => {
     env.CHESS_HOSTED_ENABLED = true;

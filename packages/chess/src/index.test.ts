@@ -2,14 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   applyUci,
   boardAt,
+  boundReply,
+  catalogOutputLimits,
   createMatch,
   DEFAULT_POSITION,
   finishMatch,
   legalMoves,
+  MAX_REPLY_BYTES,
   type MatchEvent,
   matchConfigSchema,
   matchStats,
   submitMove,
+  utf8ByteLength,
   validateArchive,
 } from "./index";
 import { exportPgn } from "./pgn";
@@ -239,5 +243,99 @@ describe("move format transparency", () => {
     const [attempt] = forged.events;
     if (attempt?.type === "attempt") attempt.normalizedFrom = "e4";
     expect(() => validateArchive(forged)).toThrow("Move normalization violates ruleset");
+  });
+});
+
+describe("recorded rejected replies", () => {
+  it("keeps a reply whole when it fits, else its end after an ellipsis, within the byte bound", () => {
+    expect(boundReply("short")).toBe("short");
+    const long = `${"a".repeat(3000)}THE END`;
+    const bounded = boundReply(long);
+    expect(bounded.startsWith("…")).toBe(true);
+    expect(bounded.endsWith("THE END")).toBe(true);
+    expect(utf8ByteLength(JSON.stringify(bounded)) - 2).toBeLessThanOrEqual(MAX_REPLY_BYTES);
+    // Escapes count at their recorded size: control characters take six bytes each.
+    const escaped = boundReply("\u0001".repeat(2000));
+    expect(utf8ByteLength(JSON.stringify(escaped)) - 2).toBeLessThanOrEqual(MAX_REPLY_BYTES);
+    // Never splits a surrogate pair.
+    expect(boundReply("😀".repeat(1000)).slice(1)).toMatch(/^(?:😀)+$/u);
+  });
+  it("records reply and stop reason only on rejected attempts, and validates them", () => {
+    const match = game({ maxAttempts: 3 });
+    const chess = boardAt(match);
+    submitMove(match, chess, "[truncated]", "", undefined, {
+      text: "thinking…",
+      stopReason: "output-truncated",
+    });
+    submitMove(match, chess, "e2e4", "", undefined, {
+      text: '{"move":"e2e4"}',
+      stopReason: "completed",
+    });
+    expect(match.events[0]).toMatchObject({ reason: "truncated", reply: "thinking…" });
+    expect(match.events[1]).not.toHaveProperty("reply");
+    expect(validateArchive(JSON.parse(JSON.stringify(match)))).toEqual(match);
+    const forge = (edit: (events: MatchEvent[]) => void) => {
+      const copy = JSON.parse(JSON.stringify(match));
+      edit(copy.events);
+      return () => validateArchive(copy);
+    };
+    // A truncated reason needs the cut-off stop; a cut-off reply is never "unparseable".
+    expect(
+      forge((events) => {
+        const first = events[0];
+        if (first?.type === "attempt") delete first.stopReason;
+      }),
+    ).toThrow("Attempt reason mismatch");
+    expect(
+      forge((events) => {
+        const first = events[0];
+        if (first?.type === "attempt") first.reason = "unparseable";
+      }),
+    ).toThrow("Attempt reason mismatch");
+    expect(
+      forge((events) => {
+        const played = events[1];
+        if (played?.type === "attempt") played.reply = "x";
+      }),
+    ).toThrow("Reply record on an accepted move");
+    expect(
+      forge((events) => {
+        const first = events[0];
+        if (first?.type === "attempt") first.reply = "x".repeat(MAX_REPLY_BYTES + 1);
+      }),
+    ).toThrow();
+  });
+  it("never plays a cut-off reply, even when its move is legal, and validates the record", () => {
+    const match = game();
+    const chess = boardAt(match);
+    const before = chess.fen();
+    const event = submitMove(match, chess, "e2e4", "", undefined, {
+      text: '{"move":"e2e4"',
+      stopReason: "output-truncated",
+    });
+    expect(event).toMatchObject({ accepted: false, san: null, reason: "truncated", fen: before });
+    expect(chess.fen()).toBe(before);
+    expect(validateArchive(JSON.parse(JSON.stringify(match)))).toEqual(match);
+    // A forged record that plays it is refused.
+    const forged = JSON.parse(JSON.stringify(match));
+    Object.assign(forged.events[0], { accepted: true, san: "e4", reason: null });
+    expect(() => validateArchive(forged)).toThrow();
+  });
+  it("reads a model's output limits from an OpenRouter catalog entry", () => {
+    expect(
+      catalogOutputLimits({
+        context_length: 163840,
+        top_provider: { max_completion_tokens: 65536 },
+      }),
+    ).toEqual({ maxOutputTokens: 65536, contextLength: 163840 });
+    expect(catalogOutputLimits({ top_provider: { max_completion_tokens: null } })).toEqual({
+      maxOutputTokens: null,
+      contextLength: null,
+    });
+    expect(catalogOutputLimits(null)).toEqual({ maxOutputTokens: null, contextLength: null });
+    expect(catalogOutputLimits({ context_length: -1, top_provider: "x" })).toEqual({
+      maxOutputTokens: null,
+      contextLength: null,
+    });
   });
 });

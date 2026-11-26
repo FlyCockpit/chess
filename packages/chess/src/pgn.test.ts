@@ -71,7 +71,7 @@ describe("PGN export", () => {
     });
     expect(headers).toMatchObject(Object.fromEntries(rulesTags(match.config.rules)));
     expect(headers).toMatchObject({
-      CockpitVersion: "cockpit-v2",
+      CockpitVersion: "cockpit-v3",
       CockpitRemarks: "trash-talk",
       CockpitClock: "w:600000,b:600000",
       CockpitMaxAttempts: "3",

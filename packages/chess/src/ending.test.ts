@@ -53,6 +53,35 @@ describe("how a match ended, in plain words", () => {
       "White forfeited: 3 illegal moves (d2d4, d2d3, d2d4; its d-pawn had already moved)",
     );
   });
+  it("tells cut-off replies apart from illegal and unreadable ones", () => {
+    const cutOff = { text: "Let me think", stopReason: "output-truncated" as const };
+    const all = game();
+    for (let index = 0; index < 3; index += 1)
+      submitMove(all, boardAt(all), "[truncated]", "", undefined, cutOff);
+    const { ending, text } = describeMatch(all);
+    expect(endingSummary(ending)).toEqual({
+      kind: "illegal-forfeit",
+      side: "w",
+      illegal: 3,
+      truncated: 3,
+    });
+    expect(text).toBe(
+      "White forfeited: 3 replies ran out of space ([truncated], [truncated], [truncated]; ran out of space before giving a move)",
+    );
+    const mixed = game();
+    submitMove(mixed, boardAt(mixed), "[truncated]", "", undefined, cutOff);
+    submitMove(mixed, boardAt(mixed), "e2e5");
+    // A cut-off reply is never played, even when its placeholder were a legal move.
+    submitMove(mixed, boardAt(mixed), "e2e4", "", undefined, cutOff);
+    expect(mixed.events.map((event) => event.type === "attempt" && event.reason)).toEqual([
+      "truncated",
+      "illegal",
+      "truncated",
+    ]);
+    expect(endingHeadline(endingSummary(describeMatch(mixed).ending))).toBe(
+      "White forfeited: 3 rejected moves (2 ran out of space)",
+    );
+  });
   it("explains each kind of illegal attempt, listing reasons per move when they differ", () => {
     const match = play(game({ maxAttempts: 5 }), "g1f3", "e7e5", "g1h3", "e5e4", "a3a4", "f3f6");
     submitMove(match, boardAt(match), "hello");

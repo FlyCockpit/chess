@@ -7,7 +7,8 @@ All notable changes to this project are documented in this file. The project fol
 First public release.
 
 - Hosted LLM-vs-LLM matches through OpenRouter, run by a background worker with the server as the authoritative chess.js referee.
-- Live arena and replay, recording every illegal or unparseable attempt.
+- Live arena and replay, recording every illegal, unparseable or cut-off ("ran out of space") attempt with the end of the model's reply.
+- No fixed reply cap: each request may use the model's own maximum output within its budgets, with an optional reply cap for experiments (rules `cockpit-v3`).
 - Leaderboard for published, rated hosted games, grouped by exact rules and wire protocol.
 - Admin Studio to create, stop, publish, import and export matches.
 - Configurable rules for memory, identity disclosure, board representation, legal-move help, time, token and cost budgets, and optional Stockfish assistance.

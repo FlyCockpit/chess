@@ -30,6 +30,8 @@ export type PieceName = "pawn" | "knight" | "bishop" | "rook" | "queen" | "king"
 /** Why one rejected attempt was illegal, where that is cheap and certain to derive. */
 export type IllegalWhy =
   | { code: "unparseable" }
+  /** The reply was cut off at its output limit before it gave a move. */
+  | { code: "truncated" }
   /**
    * The side's pawn on its own starting square already moved away earlier, so it was
    * that file's pawn. (A pawn that left any other square may have changed file.)
@@ -99,6 +101,7 @@ function drawKind(chess: Chess): DrawKind {
 
 /** Why `attempt` was illegal, from its own `before` position and the moves played earlier. */
 export function illegalWhy(match: MatchArchive, attempt: AttemptEvent, board: Chess): IllegalWhy {
+  if (attempt.reason === "truncated") return { code: "truncated" };
   const parsed = UCI.exec(attempt.move);
   if (!parsed || attempt.reason === "unparseable") return { code: "unparseable" };
   const from = parsed[1] as string;
@@ -213,6 +216,8 @@ export const endingSummarySchema = z
     draw: z.enum(drawKinds).optional(),
     /** Rejected attempts in an illegal-move forfeit. */
     illegal: z.number().int().nonnegative().optional(),
+    /** Of those, replies cut off before they gave a move (absent when none). */
+    truncated: z.number().int().positive().optional(),
   })
   .strict();
 export type EndingSummary = z.infer<typeof endingSummarySchema>;
@@ -222,8 +227,15 @@ export function endingSummary(ending: MatchEnding): EndingSummary {
       return { kind: ending.kind, side: ending.winner === "w" ? "b" : "w" };
     case "draw":
       return { kind: ending.kind, draw: ending.draw };
-    case "illegal-forfeit":
-      return { kind: ending.kind, side: ending.loser, illegal: ending.attempts.length };
+    case "illegal-forfeit": {
+      const truncated = ending.attempts.filter((attempt) => attempt.why.code === "truncated");
+      return {
+        kind: ending.kind,
+        side: ending.loser,
+        illegal: ending.attempts.length,
+        ...(truncated.length ? { truncated: truncated.length } : {}),
+      };
+    }
     case "timeout":
     case "move-timeout":
     case "token-budget":
@@ -259,6 +271,8 @@ export function illegalWhyText(why: IllegalWhy) {
   switch (why.code) {
     case "unparseable":
       return "not a move in UCI notation";
+    case "truncated":
+      return "ran out of space before giving a move";
     case "pawn-moved":
       return `its ${why.file}-pawn had already moved`;
     case "piece-moved":
@@ -299,6 +313,10 @@ export function endingHeadline(summary: EndingSummary): string {
     case "illegal-forfeit":
       if (!side) return "Forfeit after illegal moves";
       if (summary.illegal === undefined) return `${side} forfeited: illegal moves`;
+      if (summary.truncated !== undefined && summary.truncated === summary.illegal)
+        return `${side} forfeited: ${summary.truncated} ${summary.truncated === 1 ? "reply" : "replies"} ran out of space`;
+      if (summary.truncated !== undefined)
+        return `${side} forfeited: ${summary.illegal} rejected moves (${summary.truncated} ran out of space)`;
       return `${side} forfeited: ${summary.illegal} illegal ${summary.illegal === 1 ? "move" : "moves"}`;
     case "timeout":
       return side ? `${side} ran out of time` : "Out of time";

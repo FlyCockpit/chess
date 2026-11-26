@@ -127,6 +127,8 @@ const leaderboardSelect = {
   blackProtocol: true,
   whiteIllegal: true,
   blackIllegal: true,
+  whiteTruncated: true,
+  blackTruncated: true,
   whiteCostMicros: true,
   blackCostMicros: true,
   moveFormat: true,
@@ -355,6 +357,8 @@ export const chessRouter = {
           draws: number;
           losses: number;
           illegalAttempts: number;
+          /** Of those, replies cut off before a move (rows from before the column count 0). */
+          truncatedAttempts: number;
           estimatedCostMicros: number | null;
         }
       >();
@@ -379,6 +383,7 @@ export const chessRouter = {
             model: whiteModel,
             protocol: whiteProtocol,
             illegal: whiteIllegal,
+            truncated: row.whiteTruncated ?? 0,
             cost: row.whiteCostMicros,
           },
           {
@@ -386,6 +391,7 @@ export const chessRouter = {
             model: blackModel,
             protocol: blackProtocol,
             illegal: blackIllegal,
+            truncated: row.blackTruncated ?? 0,
             cost: row.blackCostMicros,
           },
         ];
@@ -403,6 +409,7 @@ export const chessRouter = {
             draws: 0,
             losses: 0,
             illegalAttempts: 0,
+            truncatedAttempts: 0,
             estimatedCostMicros: 0,
           };
           record.games += 1;
@@ -410,6 +417,7 @@ export const chessRouter = {
           else if (result === side.win) record.wins += 1;
           else record.losses += 1;
           record.illegalAttempts += side.illegal;
+          record.truncatedAttempts += side.truncated;
           record.estimatedCostMicros =
             record.estimatedCostMicros === null || side.cost === null
               ? null

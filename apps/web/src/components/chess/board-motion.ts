@@ -51,7 +51,9 @@ export type BoardMotion = {
 /**
  * A rejected attempt, read from the position it was made in. `illegal` names the
  * squares it tried (`piece` is the side's piece on `from`, null when it has none
- * there); `unreadable` is a reply with no squares at all.
+ * there); `unreadable` is a reply with no squares at all: `raw` is the recorded end
+ * of the reply when there is one (else the submitted token), and `cutOff` marks a
+ * reply that ran out of space before it gave a move.
  */
 export type IllegalMark =
   | {
@@ -64,7 +66,15 @@ export type IllegalMark =
       /** "Nf3-e5": the attempt in words a chess reader knows. */
       notation: string;
     }
-  | { kind: "unreadable"; index: number; side: Color; raw: string };
+  | {
+      kind: "unreadable";
+      index: number;
+      side: Color;
+      raw: string;
+      /** True when `raw` is the recorded reply rather than the submitted token. */
+      reply: boolean;
+      cutOff: boolean;
+    };
 
 type Labels =
   | TFunction<"chess">
@@ -80,8 +90,16 @@ export function illegalMark(
   index: number,
 ): IllegalMark | undefined {
   if (event?.type !== "attempt" || event.accepted) return undefined;
-  const parts = UCI.exec(event.move.trim());
-  if (!parts) return { kind: "unreadable", index, side: event.side, raw: event.move };
+  const parts = event.reason === "truncated" ? null : UCI.exec(event.move.trim());
+  if (!parts)
+    return {
+      kind: "unreadable",
+      index,
+      side: event.side,
+      raw: event.reply || event.move,
+      reply: Boolean(event.reply),
+      cutOff: event.reason === "truncated",
+    };
   const from = parts[1] as Square;
   const to = parts[2] as Square;
   let found: Piece | undefined;
@@ -135,14 +153,19 @@ export function markSquares(mark: IllegalMark | undefined): Square[] {
   return mark.piece ? [mark.from, mark.to] : [mark.from];
 }
 
-/** Untrusted model text for a caption: one line, no controls or bidi overrides, short. */
-function shortRaw(raw: string, max = 40): string {
+/**
+ * Untrusted model text for a caption: one line, no controls or bidi overrides, short.
+ * A submitted token keeps its start; a recorded reply keeps its end, where a reply
+ * puts its answer (the record already is the reply's end).
+ */
+function shortRaw(raw: string, fromEnd: boolean, max = 40): string {
   const clean = raw
     .replace(/[\p{Cc}\p{Bidi_Control}]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
-  const chars = Array.from(clean);
-  return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : clean;
+  const chars = Array.from(fromEnd ? clean.replace(/^…\s*/, "") : clean);
+  if (chars.length <= max) return chars.join("");
+  return fromEnd ? `…${chars.slice(-(max - 1)).join("")}` : `${chars.slice(0, max - 1).join("")}…`;
 }
 
 /** "Black tried Nf3-e5: not a legal move", for the board, the video and the PNG alike. */
@@ -150,7 +173,8 @@ export function illegalCaption(t: Labels, mark: IllegalMark): string {
   const translate = t as (key: string, params?: Record<string, string | number>) => string;
   const side = translate(`colors.${mark.side}`);
   if (mark.kind === "unreadable") {
-    const raw = shortRaw(mark.raw);
+    if (mark.cutOff) return translate("motion.cutOff", { side });
+    const raw = shortRaw(mark.raw, mark.reply);
     return raw
       ? translate("motion.unreadable", { side, raw })
       : translate("motion.unreadableEmpty", { side });

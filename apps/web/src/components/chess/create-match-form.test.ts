@@ -29,6 +29,7 @@ const catalog: CatalogModel[] = [
     name: "GPT-4.1 Nano",
     provider: "OpenAI",
     contextLength: 1047576,
+    maxOutputTokens: 32768,
     promptPerMillion: 0.1,
     completionPerMillion: 0.4,
     tools: true,
@@ -39,6 +40,7 @@ const catalog: CatalogModel[] = [
     name: "Claude Haiku 4.5",
     provider: "Anthropic",
     contextLength: 200000,
+    maxOutputTokens: null,
     promptPerMillion: 1,
     completionPerMillion: 5,
     tools: true,
@@ -260,6 +262,22 @@ describe("validation keeps the hosted bounds", () => {
     const strict = toMatchConfig({ ...DEFAULT_VALUES, maxAttempts: 1 }, undefined, t);
     expect(strict.success && strict.data.rules).toMatchObject({ maxAttempts: 1 });
     expect(strict.success && strict.data.rules).not.toHaveProperty("illegalPolicy");
+  });
+  it("records no reply cap by default and an optional cap within its bounds", () => {
+    const open = toMatchConfig(DEFAULT_VALUES, undefined, t);
+    expect(open.success && open.data.rules).not.toHaveProperty("maxOutputTokens");
+    const capped = toMatchConfig({ ...DEFAULT_VALUES, replyCap: " 2048 " }, undefined, t);
+    expect(capped.success && capped.data.rules.maxOutputTokens).toBe(2048);
+    expect(summaryParts({ ...DEFAULT_VALUES, replyCap: "2048" }, t, usd)).toContain(
+      "Reply cap 2048 tokens",
+    );
+    expect(summaryParts(DEFAULT_VALUES, t, usd).join(" · ")).not.toContain("Reply cap");
+    const schema = createMatchSchema(t);
+    for (const replyCap of ["63", "131073", "1.5", "lots"]) {
+      expect(toMatchConfig({ ...DEFAULT_VALUES, replyCap }, undefined, t).success).toBe(false);
+      expect(schema.safeParse({ ...DEFAULT_VALUES, replyCap }).success).toBe(false);
+    }
+    expect(schema.safeParse({ ...DEFAULT_VALUES, replyCap: "64" }).success).toBe(true);
   });
   it("maps every advanced field to its section", () => {
     expect(FIELD_SECTION.illegalPolicy).toBe("rules");

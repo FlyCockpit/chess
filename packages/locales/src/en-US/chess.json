@@ -159,7 +159,20 @@
     "chatTab": "Chat ({{count}})",
     "sideSpend": "{{side}} · spent {{spent}} of {{budget}}",
     "sideSpendUnknown": "{{side}} · spent at least {{spent}} of {{budget}} (usage still settling)",
-    "illegalBySide": "Illegal attempts: {{white}} {{w}} · {{black}} {{b}}"
+    "illegalBySide": "Illegal attempts: {{white}} {{w}} · {{black}} {{b}}",
+    "cutOff": "Rejected · ran out of space",
+    "rejectedTruncated": "Rejected: the reply ran out of space before giving a move. The board stays unchanged.",
+    "replyDetails": "The model's reply",
+    "replyNote": "Shown as plain text; it is untrusted model output, and long replies keep only their end.",
+    "replyEmpty": "(no text)",
+    "copyReply": "Copy the reply",
+    "truncatedBySide": "Ran out of space: {{white}} {{w}} · {{black}} {{b}}",
+    "stopReasons": {
+      "completed": "The reply finished without a readable move.",
+      "output-truncated": "The reply was cut off at its output limit before it gave a move.",
+      "max-iterations": "The reply used every model round of the attempt without giving a move.",
+      "illegal": "The reply finished; its move is not legal in this position."
+    }
   },
   "leaderboard": {
     "title": "Earned on the board.",
@@ -169,19 +182,21 @@
     "model": "Model / protocol",
     "ruleset": "Ruleset",
     "note": "Provisional score = wins + half of draws, divided by games. Latest {{limit}} eligible matches; {{count}} included. These are not human Elo ratings.",
-    "window": "Results window"
+    "window": "Results window",
+    "truncated_one": "{{count}} ran out of space",
+    "truncated_other": "{{count}} ran out of space"
   },
   "methodology": {
     "title": "The rules are part of the result.",
     "intro": "A model’s score only means something when you know how it played.",
     "legalTitle": "An authoritative board",
-    "legalBody": "The rules engine accepts legal UCI moves. Illegal and unparseable attempts stay in the timeline; they never move a piece. The configured attempt allowance determines forfeits.",
+    "legalBody": "The rules engine accepts legal UCI moves. Illegal, unparseable and cut-off attempts stay in the timeline with the end of the model’s reply; they never move a piece, and a reply cut off at its output limit never counts as a move. The configured attempt allowance determines forfeits.",
     "contextTitle": "Memory is an experiment",
     "contextBody": "Fresh-context turns receive the current position, side to move, draw information, rules and remaining allowance. Persistent turns retain that player’s conversation. Neither player sees the other’s private conversation.",
     "identityTitle": "Identity is independent",
     "identityBody": "Anonymous games omit the opponent’s configured model identity. Commentary can be enabled independently, so it may reveal identity clues. Revealed games name the opponent; neither mode guarantees that a model cannot guess identity.",
     "budgetTitle": "Bounded, accountable inference",
-    "budgetBody": "Every dispatch reserves a conservative token and cost allowance, including transport retries, before inference. Reported usage and price-based cost estimates are separate from reservations. Missing provider usage is not proof of zero cost.",
+    "budgetBody": "Every dispatch reserves a conservative token and cost allowance, including transport retries, before inference. There is no fixed reply cap: each reply may use the model’s own maximum output, limited by what the side’s budgets can still pay, unless the ruleset sets one for an experiment. Reported usage and price-based cost estimates are separate from reservations. Missing provider usage is not proof of zero cost.",
     "rankTitle": "Comparable experiments",
     "rankBody": "Standings separate exact rulesets and wire protocols. Imported games are local experiments, never automatic evidence of model identity. Small samples remain provisional. Chess performance is not a general intelligence score.",
     "privacyTitle": "Your keys stay with you",
@@ -363,7 +378,8 @@
     "moveFormatNote": "Lenient also reads a JSON move embedded in prose and converts legal SAN to UCI. Each format is ranked separately.",
     "remarks": "Remarks",
     "illegalPolicy": "On repeated illegal moves",
-    "maxAttempts": "Illegal moves before a forfeit"
+    "maxAttempts": "Illegal moves before a forfeit",
+    "replyCap": "Reply cap (tokens)"
   },
   "accounting": {
     "provider": "Provider token reservations",
@@ -416,7 +432,10 @@
       "autoMoveLimit": "{{time}} (automatic)",
       "retry": "Keeps trying on illegal moves",
       "forfeitAfter_one": "Forfeits after {{count}} illegal move",
-      "forfeitAfter_other": "Forfeits after {{count}} illegal moves"
+      "forfeitAfter_other": "Forfeits after {{count}} illegal moves",
+      "replyCap_one": "Reply cap {{count}} token",
+      "replyCap_other": "Reply cap {{count}} tokens",
+      "noReplyCap": "No reply cap"
     },
     "advanced": "Advanced settings",
     "advancedHint": "Optional. A closed section keeps the values in the summary above.",
@@ -477,7 +496,8 @@
         "forfeit": "After this many rejected moves on one turn, that side loses the game.",
         "retry": "No forfeit: the side keeps trying until it plays a legal move, and every rejected move is recorded. The per-move limit, the clock and the side's token and spend budgets still apply and end the game when one runs out."
       },
-      "maxAttempts": "Rejected moves allowed on one turn ({{min}} to {{max}})."
+      "maxAttempts": "Rejected moves allowed on one turn ({{min}} to {{max}}).",
+      "replyCap": "Off by default: each reply may use the model's own maximum output (White {{white}}, Black {{black}} tokens), limited by what its budgets can still pay. Set a cap ({{min}} to {{max}}) only for experiments: hidden reasoning counts against it on many providers, and a reply cut off at it is rejected as out of space. A cap is part of the rules, so capped games rank separately."
     },
     "start": "Start match",
     "starting": "Starting…",
@@ -501,7 +521,10 @@
       "usd": "USD",
       "thousand": "k",
       "million": "M"
-    }
+    },
+    "replyCapOff": "Off",
+    "modelMax": "up to {{tokens}}",
+    "modelMaxUnknown": "not listed, so {{tokens}}"
   },
   "motion": {
     "illegal": "{{side}} tried {{move}}: not a legal move",
@@ -509,7 +532,8 @@
     "unreadable": "{{side}}'s reply couldn't be read as a move: “{{raw}}”",
     "unreadableEmpty": "{{side}}'s reply couldn't be read as a move",
     "more_one": "+{{count}} more illegal attempt",
-    "more_other": "+{{count}} more illegal attempts"
+    "more_other": "+{{count}} more illegal attempts",
+    "cutOff": "{{side}}'s reply ran out of space before giving a move"
   },
   "video": {
     "open": "Export video",
@@ -575,7 +599,11 @@
     "interrupted": "Interrupted by the server",
     "provider-error": "A model provider failed",
     "engine-error": "The chess engine failed",
-    "event-limit": "The game record reached its size limit"
+    "event-limit": "The game record reached its size limit",
+    "truncatedForfeit_one": "{{side}} forfeited: {{count}} reply ran out of space",
+    "truncatedForfeit_other": "{{side}} forfeited: {{count}} replies ran out of space",
+    "mixedForfeit_one": "{{side}} forfeited: {{count}} rejected move ({{truncated}} ran out of space)",
+    "mixedForfeit_other": "{{side}} forfeited: {{count}} rejected moves ({{truncated}} ran out of space)"
   },
   "endingDetail": {
     "withDetail": "{{headline}} ({{detail}})",
@@ -602,7 +630,8 @@
     "empty": "there is no piece on {{square}}",
     "opponentPiece": "{{square}} holds an opposing piece",
     "cannotMove": "its {{piece}} on {{from}} cannot legally move to {{to}}",
-    "promotion": "its pawn on {{from}} must name a promotion piece (q, r, b or n)"
+    "promotion": "its pawn on {{from}} must name a promotion piece (q, r, b or n)",
+    "truncated": "ran out of space before giving a move"
   },
   "pieceNames": {
     "pawn": "pawn",

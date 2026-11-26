@@ -25,6 +25,8 @@ export function chessStatsColumns(match: MatchArchive) {
     blackProtocol: match.config.black.protocol,
     whiteIllegal: white.illegalAttempts,
     blackIllegal: black.illegalAttempts,
+    whiteTruncated: white.truncatedAttempts,
+    blackTruncated: black.truncatedAttempts,
     whiteCostMicros: white.costMicros === null ? null : BigInt(white.costMicros),
     blackCostMicros: black.costMicros === null ? null : BigInt(black.costMicros),
     moveFormat: match.config.rules.moveFormat,

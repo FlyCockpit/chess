@@ -21,6 +21,8 @@ describe("chessStatsColumns", () => {
       blackProtocol: "random",
       whiteIllegal: 0,
       blackIllegal: 0,
+      whiteTruncated: 0,
+      blackTruncated: 0,
       whiteCostMicros: 0n,
       blackCostMicros: 0n,
       moveFormat: "strict",

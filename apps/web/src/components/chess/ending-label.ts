@@ -51,6 +51,14 @@ export function endingHeadlineLabel(t: ChessT, summary: EndingSummary): string {
     case "illegal-forfeit":
       if (!side) return t("ending.illegalForfeitUnknown");
       if (summary.illegal === undefined) return t("ending.illegalForfeitUncounted", { side });
+      if (summary.truncated !== undefined && summary.truncated === summary.illegal)
+        return t("ending.truncatedForfeit", { side, count: summary.truncated });
+      if (summary.truncated !== undefined)
+        return t("ending.mixedForfeit", {
+          side,
+          count: summary.illegal,
+          truncated: summary.truncated,
+        });
       return t("ending.illegalForfeit", { side, count: summary.illegal });
     case "timeout":
     case "move-timeout":
@@ -69,6 +77,8 @@ function illegalWhyLabel(t: ChessT, why: IllegalWhy) {
   switch (why.code) {
     case "unparseable":
       return t("illegalWhy.unparseable");
+    case "truncated":
+      return t("illegalWhy.truncated");
     case "pawn-moved":
       return t("illegalWhy.pawnMoved", { file: why.file });
     case "piece-moved":

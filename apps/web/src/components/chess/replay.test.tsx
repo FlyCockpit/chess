@@ -179,6 +179,34 @@ describe("MatchReplay", () => {
     expect(html).toContain("<strong>2 / 1</strong>");
     expect(html).toContain("Rejected moves (White / Black)");
   });
+  it("tells a cut-off reply apart and shows the recorded reply as escaped plain text", () => {
+    const match = fixtureGame({ remarks: "off" });
+    const chess = boardAt(match);
+    submitMove(match, chess, "[truncated]", "", undefined, {
+      text: 'Thinking <img src=x onerror="alert(1)"> about e4',
+      stopReason: "output-truncated",
+    });
+    const html = render(match);
+    expect(html).toContain("Rejected · ran out of space");
+    expect(html).toContain(
+      "Rejected: the reply ran out of space before giving a move. The board stays unchanged.",
+    );
+    expect(html).toContain("The model&#x27;s reply");
+    expect(html).toContain("The reply was cut off at its output limit before it gave a move.");
+    expect(html).toContain("Thinking &lt;img src=x onerror=&quot;alert(1)&quot;&gt; about e4");
+    expect(html).not.toContain("<img src=x");
+    finishMatch(match, "0-1", "cost-budget");
+    expect(render(match)).toContain("Ran out of space: White 1 · Black 0");
+    // A finished reply whose move was readable but not legal says so.
+    const illegal = fixtureGame({ remarks: "off" });
+    submitMove(illegal, boardAt(illegal), "e2e5", "", undefined, {
+      text: '{"move":"e2e5"}',
+      stopReason: "completed",
+    });
+    const illegalHtml = render(illegal);
+    expect(illegalHtml).toContain("The reply finished; its move is not legal in this position.");
+    expect(illegalHtml).not.toContain("without a readable move");
+  });
   it("shows each side's clock in timed games and none in untimed ones", () => {
     const match = fixtureGame({ clock: { w: 600000, b: 300000 } });
     match.events.push({

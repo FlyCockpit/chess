@@ -6,8 +6,10 @@ import {
   boardAt,
   Chess,
   createMatch,
+  FALLBACK_MAX_OUTPUT_TOKENS,
   finishMatch,
   MAX_ARCHIVE_BYTES,
+  MAX_REPLY_BYTES,
   type MatchArchive,
   type MatchEvent,
   matchStats,
@@ -21,12 +23,15 @@ import {
   advanceMatch,
   archiveLimitReached,
   archiveMeter,
+  dispatchOutputLimit,
   dispatchReservation,
   endAtArchiveLimit,
   eventEntryBytes,
   MATCH_INTERRUPTED,
   MAX_UNMEASURED_EVENT_BYTES,
+  MIN_REPLY_TOKENS,
   REMARK_PROMPTS,
+  rejectionMessage,
   runMatch,
   spectatorFeed,
   TERMINAL_BOOKKEEPING_BYTES,
@@ -252,11 +257,19 @@ describe("bounded local and worker match runner", () => {
         termination: "illegal-forfeit",
         result: "0-1",
       });
-      expect(
-        match.events
-          .filter((event) => event.type === "attempt")
-          .every((event) => event.move === "[unparseable]" && event.reason === "unparseable"),
-      ).toBe(true);
+      // A cut-off reply is "truncated" and never played, even when its text held a move.
+      const truncated = stopReason === "output-truncated";
+      expect(match.events.filter((event) => event.type === "attempt")).toEqual(
+        Array.from({ length: 2 }, () =>
+          expect.objectContaining({
+            move: truncated ? "[truncated]" : "[unparseable]",
+            reason: truncated ? "truncated" : "unparseable",
+            reply: '{"move":"e2e4"}',
+            stopReason,
+          }),
+        ),
+      );
+      expect(matchStats(match).truncatedAttempts).toBe(truncated ? 2 : 0);
       expect(validateArchive(match)).toEqual(match);
     },
   );
@@ -1041,6 +1054,9 @@ describe("settlement, persistence, replay reuse and archive limits", () => {
         reason: "unparseable",
         comment: worst(500),
         normalizedFrom: worst(256),
+        // Six escaped bytes per character: the most MAX_REPLY_BYTES admits.
+        reply: worst(Math.floor(MAX_REPLY_BYTES / 6)),
+        stopReason: "max-iterations",
       },
       {
         ...base,
@@ -1153,6 +1169,29 @@ describe("strict and lenient move formats", () => {
       comment: "{x}",
       normalizedFrom: "g1f3",
     });
+    // A long reply puts its answer at the end: the scan reads the end, not the start.
+    const analysis = `Let me think. ${"{analysis} ".repeat(4000)}`;
+    expect(analysis.length).toBeGreaterThan(40_000);
+    expect(
+      await firstAttempt(`${analysis}\nSo: {"move":"g1f3","comment":"ok"}`, "lenient"),
+    ).toMatchObject({ move: "g1f3", accepted: true, comment: "ok" });
+    // The window may start inside a string: `{note"` must not hide the final object.
+    const inString = `{"analysis":"${"a".repeat(40_000)} {note"}\n{"move":"e2e4"}`;
+    expect(await firstAttempt(inString, "lenient")).toMatchObject({
+      move: "e2e4",
+      accepted: true,
+    });
+    // ...or inside an earlier fenced block, which must not mispair the final fence.
+    const inFence = `\`\`\`text\n${"b".repeat(40_000)}\n\`\`\`\nSo:\n\`\`\`json\n{"move":"d2d4"}\n\`\`\``;
+    expect(await firstAttempt(inFence, "lenient")).toMatchObject({
+      move: "d2d4",
+      accepted: true,
+    });
+    // An enclosing answer wins over an object nested in it (a move or a resignation).
+    for (const nested of ['{"move":"d2d4"}', '{"move":"resign"}'])
+      expect(
+        await firstAttempt(`Answer: {"move":"e2e4","alternative":${nested}}`, "lenient"),
+      ).toMatchObject({ move: "e2e4", accepted: true });
     const exact = await firstAttempt('{"move":"e2e4"}', "lenient");
     expect(exact).toMatchObject({ move: "e2e4", accepted: true });
     expect(exact).not.toHaveProperty("normalizedFrom");
@@ -1531,5 +1570,254 @@ describe("keep trying on illegal moves", () => {
       expect(matchStats(match, "w").illegalAttempts).toBe(3);
       expect(validateArchive(JSON.parse(JSON.stringify(match)))).toEqual(match);
     });
+  });
+});
+
+describe("cut-off replies and reply limits", () => {
+  /** A scripted provider: runs the runtime's pre-dispatch hook, then replies as told. */
+  const scripted = (turns: Array<{ text: string; stopReason: string }>) => {
+    const ceilings: Array<number | undefined> = [];
+    const prompts: string[] = [];
+    for (const turn of turns)
+      runAgentLoop.mockImplementationOnce(async (options: AgentLoopOptions) => {
+        prompts.push(JSON.stringify(options.messages.at(-1)));
+        const hook = await options.onBeforeDispatch?.({
+          messages: options.messages,
+          iteration: 0,
+          lastDispatchAt: null,
+        });
+        if (hook && "veto" in hook)
+          return { messages: options.messages, stopReason: "vetoed", vetoReason: hook.veto.reason };
+        ceilings.push(hook && "maxOutputTokens" in hook ? hook.maxOutputTokens : undefined);
+        const ceiling = hook && "maxOutputTokens" in hook ? hook.maxOutputTokens : 0;
+        // A cut-off reply used its whole limit.
+        options.onUsage?.({
+          inputTokens: 100,
+          outputTokens: turn.stopReason === "output-truncated" ? ceiling : 50,
+          model: "m",
+        });
+        return {
+          messages: [...options.messages, reply(turn.text)],
+          stopReason: turn.stopReason,
+        };
+      });
+    return { ceilings, prompts };
+  };
+  it("records two cut-off replies as truncated with their text, tells the model, then plays", async () => {
+    const match = createMatch({
+      white: model,
+      black: random,
+      rules: { illegalPolicy: "retry", remarks: "commentary" },
+    });
+    const long = `Let me think about vendor/secret-model and the position. ${"x".repeat(5000)}`;
+    const { ceilings, prompts } = scripted([
+      { text: long, stopReason: "output-truncated" },
+      { text: "Considering e2e4 because", stopReason: "output-truncated" },
+      { text: '{"move":"e2e4","comment":"Centre."}', stopReason: "completed" },
+    ]);
+    await advanceMatch(match, {
+      credentials: { w: { ...credentials.w, maxOutputTokens: 4000 } },
+    });
+    const attempts = match.events.filter((event) => event.type === "attempt");
+    expect(attempts.map((event) => event.reason)).toEqual(["truncated", "truncated", null]);
+    const [first, second, played] = attempts;
+    // Bounded to its end, identities redacted.
+    expect(first?.reply?.startsWith("…")).toBe(true);
+    expect(first?.reply?.endsWith("xxx")).toBe(true);
+    expect(utf8ByteLength(JSON.stringify(first?.reply)) - 2).toBeLessThanOrEqual(MAX_REPLY_BYTES);
+    expect(second).toMatchObject({
+      reply: "Considering e2e4 because",
+      stopReason: "output-truncated",
+      move: "[truncated]",
+    });
+    expect(played).toMatchObject({ accepted: true, move: "e2e4" });
+    expect(played).not.toHaveProperty("reply");
+    expect(played).not.toHaveProperty("stopReason");
+    expect(ceilings).toEqual([4000, 4000, 4000]);
+    expect(prompts[1]).toContain("cut off at the 4000-token reply limit before it gave a move");
+    expect(prompts[1]).toContain("Reply with only the JSON object");
+    expect(prompts[1]).toContain('\\"comment\\"');
+    expect(matchStats(match, "w")).toMatchObject({ illegalAttempts: 2, truncatedAttempts: 2 });
+    expect(validateArchive(match)).toEqual(match);
+  });
+  it("redacts withheld identities from the recorded reply", async () => {
+    const match = createMatch({ white: model, black: random, rules: { maxAttempts: 1 } });
+    scripted([
+      {
+        text: 'As Secret Model Name I pick nothing {"comment":"I am vendor\\/secret-model"}',
+        stopReason: "completed",
+      },
+    ]);
+    await advanceMatch(match, { credentials });
+    const attempt = match.events.find((event) => event.type === "attempt");
+    expect(attempt).toMatchObject({
+      reason: "unparseable",
+      stopReason: "completed",
+      reply: 'As [identity withheld] I pick nothing {"comment":"I am [identity withheld]"}',
+    });
+    const disclosed = createMatch({
+      white: model,
+      black: random,
+      rules: { maxAttempts: 1, opponentIdentity: "disclosed" },
+    });
+    scripted([{ text: "As Secret Model Name I pick nothing", stopReason: "completed" }]);
+    await advanceMatch(disclosed, { credentials });
+    expect(disclosed.events.find((event) => event.type === "attempt")).toMatchObject({
+      reply: "As Secret Model Name I pick nothing",
+    });
+  });
+  it("says what was rejected in the retry message", () => {
+    const base = { move: "[truncated]", maxDispatches: 6, tone: "off" as const };
+    expect(
+      rejectionMessage({ ...base, reason: "truncated", limitTokens: 512, attemptsLeft: 2 }),
+    ).toBe(
+      'Your reply was cut off at the 512-token reply limit before it gave a move. Board unchanged. 2 attempts remain. Reply with only the JSON object {"move":"<your UCI move>"}: no reasoning or other text before or after it.',
+    );
+    expect(rejectionMessage({ ...base, reason: "truncated", attemptsLeft: null })).toContain(
+      "Your reply was cut off before it gave a move. Board unchanged. Reply with only",
+    );
+    expect(
+      rejectionMessage({
+        ...base,
+        move: "[unparseable]",
+        reason: "unparseable",
+        stopReason: "max-iterations",
+        attemptsLeft: 1,
+      }),
+    ).toContain(
+      "used all 6 model rounds of this attempt without giving a move. Board unchanged. 1 attempt remains.",
+    );
+    expect(rejectionMessage({ ...base, move: "e2e5", reason: "illegal", attemptsLeft: null })).toBe(
+      "Rejected illegal move: e2e5. Board unchanged. Submit a legal UCI move.",
+    );
+  });
+  it("sends each request the model's maximum, the rules cap or what the budget pays for", () => {
+    const price = { inputMicrosPerMillion: 1_000_000, outputMicrosPerMillion: 2_000_000 };
+    const roomy = { inputBytes: 1000, price, remainingTokens: 1e9, remainingCostMicros: 1e9 };
+    // The model's own maximum, with no rules cap.
+    expect(
+      dispatchOutputLimit({ ...roomy, modelMaxOutputTokens: 65536, replyCap: null }),
+    ).toMatchObject({ maxOutputTokens: 65536 });
+    // Unknown model maximum: the fallback.
+    for (const modelMaxOutputTokens of [null, undefined, 0, Number.NaN])
+      expect(dispatchOutputLimit({ ...roomy, modelMaxOutputTokens, replyCap: null })).toMatchObject(
+        { maxOutputTokens: FALLBACK_MAX_OUTPUT_TOKENS },
+      );
+    // The context window leaves room for the input (bytes bound its tokens).
+    expect(
+      dispatchOutputLimit({
+        ...roomy,
+        modelMaxOutputTokens: 65536,
+        contextLength: 32000,
+        replyCap: null,
+      }),
+    ).toMatchObject({ maxOutputTokens: 32000 - 5096 });
+    // Less room than a minimal reply: the room, never more.
+    expect(
+      dispatchOutputLimit({
+        ...roomy,
+        modelMaxOutputTokens: 65536,
+        contextLength: 5096 + 104,
+        replyCap: null,
+      }),
+    ).toMatchObject({ maxOutputTokens: 104 });
+    // The byte bound alone overfills the window: at most a minimal reply is asked for.
+    for (const contextLength of [5096, 4000])
+      expect(
+        dispatchOutputLimit({
+          ...roomy,
+          modelMaxOutputTokens: 65536,
+          contextLength,
+          replyCap: null,
+        }),
+      ).toMatchObject({ maxOutputTokens: MIN_REPLY_TOKENS });
+    // Affordability uses the combined unrounded cost: 509.6 + 257 × 0.2 = 561 exactly.
+    const tight = {
+      inputBytes: 1000,
+      price: { inputMicrosPerMillion: 100_000, outputMicrosPerMillion: 200_000 },
+      remainingTokens: 1e9,
+      modelMaxOutputTokens: 65536,
+      replyCap: null,
+    };
+    expect(dispatchOutputLimit({ ...tight, remainingCostMicros: 561 })).toMatchObject({
+      maxOutputTokens: 257,
+      costMicros: 561,
+    });
+    expect(dispatchOutputLimit({ ...tight, remainingCostMicros: 560 })).toEqual({
+      veto: "cost-budget",
+    });
+    // The optional rules cap.
+    expect(
+      dispatchOutputLimit({ ...roomy, modelMaxOutputTokens: 65536, replyCap: 300 }),
+    ).toMatchObject({ maxOutputTokens: 300 });
+    // The token budget: input bound (1000 + 4096 framing) plus the output must fit.
+    expect(
+      dispatchOutputLimit({
+        ...roomy,
+        remainingTokens: 7096,
+        modelMaxOutputTokens: 65536,
+        replyCap: null,
+      }),
+    ).toMatchObject({ maxOutputTokens: 2000, tokens: 7096 });
+    // The cost budget: 5096 input tokens cost 5096 µ$; 2 µ$ per output token.
+    const costly = dispatchOutputLimit({
+      ...roomy,
+      remainingCostMicros: 5096 + 3000,
+      modelMaxOutputTokens: 65536,
+      replyCap: null,
+    });
+    expect(costly).toMatchObject({ maxOutputTokens: 1500, costMicros: 8096 });
+    // One attempt never spends more than what remains.
+    if ("maxOutputTokens" in costly)
+      expect(5096 * 1 + costly.maxOutputTokens * 2).toBeLessThanOrEqual(8096);
+    // Too little left for a minimal reply: that budget has run out.
+    expect(
+      dispatchOutputLimit({
+        ...roomy,
+        remainingTokens: 5096 + MIN_REPLY_TOKENS - 1,
+        modelMaxOutputTokens: 65536,
+        replyCap: null,
+      }),
+    ).toEqual({ veto: "token-budget" });
+    expect(
+      dispatchOutputLimit({
+        ...roomy,
+        remainingCostMicros: 5096 + 2 * MIN_REPLY_TOKENS - 1,
+        modelMaxOutputTokens: 65536,
+        replyCap: null,
+      }),
+    ).toEqual({ veto: "cost-budget" });
+    // A rules cap below the minimal reply is still honoured when the budget pays for it.
+    expect(
+      dispatchOutputLimit({
+        ...roomy,
+        remainingTokens: 5096 + 100,
+        modelMaxOutputTokens: 65536,
+        replyCap: 64,
+      }),
+    ).toMatchObject({ maxOutputTokens: 64 });
+  });
+  it("lowers the request limit as the budget runs down, then ends on that budget", async () => {
+    const match = createMatch({
+      white: model,
+      black: random,
+      rules: { illegalPolicy: "retry", tokenBudget: 20_000 },
+    });
+    const { ceilings } = scripted([
+      { text: "thinking", stopReason: "output-truncated" },
+      { text: "thinking", stopReason: "output-truncated" },
+      { text: "thinking", stopReason: "output-truncated" },
+      { text: "thinking", stopReason: "output-truncated" },
+      { text: "thinking", stopReason: "output-truncated" },
+      { text: "thinking", stopReason: "output-truncated" },
+    ]);
+    await advanceMatch(match, {
+      credentials: { w: { ...credentials.w, maxOutputTokens: 100_000 } },
+    });
+    expect(ceilings.length).toBeGreaterThan(0);
+    // Each ceiling fits what the budget had left for one attempt.
+    for (const ceiling of ceilings) expect(ceiling).toBeLessThan(20_000);
+    expect(match).toMatchObject({ termination: "token-budget", result: "0-1" });
+    expect(validateArchive(match)).toEqual(match);
   });
 });

@@ -1,4 +1,4 @@
-import { CLOCK_MAX_MS, CLOCK_MIN_MS, type RulesV2 } from "@cockpit-chess/chess";
+import { CLOCK_MAX_MS, CLOCK_MIN_MS, type RulesV3 } from "@cockpit-chess/chess";
 import type { TFunction } from "i18next";
 import { durationLabel } from "./ending-label";
 
@@ -35,7 +35,7 @@ function sideMs(side: SideTime): number | null {
 const effectiveBlack = (value: TimeControlValue) => (value.uneven ? value.black : value.white);
 
 /** `rules.clock` for a valid value; null when untimed. Throws on an invalid value. */
-export function clockFromTimeControl(value: TimeControlValue): RulesV2["clock"] {
+export function clockFromTimeControl(value: TimeControlValue): RulesV3["clock"] {
   if (!value.timed) return null;
   const w = sideMs(value.white);
   const b = sideMs(effectiveBlack(value));
@@ -77,12 +77,12 @@ export function applyPreset(value: TimeControlValue, preset: "untimed" | number)
 }
 
 /** The per-move limit's automatic value: one minute, never longer than the shorter clock. */
-export function autoMoveLimitMs(clock: RulesV2["clock"]) {
+export function autoMoveLimitMs(clock: RulesV3["clock"]) {
   const fallback = MOVE_LIMIT_SECONDS.fallback * 1000;
   return clock ? Math.min(fallback, clock.w, clock.b) : fallback;
 }
 /** The per-move limit for a typed value ("" = automatic), or null when it is invalid. */
-export function moveLimitMs(raw: string, clock: RulesV2["clock"]): number | null {
+export function moveLimitMs(raw: string, clock: RulesV3["clock"]): number | null {
   const text = raw.trim();
   if (!text) return autoMoveLimitMs(clock);
   if (!WHOLE.test(text)) return null;

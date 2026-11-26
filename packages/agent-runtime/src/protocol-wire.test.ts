@@ -528,6 +528,75 @@ describe("Anthropic-compatible bearer gateway", () => {
   });
 });
 
+describe.each<[Protocol, string]>([
+  ["openai-chat", "max_completion_tokens"],
+  ["openai-responses", "max_output_tokens"],
+  ["anthropic", "max_tokens"],
+])("per-dispatch output ceiling on %s", (protocol, field) => {
+  it("sends the ceiling onBeforeDispatch returns, per dispatch, in place of the loop's", async () => {
+    const requests = captureHttp((index) => responseFor(protocol, index === 0));
+    const result = await runAgentLoop({
+      ...options(protocol),
+      tools: [
+        {
+          name: "legal_moves",
+          description: "Get legal moves for one piece",
+          inputSchema: z.object({ piece: z.string() }),
+          maxResultChars: 1000,
+          execute: () => ["e2e4"],
+        },
+      ],
+      onBeforeDispatch: ({ iteration }) => (iteration === 0 ? { maxOutputTokens: 900 } : undefined),
+    });
+    expect(result.stopReason).toBe("completed");
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.body[field]).toBe(900);
+    // A dispatch without an override is back on the loop's ceiling.
+    expect(requests[1]?.body[field]).toBe(64);
+  });
+});
+
+describe("per-dispatch output ceiling on failover", () => {
+  it("sends a fallback the override in its own field, and a later fallback dispatch the loop's", async () => {
+    let anthropicCalls = 0;
+    const requests = captureHttp((index) => {
+      const url = new URL(requests[index]?.url ?? "http://x/");
+      // The primary fails every transport attempt of both dispatches (fast retries).
+      if (url.pathname.endsWith("/chat/completions"))
+        return new Response("{}", { status: 503, headers: { "retry-after": "0" } });
+      anthropicCalls += 1;
+      return anthropicResponse(anthropicCalls === 1);
+    });
+    const result = await runAgentLoop({
+      ...options("openai-chat"),
+      fallbackModels: [{ ...options("anthropic").model }],
+      tools: [
+        {
+          name: "legal_moves",
+          description: "Get legal moves for one piece",
+          inputSchema: z.object({ piece: z.string() }),
+          maxResultChars: 1000,
+          execute: () => ["e2e4"],
+        },
+      ],
+      onBeforeDispatch: ({ iteration }) => (iteration === 0 ? { maxOutputTokens: 900 } : undefined),
+    });
+    expect(result.stopReason).toBe("completed");
+    const chat = requests.filter((request) =>
+      new URL(request.url).pathname.endsWith("/chat/completions"),
+    );
+    const anthropic = requests.filter((request) =>
+      new URL(request.url).pathname.endsWith("/messages"),
+    );
+    // Three transport attempts per dispatch on the primary, then the fallback.
+    expect(chat.map((request) => request.body.max_completion_tokens)).toEqual([
+      900, 900, 900, 64, 64, 64,
+    ]);
+    // The override reached the fallback, and did not leak into its next dispatch.
+    expect(anthropic.map((request) => request.body.max_tokens)).toEqual([900, 64]);
+  });
+});
+
 describe("existing OpenRouter adapter", () => {
   it("forwards the output ceiling through the SDK's camelCase request mapping", async () => {
     const requests = captureHttp(() => chatResponse(false));

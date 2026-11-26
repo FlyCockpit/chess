@@ -27,6 +27,31 @@ export type ModelProtocol = (typeof MODEL_PROTOCOLS)[number];
 export function protocolForModel(model: string): ModelProtocol {
   return /^~?anthropic\//.test(model.trim()) ? "anthropic" : "openai-chat";
 }
+/**
+ * The output ceiling of a request when the model's catalog lists no maximum: widely
+ * supported, and room for hidden reasoning, which many providers count against it.
+ */
+export const FALLBACK_MAX_OUTPUT_TOKENS = 8192;
+/**
+ * A model's output limits as an OpenRouter catalog entry lists them (`GET /models`):
+ * its own maximum output per reply (`top_provider.max_completion_tokens`) and its
+ * context window, each null when missing or not a positive number. The runner sends
+ * each request the model's maximum (within the context and the side's budgets).
+ */
+export function catalogOutputLimits(entry: unknown): {
+  maxOutputTokens: number | null;
+  contextLength: number | null;
+} {
+  const positive = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 1 ? Math.floor(value) : null;
+  const record = (value: unknown): Record<string, unknown> =>
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  const item = record(entry);
+  return {
+    maxOutputTokens: positive(record(item.top_provider).max_completion_tokens),
+    contextLength: positive(item.context_length),
+  };
+}
 export const playerSchema = z
   .object({
     name: z.string().min(1).max(80),
@@ -62,14 +87,13 @@ const sharedRules = {
   /** Per-move safety limit; never longer than either side's clock. */
   turnTimeoutMs: z.number().int().min(1000).max(300000).default(60000),
   maxDispatches: z.number().int().min(1).max(12).default(6),
-  maxOutputTokens: z.number().int().min(64).max(4096).default(512),
   tokenBudget: z.number().int().min(256).max(MAX_TOKEN_BUDGET).default(1000000),
   costBudgetMicros: z.number().int().min(100).max(MAX_COST_BUDGET_MICROS).default(1000000),
 };
 /**
  * The first ruleset, kept so archives recorded under it still read, validate and
  * replay exactly as they were played: a ply cap, one shared per-player time allowance
- * and an on/off remark switch (shown as "Commentary"). New matches use cockpit-v2.
+ * and an on/off remark switch (shown as "Commentary"). New matches use cockpit-v3.
  */
 export const rulesV1Schema = z
   .object({
@@ -90,7 +114,7 @@ export const rulesV1Schema = z
     maxPlies: z.number().int().min(2).max(600).default(200),
     turnTimeoutMs: sharedRules.turnTimeoutMs,
     maxDispatches: sharedRules.maxDispatches,
-    maxOutputTokens: sharedRules.maxOutputTokens,
+    maxOutputTokens: z.number().int().min(64).max(4096).default(512),
     tokenBudget: sharedRules.tokenBudget,
     timeBudgetMs: z.number().int().min(1000).max(3600000).default(600000),
     costBudgetMicros: sharedRules.costBudgetMicros,
@@ -102,16 +126,24 @@ export const CLOCK_MAX_MS = 3_600_000;
 const clockMs = z.number().int().min(CLOCK_MIN_MS).max(CLOCK_MAX_MS);
 export const remarkTones = ["off", "commentary", "trash-talk"] as const;
 export type RemarkTone = (typeof remarkTones)[number];
+/** Bounds of the optional reply cap (`maxOutputTokens`) a cockpit-v3 ruleset may set. */
+export const REPLY_CAP_MIN = 64;
+export const REPLY_CAP_MAX = 131_072;
 /**
- * cockpit-v2: no move cap (the rules engine's own draws, the archive limit and the
- * spend budgets end every game), a remark tone, and an optional per-side clock
- * (null = untimed: only the per-move safety limit applies).
+ * cockpit-v3: no move cap (the rules engine's own draws, the archive limit and the
+ * spend budgets end every game), a remark tone, an optional per-side clock
+ * (null = untimed: only the per-move safety limit applies) and no fixed reply cap:
+ * each request may use the model's own maximum output, limited by what the side's
+ * budgets can still pay for, unless the optional `maxOutputTokens` caps it lower.
+ * A reply cut off at that limit is rejected as `truncated`.
  * See README.md § Rules and endings
  */
-export const rulesV2Schema = z
+export const rulesV3Schema = z
   .object({
-    version: z.literal("cockpit-v2").default("cockpit-v2"),
+    version: z.literal("cockpit-v3").default("cockpit-v3"),
     ...sharedRules,
+    /** Optional reply cap in tokens, for experiments; absent = no rules cap. */
+    maxOutputTokens: z.number().int().min(REPLY_CAP_MIN).max(REPLY_CAP_MAX).optional(),
     remarks: z.enum(remarkTones).default("off"),
     clock: z.object({ w: clockMs, b: clockMs }).strict().nullable().default(null),
     /**
@@ -128,10 +160,14 @@ export const rulesV2Schema = z
       path: ["turnTimeoutMs"],
     },
   );
-/** Every ruleset an archive may carry. New matches are created only with cockpit-v2. */
-export const rulesSchema = z.union([rulesV2Schema, rulesV1Schema]);
+/** Every ruleset an archive may carry. New matches are created only with cockpit-v3. */
+export const rulesSchema = z.union([rulesV3Schema, rulesV1Schema]);
 export type RulesV1 = z.infer<typeof rulesV1Schema>;
-export type RulesV2 = z.infer<typeof rulesV2Schema>;
+export type RulesV3 = z.infer<typeof rulesV3Schema>;
+/** The reply cap a ruleset sets in tokens, or null when it sets none (cockpit-v3 default). */
+export function replyCap(rules: Rules): number | null {
+  return rules.maxOutputTokens ?? null;
+}
 /** The remark tone a ruleset asks for (v1's switch was neutral "Commentary"). */
 export function remarkTone(rules: Rules): RemarkTone {
   if (rules.version === "cockpit-v1") return rules.trashTalk ? "commentary" : "off";
@@ -139,7 +175,7 @@ export function remarkTone(rules: Rules): RemarkTone {
 }
 /** What repeated illegal moves do under a ruleset (cockpit-v1 always forfeits). */
 export function illegalPolicy(rules: Rules): IllegalPolicy {
-  return rules.version === "cockpit-v2" ? (rules.illegalPolicy ?? "forfeit") : "forfeit";
+  return rules.version === "cockpit-v3" ? (rules.illegalPolicy ?? "forfeit") : "forfeit";
 }
 /** Whether this many rejected attempts on one turn forfeit the game. */
 export function forfeitsAfter(rules: Rules, rejectedThisTurn: number) {
@@ -150,7 +186,7 @@ export function sideClockMs(rules: Rules, side: Side): number | null {
   if (rules.version === "cockpit-v1") return rules.timeBudgetMs;
   return rules.clock?.[side] ?? null;
 }
-/** The move cap of a cockpit-v1 archive; cockpit-v2 has none. */
+/** The move cap of a cockpit-v1 archive; cockpit-v3 has none. */
 export function plyLimit(rules: Rules): number | null {
   return rules.version === "cockpit-v1" ? rules.maxPlies : null;
 }
@@ -165,7 +201,7 @@ const configFields = {
     .default(DEFAULT_POSITION),
 };
 /** A new match's configuration (current ruleset only). */
-export const matchConfigSchema = z.object({ ...configFields, rules: rulesV2Schema }).strict();
+export const matchConfigSchema = z.object({ ...configFields, rules: rulesV3Schema }).strict();
 /** A recorded match's configuration, under any ruleset version. */
 export const archivedConfigSchema = z.object({ ...configFields, rules: rulesSchema }).strict();
 export type Player = z.infer<typeof playerSchema>;
@@ -195,6 +231,40 @@ export const evaluationSchema = z
   })
   .strict();
 export type EngineEvaluation = z.infer<typeof evaluationSchema>;
+/**
+ * Why an attempt was rejected: `illegal` (a well-formed UCI move the position does not
+ * allow), `unparseable` (a finished reply that names no move) or `truncated` (the
+ * reply was cut off at its output limit before it gave a move: "ran out of space").
+ */
+export const attemptReasons = ["illegal", "unparseable", "truncated"] as const;
+export type AttemptReason = (typeof attemptReasons)[number];
+/** How a model's reply ended: finished, cut off at its output limit, or out of tool rounds. */
+export const replyStopReasons = ["completed", "output-truncated", "max-iterations"] as const;
+export type ReplyStopReason = (typeof replyStopReasons)[number];
+/** The bound of a recorded rejected reply, in UTF-8 bytes of its JSON string body. */
+export const MAX_REPLY_BYTES = 2048;
+const replyBytes = (text: string) => utf8ByteLength(JSON.stringify(text)) - 2;
+function replyFits(text: string) {
+  return replyBytes(text) <= MAX_REPLY_BYTES;
+}
+/**
+ * The end of a reply, kept for the record: whole when it fits MAX_REPLY_BYTES as an
+ * escaped JSON string, else its last characters after a leading "…". The end is
+ * where a cut-off reply stopped and where a finished one put its answer.
+ */
+export function boundReply(text: string): string {
+  if (replyFits(text)) return text;
+  const chars = Array.from(text);
+  let start = chars.length;
+  let bytes = replyBytes("…");
+  while (start > 0) {
+    const next = replyBytes(chars[start - 1] as string);
+    if (bytes + next > MAX_REPLY_BYTES) break;
+    bytes += next;
+    start -= 1;
+  }
+  return `…${chars.slice(start).join("")}`;
+}
 export const eventSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -240,10 +310,17 @@ export const eventSchema = z.discriminatedUnion("type", [
       before: z.string().max(160),
       fen: z.string().max(160),
       san: z.string().max(32).nullable(),
-      reason: z.enum(["illegal", "unparseable"]).nullable(),
+      reason: z.enum(attemptReasons).nullable(),
       comment: z.string().max(500).default(""),
       /** The model's raw reply (truncated) when lenient parsing changed what was submitted. */
       normalizedFrom: z.string().max(256).optional(),
+      /**
+       * A rejected model attempt only: the end of the reply text (untrusted, at most
+       * MAX_REPLY_BYTES as escaped JSON, identities redacted when withheld) and why the
+       * reply stopped. `output-truncated` is what makes the reason `truncated`.
+       */
+      reply: z.string().max(MAX_REPLY_BYTES).refine(replyFits).optional(),
+      stopReason: z.enum(replyStopReasons).optional(),
     })
     .strict(),
   z
@@ -396,12 +473,25 @@ export function settleBoard(match: MatchArchive, chess: Chess) {
       finishMatch(match, "1/2-1/2", "ply-limit");
   }
 }
+/** Whether an attempt with this move and reply ending is rejected, and why. */
+export function attemptReason(
+  san: string | null,
+  move: string,
+  stopReason: ReplyStopReason | undefined,
+): AttemptReason | null {
+  if (san !== null) return null;
+  if (stopReason === "output-truncated") return "truncated";
+  return /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move) ? "illegal" : "unparseable";
+}
+/** What the runner knows about the model reply behind an attempt (kept when rejected). */
+export type ReplyRecord = { text: string; stopReason: ReplyStopReason };
 export function submitMove(
   match: MatchArchive,
   chess: Chess,
   rawMove: string,
   comment = "",
   normalizedFrom?: string,
+  reply?: ReplyRecord,
 ): AttemptEvent {
   if (match.status !== "running" || chess.isGameOver())
     throw new Error("Game is not accepting moves");
@@ -410,12 +500,14 @@ export function submitMove(
   const side = chess.turn();
   const ply = match.events.filter((event) => event.type === "attempt" && event.accepted).length;
   let san: string | null = null;
-  let reason: AttemptEvent["reason"] = null;
-  try {
-    san = applyUci(chess, rawMove).san;
-  } catch {
-    reason = /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(rawMove) ? "illegal" : "unparseable";
-  }
+  // A cut-off reply is never played, even when its prefix looked like a move.
+  if (reply?.stopReason !== "output-truncated")
+    try {
+      san = applyUci(chess, rawMove).san;
+    } catch {
+      /* Rejected below. */
+    }
+  const reason = attemptReason(san, rawMove, reply?.stopReason);
   const event: AttemptEvent = {
     type: "attempt",
     seq: match.events.length,
@@ -431,6 +523,9 @@ export function submitMove(
     comment: remarkTone(match.config.rules) === "off" ? "" : comment.slice(0, 500),
     ...(normalizedFrom !== undefined && match.config.rules.moveFormat === "lenient"
       ? { normalizedFrom: normalizedFrom.slice(0, 256) }
+      : {}),
+    ...(reply && san === null
+      ? { reply: boundReply(reply.text), stopReason: reply.stopReason }
       : {}),
   };
   match.events.push(event);
@@ -526,7 +621,10 @@ export function matchStats(match: MatchArchive, side?: Side) {
     committedTokens,
     committedCostMicros,
     moves: attempts.filter((event) => event.accepted).length,
+    /** Every rejected attempt (illegal, unparseable or truncated). */
     illegalAttempts: attempts.filter((event) => !event.accepted).length,
+    /** Rejected attempts whose reply was cut off before it gave a move. */
+    truncatedAttempts: attempts.filter((event) => event.reason === "truncated").length,
     inputTokens: usage.reduce((n, event) => n + event.inputTokens, 0),
     outputTokens: usage.reduce((n, event) => n + event.outputTokens, 0),
     elapsedMs: events.reduce((n, event) => n + (event.type === "timing" ? event.elapsedMs : 0), 0),
@@ -601,19 +699,18 @@ export function validateArchive(input: unknown): MatchArchive {
     if (event.type !== "attempt") continue;
     if (event.before !== chess.fen()) throw new Error("Position mismatch");
     let san: string | null = null;
-    try {
-      san = applyUci(chess, event.move).san;
-    } catch {
-      /* Rejections are legitimate recorded events. */
-    }
+    if (event.stopReason !== "output-truncated")
+      try {
+        san = applyUci(chess, event.move).san;
+      } catch {
+        /* Rejections are legitimate recorded events. */
+      }
     if (event.accepted !== (san !== null) || event.san !== san || event.fen !== chess.fen())
       throw new Error("Move validation mismatch");
-    const reason = san
-      ? null
-      : /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(event.move)
-        ? "illegal"
-        : "unparseable";
-    if (event.reason !== reason) throw new Error("Attempt reason mismatch");
+    if (event.reason !== attemptReason(san, event.move, event.stopReason))
+      throw new Error("Attempt reason mismatch");
+    if (san !== null && (event.reply !== undefined || event.stopReason !== undefined))
+      throw new Error("Reply record on an accepted move");
     if (remarkTone(match.config.rules) === "off" && event.comment)
       throw new Error("Commentary violates ruleset");
     if (event.normalizedFrom !== undefined && match.config.rules.moveFormat !== "lenient")

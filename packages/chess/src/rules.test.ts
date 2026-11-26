@@ -9,8 +9,11 @@ import {
   type MatchArchive,
   matchConfigSchema,
   plyLimit,
+  REPLY_CAP_MAX,
+  REPLY_CAP_MIN,
   type RulesV1,
   remarkTone,
+  replyCap,
   rulesSchema,
   serializeArchive,
   sideClockMs,
@@ -28,7 +31,7 @@ const v1Archive = (rules: Partial<RulesV1> = {}): MatchArchive =>
 
 describe("versioned rules", () => {
   // 201 archived plies take a few seconds: each move re-checks the game's draw rules.
-  it("keeps a cockpit-v2 game running past the old 200-ply cap", { timeout: 30_000 }, () => {
+  it("keeps a cockpit-v3 game running past the old 200-ply cap", { timeout: 30_000 }, () => {
     // Fixed pseudo-random legal play; the first seed whose game is still going at 201.
     for (let seed = 1; ; seed++) {
       let state = seed;
@@ -60,10 +63,10 @@ describe("versioned rules", () => {
       '"costBudgetMicros":1000000}';
     expect(JSON.stringify(rulesSchema.parse(JSON.parse(written)))).toBe(written);
   });
-  it("creates new matches under cockpit-v2 with no move cap, untimed, remarks off", () => {
+  it("creates new matches under cockpit-v3 with no move cap, untimed, remarks off", () => {
     const match = createMatch({ white: player, black: player, rules: {} });
     expect(match.config.rules).toMatchObject({
-      version: "cockpit-v2",
+      version: "cockpit-v3",
       remarks: "off",
       clock: null,
     });
@@ -148,25 +151,37 @@ describe("what repeated illegal moves do", () => {
       submitMove(match, chess, "e2e5");
     return chess;
   };
-  it("keeps a ruleset recorded before the option byte-identical (same rules key)", () => {
-    // Exactly as the release before this option wrote default cockpit-v2 rules; the
-    // server's rules key (first 16 hex of its SHA-256) must stay 22bd4232ec9c2814.
+  it("writes default rules by omission under one stable rules key", () => {
+    // Default cockpit-v3 rules: no reply cap and no illegalPolicy key. The server's rules
+    // key (first 16 hex of the SHA-256) is pinned so a change to the defaults is deliberate.
     const written =
-      '{"version":"cockpit-v2","context":"fresh","opponentIdentity":"hidden",' +
+      '{"version":"cockpit-v3","context":"fresh","opponentIdentity":"hidden",' +
       '"representation":"ascii","legalMoves":"tool","moveFormat":"strict",' +
       '"tokenAccounting":"provider","engineEvaluation":"off","engineNodes":10000,' +
       '"engineCallsPerTurn":2,"maxAttempts":3,"turnTimeoutMs":60000,"maxDispatches":6,' +
-      '"maxOutputTokens":512,"tokenBudget":1000000,"costBudgetMicros":1000000,' +
-      '"remarks":"off","clock":null}';
+      '"tokenBudget":1000000,"costBudgetMicros":1000000,"remarks":"off","clock":null}';
     const key = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-    expect(key(written)).toBe("22bd4232ec9c2814");
+    expect(key(written)).toBe("addb86a522d338d9");
     expect(JSON.stringify(rulesSchema.parse(JSON.parse(written)))).toBe(written);
     expect(illegalPolicy(rulesSchema.parse(JSON.parse(written)))).toBe("forfeit");
-    // New default matches (and an explicit "forfeit") still write exactly that text.
+    expect(replyCap(rulesSchema.parse(JSON.parse(written)))).toBeNull();
     for (const rules of [{}, { illegalPolicy: "forfeit" as const }])
       expect(
         JSON.stringify(createMatch({ white: player, black: player, rules }).config.rules),
       ).toBe(written);
+  });
+  it("keeps an optional reply cap in the rules (and so in the rules key)", () => {
+    const capped = createMatch({ white: player, black: player, rules: { maxOutputTokens: 2048 } });
+    expect(replyCap(capped.config.rules)).toBe(2048);
+    expect(JSON.stringify(capped.config.rules)).toContain('"maxOutputTokens":2048');
+    for (const maxOutputTokens of [REPLY_CAP_MIN - 1, REPLY_CAP_MAX + 1])
+      expect(() =>
+        createMatch({ white: player, black: player, rules: { maxOutputTokens } }),
+      ).toThrow();
+    // A cockpit-v1 archive always had its fixed cap.
+    expect(
+      replyCap(asCockpitV1(createMatch({ white: player, black: player, rules: {} })).config.rules),
+    ).toBe(512);
   });
   it("records the default by omission and keeps only retry", () => {
     const forfeit = createMatch({

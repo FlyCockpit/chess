@@ -56,7 +56,14 @@ describe("localCredentials", () => {
     const fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          data: [{ id: "vendor/model", pricing: { prompt: "0.000001", completion: "0.000002" } }],
+          data: [
+            {
+              id: "vendor/model",
+              pricing: { prompt: "0.000001", completion: "0.000002" },
+              context_length: 131072,
+              top_provider: { max_completion_tokens: 32768 },
+            },
+          ],
         }),
         { status: 200 },
       ),
@@ -66,6 +73,8 @@ describe("localCredentials", () => {
       inputMicrosPerMillion: 1000000,
       outputMicrosPerMillion: 2000000,
       anthropicAuth: "bearer",
+      maxOutputTokens: 32768,
+      contextLength: 131072,
     });
     expect(fetch.mock.calls[0]?.[1]).not.toHaveProperty("headers");
   });

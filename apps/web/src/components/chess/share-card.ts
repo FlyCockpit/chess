@@ -95,7 +95,11 @@ export function drawShareCard(
   ctx.fillStyle = "#bbc9c1";
   ctx.font = "20px sans-serif";
   ctx.fillText(
-    `${stats.moves} ${t("stats.plies")} · ${stats.illegalAttempts} ${t("stats.rejected")}`,
+    `${stats.moves} ${t("stats.plies")} · ${stats.illegalAttempts} ${t("stats.rejected")}${
+      stats.truncatedAttempts > 0
+        ? ` (${t("leaderboard.truncated", { count: stats.truncatedAttempts })})`
+        : ""
+    }`,
     56,
     446,
     620,

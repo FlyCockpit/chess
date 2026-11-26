@@ -1,7 +1,13 @@
 import { setTimeout as delay } from "node:timers/promises";
 
 import { chessStatsColumns, INTERRUPTED_ENDING } from "@cockpit-chess/api/lib/chess-stats";
-import { boardAt, finishMatch, type MatchArchive, validateArchive } from "@cockpit-chess/chess";
+import {
+  boardAt,
+  catalogOutputLimits,
+  finishMatch,
+  type MatchArchive,
+  validateArchive,
+} from "@cockpit-chess/chess";
 import {
   finishAbortedMatch,
   MATCH_INTERRUPTED,
@@ -255,6 +261,8 @@ export async function handleChessRunJob(
           id: string;
           supported_parameters?: string[];
           pricing?: { prompt?: string; completion?: string };
+          context_length?: unknown;
+          top_provider?: unknown;
         }>;
       };
       for (const side of ["w", "b"] as const) {
@@ -277,6 +285,8 @@ export async function handleChessRunJob(
           anthropicAuth: "bearer",
           inputMicrosPerMillion: Math.ceil(inputPrice * 1e12),
           outputMicrosPerMillion: Math.ceil(outputPrice * 1e12),
+          // Each request may use the model's own maximum output (within its budgets).
+          ...catalogOutputLimits(item),
         };
       }
     }
