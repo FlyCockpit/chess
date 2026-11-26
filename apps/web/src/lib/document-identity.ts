@@ -237,9 +237,8 @@ function quarantineDocument(): void {
  * On a page that holds no account data (`setAccountFreePage`), the account
  * state is dropped in place instead (`onAccountStateDiscarded`) and the page
  * stays as it is. The router calls this again before every navigation of a
- * replaced document (`isDocumentReplaced`), and the first one to a page that
- * may hold account data gets the full load (the URL is already the
- * destination's by then).
+ * replaced document (`replaceDocumentBeforeNavigation`), and the first one
+ * to a page that may hold account data gets the full load of that page.
  */
 export function replaceDocument(): void {
   if (typeof window === "undefined") return;
@@ -255,6 +254,21 @@ export function replaceDocument(): void {
   documentIdentity.reloading = true;
   // full-reload:audited — An identity change discards all prior user cache and mounted client state.
   window.location.reload();
+}
+
+/**
+ * The router's hook before every navigation (`onBeforeNavigate`): a replaced
+ * document is replaced again there (`replaceDocument`), so the first
+ * navigation of a document kept on an account-free page to a page that may
+ * hold account data (Lab → Studio) reloads into that page. The router has
+ * the destination by then but its browser history writes the URL a microtask
+ * later, so a reload at that point would load the page being left (and drop
+ * its device-local work for nothing): the pending URL is written first.
+ */
+export function replaceDocumentBeforeNavigation(history: { flush(): void }): void {
+  if (!documentIdentity.replaced) return;
+  history.flush();
+  replaceDocument();
 }
 
 /**

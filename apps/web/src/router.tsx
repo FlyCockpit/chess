@@ -13,10 +13,9 @@ import i18n, { createRequestI18n } from "./i18n";
 import { holdsNoAccountData } from "./lib/account-free-pages";
 import {
   discardAccountQueries,
-  isDocumentReplaced,
   onAccountStateDiscarded,
   onDocumentReplaced,
-  replaceDocument,
+  replaceDocumentBeforeNavigation,
   sealQueryClient,
   setAccountFreePage,
   skipErrorToastForIdentity,
@@ -188,11 +187,9 @@ export function getRouter() {
     );
     // A document replaced in place (an account-free page) gets its full load
     // before the first navigation to a page that may hold account data
-    // renders anything: the URL is already the destination's, so the reload
-    // lands there and the route guards decide as usual.
-    router.subscribe("onBeforeNavigate", () => {
-      if (isDocumentReplaced()) replaceDocument();
-    });
+    // renders anything: a load of the destination, where the route guards
+    // decide as usual.
+    router.subscribe("onBeforeNavigate", () => replaceDocumentBeforeNavigation(router.history));
   }
 
   return router;

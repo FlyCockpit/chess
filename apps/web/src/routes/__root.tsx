@@ -92,7 +92,10 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
       // static media-keyed meta here would fight that and reintroduce the
       // white-status-bar-in-dark-mode bug when the OS and app themes disagree.
       {
-        title: APP_NAME,
+        // The brand in the page's language, as both shells' headers name it
+        // (`chess:brand`, components/app-name-link.tsx), from the
+        // router-context instance for the reason below.
+        title: match.context.i18n.t("chess:brand"),
       },
       {
         name: "description",
