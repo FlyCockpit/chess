@@ -182,8 +182,16 @@ export function judgeReserve(page: string, probe: ReserveProbe | null): string[]
   return bad;
 }
 
-/** The height the reserve probe pretends a banner covers. Taller than the BottomNav. */
+/**
+ * The most the reserve probe pretends a banner covers, and its share of a
+ * short viewport: on phones a real banner's own content is about 90px (one
+ * line over two buttons; over the BottomNav it reserves that plus the nav's
+ * 3.5rem and the safe area), and as a desktop card it stays under 200px, so a
+ * fixed 200px would leave no room under a tall header at 390×300. Both exceed
+ * the BottomNav's reserve while the safe area is under about 34px.
+ */
 const RESERVE_INSET = 200;
+const RESERVE_SHARE = 0.3;
 
 // Runs in the page (agent-browser eval). Self-contained: no closures.
 const RESERVE_PROBE = `(async () => {
@@ -210,7 +218,8 @@ const RESERVE_PROBE = `(async () => {
   const before = boxes();
   // A real banner's reservation (an app with analytics) is put back afterwards.
   const previous = html.style.getPropertyValue("--consent-inset");
-  html.style.setProperty("--consent-inset", "${RESERVE_INSET}px");
+  const inset = Math.min(${RESERVE_INSET}, Math.round(window.innerHeight * ${RESERVE_SHARE}));
+  html.style.setProperty("--consent-inset", inset + "px");
   await settle();
   const after = boxes();
   // Where the content would be scrolled to the end, computed rather than
@@ -231,7 +240,7 @@ const RESERVE_PROBE = `(async () => {
   const footerEnd = footer ? Math.round(footer.getBoundingClientRect().bottom) - toEnd : null;
   if (previous) html.style.setProperty("--consent-inset", previous);
   else html.style.removeProperty("--consent-inset");
-  return JSON.stringify({ vh: window.innerHeight, inset: ${RESERVE_INSET}, before, after, contentEnd, footer: footerEnd });
+  return JSON.stringify({ vh: window.innerHeight, inset, before, after, contentEnd, footer: footerEnd });
 })()`;
 
 // Runs in the page (agent-browser eval). Self-contained: no closures.
