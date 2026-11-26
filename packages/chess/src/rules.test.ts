@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   archiveSchema,
   boardAt,
   createMatch,
   finishMatch,
+  illegalPolicy,
   type MatchArchive,
   matchConfigSchema,
   plyLimit,
@@ -136,5 +138,80 @@ describe("versioned rules", () => {
     const forged = structuredClone(loud);
     forged.config.rules = rulesSchema.parse({});
     expect(() => validateArchive(forged)).toThrow("Commentary violates ruleset");
+  });
+});
+
+describe("what repeated illegal moves do", () => {
+  const illegal = (match: MatchArchive, count: number) => {
+    const chess = boardAt(match);
+    for (let index = 0; index < count && match.status === "running"; index += 1)
+      submitMove(match, chess, "e2e5");
+    return chess;
+  };
+  it("keeps a ruleset recorded before the option byte-identical (same rules key)", () => {
+    // Exactly as the release before this option wrote default cockpit-v2 rules; the
+    // server's rules key (first 16 hex of its SHA-256) must stay 22bd4232ec9c2814.
+    const written =
+      '{"version":"cockpit-v2","context":"fresh","opponentIdentity":"hidden",' +
+      '"representation":"ascii","legalMoves":"tool","moveFormat":"strict",' +
+      '"tokenAccounting":"provider","engineEvaluation":"off","engineNodes":10000,' +
+      '"engineCallsPerTurn":2,"maxAttempts":3,"turnTimeoutMs":60000,"maxDispatches":6,' +
+      '"maxOutputTokens":512,"tokenBudget":1000000,"costBudgetMicros":1000000,' +
+      '"remarks":"off","clock":null}';
+    const key = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
+    expect(key(written)).toBe("22bd4232ec9c2814");
+    expect(JSON.stringify(rulesSchema.parse(JSON.parse(written)))).toBe(written);
+    expect(illegalPolicy(rulesSchema.parse(JSON.parse(written)))).toBe("forfeit");
+    // New default matches (and an explicit "forfeit") still write exactly that text.
+    for (const rules of [{}, { illegalPolicy: "forfeit" as const }])
+      expect(
+        JSON.stringify(createMatch({ white: player, black: player, rules }).config.rules),
+      ).toBe(written);
+  });
+  it("records the default by omission and keeps only retry", () => {
+    const forfeit = createMatch({
+      white: player,
+      black: player,
+      rules: { illegalPolicy: "forfeit" },
+    });
+    expect(forfeit.config.rules).not.toHaveProperty("illegalPolicy");
+    const retry = createMatch({ white: player, black: player, rules: { illegalPolicy: "retry" } });
+    expect(retry.config.rules).toMatchObject({ illegalPolicy: "retry" });
+    expect(() =>
+      matchConfigSchema.parse({ white: player, black: player, rules: { illegalPolicy: "never" } }),
+    ).toThrow();
+  });
+  it("is not part of cockpit-v1, which always forfeits", () => {
+    const v1 = v1Archive();
+    expect(illegalPolicy(v1.config.rules)).toBe("forfeit");
+    expect(() => rulesSchema.parse({ ...v1.config.rules, illegalPolicy: "retry" })).toThrow();
+  });
+  it("forfeits after maxAttempts by default and replays that archive", () => {
+    const match = createMatch({ white: player, black: player, rules: { maxAttempts: 2 } });
+    illegal(match, 2);
+    expect(match).toMatchObject({ termination: "illegal-forfeit", result: "0-1" });
+    expect(validateArchive(JSON.parse(serializeArchive(match)))).toEqual(match);
+  });
+  it("keeps trying: no forfeit however many rejections, and the archive replays", () => {
+    const match = createMatch({
+      white: player,
+      black: player,
+      rules: { maxAttempts: 1, illegalPolicy: "retry" },
+    });
+    const chess = illegal(match, 12);
+    expect(match.status).toBe("running");
+    submitMove(match, chess, "e2e4");
+    expect(match.events.filter((event) => event.type === "attempt")).toHaveLength(13);
+    expect(validateArchive(JSON.parse(serializeArchive(match)))).toEqual(match);
+  });
+  it("rejects a forfeit recorded under keep trying", () => {
+    const match = createMatch({
+      white: player,
+      black: player,
+      rules: { maxAttempts: 1, illegalPolicy: "retry" },
+    });
+    illegal(match, 3);
+    finishMatch(match, "0-1", "illegal-forfeit");
+    expect(() => validateArchive(JSON.parse(serializeArchive(match)))).toThrow("Invalid forfeit");
   });
 });

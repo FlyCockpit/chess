@@ -132,6 +132,52 @@ describe("MatchReplay", () => {
     expect(html).toContain("<span>1 min per-move limit</span>");
     expect(render(fixtureGame())).not.toContain("cc-result-banner");
   });
+  it("shows each model's live spend against its budget", () => {
+    const match = fixtureGame({ remarks: "off" });
+    const base = () => ({
+      seq: match.events.length,
+      at: new Date().toISOString(),
+      side: "w" as const,
+    });
+    const ply = match.events.filter((event) => event.type === "attempt" && event.accepted).length;
+    // White is to move; a dispatch in flight counts as "at least".
+    match.events.push({
+      ...base(),
+      ply,
+      type: "reservation",
+      dispatch: 0,
+      tokens: 9000,
+      costMicros: 90_000,
+    });
+    let html = render(match);
+    expect(html).toContain("White · spent at least $0.00 of $1.00 (usage still settling)");
+    expect(html).toContain("Black · spent $0.00 of $1.00");
+    match.events.push({
+      ...base(),
+      ply,
+      type: "usage",
+      dispatch: 0,
+      inputTokens: 1000,
+      outputTokens: 200,
+      costMicros: 120_000,
+    });
+    html = render(match);
+    expect(html).toContain("White · spent $0.12 of $1.00");
+  });
+  it("counts illegal attempts per side in the result banner and the stats", () => {
+    const match = fixtureGame({ remarks: "off" });
+    const chess = boardAt(match);
+    submitMove(match, chess, "e2e5");
+    submitMove(match, chess, "a1a5");
+    finishMatch(match, "0-1", "cost-budget");
+    const html = render(match);
+    expect(html).toContain("<strong>White ran out of budget</strong>");
+    expect(html).toContain("<span>spent $0.00 of $1.00</span>");
+    // The fixture already holds one rejected Black move.
+    expect(html).toContain("Illegal attempts: White 2 · Black 1");
+    expect(html).toContain("<strong>2 / 1</strong>");
+    expect(html).toContain("Rejected moves (White / Black)");
+  });
   it("shows each side's clock in timed games and none in untimed ones", () => {
     const match = fixtureGame({ clock: { w: 600000, b: 300000 } });
     match.events.push({

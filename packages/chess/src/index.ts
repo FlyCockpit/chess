@@ -34,6 +34,19 @@ export const playerSchema = z
     protocol: z.enum([...MODEL_PROTOCOLS, "random", "human"]),
   })
   .strict();
+/**
+ * The schema ceilings of a side's budgets ($1,000 and 100M tokens). A server's own
+ * operator limits (`CHESS_MAX_COST_USD`, `CHESS_MAX_TOKENS`) sit at or below these.
+ */
+export const MAX_COST_BUDGET_MICROS = 1_000_000_000;
+export const MAX_TOKEN_BUDGET = 100_000_000;
+/**
+ * What a rejected attempt costs a side: "forfeit" loses the game after `maxAttempts`
+ * rejections on one turn; "retry" never forfeits, so the side keeps trying until it
+ * submits a legal move or its budgets, clock or per-move limit end the game.
+ */
+export const illegalPolicies = ["forfeit", "retry"] as const;
+export type IllegalPolicy = (typeof illegalPolicies)[number];
 const sharedRules = {
   context: z.enum(["fresh", "persistent"]).default("fresh"),
   opponentIdentity: z.enum(["hidden", "disclosed"]).default("hidden"),
@@ -50,8 +63,8 @@ const sharedRules = {
   turnTimeoutMs: z.number().int().min(1000).max(300000).default(60000),
   maxDispatches: z.number().int().min(1).max(12).default(6),
   maxOutputTokens: z.number().int().min(64).max(4096).default(512),
-  tokenBudget: z.number().int().min(256).max(1000000).default(1000000),
-  costBudgetMicros: z.number().int().min(100).max(100000000).default(1000000),
+  tokenBudget: z.number().int().min(256).max(MAX_TOKEN_BUDGET).default(1000000),
+  costBudgetMicros: z.number().int().min(100).max(MAX_COST_BUDGET_MICROS).default(1000000),
 };
 /**
  * The first ruleset, kept so archives recorded under it still read, validate and
@@ -101,6 +114,11 @@ export const rulesV2Schema = z
     ...sharedRules,
     remarks: z.enum(remarkTones).default("off"),
     clock: z.object({ w: clockMs, b: clockMs }).strict().nullable().default(null),
+    /**
+     * Absent means "forfeit", so rules recorded before this option keep their exact JSON
+     * (the rules key hashes it); `createMatch` writes only "retry".
+     */
+    illegalPolicy: z.enum(illegalPolicies).optional(),
   })
   .strict()
   .refine(
@@ -118,6 +136,14 @@ export type RulesV2 = z.infer<typeof rulesV2Schema>;
 export function remarkTone(rules: Rules): RemarkTone {
   if (rules.version === "cockpit-v1") return rules.trashTalk ? "commentary" : "off";
   return rules.remarks;
+}
+/** What repeated illegal moves do under a ruleset (cockpit-v1 always forfeits). */
+export function illegalPolicy(rules: Rules): IllegalPolicy {
+  return rules.version === "cockpit-v2" ? (rules.illegalPolicy ?? "forfeit") : "forfeit";
+}
+/** Whether this many rejected attempts on one turn forfeit the game. */
+export function forfeitsAfter(rules: Rules, rejectedThisTurn: number) {
+  return illegalPolicy(rules) === "forfeit" && rejectedThisTurn >= rules.maxAttempts;
 }
 /** One side's whole-game clock in ms, or null when the game is untimed. */
 export function sideClockMs(rules: Rules, side: Side): number | null {
@@ -317,6 +343,8 @@ export function createMatch(
   source: MatchArchive["source"] = "local",
 ): MatchArchive {
   const config = matchConfigSchema.parse(input);
+  // The default is recorded by omission, so a default ruleset keeps one rules key.
+  if (config.rules.illegalPolicy === "forfeit") delete config.rules.illegalPolicy;
   config.initialFen = new Chess(config.initialFen).fen();
   const match: MatchArchive = {
     format: "cockpit-chess/v1",
@@ -408,8 +436,10 @@ export function submitMove(
   match.events.push(event);
   if (event.accepted) settleBoard(match, chess);
   else if (
-    match.events.filter((entry) => entry.type === "attempt" && entry.ply === ply).length >=
-    match.config.rules.maxAttempts
+    forfeitsAfter(
+      match.config.rules,
+      match.events.filter((entry) => entry.type === "attempt" && entry.ply === ply).length,
+    )
   )
     finishMatch(match, side === "w" ? "0-1" : "1-0", "illegal-forfeit");
   return event;
@@ -500,6 +530,8 @@ export function matchStats(match: MatchArchive, side?: Side) {
     inputTokens: usage.reduce((n, event) => n + event.inputTokens, 0),
     outputTokens: usage.reduce((n, event) => n + event.outputTokens, 0),
     elapsedMs: events.reduce((n, event) => n + (event.type === "timing" ? event.elapsedMs : 0), 0),
+    /** Provider-reported cost so far (usage reports without a cost count as 0). */
+    reportedCostMicros: usage.reduce((n, event) => n + (event.costMicros ?? 0), 0),
     costMicros:
       reservations.some((event) => !settled.has(event.dispatch)) ||
       usage.some((event) => event.costMicros === null)
@@ -591,7 +623,7 @@ export function validateArchive(input: unknown): MatchArchive {
       illegalThisTurn = 0;
     } else illegalThisTurn += 1;
     terminal =
-      chess.isGameOver() || ply >= limit || illegalThisTurn >= match.config.rules.maxAttempts;
+      chess.isGameOver() || ply >= limit || forfeitsAfter(match.config.rules, illegalThisTurn);
   }
   if (match.status === "running" && terminal) throw new Error("Running game is terminal");
   if (
@@ -605,7 +637,7 @@ export function validateArchive(input: unknown): MatchArchive {
     throw new Error("Invalid ply limit");
   if (
     match.termination === "illegal-forfeit" &&
-    (illegalThisTurn < match.config.rules.maxAttempts ||
+    (!forfeitsAfter(match.config.rules, illegalThisTurn) ||
       match.result !== (chess.turn() === "w" ? "0-1" : "1-0"))
   )
     throw new Error("Invalid forfeit");

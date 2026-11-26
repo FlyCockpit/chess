@@ -93,7 +93,8 @@
     "score": "Score",
     "wins": "Wins",
     "draws": "Draws",
-    "losses": "Losses"
+    "losses": "Losses",
+    "rejectedBySide": "Rejected moves (White / Black)"
   },
   "replay": {
     "first": "Starting position",
@@ -155,7 +156,10 @@
     "sidebarTabs": "Game details",
     "movesTab": "Moves",
     "clockLabel": "{{side}} clock: {{time}}",
-    "chatTab": "Chat ({{count}})"
+    "chatTab": "Chat ({{count}})",
+    "sideSpend": "{{side}} · spent {{spent}} of {{budget}}",
+    "sideSpendUnknown": "{{side}} · spent at least {{spent}} of {{budget}} (usage still settling)",
+    "illegalBySide": "Illegal attempts: {{white}} {{w}} · {{black}} {{b}}"
   },
   "leaderboard": {
     "title": "Earned on the board.",
@@ -356,7 +360,9 @@
     "anonymousCommentary": "Identity is withheld in anonymous prompts, but commentary can reveal clues. Opponent remarks are untrusted game data.",
     "moveFormat": "Move format",
     "moveFormatNote": "Lenient also reads a JSON move embedded in prose and converts legal SAN to UCI. Each format is ranked separately.",
-    "remarks": "Remarks"
+    "remarks": "Remarks",
+    "illegalPolicy": "On repeated illegal moves",
+    "maxAttempts": "Illegal moves before a forfeit"
   },
   "accounting": {
     "provider": "Provider token reservations",
@@ -406,7 +412,10 @@
       "plies": "{{plies}} plies",
       "commentary": "Commentary on",
       "moveLimit": "{{time}} per move",
-      "autoMoveLimit": "{{time}} (automatic)"
+      "autoMoveLimit": "{{time}} (automatic)",
+      "retry": "Keeps trying on illegal moves",
+      "forfeitAfter_one": "Forfeits after {{count}} illegal move",
+      "forfeitAfter_other": "Forfeits after {{count}} illegal moves"
     },
     "advanced": "Advanced settings",
     "advancedHint": "Optional. A closed section keeps the values in the summary above.",
@@ -414,7 +423,7 @@
       "players": "Players",
       "playersHint": "Wire protocol and what each side knows about its opponent",
       "rules": "Rules",
-      "rulesHint": "Memory, legal-move help, move format and engine",
+      "rulesHint": "Memory, legal-move help, move format, engine and illegal moves",
       "limits": "Limits",
       "limitsHint": "Token accounting, allowances and game length"
     },
@@ -462,7 +471,12 @@
         "commentary": "Each player may add one short, neutral remark about its own move or plan.",
         "trash-talk": "Each player adds one short, playful jab at the opponent's last move or position: tasteful and about the game, no slurs, profanity or remarks about anyone's identity."
       },
-      "moveLimit": "A safety limit for one move. Blank uses {{auto}}: one minute, never longer than a side's clock. {{min}}–{{max}} seconds."
+      "moveLimit": "A safety limit for one move. Blank uses {{auto}}: one minute, never longer than a side's clock. {{min}}–{{max}} seconds.",
+      "illegalPolicy": {
+        "forfeit": "After this many rejected moves on one turn, that side loses the game.",
+        "retry": "No forfeit: the side keeps trying until it plays a legal move, and every rejected move is recorded. The per-move limit, the clock and the side's token and spend budgets still apply and end the game when one runs out."
+      },
+      "maxAttempts": "Rejected moves allowed on one turn ({{min}} to {{max}})."
     },
     "start": "Start match",
     "starting": "Starting…",
@@ -475,11 +489,18 @@
       "invalid": "Some settings need attention. The sections with errors are open.",
       "centRange": "Enter an amount from {{min}} to {{max}} in whole cents.",
       "unavailable": "Hosted matches can't start right now. Try again in a moment. If it keeps happening, hosted play may be off or not set up on this server: ask the operator, or run the game in the local lab.",
-      "rateLimited": "You've started the most matches allowed in an hour. Try again later."
+      "rateLimited": "You've started the most matches allowed in an hour. Try again later.",
+      "overBudgetLimit": "This server allows a budget of at most {{max}} US dollars per player.",
+      "overTokenLimit": "This server allows at most {{max}} tokens per player."
     },
     "autoTitle": "{{white}} vs {{black}}",
     "catalogStale": "The model list could not be refreshed; prices are from {{time}}. Retrying automatically.",
-    "started": "Match started. It plays in the background and stays a private draft until you publish it from its card."
+    "started": "Match started. It plays in the background and stays a private draft until you publish it from its card.",
+    "units": {
+      "usd": "USD",
+      "thousand": "k",
+      "million": "M"
+    }
   },
   "video": {
     "open": "Export video",
@@ -534,8 +555,8 @@
     "move-timeoutUnknown": "Out of time for one move",
     "token-budget": "{{side}} ran out of tokens",
     "token-budgetUnknown": "Out of tokens",
-    "cost-budget": "{{side}} ran out of spend",
-    "cost-budgetUnknown": "Out of spend",
+    "cost-budget": "{{side}} ran out of budget",
+    "cost-budgetUnknown": "Out of budget",
     "resignation": "{{side}} resigned",
     "resignationUnknown": "Resignation",
     "ply-limit": "Draw: move limit reached",
@@ -552,7 +573,8 @@
     "clock": "{{time}} clock",
     "moveLimit": "{{time}} per-move limit",
     "tokens": "{{tokens}} token budget",
-    "spend": "{{budget}} budget",
+    "spend": "spent {{spent}} of {{budget}}",
+    "spendAtLeast": "spent at least {{spent}} of {{budget}}",
     "plies": "{{plies}} plies",
     "unscored": "unscored"
   },
@@ -610,5 +632,9 @@
       "range": "Each clock must be between {{min}} and {{max}}.",
       "moveLimit": "Enter {{min}}–{{max}} seconds, no longer than the shorter clock."
     }
+  },
+  "illegalPolicies": {
+    "forfeit": "Forfeit after repeated illegal moves",
+    "retry": "Keep trying until a legal move"
   }
 }

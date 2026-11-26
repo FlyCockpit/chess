@@ -9,7 +9,7 @@ The two supported topologies are:
 | `app` | Embedded in the server (`WORKER_MODE=embedded`) | Server applies before HTTP startup |
 | `app-worker` | Dedicated worker (`WORKER_MODE=external` on server) | Server applies; worker waits and registers |
 
-Omitting a worker container keeps background jobs in the server. Both topologies require PostgreSQL and Valkey. Hosted inference remains off until `CHESS_HOSTED_ENABLED=true` and the selected worker runtime has an OpenRouter key. Read [SECURITY.md](../SECURITY.md) and [the environment inventory](./environment.md) before exposing an instance.
+Omitting a worker container keeps background jobs in the server. Both topologies require PostgreSQL and Valkey. Hosted inference remains off until `CHESS_HOSTED_ENABLED=true` and the selected worker runtime has an OpenRouter key. Each side of a hosted match may spend at most `CHESS_MAX_COST_USD` (default 25) and use at most `CHESS_MAX_TOKENS` (default 10000000) tokens; set them on the server, and the create form's budget sliders follow them. Read [SECURITY.md](../SECURITY.md) and [the environment inventory](./environment.md) before exposing an instance.
 
 ## Generated Compose
 

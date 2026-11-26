@@ -1,5 +1,6 @@
 import type { AgentLoopOptions, AgentMessage } from "@cockpit-chess/agent-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { matchEnding } from "./ending";
 import {
   archiveByteLength,
   boardAt,
@@ -19,6 +20,8 @@ import {
   ARCHIVE_HEADROOM_BYTES,
   advanceMatch,
   archiveLimitReached,
+  archiveMeter,
+  dispatchReservation,
   endAtArchiveLimit,
   eventEntryBytes,
   MATCH_INTERRUPTED,
@@ -524,7 +527,13 @@ const reply = (content: string): AgentMessage => ({
 });
 /** A provider stand-in that plays the first legal move listed in its prompt. */
 const legalPlayer =
-  ({ usage = true }: { usage?: boolean } = {}) =>
+  ({
+    usage = true,
+    tokens = { inputTokens: 40, outputTokens: 10 },
+  }: {
+    usage?: boolean;
+    tokens?: { inputTokens: number; outputTokens: number };
+  } = {}) =>
   async (options: {
     messages: Array<{ parts: Array<{ content?: string }> }>;
     onBeforeDispatch: (ctx: unknown) => Promise<{ veto?: unknown } | undefined>;
@@ -532,7 +541,7 @@ const legalPlayer =
   }) => {
     const check = await options.onBeforeDispatch({ messages: options.messages });
     if (check?.veto) return { messages: options.messages, stopReason: "vetoed" };
-    if (usage) options.onUsage({ inputTokens: 40, outputTokens: 10 });
+    if (usage) options.onUsage(tokens);
     const prompt = options.messages.at(-1)?.parts[0]?.content ?? "";
     const move = /Legal UCI moves: (\S+)/.exec(prompt)?.[1] ?? "0000";
     return {
@@ -796,11 +805,14 @@ describe("settlement, persistence, replay reuse and archive limits", () => {
     expect(stats.costMicros).not.toBeNull();
     expect(validateArchive(settled)).toEqual(settled);
     // A dispatch that never reports usage keeps its full reservation, and cost is unknown.
+    // The second call no longer fits its full reservation but one attempt does, so it
+    // runs on the half budget that remains; then nothing remains.
     runAgentLoop.mockImplementation(legalPlayer({ usage: false }));
     const unknown = createMatch({ white: model, black: random, rules });
     await runMatch(unknown, { credentials, random: () => 0 });
     expect(unknown).toMatchObject({ termination: "token-budget", result: "0-1" });
-    expect(matchStats(unknown, "w")).toMatchObject({ moves: 1, costMicros: null });
+    expect(matchStats(unknown, "w")).toMatchObject({ moves: 2, costMicros: null });
+    expect(matchStats(unknown, "w").committedTokens).toBe(rules.tokenBudget);
     expect(matchStats(unknown, "w").committedTokens).toBe(matchStats(unknown, "w").reservedTokens);
     expect(validateArchive(unknown)).toEqual(unknown);
   });
@@ -1303,5 +1315,221 @@ describe("spectator evaluation", () => {
     await feed.drain();
     expect(recorded).toEqual([0, 1, 2]);
     expect(feed.remaining).toBe(0);
+  });
+});
+
+/** A provider stand-in that dispatches once, reports usage, and replies with `move`. */
+const fixedPlayer =
+  (move: string, usage = { inputTokens: 40, outputTokens: 10 }) =>
+  async (options: AgentLoopOptions) => {
+    const check = await options.onBeforeDispatch?.({
+      messages: options.messages,
+      iteration: 0,
+      lastDispatchAt: null,
+    });
+    if (check && "veto" in check && check.veto)
+      return { messages: options.messages, stopReason: "vetoed" };
+    options.onUsage?.(usage as never);
+    return {
+      messages: [...options.messages, reply(JSON.stringify({ move }))],
+      stopReason: "completed",
+    };
+  };
+
+describe("dispatch reservations sized to the model and what remains", () => {
+  const price = { inputMicrosPerMillion: 5_000_000, outputMicrosPerMillion: 25_000_000 };
+  const base = { inputBytes: 6000, maxOutputTokens: 512, price };
+  // One attempt: (6000 + 4096) input x $5/M + 512 output x $25/M = 50,480 + 12,800 µ$.
+  const one = 63_280;
+  it("reserves every transport attempt when that fits", () => {
+    expect(
+      dispatchReservation({ ...base, remainingTokens: 1e9, remainingCostMicros: 1_000_000 }),
+    ).toEqual({ tokens: (6000 + 4096 + 512) * 3, costMicros: one * 3 });
+  });
+  it("caps the reservation to what remains when one attempt still fits", () => {
+    expect(
+      dispatchReservation({ ...base, remainingTokens: 20_000, remainingCostMicros: 100_000 }),
+    ).toEqual({ tokens: 20_000, costMicros: 100_000 });
+    expect(
+      dispatchReservation({ ...base, remainingTokens: 10_608, remainingCostMicros: one }),
+    ).toEqual({ tokens: 10_608, costMicros: one });
+  });
+  it("cannot afford a call whose single attempt exceeds what remains", () => {
+    expect(
+      dispatchReservation({ ...base, remainingTokens: 10_607, remainingCostMicros: one - 1 }),
+    ).toEqual({ tokens: null, costMicros: null });
+    expect(dispatchReservation({ ...base, remainingTokens: 0, remainingCostMicros: -5 })).toEqual({
+      tokens: null,
+      costMicros: null,
+    });
+  });
+  it("plays an expensive model on to its budget and says what it spent", async () => {
+    // Each reply costs 3000 x $5/M + 400 x $25/M = 25,000 µ$; a full reservation is
+    // several times more, so the old rule stopped this side with most of the budget left.
+    const expensive = { w: { apiKey: "test-only", ...price } };
+    runAgentLoop.mockImplementation(
+      legalPlayer({ tokens: { inputTokens: 3000, outputTokens: 400 } }),
+    );
+    const match = createMatch({
+      white: model,
+      black: random,
+      rules: { legalMoves: "provided", costBudgetMicros: 200_000 },
+    });
+    await runMatch(match, { credentials: expensive, random: () => 0 });
+    expect(match).toMatchObject({ termination: "cost-budget", result: "0-1" });
+    const stats = matchStats(match, "w");
+    // It plays until one more call's single attempt no longer fits: spent within one
+    // attempt's bound of the budget, never over it.
+    expect(stats.costMicros).toBe(stats.moves * 25_000);
+    expect(stats.committedCostMicros).toBeLessThanOrEqual(200_000);
+    expect(stats.committedCostMicros).toBeGreaterThan(200_000 - 100_000);
+    expect(matchEnding(match)).toMatchObject({ spentMicros: stats.costMicros });
+    expect(validateArchive(JSON.parse(JSON.stringify(match)))).toEqual(match);
+  });
+});
+
+describe("keep trying on illegal moves", () => {
+  it("retries past maxAttempts until a legal move instead of forfeiting", async () => {
+    runAgentLoop.mockImplementation(fixedPlayer("e2e5"));
+    for (let index = 0; index < 5; index += 1)
+      runAgentLoop.mockImplementationOnce(fixedPlayer("e2e5"));
+    runAgentLoop.mockImplementationOnce(fixedPlayer("e2e4"));
+    const match = createMatch({
+      white: model,
+      black: random,
+      rules: { illegalPolicy: "retry", maxAttempts: 1 },
+    });
+    await advanceMatch(match, { credentials });
+    expect(match.status).toBe("running");
+    const attempts = match.events.filter((event) => event.type === "attempt");
+    expect(attempts.map((event) => event.accepted)).toEqual([...Array(5).fill(false), true]);
+    expect(matchStats(match, "w").illegalAttempts).toBe(5);
+    const feedback = runAgentLoop.mock.calls[5]?.[0].messages.at(-1)?.parts[0];
+    expect(feedback).toMatchObject({ content: expect.stringContaining("Rejected illegal move") });
+    expect(JSON.stringify(feedback)).not.toContain("attempts remain");
+    expect(validateArchive(JSON.parse(JSON.stringify(match)))).toEqual(match);
+  });
+  it("still ends a retrying turn on the cost budget", async () => {
+    runAgentLoop.mockImplementation(fixedPlayer("e2e5", { inputTokens: 2000, outputTokens: 2000 }));
+    const match = createMatch({
+      white: model,
+      black: random,
+      rules: { illegalPolicy: "retry", costBudgetMicros: 10_000 },
+    });
+    await advanceMatch(match, { credentials });
+    expect(match).toMatchObject({ termination: "cost-budget", result: "0-1" });
+    expect(matchStats(match, "w").illegalAttempts).toBeGreaterThan(3);
+    expect(matchStats(match, "w").committedCostMicros).toBeLessThanOrEqual(10_000);
+    expect(validateArchive(JSON.parse(JSON.stringify(match)))).toEqual(match);
+  });
+  it("re-measures a long retrying turn and ends it at the archive limit, never over it", {
+    timeout: 120_000,
+  }, async () => {
+    // Shared accounting streams counts that grow after the meter counted them; a turn
+    // of 120+ dispatches must re-measure instead of trusting the fixed slack.
+    const match = createMatch({
+      white: model,
+      black: random,
+      rules: {
+        illegalPolicy: "retry",
+        tokenAccounting: "cl100k_base",
+        tokenBudget: 100_000_000,
+        costBudgetMicros: 100_000_000,
+        maxDispatches: 1,
+        turnTimeoutMs: 300_000,
+      },
+    });
+    padArchive(match, MAX_ARCHIVE_BYTES - ARCHIVE_HEADROOM_BYTES - 200_000);
+    runAgentLoop.mockImplementation(async (options: AgentLoopOptions) => {
+      const check = await options.onBeforeDispatch?.({
+        messages: options.messages,
+        iteration: 0,
+        lastDispatchAt: null,
+      });
+      if (check && "veto" in check && check.veto)
+        return { messages: options.messages, stopReason: "vetoed" };
+      // A long reply: each shared-usage count grows by several digits after the meter saw 0.
+      const output = reply(JSON.stringify({ move: "e2e5", note: "a b ".repeat(150) }));
+      return { messages: [...options.messages, output], stopReason: "completed" };
+    });
+    let largest = 0;
+    await advanceMatch(match, {
+      credentials,
+      onUpdate: (snapshot) => {
+        largest = Math.max(largest, archiveByteLength(snapshot));
+      },
+    });
+    expect({ status: match.status, termination: match.termination }).toEqual({
+      status: "error",
+      termination: "event-limit",
+    });
+    const shared = match.events.filter((event) => event.type === "shared-usage");
+    expect(shared.length).toBeGreaterThan(120);
+    expect(shared.every((event) => event.outputTokens > 0)).toBe(true);
+    expect(Math.max(largest, archiveByteLength(match))).toBeLessThanOrEqual(MAX_ARCHIVE_BYTES);
+    expect(validateArchive(JSON.parse(serializeArchive(match)))).toEqual(match);
+  });
+  it("re-measures after many shared-usage counts grew in place past the slack", () => {
+    const match = createMatch({
+      white: model,
+      black: random,
+      rules: { tokenAccounting: "cl100k_base" },
+    });
+    const shared = (outputTokens: number): MatchEvent => ({
+      type: "shared-usage",
+      seq: match.events.length,
+      at: "2026-11-26T00:00:00.000Z",
+      side: "w",
+      ply: 0,
+      encoding: "cl100k_base",
+      inputTokens: 1000,
+      outputTokens,
+    });
+    // 200 counts that each grow by six digits after being counted: 1,200 unseen bytes,
+    // more than the meter's fixed slack. Pad so the counted size stays 1,100 bytes under
+    // the threshold (the slack alone would accept it) while the grown size is over it.
+    const count = 200;
+    const target = MAX_ARCHIVE_BYTES - ARCHIVE_HEADROOM_BYTES - 1100;
+    const zeroBytes = () => {
+      const before = archiveByteLength(match);
+      for (let index = 0; index < count; index += 1) match.events.push(shared(0));
+      const added = archiveByteLength(match) - before;
+      match.events.splice(-count);
+      return added;
+    };
+    padArchive(match, target - count * eventEntryBytes(shared(0)) - 2000);
+    padArchive(match, target - zeroBytes());
+    expect(archiveByteLength(match) + zeroBytes()).toBe(target);
+    const meter = archiveMeter(match);
+    expect(meter()).toBe(false);
+    let reached = false;
+    for (let index = 0; index < count; index += 1) {
+      const event = shared(0);
+      match.events.push(event);
+      reached ||= meter();
+      if (event.type === "shared-usage") event.outputTokens = 9_999_999;
+    }
+    reached ||= meter();
+    expect(archiveLimitReached(match)).toBe(true);
+    expect(reached).toBe(true);
+  });
+  describe("on the clock", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+    it("still ends a retrying turn on the per-move limit", async () => {
+      runAgentLoop.mockImplementation(async (options: AgentLoopOptions) => {
+        await vi.advanceTimersByTimeAsync(2000);
+        return fixedPlayer("e2e5")(options);
+      });
+      const match = createMatch({
+        white: model,
+        black: random,
+        rules: { illegalPolicy: "retry", turnTimeoutMs: 5000 },
+      });
+      await advanceMatch(match, { credentials });
+      expect(match).toMatchObject({ termination: "move-timeout", result: "0-1" });
+      expect(matchStats(match, "w").illegalAttempts).toBe(3);
+      expect(validateArchive(JSON.parse(JSON.stringify(match)))).toEqual(match);
+    });
   });
 });

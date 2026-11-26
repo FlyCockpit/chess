@@ -2,11 +2,14 @@ import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import { createInstance, type TFunction } from "i18next";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  budgetStops,
   type CatalogModel,
   type CreateMatchValues,
   createMatchSchema,
   DEFAULT_VALUES,
+  defaultValuesFor,
   FIELD_SECTION,
+  maxBudgetUsd,
   resolveProtocol,
   searchModels,
   summaryParts,
@@ -47,10 +50,14 @@ const usd = new Intl.NumberFormat("en-US", {
   currency: "USD",
   minimumFractionDigits: 2,
 });
-const errorsFor = (value: Partial<CreateMatchValues>) => {
-  const result = createMatchSchema(t).safeParse({ ...DEFAULT_VALUES, ...value });
-  return result.success ? [] : result.error.issues.map((issue) => String(issue.path[0]));
+/** The server's defaults (CHESS_MAX_COST_USD=25, CHESS_MAX_TOKENS=10000000). */
+const limits = { maxCostMicros: 25_000_000, maxTokens: 10_000_000 };
+const issuesFor = (value: Partial<CreateMatchValues>, server = limits) => {
+  const result = createMatchSchema(t, server).safeParse({ ...DEFAULT_VALUES, ...value });
+  return result.success ? [] : result.error.issues;
 };
+const errorsFor = (value: Partial<CreateMatchValues>, server = limits) =>
+  issuesFor(value, server).map((issue) => String(issue.path[0]));
 
 /** An uneven clock: White minutes, Black minutes, optional Black seconds. */
 const uneven = (white: string, black: string, blackSeconds = "0") => ({
@@ -116,11 +123,13 @@ describe("defaults", () => {
       remarks: "off",
       tokenAccounting: "provider",
       tokenBudget: 1000000,
-      costBudgetMicros: 100000,
+      costBudgetMicros: 1_000_000,
+      maxAttempts: 3,
       clock: null,
       turnTimeoutMs: 60000,
     });
     expect(config.data.rules).not.toHaveProperty("maxPlies");
+    expect(config.data.rules).not.toHaveProperty("illegalPolicy");
   });
   it("keep a typed title and translate the derived one", () => {
     const typed = toMatchConfig({ ...DEFAULT_VALUES, title: "  Grudge match " }, undefined, t);
@@ -133,7 +142,13 @@ describe("defaults", () => {
   });
   it("summarise in one line", () => {
     expect(summaryParts(DEFAULT_VALUES, t, usd).join(" · ")).toBe(
-      "Untimed · Fresh context · Legal-move tool · Strict format · $0.10 budget",
+      "Untimed · Fresh context · Legal-move tool · Strict format · $1.00 budget",
+    );
+    expect(summaryParts({ ...DEFAULT_VALUES, illegalPolicy: "retry" }, t, usd).at(-1)).toBe(
+      "Keeps trying on illegal moves",
+    );
+    expect(summaryParts({ ...DEFAULT_VALUES, maxAttempts: 1 }, t, usd).at(-1)).toBe(
+      "Forfeits after 1 illegal move",
     );
     expect(
       summaryParts(
@@ -184,15 +199,17 @@ describe("validation keeps the hosted bounds", () => {
       { time: { ...applyPreset(DEFAULT_VALUES.time, 5), white: { minutes: "4", seconds: "60" } } },
       "time",
     ],
-    [{ budget: "0.001" }, "budget"],
-    [{ budget: "1.01" }, "budget"],
-    [{ budget: "" }, "budget"],
-    // The old input's step: whole cents only.
-    [{ budget: "0.015" }, "budget"],
-    [{ tokenBudget: "1000.5" }, "tokenBudget"],
+    [{ budget: 0.001 }, "budget"],
+    [{ budget: 25.01 }, "budget"],
+    [{ budget: Number.NaN }, "budget"],
+    // Whole cents only.
+    [{ budget: 0.015 }, "budget"],
+    [{ tokenBudget: 1000.5 }, "tokenBudget"],
     [{ moveLimit: "abc" }, "moveLimit"],
-    [{ tokenBudget: "255" }, "tokenBudget"],
-    [{ tokenBudget: "1000001" }, "tokenBudget"],
+    [{ tokenBudget: 255 }, "tokenBudget"],
+    [{ tokenBudget: 10_000_001 }, "tokenBudget"],
+    [{ maxAttempts: 0 }, "maxAttempts"],
+    [{ maxAttempts: 11 }, "maxAttempts"],
     [{ white: "  " }, "white"],
     [{ black: "x".repeat(161) }, "black"],
     [{ title: "t".repeat(141) }, "title"],
@@ -205,19 +222,48 @@ describe("validation keeps the hosted bounds", () => {
     { time: applyPreset(DEFAULT_VALUES.time, 30), moveLimit: "300" },
     { time: uneven("1", "0", "30") },
     { time: uneven("60", "0", "30"), moveLimit: "30" },
-    { budget: "0.01" },
-    { budget: "1" },
-    { tokenBudget: "256" },
+    { budget: 0.01 },
+    { budget: 1 },
+    { budget: 25 },
+    { budget: 0.07 },
+    { tokenBudget: 256 },
+    { tokenBudget: 10_000_000 },
     { title: "t".repeat(140) },
-    { budget: "0.07" },
-    { budget: ".5" },
-    // Number-input notation the browser accepts.
-    { tokenBudget: "1e3" },
+    { maxAttempts: 1 },
+    { maxAttempts: 10 },
+    { illegalPolicy: "retry" as const },
   ])("%o is accepted", (value) => {
     expect(errorsFor(value)).toEqual([]);
     expect(toMatchConfig({ ...DEFAULT_VALUES, ...value }, undefined, t).success).toBe(true);
   });
+  it("follows the server's limits and names them when a value is over", () => {
+    const small = { maxCostMicros: 2_500_000, maxTokens: 50_000 };
+    expect(errorsFor({ budget: 2.5, tokenBudget: 50_000 }, small)).toEqual([]);
+    expect(issuesFor({ budget: 2.51, tokenBudget: 50_001 }, small).map((i) => i.message)).toEqual([
+      "This server allows at most 50000 tokens per player.",
+      "This server allows a budget of at most 2.5 US dollars per player.",
+    ]);
+    expect(maxBudgetUsd({ maxCostMicros: 25_000_000, maxTokens: 1 })).toBe(25);
+    // A cap below the defaults starts the form at the cap, so it opens valid.
+    const tight = defaultValuesFor({ maxCostMicros: 500_000, maxTokens: 20_000 });
+    expect(tight).toMatchObject({ budget: 0.5, tokenBudget: 20_000 });
+    expect(errorsFor(tight, { maxCostMicros: 500_000, maxTokens: 20_000 })).toEqual([]);
+    expect(defaultValuesFor(limits)).toEqual(DEFAULT_VALUES);
+  });
+  it("offers log-spaced budget stops that end at the server's cap", () => {
+    expect(budgetStops(0.01, 25)).toEqual([0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 25]);
+    expect(budgetStops(0.01, 1)).toEqual([0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1]);
+  });
+  it("records keep trying as a rule and forfeit-after-N as the attempt count", () => {
+    const retry = toMatchConfig({ ...DEFAULT_VALUES, illegalPolicy: "retry" }, undefined, t);
+    expect(retry.success && retry.data.rules.illegalPolicy).toBe("retry");
+    const strict = toMatchConfig({ ...DEFAULT_VALUES, maxAttempts: 1 }, undefined, t);
+    expect(strict.success && strict.data.rules).toMatchObject({ maxAttempts: 1 });
+    expect(strict.success && strict.data.rules).not.toHaveProperty("illegalPolicy");
+  });
   it("maps every advanced field to its section", () => {
+    expect(FIELD_SECTION.illegalPolicy).toBe("rules");
+    expect(FIELD_SECTION.maxAttempts).toBe("rules");
     expect(FIELD_SECTION.whiteProtocol).toBe("players");
     expect(FIELD_SECTION.identity).toBe("players");
     expect(FIELD_SECTION.context).toBe("rules");

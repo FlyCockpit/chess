@@ -87,6 +87,11 @@ export const sharedVars = {
   SMTP_FROM: z.string().optional(),
   // Admin-only hosted inference is opt-in; local chess needs no provider key.
   CHESS_HOSTED_ENABLED: strictBooleanFlag(false),
+  // Operator limits for one side of a hosted match: the most `chess.create` accepts
+  // and the create form offers. Bounded by the rules schema's own ceilings
+  // ($1,000 and 100M tokens, packages/chess MAX_COST_BUDGET_MICROS / MAX_TOKEN_BUDGET).
+  CHESS_MAX_COST_USD: z.coerce.number().min(0.01).max(1000).default(25),
+  CHESS_MAX_TOKENS: z.coerce.number().int().min(256).max(100_000_000).default(10_000_000),
   // Per-call model override. Falls through to the provider's default
   // (`anthropic/claude-haiku-4-5` for OpenRouter, `claude-haiku-4-5` for
   // direct Anthropic) when unset.

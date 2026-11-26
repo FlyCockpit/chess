@@ -5,7 +5,9 @@ import {
   type EngineEvaluation,
   type MatchArchive,
   type MatchEvent,
+  MODEL_PROTOCOLS,
   matchStats,
+  type Player,
   remarkTone,
 } from "@cockpit-chess/chess";
 import { endingSummary, type MatchEnding, matchEnding } from "@cockpit-chess/chess/ending";
@@ -35,7 +37,13 @@ import {
   endingLabel,
   remarkToneLabel,
   timeControlLabel,
+  usdLabel,
 } from "./ending-label";
+
+/** Hosted model players spend against a budget; random and human players do not. */
+const isModelPlayer = (player: Player) =>
+  (MODEL_PROTOCOLS as readonly string[]).includes(player.protocol);
+
 import { EvalBar, EvalGraph } from "./eval-bar";
 import {
   evaluationSeries,
@@ -368,12 +376,10 @@ export function MatchReplay({
   const remarks = useMemo(() => remarksOf(match), [match]);
   const sideStats = useMemo(
     () =>
-      match.config.rules.tokenAccounting === "cl100k_base"
-        ? ([
-            ["w", matchStats(match, "w")],
-            ["b", matchStats(match, "b")],
-          ] as const)
-        : [],
+      [
+        ["w", matchStats(match, "w")],
+        ["b", matchStats(match, "b")],
+      ] as const,
     [match],
   );
   const rulesJson = useMemo(
@@ -473,6 +479,16 @@ export function MatchReplay({
             <strong>{endingHeadlineLabel(t, summary)}</strong>
             {endingDetailLabel(t, i18n.language, structuredEnding) && (
               <span>{endingDetailLabel(t, i18n.language, structuredEnding)}</span>
+            )}
+            {sideStats.some(([, side]) => side.illegalAttempts > 0) && (
+              <span className="cc-result-illegal">
+                {t("replay.illegalBySide", {
+                  white: t("colors.w"),
+                  w: sideStats[0][1].illegalAttempts,
+                  black: t("colors.b"),
+                  b: sideStats[1][1].illegalAttempts,
+                })}
+              </span>
             )}
             <span className="cc-result-score">{match.result}</span>
           </div>
@@ -616,16 +632,29 @@ export function MatchReplay({
             <p>{t("engine.details", { depth: evaluation.depth, nodes: evaluation.nodes })}</p>
           </div>
         )}
-        {sideStats.map(([side, shared]) => (
-          <p key={side} className="cc-muted mb-2 text-xs">
-            {t(`colors.${side}`)} ·{" "}
-            {t("replay.sharedSpend", {
-              input: shared.sharedInputTokens,
-              output: shared.sharedOutputTokens,
-              limit: match.config.rules.tokenBudget,
-            })}
-          </p>
-        ))}
+        {match.config.rules.tokenAccounting === "cl100k_base" &&
+          sideStats.map(([side, shared]) => (
+            <p key={side} className="cc-muted mb-2 text-xs">
+              {t(`colors.${side}`)} ·{" "}
+              {t("replay.sharedSpend", {
+                input: shared.sharedInputTokens,
+                output: shared.sharedOutputTokens,
+                limit: match.config.rules.tokenBudget,
+              })}
+            </p>
+          ))}
+        {/* Each model's spend against its budget, live while the game runs. */}
+        {sideStats
+          .filter(([side]) => isModelPlayer(side === "w" ? match.config.white : match.config.black))
+          .map(([side, spent]) => (
+            <p key={side} className="cc-muted mb-2 text-xs cc-side-spend">
+              {t(spent.costMicros === null ? "replay.sideSpendUnknown" : "replay.sideSpend", {
+                side: t(`colors.${side}`),
+                spent: usdLabel(i18n.language, spent.reportedCostMicros),
+                budget: usdLabel(i18n.language, match.config.rules.costBudgetMicros),
+              })}
+            </p>
+          ))}
         <p className="cc-muted mb-4 text-xs">
           {t("replay.spend", {
             cost:
@@ -645,8 +674,10 @@ export function MatchReplay({
             <span>{t("stats.plies")}</span>
           </div>
           <div>
-            <strong>{stats.illegalAttempts}</strong>
-            <span>{t("stats.rejected")}</span>
+            <strong>
+              {sideStats[0][1].illegalAttempts} / {sideStats[1][1].illegalAttempts}
+            </strong>
+            <span>{t("stats.rejectedBySide")}</span>
           </div>
           <div>
             <strong>{stats.inputTokens + stats.outputTokens}</strong>

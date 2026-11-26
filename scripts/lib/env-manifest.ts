@@ -1025,6 +1025,30 @@ export const ENV_VARS: EnvVar[] = [
       "Enable admin-only hosted chess inference. Local play and public replay need no key.",
     ],
   },
+  {
+    key: "CHESS_MAX_COST_USD",
+    group: "chess",
+    source: "default",
+    default: "25",
+    advanced: true,
+    example: "25",
+    comment: [
+      "Most a hosted match may let one side spend, in US dollars (0.01 to 1000).",
+      "The create form's budget slider stops here; `chess.create` rejects more.",
+    ],
+  },
+  {
+    key: "CHESS_MAX_TOKENS",
+    group: "chess",
+    source: "default",
+    default: "10000000",
+    advanced: true,
+    example: "10000000",
+    comment: [
+      "Most tokens a hosted match may let one side use (256 to 100000000).",
+      "The create form's token slider stops here; `chess.create` rejects more.",
+    ],
+  },
 
   // --- ratelimit (tuning) --------------------------------------------------
   // Three named budgets, two knobs per family.

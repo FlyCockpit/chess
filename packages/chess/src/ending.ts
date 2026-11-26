@@ -5,6 +5,7 @@ import {
   boardAt,
   type Chess,
   type MatchArchive,
+  matchStats,
   plyLimit,
   type Rules,
   type Side,
@@ -55,7 +56,17 @@ export type MatchEnding =
       tokens: number;
       accounting: Rules["tokenAccounting"];
     }
-  | { kind: "cost-budget"; loser: Side; budgetMicros: number }
+  /**
+   * `spentMicros`: the provider-reported cost of the side's calls. `settled` is false
+   * when some call never reported its cost, so the side spent at least that much.
+   */
+  | {
+      kind: "cost-budget";
+      loser: Side;
+      budgetMicros: number;
+      spentMicros: number;
+      settled: boolean;
+    }
   | { kind: "resignation"; loser: Side }
   | { kind: "ply-limit"; plies: number }
   | { kind: "cancelled" }
@@ -124,6 +135,12 @@ export function illegalWhy(match: MatchArchive, attempt: AttemptEvent, board: Ch
   return { code: "empty", square: from };
 }
 
+/** A side's reported spend, and whether every call's cost was reported. */
+function spentOf(match: MatchArchive, side: Side) {
+  const stats = matchStats(match, side);
+  return { spentMicros: stats.reportedCostMicros, settled: stats.costMicros !== null };
+}
+
 /** How the match ended, with the details its plain-words description needs. */
 export function matchEnding(match: MatchArchive): MatchEnding {
   const rules = match.config.rules;
@@ -164,7 +181,12 @@ export function matchEnding(match: MatchArchive): MatchEnding {
         accounting: rules.tokenAccounting,
       };
     case "cost-budget":
-      return { kind: "cost-budget", loser: toMove, budgetMicros: rules.costBudgetMicros };
+      return {
+        kind: "cost-budget",
+        loser: toMove,
+        budgetMicros: rules.costBudgetMicros,
+        ...spentOf(match, toMove),
+      };
     case "resignation":
       return { kind: "resignation", loser: toMove };
     case "ply-limit":
@@ -214,8 +236,9 @@ export function endingSummary(ending: MatchEnding): EndingSummary {
 }
 
 const colour = (side: Side) => (side === "w" ? "White" : "Black");
-/** "$1.00", "$0.05", "$0.0012": cents when whole, else up to four decimals. */
+/** "$1.00", "$0.05", "$0.0012", "$0.00": cents when whole, else up to four decimals. */
 export function formatUsd(micros: number) {
+  if (micros === 0) return "$0.00";
   const dollars = micros / 1_000_000;
   return `$${dollars >= 0.01 && Number.isInteger(micros / 10_000) ? dollars.toFixed(2) : dollars.toFixed(4).replace(/\.?0+$/, "")}`;
 }
@@ -284,7 +307,7 @@ export function endingHeadline(summary: EndingSummary): string {
     case "token-budget":
       return side ? `${side} ran out of tokens` : "Out of tokens";
     case "cost-budget":
-      return side ? `${side} ran out of spend` : "Out of spend";
+      return side ? `${side} ran out of budget` : "Out of budget";
     case "resignation":
       return side ? `${side} resigned` : "Resignation";
     case "ply-limit":
@@ -321,7 +344,7 @@ export function endingDetail(ending: MatchEnding): string | null {
     case "token-budget":
       return `${ending.tokens.toLocaleString("en-US")} token budget`;
     case "cost-budget":
-      return `${formatUsd(ending.budgetMicros)} budget`;
+      return `spent ${ending.settled ? "" : "at least "}${formatUsd(ending.spentMicros)} of ${formatUsd(ending.budgetMicros)}`;
     case "ply-limit":
       return `${ending.plies} plies`;
     case "cancelled":

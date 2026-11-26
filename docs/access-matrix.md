@@ -10,7 +10,7 @@ registered access levels; handler tests verify ownership and custom role rules.
 
 | Feature | Status | Anonymous | User | Admin | Enforcing procedure | Notes |
 |---|---|---|---|---|---|---|
-| Read arena configuration | implemented | read | read | read | `chess.info` | No secrets |
+| Read arena configuration | implemented | read | read | read | `chess.info` | No secrets; includes the per-side hosted budget limits (operator config) |
 | Browse published matches | implemented | read | read | read | `chess.list` | Public projection only; cursor bounded |
 | View a published game and replay | implemented | read | read | read | `chess.get` | Drafts never public; includes spectator-only engine scores; a finished game missing some may enqueue one deduplicated background backfill (engine CPU only, no inference spend) |
 | Read official results | implemented | read | read | read | `chess.leaderboard` | Controlled runs only |

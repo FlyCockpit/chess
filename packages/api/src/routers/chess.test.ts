@@ -23,7 +23,12 @@ const { ensureRunnableJob, budget, env, reconcileAdd } = vi.hoisted(() => ({
   ensureRunnableJob: vi.fn(),
   reconcileAdd: vi.fn(),
   budget: vi.fn(),
-  env: { CHESS_HOSTED_ENABLED: true, OPENROUTER_API_KEY: "test-only" },
+  env: {
+    CHESS_HOSTED_ENABLED: true,
+    OPENROUTER_API_KEY: "test-only",
+    CHESS_MAX_COST_USD: 25,
+    CHESS_MAX_TOKENS: 10_000_000,
+  },
 }));
 vi.mock("@cockpit-chess/queue", () => ({
   CHESS_SPECTATOR_JOB_PRIORITY: 10,
@@ -195,6 +200,8 @@ beforeEach(() => {
   invalidateForceTwoFactorSettingsCache();
   db.appSetting.findMany.mockResolvedValue([]);
   env.CHESS_HOSTED_ENABLED = true;
+  env.CHESS_MAX_COST_USD = 25;
+  env.CHESS_MAX_TOKENS = 10_000_000;
   budget.mockResolvedValue(undefined);
 });
 describe("chess public projection and operator boundaries", () => {
@@ -240,6 +247,34 @@ describe("chess public projection and operator boundaries", () => {
       code: "SERVICE_UNAVAILABLE",
     });
     expect(db.chessMatch.create).not.toHaveBeenCalled();
+  });
+  it("tells the create form the operator limits from server config", async () => {
+    env.CHESS_MAX_COST_USD = 2.5;
+    env.CHESS_MAX_TOKENS = 3_000_000;
+    expect(await client(null).info()).toMatchObject({
+      limits: { maxCostMicros: 2_500_000, maxTokens: 3_000_000 },
+    });
+  });
+  it("accepts budgets up to the configured operator limits and rejects more", async () => {
+    db.chessMatch.create.mockResolvedValue(row());
+    ensureRunnableJob.mockResolvedValue({ id: "chess-id" });
+    const at = { costBudgetMicros: 25_000_000, tokenBudget: 10_000_000 };
+    await expect(client().create({ ...newConfig(), rules: at })).resolves.toMatchObject({
+      slug: expect.any(String),
+    });
+    for (const over of [
+      { ...at, costBudgetMicros: 25_000_001 },
+      { ...at, tokenBudget: 10_000_001 },
+    ])
+      await expect(client().create({ ...newConfig(), rules: over })).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+        message: "Hosted match exceeds the operator limits",
+      });
+    env.CHESS_MAX_COST_USD = 1;
+    await expect(
+      client().create({ ...newConfig(), rules: { costBudgetMicros: 1_000_001 } }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(db.chessMatch.create).toHaveBeenCalledTimes(1);
   });
   it("rejects an unloadable initial FEN as input validation before charging the budget", async () => {
     await expect(

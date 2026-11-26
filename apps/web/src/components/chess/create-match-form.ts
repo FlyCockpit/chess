@@ -1,4 +1,6 @@
 import {
+  type IllegalPolicy,
+  illegalPolicies,
   type MatchConfig,
   MODEL_PROTOCOLS,
   type ModelProtocol,
@@ -46,15 +48,37 @@ export const MOVE_FORMATS = ["strict", "lenient"] as const;
 export const ENGINE_MODES = ["off", "tool", "after-move", "both"] as const;
 export const TOKEN_ACCOUNTING = ["provider", "cl100k_base"] as const;
 export const REMARK_TONES = remarkTones;
+export const ILLEGAL_POLICIES = illegalPolicies;
 
-/** The hosted operator limits `chess.create` enforces, mirrored for inline errors. */
+/** Field limits the shared schema enforces, mirrored for inline errors. */
 export const LIMITS = {
   title: 140,
   model: 160,
   name: 80,
-  budgetUsd: { min: 0.01, max: 1 },
+  budgetUsd: { min: 0.01 },
+  /** `max` bounds the local lab's own token field; hosted maxima come from the server. */
   tokens: { min: 256, max: 1_000_000 },
+  attempts: { min: 1, max: 10 },
 } as const;
+
+/** The server's per-side operator limits (`chess.info`, from `CHESS_MAX_*`). */
+export type HostedLimits = { maxCostMicros: number; maxTokens: number };
+/** Used only until `chess.info` answers (the create button stays disabled until then). */
+export const FALLBACK_LIMITS: HostedLimits = { maxCostMicros: 25_000_000, maxTokens: 10_000_000 };
+/** The hosted per-side budget maximum in US dollars, never below the field's minimum. */
+export function maxBudgetUsd(limits: HostedLimits) {
+  return Math.max(LIMITS.budgetUsd.min, Math.floor(limits.maxCostMicros / 10_000) / 100);
+}
+/** A 1-2-5 series up to `max`, which always ends it: the slider's log-spaced stops. */
+export function budgetStops(min: number, max: number) {
+  const stops: number[] = [];
+  for (let decade = 1e-2; decade <= max; decade *= 10)
+    for (const digit of [1, 2, 5]) {
+      const stop = Number((digit * decade).toPrecision(3));
+      if (stop >= min && stop < max) stops.push(stop);
+    }
+  return [...stops, max];
+}
 
 export type CreateMatchValues = {
   title: string;
@@ -70,9 +94,13 @@ export type CreateMatchValues = {
   remarks: RemarkTone;
   time: TimeControlValue;
   tokenAccounting: Rules["tokenAccounting"];
-  /** Numeric inputs stay strings in the form; the schema parses them. */
-  tokenBudget: string;
-  budget: string;
+  /** Per side; the slider and typed value commit numbers within the server's limits. */
+  tokenBudget: number;
+  /** Per side, in US dollars. */
+  budget: number;
+  illegalPolicy: IllegalPolicy;
+  /** Rejected attempts on one turn that forfeit (only under "forfeit"). */
+  maxAttempts: number;
   /** Per-move safety limit in seconds; "" = automatic (1 min, never above a clock). */
   moveLimit: string;
 };
@@ -92,10 +120,21 @@ export const DEFAULT_VALUES: CreateMatchValues = {
   remarks: "off",
   time: DEFAULT_TIME_CONTROL,
   tokenAccounting: "provider",
-  tokenBudget: "1000000",
-  budget: "0.10",
+  tokenBudget: 1_000_000,
+  budget: 1,
+  illegalPolicy: "forfeit",
+  maxAttempts: 3,
   moveLimit: "",
 };
+
+/** The defaults within the server's limits (a server capped below them starts at its cap). */
+export function defaultValuesFor(limits: HostedLimits): CreateMatchValues {
+  return {
+    ...DEFAULT_VALUES,
+    budget: Math.min(DEFAULT_VALUES.budget, maxBudgetUsd(limits)),
+    tokenBudget: Math.min(DEFAULT_VALUES.tokenBudget, limits.maxTokens),
+  };
+}
 
 export type SectionId = "players" | "rules" | "limits";
 /** Which collapsed section owns a field, so a failed submit can open it. */
@@ -107,37 +146,47 @@ export const FIELD_SECTION: Partial<Record<keyof CreateMatchValues, SectionId>> 
   tools: "rules",
   moveFormat: "rules",
   engineEvaluation: "rules",
+  illegalPolicy: "rules",
+  maxAttempts: "rules",
   tokenAccounting: "limits",
   tokenBudget: "limits",
   budget: "limits",
   moveLimit: "limits",
 };
 
-/**
- * The rule the old native inputs enforced: a number in [min, max] on the
- * input's step (whole numbers, or whole cents for dollars). Anything a number
- * input can hold parses, `1e3` included.
- */
-function inRange(raw: string, { min, max }: { min: number; max: number }, step: 1 | 0.01) {
-  if (!raw.trim()) return false;
-  const value = Number(raw);
+/** A number in [min, max] on the step (whole numbers, or whole cents for dollars). */
+function inRange(value: number, { min, max }: { min: number; max: number }, step: 1 | 0.01) {
   if (!Number.isFinite(value) || value < min || value > max) return false;
   const steps = value / step;
-  return Math.abs(steps - Math.round(steps)) < 1e-9;
+  return Math.abs(steps - Math.round(steps)) < 1e-6;
 }
+/**
+ * The range check behind the sliders (which already keep values in range): a value
+ * over the server's limit names that limit, anything else the plain range.
+ */
 function numberInRange(
   t: TFunction<"chess">,
   limits: { min: number; max: number },
   step: 1 | 0.01,
+  overLimit?: string,
 ) {
-  return z.string().refine((raw) => inRange(raw, limits, step), {
-    message:
-      step === 1 ? t("create.errors.integerRange", limits) : t("create.errors.centRange", limits),
+  return z.number().superRefine((value, context) => {
+    if (inRange(value, limits, step)) return;
+    context.addIssue({
+      code: "custom",
+      message:
+        overLimit && Number.isFinite(value) && value > limits.max
+          ? overLimit
+          : step === 1
+            ? t("create.errors.integerRange", limits)
+            : t("create.errors.centRange", limits),
+    });
   });
 }
 
-/** Per-field validation with the hosted limits; `toMatchConfig` runs the shared schema after it. */
-export function createMatchSchema(t: TFunction<"chess">) {
+/** Per-field validation with the server's limits; `toMatchConfig` runs the shared schema after it. */
+export function createMatchSchema(t: TFunction<"chess">, limits: HostedLimits = FALLBACK_LIMITS) {
+  const budgetMax = maxBudgetUsd(limits);
   const model = z
     .string()
     .trim()
@@ -163,8 +212,20 @@ export function createMatchSchema(t: TFunction<"chess">) {
           context.addIssue({ code: "custom", message, path: [side] });
       }),
       tokenAccounting: z.enum(TOKEN_ACCOUNTING),
-      tokenBudget: numberInRange(t, LIMITS.tokens, 1),
-      budget: numberInRange(t, LIMITS.budgetUsd, 0.01),
+      tokenBudget: numberInRange(
+        t,
+        { min: LIMITS.tokens.min, max: limits.maxTokens },
+        1,
+        t("create.errors.overTokenLimit", { max: limits.maxTokens }),
+      ),
+      budget: numberInRange(
+        t,
+        { min: LIMITS.budgetUsd.min, max: budgetMax },
+        0.01,
+        t("create.errors.overBudgetLimit", { max: budgetMax }),
+      ),
+      illegalPolicy: z.enum(ILLEGAL_POLICIES),
+      maxAttempts: numberInRange(t, LIMITS.attempts, 1),
       moveLimit: z.string(),
     })
     .superRefine((value, context) => {
@@ -239,8 +300,12 @@ export function toMatchConfig(
       context: value.context,
       opponentIdentity: value.identity,
       legalMoves: value.tools,
-      costBudgetMicros: Math.round(Number(value.budget) * 1_000_000),
-      tokenBudget: Number(value.tokenBudget),
+      costBudgetMicros: Math.round(value.budget * 1_000_000),
+      tokenBudget: value.tokenBudget,
+      // Under "retry" the attempt count is unused; the default keeps the rules key.
+      ...(value.illegalPolicy === "retry"
+        ? { illegalPolicy: "retry" as const }
+        : { maxAttempts: value.maxAttempts }),
       tokenAccounting: value.tokenAccounting,
       engineEvaluation: value.engineEvaluation,
       remarks: value.remarks,
@@ -252,25 +317,28 @@ export function toMatchConfig(
   return parsed.success ? { success: true, data: parsed.data } : { success: false };
 }
 
-/** "Untimed · Fresh context · Legal-move tool · Strict format · $0.10 budget", plus non-defaults. */
+/** "Untimed · Fresh context · Legal-move tool · Strict format · $1.00 budget", plus non-defaults. */
 export function summaryParts(
   value: CreateMatchValues,
   t: TFunction<"chess">,
   currency: Intl.NumberFormat,
 ) {
-  const budget = Number(value.budget);
+  const budget = value.budget;
   const parts = [
     timeControlSummary(t, value.time),
     t(`context.${value.context}`),
     t(`tools.${value.tools}`),
     t("create.summary.format", { format: t(`moveFormats.${value.moveFormat}`) }),
     t("create.summary.budget", {
-      budget: Number.isFinite(budget) ? currency.format(budget) : value.budget,
+      budget: currency.format(budget),
     }),
   ];
   if (value.engineEvaluation !== "off") parts.push(t(`engineModes.${value.engineEvaluation}`));
   if (value.remarks !== "off") parts.push(t(`remarkTones.${value.remarks}`));
   if (value.identity === "disclosed") parts.push(t("identity.disclosed"));
+  if (value.illegalPolicy === "retry") parts.push(t("create.summary.retry"));
+  else if (value.maxAttempts !== DEFAULT_VALUES.maxAttempts)
+    parts.push(t("create.summary.forfeitAfter", { count: value.maxAttempts }));
   return parts;
 }
 

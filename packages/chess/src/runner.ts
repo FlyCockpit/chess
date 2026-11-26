@@ -14,6 +14,7 @@ import {
   Chess,
   type EngineEvaluation,
   finishMatch,
+  illegalPolicy,
   legalMoves,
   MAX_ARCHIVE_BYTES,
   type MatchArchive,
@@ -96,9 +97,11 @@ export function eventEntryBytes(event: MatchEvent) {
 /**
  * In-place growth the running estimate does not see: the first event's array framing
  * (2 bytes) and streamed shared-usage counts that grow after being counted (at most
- * 7 digits each, for maxAttempts x maxDispatches = 120 dispatches per turn).
+ * 7 digits each). The meter measures exactly again after SLACK_SHARED_EVENTS of them,
+ * so a turn that keeps retrying stays inside this slack however many dispatches it takes.
  */
 const ESTIMATE_SLACK_BYTES = 1024;
+const SLACK_SHARED_EVENTS = 120;
 /**
  * The per-turn limit check. Re-serializing a 2 MB archive per tool call or dispatch
  * would make a long turn quadratic, so it keeps a running upper bound (the last exact
@@ -107,19 +110,28 @@ const ESTIMATE_SLACK_BYTES = 1024;
  * Valid while earlier events stay append-only apart from shared-usage counts, which is
  * how the runner writes them within one turn.
  */
-function archiveMeter(match: MatchArchive) {
+export function archiveMeter(match: MatchArchive) {
   let counted = -1;
   let estimate = 0;
+  /** Shared-usage events appended since the last exact measurement. */
+  let growing = 0;
   const measure = () => {
     estimate = archiveByteLength(match);
     counted = match.events.length;
+    growing = 0;
   };
   return () => {
     if (counted < 0 || counted > match.events.length) measure();
     else {
-      for (const event of match.events.slice(counted)) estimate += eventEntryBytes(event);
+      for (const event of match.events.slice(counted)) {
+        estimate += eventEntryBytes(event);
+        if (event.type === "shared-usage") growing += 1;
+      }
       counted = match.events.length;
-      if (estimate + ESTIMATE_SLACK_BYTES + ARCHIVE_HEADROOM_BYTES <= MAX_ARCHIVE_BYTES)
+      if (
+        growing < SLACK_SHARED_EVENTS &&
+        estimate + ESTIMATE_SLACK_BYTES + ARCHIVE_HEADROOM_BYTES <= MAX_ARCHIVE_BYTES
+      )
         return false;
       measure();
     }
@@ -562,7 +574,14 @@ export async function advanceMatch(
   };
   // Widened: closures assign it, so flow narrowing of the initializer would be wrong.
   let veto = "token-budget" as MatchArchive["termination"];
-  for (let attempt = 0; attempt < rules.maxAttempts && match.status === "running"; attempt += 1) {
+  // "retry" keeps the turn going until a legal move; the per-move limit (always set),
+  // the clock, the budgets and the archive limit still end it, so it is never endless.
+  const retries = illegalPolicy(rules) === "retry";
+  for (
+    let attempt = 0;
+    (retries || attempt < rules.maxAttempts) && match.status === "running";
+    attempt += 1
+  ) {
     // Even a vetoed or failed loop records timing; reserve its slot before entering.
     if (limitReached()) {
       finishMatch(match, "*", "event-limit", "error");
@@ -602,25 +621,22 @@ export async function advanceMatch(
           }
           // Budgets count reported usage plus reservations not yet settled by a report.
           const current = matchStats(match, side);
-          // UTF-8 bytes upper-bound ordinary text tokenization. Include tool/schema framing
-          // and the runtime's maximum three transport attempts; this is a reservation,
-          // not an assertion that provider-billed tokens use a shared tokenizer.
-          const inputBound =
-            encoder.encode(JSON.stringify(pending)).length + reserveFramingBytes + 4096;
-          const tokenReserve = (inputBound + rules.maxOutputTokens) * 3;
-          const costReserve = Math.ceil(
-            ((inputBound * credential.inputMicrosPerMillion +
-              rules.maxOutputTokens * credential.outputMicrosPerMillion) *
-              3) /
-              1000000,
-          );
+          const { tokens: tokenReserve, costMicros: costReserve } = dispatchReservation({
+            inputBytes: encoder.encode(JSON.stringify(pending)).length + reserveFramingBytes,
+            maxOutputTokens: rules.maxOutputTokens,
+            price: credential,
+            remainingTokens:
+              rules.tokenAccounting === "provider"
+                ? rules.tokenBudget - current.committedTokens
+                : Number.POSITIVE_INFINITY,
+            remainingCostMicros: rules.costBudgetMicros - current.committedCostMicros,
+          });
           const sharedInput =
             rules.tokenAccounting === "cl100k_base"
               ? sharedInputTokens(systemPrompt, pending, toolSchemas)
               : 0;
           if (
-            (rules.tokenAccounting === "provider" &&
-              current.committedTokens + tokenReserve > rules.tokenBudget) ||
+            tokenReserve === null ||
             (rules.tokenAccounting === "cl100k_base" &&
               current.sharedInputTokens + current.sharedOutputTokens + sharedInput >
                 rules.tokenBudget)
@@ -628,7 +644,7 @@ export async function advanceMatch(
             veto = "token-budget";
             return { veto: { reason: veto } };
           }
-          if (current.committedCostMicros + costReserve > rules.costBudgetMicros) {
+          if (costReserve === null) {
             veto = "cost-budget";
             return { veto: { reason: veto } };
           }
@@ -762,7 +778,9 @@ export async function advanceMatch(
       if (rejectedOutput) messages = messagesBeforeAttempt;
       messages.push(
         message(
-          `Rejected ${event.reason} move: ${event.move}. Board unchanged. ${rules.maxAttempts - attempt - 1} attempts remain. Submit a legal UCI move.`,
+          retries
+            ? `Rejected ${event.reason} move: ${event.move}. Board unchanged. Submit a legal UCI move.`
+            : `Rejected ${event.reason} move: ${event.move}. Board unchanged. ${rules.maxAttempts - attempt - 1} attempts remain. Submit a legal UCI move.`,
         ),
       );
     } catch {
@@ -779,6 +797,43 @@ export async function advanceMatch(
   if (options.memory && rules.context === "persistent") options.memory[side] = messages;
   await options.onUpdate?.(match);
   return match;
+}
+/** Fixed input framing a dispatch may add beyond its messages and tool schemas, in bytes. */
+const DISPATCH_FRAMING_BYTES = 4096;
+/** The runtime's maximum transport attempts for one dispatch (a retried stream may bill). */
+const TRANSPORT_ATTEMPTS = 3;
+/**
+ * The reservation one dispatch takes against a side's budgets, from the request's size,
+ * the model's price and the output cap. UTF-8 bytes upper-bound ordinary text
+ * tokenization (a reservation, not a claim about the provider's tokenizer).
+ *
+ * The full reservation covers every transport attempt. When that does not fit what
+ * remains but one attempt's whole bound does, the call goes ahead with the reservation
+ * capped to what remains: a single attempt never spends more than the budget, and only
+ * a transport retry (rare) could. When not even one attempt fits, the side cannot
+ * afford the call and its value is null (the caller ends the game on that budget).
+ * Reported usage replaces the reservation when it settles, so the record stays exact.
+ */
+export function dispatchReservation(input: {
+  inputBytes: number;
+  maxOutputTokens: number;
+  price: Pick<ProviderCredentials, "inputMicrosPerMillion" | "outputMicrosPerMillion">;
+  remainingTokens: number;
+  remainingCostMicros: number;
+}): { tokens: number | null; costMicros: number | null } {
+  const inputBound = input.inputBytes + DISPATCH_FRAMING_BYTES;
+  const oneTokens = inputBound + input.maxOutputTokens;
+  const oneCost = Math.ceil(
+    (inputBound * input.price.inputMicrosPerMillion +
+      input.maxOutputTokens * input.price.outputMicrosPerMillion) /
+      1_000_000,
+  );
+  const fit = (one: number, remaining: number) =>
+    one > remaining ? null : Math.min(one * TRANSPORT_ATTEMPTS, remaining);
+  return {
+    tokens: fit(oneTokens, input.remainingTokens),
+    costMicros: fit(oneCost, input.remainingCostMicros),
+  };
 }
 /**
  * Which limit ended a turn: the side's clock when it was the smaller, else the move

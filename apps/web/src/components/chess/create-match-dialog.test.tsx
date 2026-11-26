@@ -73,10 +73,10 @@ beforeAll(async () => {
     react: { useSuspense: false },
   });
 });
-const render = () =>
+const render = (limits?: { maxCostMicros: number; maxTokens: number }) =>
   renderToStaticMarkup(
     <I18nextProvider i18n={i18n}>
-      <CreateMatchDialog disabled={false} onCreated={vi.fn()} />
+      <CreateMatchDialog disabled={false} limits={limits} onCreated={vi.fn()} />
     </I18nextProvider>,
   );
 const models = [
@@ -99,7 +99,7 @@ describe("CreateMatchDialog", () => {
     expect(html).toContain("White model");
     expect(html).toContain("Black model");
     expect(html).toContain(
-      "Untimed · Fresh context · Legal-move tool · Strict format · $0.10 budget",
+      "Untimed · Fresh context · Legal-move tool · Strict format · $1.00 budget",
     );
     // The time control is on the quick path, before the advanced sections.
     expect(html.indexOf("Time control")).toBeLessThan(html.indexOf("<h3>Advanced settings"));
@@ -142,15 +142,37 @@ describe("CreateMatchDialog", () => {
     const quick = html.slice(0, html.indexOf("<h3>Advanced settings"));
     expect(quick).not.toContain("openai-chat");
   });
-  it("keeps the hosted bounds on the number inputs", () => {
-    const html = render();
+  it("keeps the hosted bounds on the inputs, with budget maxima from the server", () => {
+    const html = render({ maxCostMicros: 25_000_000, maxTokens: 10_000_000 });
     expect(html).not.toMatch(/max="200"/);
     expect(html).toMatch(/min="1" max="300"/);
-    expect(html).toContain('min="0.01"');
-    expect(html).toContain('max="1"');
-    expect(html).toContain('min="256"');
-    expect(html).toContain('max="1000000"');
+    expect(html).toContain("in US dollars ($0.01 to $25.00)");
+    expect(html).toContain("(256 to 10,000,000)");
+    // The budgets are sliders with a typed value: $1 and 1M tokens per side by default.
+    expect(html).toContain('value="1 USD"');
+    expect(html).toContain('value="1 M"');
     expect(html).toContain('maxLength="140"');
+    const small = render({ maxCostMicros: 5_000_000, maxTokens: 200_000 });
+    expect(small).toContain("in US dollars ($0.01 to $5.00)");
+    expect(small).toContain("(256 to 200,000)");
+    // Defaults above a lower server cap start at the cap.
+    expect(small).toContain('value="200 k"');
+  });
+  it("offers keep trying or forfeit-after-N for illegal moves in the rules section", () => {
+    const html = render();
+    expect(html).toContain("On repeated illegal moves");
+    expect(html).toContain(">Forfeit after repeated illegal moves<");
+    expect(html).toContain(">Keep trying until a legal move<");
+    expect(html).toContain("After this many rejected moves on one turn, that side loses the game.");
+    expect(html).toContain("Illegal moves before a forfeit");
+    expect(html).toContain("Forfeits after 3 illegal moves");
+    // The rules section holds the option; the quick path keeps the default.
+    expect(html.indexOf("On repeated illegal moves")).toBeGreaterThan(
+      html.indexOf('data-section="rules"'),
+    );
+    expect(html.indexOf("On repeated illegal moves")).toBeLessThan(
+      html.indexOf('data-section="limits"'),
+    );
   });
   it("warns when the server served an older catalog", () => {
     catalog.state = {

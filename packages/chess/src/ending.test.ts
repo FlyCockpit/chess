@@ -109,7 +109,53 @@ describe("how a match ended, in plain words", () => {
     expect(describeMatch(tokens).text).toBe("White ran out of tokens (12,000 token budget)");
     const spend = play(game(), "e2e4");
     finishMatch(spend, "1-0", "cost-budget");
-    expect(describeMatch(spend).text).toBe("Black ran out of spend ($1.00 budget)");
+    expect(describeMatch(spend).text).toBe("Black ran out of budget (spent $0.00 of $1.00)");
+    const spent = play(game(), "e2e4");
+    const turn = () => ({ seq: spent.events.length, at: new Date().toISOString(), side, ply: 1 });
+    const side = "b" as const;
+    spent.events.push({
+      ...turn(),
+      type: "reservation",
+      dispatch: 0,
+      tokens: 900,
+      costMicros: 20_000,
+    });
+    spent.events.push({
+      ...turn(),
+      type: "usage",
+      dispatch: 0,
+      inputTokens: 500,
+      outputTokens: 100,
+      costMicros: 980_000,
+    });
+    finishMatch(spent, "1-0", "cost-budget");
+    expect(describeMatch(spent)).toMatchObject({
+      ending: {
+        kind: "cost-budget",
+        loser: "b",
+        budgetMicros: 1_000_000,
+        spentMicros: 980_000,
+        settled: true,
+      },
+      text: "Black ran out of budget (spent $0.98 of $1.00)",
+    });
+    // A later call that never reported its cost: the spend is a lower bound.
+    const pending = play(game(), "e2e4");
+    pending.events.push({
+      seq: 1,
+      at: new Date().toISOString(),
+      side: "b",
+      ply: 1,
+      type: "reservation",
+      dispatch: 0,
+      tokens: 900,
+      costMicros: 20_000,
+    });
+    finishMatch(pending, "1-0", "cost-budget");
+    expect(describeMatch(pending)).toMatchObject({
+      ending: { spentMicros: 0, settled: false },
+      text: "Black ran out of budget (spent at least $0.00 of $1.00)",
+    });
   });
   it("names no clock for a cockpit-v1 timeout, which also covered the per-move limit", () => {
     const legacy = asCockpitV1(play(game(), "e2e4"));
@@ -205,7 +251,7 @@ describe("how a match ended, in plain words", () => {
     expect(endingHeadline({ kind: "checkmate" })).toBe("Checkmate");
     expect(endingHeadline({ kind: "draw" })).toBe("Draw");
     expect(endingHeadline({ kind: "provider-error" })).toBe("A model provider failed");
-    expect(endingHeadline({ kind: "cost-budget", side: "b" })).toBe("Black ran out of spend");
+    expect(endingHeadline({ kind: "cost-budget", side: "b" })).toBe("Black ran out of budget");
     const match = play(game(), ...sicilian, "d2d4", "d2d3", "d2d4");
     expect(endingHeadline(endingSummary(matchEnding(match)))).toBe(
       "White forfeited: 3 illegal moves",

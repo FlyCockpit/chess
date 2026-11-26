@@ -1,4 +1,5 @@
 import { Button } from "@cockpit-chess/ui/components/button";
+import { RangeField } from "@cockpit-chess/ui/components/range-field";
 import {
   Sheet,
   SheetBody,
@@ -16,19 +17,26 @@ import { Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
+import { useRangeFieldLabels } from "@/hooks/use-form-field-labels";
 import { orpc } from "@/utils/orpc";
 import {
   autoTitle,
+  budgetStops,
   CONTEXT_MODES,
   type CreateMatchValues,
   createMatchSchema,
   DEFAULT_VALUES,
+  defaultValuesFor,
   ENGINE_MODES,
+  FALLBACK_LIMITS,
   FIELD_SECTION,
+  type HostedLimits,
   IDENTITY_MODES,
+  ILLEGAL_POLICIES,
   LEGAL_MOVE_MODES,
   LIMITS,
   MOVE_FORMATS,
+  maxBudgetUsd,
   PROTOCOL_CHOICES,
   REMARK_TONES,
   resolveProtocol,
@@ -58,12 +66,16 @@ const CATALOG_STALE_POLL_MS = 12_000;
 
 export function CreateMatchDialog({
   disabled,
+  limits = FALLBACK_LIMITS,
   onCreated,
 }: {
   disabled: boolean;
+  /** The server's per-side operator limits (`chess.info`); the budget fields stop there. */
+  limits?: HostedLimits;
   onCreated: (slug: string) => void;
 }) {
   const { t, i18n } = useTranslation("chess");
+  const rangeLabels = useRangeFieldLabels();
   const [open, setOpen] = useState(false);
   const [invalid, setInvalid] = useState(false);
   const [sections, setSections] = useState<ReadonlySet<SectionId>>(new Set());
@@ -89,7 +101,20 @@ export function CreateMatchDialog({
   const catalogState: CatalogState = catalog ? "ready" : catalogError ? "error" : "pending";
   // Older prices are still usable, but the picker says they could not be refreshed.
   const catalogStale = Boolean(catalogData && (catalogData.stale || catalogError));
-  const schema = useMemo(() => createMatchSchema(t), [t]);
+  const schema = useMemo(() => createMatchSchema(t, limits), [t, limits]);
+  const budgetMax = maxBudgetUsd(limits);
+  const usdUnits = useMemo(
+    () => [{ factor: 1, label: t("create.units.usd"), aliases: ["usd", "dollars"] }],
+    [t],
+  );
+  const tokenUnits = useMemo(
+    () => [
+      { factor: 1, label: "" },
+      { factor: 1000, label: t("create.units.thousand"), aliases: ["k"] },
+      { factor: 1_000_000, label: t("create.units.million"), aliases: ["m"] },
+    ],
+    [t],
+  );
   const currency = useMemo(
     () =>
       new Intl.NumberFormat(i18n.language, {
@@ -114,7 +139,7 @@ export function CreateMatchDialog({
     { invalidateKey: orpc.chess.key(), successMessage: t("create.started") },
   );
   const form = useForm({
-    defaultValues: DEFAULT_VALUES,
+    defaultValues: defaultValuesFor(limits),
     validators: { onChange: schema, onSubmit: schema },
     onSubmitInvalid: ({ formApi }) => {
       setInvalid(true);
@@ -162,7 +187,7 @@ export function CreateMatchDialog({
         })
       : `${t(`create.protocols.${choice}`)} · ${choice}`;
   const reset = () => {
-    form.reset();
+    form.reset(defaultValuesFor(limits));
     setInvalid(false);
     setSections(new Set());
     mutation.reset();
@@ -172,6 +197,8 @@ export function CreateMatchDialog({
       open={open}
       onOpenChange={(next) => {
         if (mutation.isPending) return;
+        // Opening starts from defaults within the limits the server reports now.
+        if (next) form.reset(defaultValuesFor(limits));
         setOpen(next);
         if (!next) reset();
       }}
@@ -334,6 +361,9 @@ export function CreateMatchDialog({
                     t(`tools.${values.tools}`),
                     t(`moveFormats.${values.moveFormat}`),
                     t(`engineModes.${values.engineEvaluation}`),
+                    values.illegalPolicy === "retry"
+                      ? t("create.summary.retry")
+                      : t("create.summary.forfeitAfter", { count: values.maxAttempts }),
                   ].join(" · ")}
                 >
                   <form.Field name="context">
@@ -385,6 +415,33 @@ export function CreateMatchDialog({
                       />
                     )}
                   </form.Field>
+                  <form.Field name="illegalPolicy">
+                    {(field) => (
+                      <ChoiceField
+                        field={field}
+                        label={t("settings.illegalPolicy")}
+                        options={ILLEGAL_POLICIES}
+                        optionLabel={(value) => t(`illegalPolicies.${value}`)}
+                        explain={(value) => t(`create.explain.illegalPolicy.${value}`)}
+                      />
+                    )}
+                  </form.Field>
+                  {values.illegalPolicy === "forfeit" && (
+                    <form.Field name="maxAttempts">
+                      {(field) => (
+                        <RangeField
+                          field={field}
+                          labels={rangeLabels}
+                          label={t("settings.maxAttempts")}
+                          description={t("create.explain.maxAttempts", LIMITS.attempts)}
+                          min={LIMITS.attempts.min}
+                          max={LIMITS.attempts.max}
+                          step={1}
+                          defaultValue={DEFAULT_VALUES.maxAttempts}
+                        />
+                      )}
+                    </form.Field>
+                  )}
                 </SettingsSection>
                 <SettingsSection
                   id="limits"
@@ -394,11 +451,7 @@ export function CreateMatchDialog({
                   hint={t("create.sections.limitsHint")}
                   status={[
                     t(`accounting.${values.tokenAccounting}`),
-                    t("create.summary.budget", {
-                      budget: Number.isFinite(Number(values.budget))
-                        ? currency.format(Number(values.budget))
-                        : values.budget,
-                    }),
+                    t("create.summary.budget", { budget: currency.format(values.budget) }),
                     t("create.summary.moveLimit", { time: moveLimitText }),
                   ].join(" · ")}
                 >
@@ -415,37 +468,40 @@ export function CreateMatchDialog({
                   </form.Field>
                   <form.Field name="tokenBudget">
                     {(field) => (
-                      <TextField
+                      <RangeField
                         field={field}
-                        type="number"
-                        inputMode="numeric"
-                        autoComplete="off"
-                        min={LIMITS.tokens.min}
-                        max={LIMITS.tokens.max}
-                        step={1}
+                        labels={rangeLabels}
                         label={t("settings.tokenBudget")}
                         description={t("create.explain.tokenBudget", {
                           min: LIMITS.tokens.min.toLocaleString(i18n.language),
-                          max: LIMITS.tokens.max.toLocaleString(i18n.language),
+                          max: limits.maxTokens.toLocaleString(i18n.language),
                         })}
+                        min={LIMITS.tokens.min}
+                        max={limits.maxTokens}
+                        step={1}
+                        scale="log"
+                        units={tokenUnits}
+                        defaultValue={defaultValuesFor(limits).tokenBudget}
                       />
                     )}
                   </form.Field>
                   <form.Field name="budget">
                     {(field) => (
-                      <TextField
+                      <RangeField
                         field={field}
-                        type="number"
-                        inputMode="decimal"
-                        autoComplete="off"
-                        min={LIMITS.budgetUsd.min}
-                        max={LIMITS.budgetUsd.max}
-                        step={0.01}
+                        labels={rangeLabels}
                         label={t("studio.budget")}
                         description={t("create.explain.budget", {
                           min: currency.format(LIMITS.budgetUsd.min),
-                          max: currency.format(LIMITS.budgetUsd.max),
+                          max: currency.format(budgetMax),
                         })}
+                        min={LIMITS.budgetUsd.min}
+                        max={budgetMax}
+                        step={0.01}
+                        scale="log"
+                        stops={budgetStops(LIMITS.budgetUsd.min, budgetMax)}
+                        units={usdUnits}
+                        defaultValue={defaultValuesFor(limits).budget}
                       />
                     )}
                   </form.Field>

@@ -297,6 +297,20 @@ remark switch) still replay, validate and display as they were played.
   sides may differ (`{ "w": 900000, "b": 300000 }`). `turnTimeoutMs` (1–300 s) is the
   per-move safety limit and may not exceed either clock. Running out of clock is
   `timeout` ("White ran out of time"); missing the per-move limit is `move-timeout`.
+- **Illegal moves.** Every rejected attempt is recorded. `illegalPolicy` is
+  `forfeit` (the default, also when the key is absent: `maxAttempts` rejections, 1–10,
+  on one turn lose the game as `illegal-forfeit`) or `retry` (no forfeit: the side
+  keeps trying until it submits a legal move). A retrying turn is still bounded by
+  the per-move limit, the clock, the side's token and cost budgets and the archive
+  limit.
+- **Budgets.** Each side has a `tokenBudget` and a `costBudgetMicros`. Before each
+  request the runner reserves its worst case from the request size, the model's price
+  and `maxOutputTokens` (every transport attempt). When that no longer fits but one
+  attempt still does, the request runs with the reservation capped to what remains;
+  when not even one attempt fits, the side has run out ("White ran out of budget
+  (spent $0.98 of $1.00)"). Reported usage then replaces each reservation. Hosted
+  matches are capped per side by the server's `CHESS_MAX_COST_USD` (default $25) and
+  `CHESS_MAX_TOKENS` (default 10M).
 - **Remarks.** `remarks` is `off`, `commentary` (one short neutral remark about the
   player's own move or plan) or `trash-talk` (one short, playful jab at the
   opponent's last move or position, kept tasteful and about the game: no slurs,

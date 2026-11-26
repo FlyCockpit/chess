@@ -58,6 +58,20 @@ const ended = (
   finishMatch(match, result, termination, status);
   return match;
 };
+/** Black (to move) has a call in flight: reserved, never reported. */
+const reserved = (match: MatchArchive) => {
+  match.events.push({
+    type: "reservation",
+    seq: match.events.length,
+    at: new Date().toISOString(),
+    side: "b",
+    ply: 1,
+    dispatch: 0,
+    tokens: 900,
+    costMicros: 20_000,
+  });
+  return match;
+};
 const sicilian = ["e2e4", "c7c5", "g1f3", "d7d6", "d2d4", "c5d4", "f3d4", "e7e5"];
 const shuffle = ["g1f3", "g8f6", "f3g1", "f6g8"];
 /** One match per termination (and every draw kind and illegal-move reason). */
@@ -81,6 +95,7 @@ const fixtures = (): Array<[string, MatchArchive]> => [
   ["spend", ended(play(game(), "e2e4"), "cost-budget", "1-0")],
   ["small spend", ended(play(game({ costBudgetMicros: 1200 }), "e2e4"), "cost-budget", "1-0")],
   ["rounded spend", ended(play(game({ costBudgetMicros: 999_999 }), "e2e4"), "cost-budget", "1-0")],
+  ["unsettled spend", ended(reserved(play(game(), "e2e4")), "cost-budget", "1-0")],
   [
     "pawn that changed file",
     play(game(), "f2f4", "e7e5", "f4e5", "g8f6", "e5e6", "f6g8", "e5e6", "e5e6", "e5e6"),
@@ -125,6 +140,12 @@ describe("ending labels", () => {
     );
     expect(endingHeadlineLabel(t, { kind: "draw" })).toBe("Draw");
     expect(endingHeadlineLabel(t, { kind: "provider-error" })).toBe("A model provider failed");
+  });
+  it("says a side spent at least its reported cost while a call never reported", () => {
+    const ending = matchEnding(ended(reserved(play(game(), "e2e4")), "cost-budget", "1-0"));
+    expect(endingLabel(t, "en-US", ending)).toBe(
+      "Black ran out of budget (spent at least $0.00 of $1.00)",
+    );
   });
   it("renders Spanish from its own keys, with plurals", () => {
     const es = i18n.getFixedT("es-MX", "chess") as TFunction<"chess">;

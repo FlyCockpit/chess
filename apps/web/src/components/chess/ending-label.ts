@@ -26,9 +26,9 @@ export function durationLabel(t: ChessT, ms: number) {
     : t("duration.minutes", { minutes });
 }
 
-function usdLabel(locale: string, micros: number) {
+export function usdLabel(locale: string, micros: number) {
   const dollars = micros / 1_000_000;
-  const cents = Number.isInteger(micros / 10_000) && dollars >= 0.01;
+  const cents = Number.isInteger(micros / 10_000) && (dollars >= 0.01 || micros === 0);
   return new Intl.NumberFormat(locale, {
     style: "currency",
     currency: "USD",
@@ -114,7 +114,10 @@ export function endingDetailLabel(t: ChessT, locale: string, ending: MatchEnding
         tokens: new Intl.NumberFormat(locale).format(ending.tokens),
       });
     case "cost-budget":
-      return t("endingDetail.spend", { budget: usdLabel(locale, ending.budgetMicros) });
+      return t(ending.settled ? "endingDetail.spend" : "endingDetail.spendAtLeast", {
+        spent: usdLabel(locale, ending.spentMicros),
+        budget: usdLabel(locale, ending.budgetMicros),
+      });
     case "ply-limit":
       return t("endingDetail.plies", { plies: ending.plies });
     case "cancelled":

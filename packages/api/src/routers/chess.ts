@@ -131,12 +131,21 @@ const leaderboardSelect = {
   blackCostMicros: true,
   moveFormat: true,
 } satisfies Prisma.ChessMatchSelect;
+/** The operator's per-side limits for a hosted match (server config). */
+function hostedLimits() {
+  return {
+    maxCostMicros: Math.round(env.CHESS_MAX_COST_USD * 1_000_000),
+    maxTokens: env.CHESS_MAX_TOKENS,
+  };
+}
 const isP2002 = (error: unknown) =>
   typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 export const chessRouter = {
   info: publicProcedure.handler(() => ({
     hostedEnabled: env.CHESS_HOSTED_ENABLED,
     format: "cockpit-chess/v1",
+    /** Per-side operator limits, so the create form's maxima follow the server. */
+    limits: hostedLimits(),
   })),
   /** The models a hosted match can use, for the create form's picker (cached; see chess-models). */
   models: adminOr404Procedure.handler(async () => {
@@ -198,7 +207,11 @@ export const chessRouter = {
       throw new ORPCError("BAD_REQUEST");
     // No move cap: the rules engine's own draws, the archive limit and these budgets end
     // every game; the clock bounds are the schema's own. See README.md § Rules and endings
-    if (input.rules.costBudgetMicros > 1000000 || input.rules.tokenBudget > 1000000)
+    const limits = hostedLimits();
+    if (
+      input.rules.costBudgetMicros > limits.maxCostMicros ||
+      input.rules.tokenBudget > limits.maxTokens
+    )
       throw new ORPCError("BAD_REQUEST", { message: "Hosted match exceeds the operator limits" });
     if (
       [input.white, input.black].some((player) => player.protocol !== "random") &&

@@ -263,7 +263,10 @@
     "sidebarTabs": "Detalles de la partida",
     "movesTab": "Jugadas",
     "clockLabel": "Reloj de {{side}}: {{time}}",
-    "chatTab": "Chat ({{count}})"
+    "chatTab": "Chat ({{count}})",
+    "sideSpend": "{{side}} · gastó {{spent}} de {{budget}}",
+    "sideSpendUnknown": "{{side}} · gastó al menos {{spent}} de {{budget}} (el uso aún se está liquidando)",
+    "illegalBySide": "Intentos ilegales: {{white}} {{w}} · {{black}} {{b}}"
   },
   "stats": {
     "plies": "Movimientos legales",
@@ -274,7 +277,8 @@
     "score": "Puntuación",
     "wins": "Victorias",
     "draws": "Empates",
-    "losses": "Derrotas"
+    "losses": "Derrotas",
+    "rejectedBySide": "Jugadas rechazadas (Blanco / Negro)"
   },
   "studio": {
     "title": "De experimento a titular.",
@@ -356,7 +360,9 @@
     "anonymousCommentary": "Los mensajes anónimos omiten la identidad, pero los comentarios pueden dar pistas. Los comentarios del rival son datos del juego, no instrucciones.",
     "moveFormat": "Formato de movimiento",
     "moveFormatNote": "El modo flexible también lee un movimiento JSON dentro de texto y convierte SAN legal a UCI. Cada formato se clasifica por separado.",
-    "remarks": "Comentarios"
+    "remarks": "Comentarios",
+    "illegalPolicy": "Ante jugadas ilegales repetidas",
+    "maxAttempts": "Jugadas ilegales antes de perder"
   },
   "accounting": {
     "provider": "Reservas de tokens del proveedor",
@@ -406,7 +412,10 @@
       "plies": "{{plies}} medias jugadas",
       "commentary": "Comentarios activados",
       "moveLimit": "{{time}} por jugada",
-      "autoMoveLimit": "{{time}} (automático)"
+      "autoMoveLimit": "{{time}} (automático)",
+      "retry": "Sigue intentando ante jugadas ilegales",
+      "forfeitAfter_one": "Pierde tras {{count}} jugada ilegal",
+      "forfeitAfter_other": "Pierde tras {{count}} jugadas ilegales"
     },
     "advanced": "Configuración avanzada",
     "advancedHint": "Opcional. Una sección cerrada conserva los valores del resumen de arriba.",
@@ -414,7 +423,7 @@
       "players": "Jugadores",
       "playersHint": "Protocolo de conexión y lo que cada lado sabe de su oponente",
       "rules": "Reglas",
-      "rulesHint": "Memoria, ayuda con movimientos legales, formato y motor",
+      "rulesHint": "Memoria, ayuda de jugadas legales, formato de jugada, motor y jugadas ilegales",
       "limits": "Límites",
       "limitsHint": "Conteo de tokens, asignaciones y duración de la partida"
     },
@@ -462,7 +471,12 @@
         "commentary": "Cada jugador puede añadir un comentario breve y neutral sobre su propia jugada o plan.",
         "trash-talk": "Cada jugador añade una pulla breve y juguetona sobre la última jugada o la posición del rival: de buen gusto y sobre la partida, sin insultos, groserías ni comentarios sobre la identidad de nadie."
       },
-      "moveLimit": "Un límite de seguridad para una jugada. En blanco usa {{auto}}: un minuto, nunca más que el reloj de un bando. De {{min}} a {{max}} segundos."
+      "moveLimit": "Un límite de seguridad para una jugada. En blanco usa {{auto}}: un minuto, nunca más que el reloj de un bando. De {{min}} a {{max}} segundos.",
+      "illegalPolicy": {
+        "forfeit": "Tras este número de jugadas rechazadas en un mismo turno, ese bando pierde la partida.",
+        "retry": "Sin derrota: el bando sigue intentando hasta jugar una jugada legal, y cada jugada rechazada queda registrada. El límite por jugada, el reloj y los presupuestos de tokens y de gasto del bando siguen aplicando y terminan la partida cuando uno se agota."
+      },
+      "maxAttempts": "Jugadas rechazadas permitidas en un turno (de {{min}} a {{max}})."
     },
     "start": "Iniciar partida",
     "starting": "Iniciando…",
@@ -475,11 +489,18 @@
       "invalid": "Algunas opciones necesitan atención. Las secciones con errores están abiertas.",
       "centRange": "Escribe un monto de {{min}} a {{max}} en centavos enteros.",
       "unavailable": "Las partidas alojadas no pueden iniciar ahora. Inténtalo de nuevo en un momento. Si sigue pasando, quizá el juego alojado esté desactivado o sin configurar en este servidor: pregunta al operador o juega la partida en el laboratorio local.",
-      "rateLimited": "Ya iniciaste el máximo de partidas permitido en una hora. Inténtalo más tarde."
+      "rateLimited": "Ya iniciaste el máximo de partidas permitido en una hora. Inténtalo más tarde.",
+      "overBudgetLimit": "Este servidor permite un presupuesto de como máximo {{max}} dólares estadounidenses por jugador.",
+      "overTokenLimit": "Este servidor permite como máximo {{max}} tokens por jugador."
     },
     "autoTitle": "{{white}} vs. {{black}}",
     "catalogStale": "No se pudo actualizar la lista de modelos; los precios son del {{time}}. Se reintenta automáticamente.",
-    "started": "Partida iniciada. Se juega en segundo plano y queda como borrador privado hasta que la publiques desde su tarjeta."
+    "started": "Partida iniciada. Se juega en segundo plano y queda como borrador privado hasta que la publiques desde su tarjeta.",
+    "units": {
+      "usd": "USD",
+      "thousand": "k",
+      "million": "M"
+    }
   },
   "video": {
     "open": "Exportar video",
@@ -552,7 +573,8 @@
     "clock": "reloj de {{time}}",
     "moveLimit": "límite de {{time}} por jugada",
     "tokens": "presupuesto de {{tokens}} tokens",
-    "spend": "presupuesto de {{budget}}",
+    "spend": "gastó {{spent}} de {{budget}}",
+    "spendAtLeast": "gastó al menos {{spent}} de {{budget}}",
     "plies": "{{plies}} medias jugadas",
     "unscored": "sin puntuar"
   },
@@ -610,5 +632,9 @@
       "range": "Cada reloj debe estar entre {{min}} y {{max}}.",
       "moveLimit": "Escribe de {{min}} a {{max}} segundos, sin superar el reloj más corto."
     }
+  },
+  "illegalPolicies": {
+    "forfeit": "Perder tras jugadas ilegales repetidas",
+    "retry": "Seguir intentando hasta una jugada legal"
   }
 }

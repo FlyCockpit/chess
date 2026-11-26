@@ -124,7 +124,11 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
         <>
           {!info?.hostedEnabled && <p className="cc-muted mb-6">{t("studio.disabled")}</p>}
           <div className="cc-hero-actions mb-8">
-            <CreateMatchDialog disabled={!info?.hostedEnabled} onCreated={setSelected} />
+            <CreateMatchDialog
+              disabled={!info?.hostedEnabled}
+              limits={info?.limits}
+              onCreated={setSelected}
+            />
             <ImportDialog onImported={setSelected} />
           </div>
           {/* The previewed game (also where Create and Import land) comes first, so choosing
