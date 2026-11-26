@@ -33,7 +33,7 @@ export function durationLabel(t: ChessT, ms: number) {
     : t("duration.minutes", { minutes });
 }
 
-function usdLabel(locale: string, micros: number) {
+export function usdLabel(locale: string, micros: number) {
   const dollars = micros / 1_000_000;
   const cents = Number.isInteger(micros / 10_000) && (dollars >= 0.01 || micros === 0);
   return new Intl.NumberFormat(locale, {
@@ -173,6 +173,8 @@ export function endingDetailLabel(t: ChessT, locale: string, ending: MatchEnding
     case "provider-error":
     case "engine-error":
     case "event-limit":
+    case "account-limit":
+    case "credential-revoked":
       return t("endingDetail.unscored");
     default:
       return null;

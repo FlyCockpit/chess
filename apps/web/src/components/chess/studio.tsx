@@ -34,7 +34,8 @@ import { isQueryAccessError } from "@/lib/query-access-error";
 import { friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 import { CreateMatchDialog } from "./create-match-dialog";
-import { endingHeadlineLabel } from "./ending-label";
+import { keyExhausted } from "./create-match-form";
+import { endingHeadlineLabel, usdLabel } from "./ending-label";
 import { replayRefetch } from "./evaluation";
 import {
   checkArchiveFile,
@@ -51,14 +52,20 @@ import { drawShareCard, lastIllegalSquares, SHARE_HEIGHT, SHARE_WIDTH } from "./
 export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
   const { t, i18n } = useTranslation("chess");
   const { state } = useAuthSession();
-  // No session guard covers this public tab: the admin's data shows (and
+  // No session guard covers this public tab: the account's data shows (and
   // loads) only once the document has recorded this account as its own
   // (docs/auth-and-routing.md § Query cache follows identity).
   const admitted = useDocumentAdmits(
     state.status === "authenticated" ? state.session.user.id : undefined,
   );
-  const admin =
-    state.status === "authenticated" && admitted && hasRole(state.session.user.role ?? "", "admin");
+  const signedIn = state.status === "authenticated" && admitted;
+  const admin = signedIn && hasRole(state.session.user.role ?? "", "admin");
+  const { data: info } = useQuery(orpc.chess.info.queryOptions());
+  // Users run matches on their own OpenRouter key when the operator allows it.
+  const userMatches = Boolean(info?.userMatchesEnabled);
+  // A signed-in owner always reaches their own matches (replay, stop, unpublish), even
+  // after the operator stops user matches; only creating follows the switch.
+  const studio = signedIn;
   const [selected, setSelected] = useState("");
   const {
     data,
@@ -76,17 +83,32 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
       initialPageParam: undefined,
       getNextPageParam: (page) => page.nextCursor,
     }),
-    enabled: admin,
+    enabled: studio,
     meta: { skipGlobalErrorToast: true },
     refetchInterval: (query) =>
-      admin &&
+      studio &&
       query.state.data?.pages.some((page) =>
         page.items.some((game) => game.status === "running" || game.status === "queued"),
       )
         ? 5000
         : false,
   });
-  const { data: info } = useQuery(orpc.chess.info.queryOptions());
+  const {
+    data: keyStatus,
+    isPending: keyPending,
+    isError: keyError,
+    refetch: retryKey,
+  } = useQuery({
+    ...orpc.openrouter.status.queryOptions(),
+    enabled: studio,
+    meta: { skipGlobalErrorToast: true },
+  });
+  const ownKey = keyStatus?.connected && keyStatus.status === "active" ? keyStatus : null;
+  const ownRemaining = ownKey
+    ? ownKey.limitMicros === null
+      ? null
+      : (ownKey.limitRemainingMicros ?? ownKey.limitMicros)
+    : null;
   const {
     data: detailData,
     error: detailFailure,
@@ -95,7 +117,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
     refetch: retryDetail,
   } = useQuery({
     ...orpc.chess.inspect.queryOptions({ input: { slug: selected || "not-selected" } }),
-    enabled: admin && Boolean(selected),
+    enabled: studio && Boolean(selected),
     meta: { skipGlobalErrorToast: true },
     refetchInterval: replayRefetch,
   });
@@ -107,23 +129,89 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
   const stop = useEntityMutation(orpc.chess.stop.mutationOptions(), {
     invalidateKey: orpc.chess.key(),
   });
-  if (state.status === "pending" || (state.status === "authenticated" && !admitted))
+  if (
+    state.status === "pending" ||
+    (state.status === "authenticated" && !admitted) ||
+    (signedIn && !info)
+  )
     return <Skeleton className="mt-12 h-96" />;
+  const settingsLink = (label: string) => (
+    <Link
+      className="cc-button mt-5"
+      to="/$lang/settings/openrouter"
+      params={{ lang: i18n.language }}
+    >
+      {label}
+    </Link>
+  );
+  // What the create area shows: the form, or the one step that unlocks it.
+  const createArea = admin ? (
+    <>
+      {!info?.hostedEnabled && <p className="cc-muted mb-6">{t("studio.disabled")}</p>}
+      <div className="cc-hero-actions mb-8">
+        <CreateMatchDialog
+          disabled={!info?.hostedEnabled}
+          limits={info?.limits}
+          billingOptions={ownKey ? ["operator", "openrouter"] : ["operator"]}
+          ownKeyRemainingMicros={ownRemaining}
+          onCreated={setSelected}
+        />
+        <ImportDialog onImported={setSelected} />
+      </div>
+    </>
+  ) : !userMatches ? (
+    <div className="cc-empty mb-8">
+      <p>{t("studio.userMatchesOff")}</p>
+    </div>
+  ) : keyPending ? (
+    <Skeleton className="mb-8 h-32" />
+  ) : keyError ? (
+    <InlineRetry onRetry={() => void retryKey()} message={t("studio.statusLoadFailed")} />
+  ) : !keyStatus?.connected ? (
+    <div className="cc-empty mb-8">
+      <h3>{t("studio.connectTitle")}</h3>
+      <p>{t("studio.connectBody")}</p>
+      {settingsLink(t("studio.connectAction"))}
+    </div>
+  ) : !ownKey ? (
+    <div className="cc-empty mb-8">
+      <h3>{t("studio.reconnectTitle")}</h3>
+      <p>{t("studio.reconnectBody")}</p>
+      {settingsLink(t("studio.connectAction"))}
+    </div>
+  ) : (
+    <div className="mb-8">
+      <p className="cc-muted mb-2">
+        {ownRemaining === null
+          ? t("studio.billedToUnlimited")
+          : t("studio.billedTo", { remaining: usdLabel(i18n.language, ownRemaining) })}
+      </p>
+      <p className="cc-muted mb-4">{t("studio.rules", { count: info?.dailyLimit ?? 1 })}</p>
+      {keyExhausted(ownRemaining) && (
+        <p className="cc-error mb-4" role="alert">
+          {t("create.keyExhausted", { remaining: usdLabel(i18n.language, ownRemaining ?? 0) })}
+        </p>
+      )}
+      <div className="cc-hero-actions">
+        <CreateMatchDialog
+          disabled={!userMatches || keyExhausted(ownRemaining)}
+          limits={info?.limits}
+          billingOptions={["openrouter"]}
+          ownKeyRemainingMicros={ownRemaining}
+          onCreated={setSelected}
+        />
+      </div>
+    </div>
+  );
   return (
     <>
       <div className="cc-page-intro">
         <h1>{t("studio.title")}</h1>
-        <p>{t("studio.description")}</p>
+        <p>{t(admin || !studio || !userMatches ? "studio.description" : "studio.userIntro")}</p>
       </div>
-      {/* Signed in without the admin role: say what the account can do here,
-          never "Sign in" (it already is). */}
-      {state.status === "authenticated" && !admin ? (
+      {!studio ? (
         <div className="cc-empty">
-          <p>{t("studio.adminOnly")}</p>
-        </div>
-      ) : !admin ? (
-        <div className="cc-empty">
-          <p>{t("studio.signIn")}</p>
+          <p>{t(userMatches ? "studio.signInUser" : "studio.signIn")}</p>
           <Link
             className="cc-button mt-5"
             to="/$lang/login"
@@ -135,15 +223,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
         </div>
       ) : (
         <>
-          {!info?.hostedEnabled && <p className="cc-muted mb-6">{t("studio.disabled")}</p>}
-          <div className="cc-hero-actions mb-8">
-            <CreateMatchDialog
-              disabled={!info?.hostedEnabled}
-              limits={info?.limits}
-              onCreated={setSelected}
-            />
-            <ImportDialog onImported={setSelected} />
-          </div>
+          {createArea}
           {/* The previewed game (also where Create and Import land) comes first, so choosing
               one shows it at once; the list follows. */}
           {selected && detailError && (
@@ -161,6 +241,20 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                   spectator={detail.spectatorEvaluations}
                 />
               </div>
+              {detail.queuePosition !== null && (
+                <p className="cc-muted mb-4" role="status">
+                  {t("studio.queuePosition", { position: detail.queuePosition })}
+                </p>
+              )}
+              {(detail.archive.termination === "account-limit" ||
+                detail.archive.termination === "credential-revoked") && (
+                <p className="cc-error mb-4" role="status">
+                  {t(`endingHelp.${detail.archive.termination}`)}{" "}
+                  <Link to="/$lang/settings/openrouter" params={{ lang: i18n.language }}>
+                    {t("studio.connectAction")}
+                  </Link>
+                </p>
+              )}
               <MatchReplay
                 key={detail.archive.id}
                 match={detail.archive}

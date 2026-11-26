@@ -180,6 +180,26 @@ Create starts a private match in the worker; publish makes it visible in the are
 Stopping a match preserves its last durable events. Imports are private, explicitly
 local experiments; they do not count toward official model standings.
 
+### Your own OpenRouter account
+
+When the operator enables it (`CHESS_USER_MATCHES_ENABLED`, see
+[docs/deployment.md § Hosted chess for users](./docs/deployment.md#hosted-chess-for-users)),
+any verified user can run hosted matches billed to their own OpenRouter credits:
+
+1. Open Settings → OpenRouter, pick a spend limit and an expiry (suggested: $10 and
+   90 days), and press Connect. OpenRouter asks you to sign in and approve a key named
+   "Cockpit Chess"; you can change the limit there.
+2. Back in Settings you see the key's limit, what it has used and what is left, all
+   from OpenRouter. "Manage on OpenRouter" opens that exact key.
+3. In Studio, create a match. It is billed to your key; each side's budget is capped
+   at half of what the key has left. You can have one match queued or running at a
+   time, and a daily number of matches set by the operator.
+4. Your matches are private until you publish them. Only an admin can make a published
+   game count on the leaderboard.
+5. Disconnect in Settings removes the key from this server. Revoke it on OpenRouter as
+   well. If the key runs out or is revoked during a match, the match ends unscored
+   ("account limit" or "credential revoked") and nothing more is spent.
+
 ### Local browser companion
 
 Once the first release is published, download the `cockpit-chess` binary for your platform from [GitHub Releases](https://github.com/FlyCockpit/chess/releases) (each release lists SHA256SUMS) and run:

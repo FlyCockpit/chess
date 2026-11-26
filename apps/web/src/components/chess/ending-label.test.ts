@@ -128,6 +128,8 @@ const fixtures = (): Array<[string, MatchArchive]> => [
   ["provider error", ended(play(game(), "e2e4"), "provider-error", "*", "error")],
   ["engine error", ended(game(), "engine-error", "*", "error")],
   ["event limit", ended(game(), "event-limit", "*", "error")],
+  ["account limit", ended(play(game(), "e2e4"), "account-limit", "*", "error")],
+  ["credential revoked", ended(play(game(), "e2e4"), "credential-revoked", "*", "error")],
 ];
 
 describe("ending labels", () => {

@@ -36,6 +36,7 @@ vi.mock("@/utils/orpc", () => ({
         },
       },
     },
+    openrouter: { status: { queryOptions: () => ({}) } },
   },
 }));
 vi.mock("@/hooks/use-auth-session", () => ({

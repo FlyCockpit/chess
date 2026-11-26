@@ -187,3 +187,40 @@ describe("Anthropic gateway authentication", () => {
     ]);
   });
 });
+
+describe("createModelAdapter — extra request headers", () => {
+  const headers = {
+    "HTTP-Referer": "https://chess.example",
+    "X-OpenRouter-Title": "Cockpit Chess",
+  };
+  it("adds them to every OpenRouter request through a beforeRequest hook", async () => {
+    createModelAdapter({ ...nonAnthropicOpenRouter, headers });
+    const client = lastOpenRouterConfig()?.httpClient as HTTPClient;
+    expect(client).toBeInstanceOf(HTTPClient);
+    const seen: Request[] = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      seen.push(input as Request);
+      return new Response("{}");
+    });
+    await client.request(
+      new Request("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer k" },
+      }),
+    );
+    fetchSpy.mockRestore();
+    expect(seen[0]?.headers.get("x-openrouter-title")).toBe("Cockpit Chess");
+    expect(seen[0]?.headers.get("http-referer")).toBe("https://chess.example");
+    expect(seen[0]?.headers.get("authorization")).toBe("Bearer k");
+  });
+  it("passes them as defaultHeaders to the Anthropic and OpenAI SDKs", () => {
+    createModelAdapter({ provider: "anthropic", model: "claude", apiKey: "k", headers });
+    expect(
+      (anthropicCalls.at(-1)?.[2] as Record<string, unknown> | undefined)?.defaultHeaders,
+    ).toEqual(headers);
+    createModelAdapter({ provider: "openai-chat", model: "gpt", apiKey: "k", headers });
+    expect(
+      (chatCompletionsCalls.at(-1)?.[2] as Record<string, unknown> | undefined)?.defaultHeaders,
+    ).toEqual(headers);
+  });
+});

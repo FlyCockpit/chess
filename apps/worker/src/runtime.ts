@@ -23,6 +23,7 @@ import {
 import { createConsumerHeartbeat } from "@cockpit-chess/queue/consumer-health";
 import { type Processor, Worker, type WorkerOptions } from "bullmq";
 import { syncBackupFreshnessScheduler } from "./backup-freshness-scheduler.js";
+import { startChessCapacity } from "./chess-capacity.js";
 import { handleCheckBackupFreshnessJob } from "./handlers/check-backup-freshness.js";
 import { handleChessReconcileJob, handleChessRunJob } from "./handlers/chess-run.js";
 import { handleNotifyDataDeletionsJob } from "./handlers/notify-data-deletions.js";
@@ -63,6 +64,7 @@ export async function startWorkerRuntime(options: {
   let ready = false;
   let failed = false;
   let stopPromise: Promise<void> | undefined;
+  let chessCapacity: ReturnType<typeof startChessCapacity> | undefined;
   const heartbeat = createConsumerHeartbeat(
     heartbeatConnection,
     embedded ? "embedded" : "external",
@@ -88,6 +90,7 @@ export async function startWorkerRuntime(options: {
     if (stopPromise) return stopPromise;
     stopping = true;
     ready = false;
+    chessCapacity?.stop();
     stopPromise = (async () => {
       // Closing consumers must begin even if a pending heartbeat cannot finish.
       // stop() closes BullMQ admission synchronously before awaiting active jobs.
@@ -144,18 +147,21 @@ export async function startWorkerRuntime(options: {
     }
     requireRunning();
 
+    // Hosted matches mostly wait on the network, so many run at once; their engine
+    // work shares one bounded Stockfish pool (chess-capacity.ts).
+    chessCapacity = startChessCapacity(connection);
     const chessWorker = createWorker<ChessRunJobData>(
       QUEUE_NAMES.chessRun,
       (job) => handleChessRunJob(job, options.signal),
-      { connection, concurrency: 1 },
+      { connection, concurrency: chessCapacity.concurrency },
     );
     chessWorker.on("failed", (job, error) => {
       console.error(`[chess-run] Job ${job?.id} failed:`, error.message);
       void reportJobFailure("chess-run", job, error);
     });
 
-    // Chess reconcile sweep — its own queue so it runs while a match holds the
-    // concurrency-1 chess-run consumer. Concurrency 1: overlapping sweeps would
+    // Chess reconcile sweep — its own queue so it runs while matches hold every
+    // chess-run slot. Concurrency 1: overlapping sweeps would
     // scan the same rows, and the compare-and-set makes the second a no-op.
     const chessReconcileWorker = createWorker<ChessReconcileJobData>(
       QUEUE_NAMES.chessReconcile,

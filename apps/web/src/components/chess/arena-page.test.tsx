@@ -28,6 +28,7 @@ const fixture = vi.hoisted(() => ({
   },
 }));
 vi.mock("@tanstack/react-query", () => ({
+  queryOptions: (options: unknown) => options,
   useQuery: () => fixture.query,
   useInfiniteQuery: () => fixture.list,
 }));
@@ -37,6 +38,7 @@ vi.mock("@/utils/orpc", () => ({
       list: { infiniteOptions: () => ({}) },
       get: { queryOptions: () => ({}) },
       leaderboard: { queryOptions: () => ({}) },
+      info: { queryOptions: () => ({}) },
     },
   },
 }));

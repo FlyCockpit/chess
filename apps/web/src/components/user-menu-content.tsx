@@ -9,14 +9,16 @@ import {
   DropdownMenuTrigger,
 } from "@cockpit-chess/ui/components/dropdown-menu";
 import { toast } from "@cockpit-chess/ui/components/sileo";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { LogOut, User } from "lucide-react";
+import { Code, LogOut, User } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAuthSession } from "@/hooks/use-auth-session";
 import { DEFAULT_LOCALE, isSupportedLocale } from "@/i18n/config";
 import { signOutAndLeave } from "@/lib/explicit-sign-out";
 import { getNavItems, toLangRoute } from "@/lib/nav-items";
 import { friendly } from "@/utils/friendly-error";
+import { orpc } from "@/utils/orpc";
 
 /**
  * The real Base UI account menu. Lazy-loaded by `user-menu.tsx` on first
@@ -32,7 +34,9 @@ export default function UserMenuContent() {
   const params = useParams({ strict: false });
   const lang = isSupportedLocale(params.lang) ? params.lang : DEFAULT_LOCALE;
   const authSession = useAuthSession();
-  const { t } = useTranslation("nav");
+  const { t } = useTranslation(["nav", "common"]);
+  // The running code's public source (AGPL-3.0 section 13); the signed-in shell has no footer.
+  const { data: info } = useQuery(orpc.chess.info.queryOptions());
 
   // The shell only renders this once a session exists; guard defensively so a
   // session-expiry race can't dereference a null user.
@@ -91,6 +95,14 @@ export default function UserMenuContent() {
               {t(item.labelKey)}
             </DropdownMenuItem>
           ))}
+          {info?.sourceCodeUrl && (
+            <DropdownMenuItem
+              render={<a href={info.sourceCodeUrl} target="_blank" rel="noopener noreferrer" />}
+            >
+              <Code className="size-4" />
+              {t("common:sourceCode")}
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             variant="destructive"

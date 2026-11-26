@@ -73,6 +73,7 @@ const cliBudget = rpcRateFamily({ points: 100, windowSeconds: 60 });
 const cliIpBudget = rpcRateFamily({ points: 300, windowSeconds: 60 });
 const cliDownloadBudget = rpcRateFamily({ points: 20, windowSeconds: 60 });
 const devicePollBudget = rpcRateFamily({ points: 30, windowSeconds: 60 });
+const openrouterBudget = rpcRateFamily({ points: 20, windowSeconds: 600 });
 
 /**
  * Credential limiter — the credential-stuffing defense. Applied ONLY to the
@@ -557,6 +558,17 @@ export const cliDownloadLimiter = createSurfaceLimiter("cli-download", cliDownlo
  * (apps/server/src/index.ts), because the endpoint issues sessions.
  */
 export const devicePollLimiter = createSurfaceLimiter("device-poll", devicePollBudget, {
+  insurance: false,
+});
+
+/**
+ * OpenRouter connect limiter — /api/openrouter/connect and /api/openrouter/callback
+ * (openrouter-routes.ts). One connection is two requests (start + callback), so 20
+ * per 10 minutes per user leaves room for a few retries and declines while keeping a
+ * script from minting OAuth states or hammering OpenRouter's exchange through us.
+ * Fail-closed with no insurance: the routes write state and call OpenRouter.
+ */
+export const openrouterLimiter = createSurfaceLimiter("openrouter", openrouterBudget, {
   insurance: false,
 });
 

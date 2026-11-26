@@ -61,6 +61,11 @@ export interface AgentModel {
   baseUrl?: string;
   /** Anthropic-compatible gateways may require Bearer instead of x-api-key. */
   anthropicAuth?: "api-key" | "bearer";
+  /**
+   * Extra request headers on every call, e.g. OpenRouter app attribution
+   * (`HTTP-Referer`, `X-OpenRouter-Title`). Never credentials: the key goes in `apiKey`.
+   */
+  headers?: Record<string, string>;
 }
 
 export interface AgentTool<TSchema extends z.ZodType = z.ZodType> {

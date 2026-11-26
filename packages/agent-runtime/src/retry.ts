@@ -103,6 +103,46 @@ const PERMANENT_ERROR_CODES = new Set([
   "not_found_error",
 ]);
 
+/**
+ * OpenRouter's 402 `limit_source`: which budget refused the call. The key's own limit
+ * and the account's credits do not refill by waiting; the in-flight budget does (it
+ * comes with Retry-After), so only that one is retried.
+ */
+const OPENROUTER_LIMIT_SOURCES = [
+  "openrouter_key_limit",
+  "openrouter_credits",
+  "openrouter_in_flight_budget",
+] as const;
+const IN_FLIGHT_BUDGET = "openrouter_in_flight_budget";
+const getLimitSource = (error: unknown): string | undefined => {
+  const source = asRecord(error);
+  if (!source) return undefined;
+  const body = providerBody(source);
+  const nested = asRecord(body?.error);
+  const places = [
+    source,
+    body,
+    nested,
+    asRecord(source.metadata),
+    asRecord(body?.metadata),
+    asRecord(nested?.metadata),
+    tanstackMetadata(source),
+  ];
+  for (const place of places) {
+    const value = place?.limit_source ?? place?.limitSource;
+    if (
+      typeof value === "string" &&
+      (OPENROUTER_LIMIT_SOURCES as readonly string[]).includes(value)
+    )
+      return value;
+  }
+  // Some adapters keep only the provider's message; it names the source too.
+  const text = [source.message, body?.message, nested?.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return OPENROUTER_LIMIT_SOURCES.find((name) => text.includes(name));
+};
+
 /** Statuses worth retrying: request timeout, rate limit, and every 5xx. */
 const isTransientStatus = (status: number): boolean =>
   status === 408 || status === 429 || status >= 500;
@@ -142,8 +182,10 @@ export const classifyModelError = (error: unknown): ModelErrorClassification => 
     };
   }
   const status = getErrorStatus(error);
+  const limitSource = status === 402 ? getLimitSource(error) : undefined;
   const codes = getErrorCodes(error);
-  const code = codes[0];
+  // A 402's limit source is the most specific code it has.
+  const code = limitSource ?? codes[0];
   const record = asRecord(error);
   const explicitWait =
     record?.retryAfterMs ?? (record ? tanstackMetadata(record)?.retryAfterMs : undefined);
@@ -152,8 +194,9 @@ export const classifyModelError = (error: unknown): ModelErrorClassification => 
       ? explicitWait
       : parseRetryAfterMs(error);
   const permanent =
-    (status !== undefined && status >= 400 && status < 500 && !isTransientStatus(status)) ||
-    codes.some((candidate) => PERMANENT_ERROR_CODES.has(candidate.toLowerCase()));
+    limitSource !== IN_FLIGHT_BUDGET &&
+    ((status !== undefined && status >= 400 && status < 500 && !isTransientStatus(status)) ||
+      codes.some((candidate) => PERMANENT_ERROR_CODES.has(candidate.toLowerCase())));
   return {
     retryable: !permanent,
     ...(status !== undefined ? { status } : {}),

@@ -23,10 +23,12 @@ import {
   advanceMatch,
   archiveLimitReached,
   archiveMeter,
+  CREDENTIAL_REVOKED,
   dispatchOutputLimit,
   dispatchReservation,
   endAtArchiveLimit,
   eventEntryBytes,
+  fitConversation,
   MATCH_INTERRUPTED,
   MAX_UNMEASURED_EVENT_BYTES,
   MIN_REPLY_TOKENS,
@@ -35,6 +37,7 @@ import {
   runMatch,
   spectatorFeed,
   TERMINAL_BOOKKEEPING_BYTES,
+  trimConversation,
   turnPrompt,
 } from "./runner";
 import { asCockpitV1 } from "./testing";
@@ -45,7 +48,9 @@ const { runAgentLoop, evaluatePosition } = vi.hoisted(() => ({
   evaluatePosition: vi.fn(),
 }));
 vi.mock("./engine", () => ({ evaluatePosition }));
-vi.mock("@cockpit-chess/agent-runtime", () => ({
+vi.mock("@cockpit-chess/agent-runtime", async (importOriginal) => ({
+  classifyModelError: (await importOriginal<typeof import("@cockpit-chess/agent-runtime")>())
+    .classifyModelError,
   runAgentLoop,
   defineTool: (options: unknown) => options,
 }));
@@ -358,6 +363,165 @@ describe("bounded local and worker match runner", () => {
     expect(match).toMatchObject({ status: "error", termination: "provider-error", result: "*" });
     expect(matchStats(match).illegalAttempts).toBe(0);
     expect(validateArchive(match)).toEqual(match);
+  });
+  it("ends unscored on a revoked key (401) or a spent key limit or balance (402)", async () => {
+    const { AgentRuntimeError } = await vi.importActual<
+      typeof import("@cockpit-chess/agent-runtime")
+    >("@cockpit-chess/agent-runtime");
+    const cases = [
+      [
+        new AgentRuntimeError("Unauthorized", { retryable: false, status: 401 }),
+        "credential-revoked",
+      ],
+      [
+        new AgentRuntimeError("Key limit", {
+          retryable: false,
+          status: 402,
+          code: "openrouter_key_limit",
+        }),
+        "account-limit",
+      ],
+      [{ statusCode: 402, message: "Insufficient credits" }, "account-limit"],
+      [
+        new AgentRuntimeError("Busy", {
+          retryable: true,
+          status: 402,
+          code: "openrouter_in_flight_budget",
+        }),
+        "provider-error",
+      ],
+    ] as const;
+    for (const [error, termination] of cases) {
+      const match = createMatch({ white: model, black: random, rules: {} });
+      runAgentLoop.mockRejectedValueOnce(error);
+      await advanceMatch(match, { credentials });
+      expect(match).toMatchObject({ status: "error", termination, result: "*" });
+      expect(validateArchive(match)).toEqual(match);
+      expect(JSON.stringify(match)).not.toContain("Insufficient credits");
+    }
+  });
+  it("ends unscored as credential-revoked when the run is aborted for a revoked key", async () => {
+    const match = createMatch({ white: model, black: random, rules: {} });
+    const controller = new AbortController();
+    controller.abort(CREDENTIAL_REVOKED);
+    await advanceMatch(match, { credentials, signal: controller.signal });
+    expect(match).toMatchObject({ status: "error", termination: "credential-revoked" });
+  });
+  it("passes attribution headers through and never puts the key in the archive", async () => {
+    const canary = "sk-or-v1-CANARY0123456789abcdef0123456789abcdef0123456789abcdef";
+    const match = createMatch({ white: model, black: random, rules: {} });
+    runAgentLoop.mockImplementation(async (options: AgentLoopOptions) => {
+      throw new Error(`upstream echoed ${options.model.apiKey}`);
+    });
+    await advanceMatch(match, {
+      credentials: {
+        w: {
+          ...credentials.w,
+          apiKey: canary,
+          headers: { "X-OpenRouter-Title": "Cockpit Chess" },
+        },
+      },
+    });
+    expect(runAgentLoop.mock.calls[0]?.[0].model).toMatchObject({
+      apiKey: canary,
+      headers: { "X-OpenRouter-Title": "Cockpit Chess" },
+    });
+    expect(match.termination).toBe("provider-error");
+    expect(JSON.stringify(match)).not.toContain(canary);
+  });
+  it("bounds a persistent side's conversation by dropping its oldest whole turns", () => {
+    const turn = (n: number, size: number): AgentMessage[] => [
+      {
+        id: `u${n}`,
+        role: "user",
+        parts: [{ type: "text", content: `You play White.\n${"x".repeat(size)}` }],
+      },
+      { id: `a${n}`, role: "assistant", parts: [{ type: "text", content: '{"move":"e2e4"}' }] },
+      {
+        id: `f${n}`,
+        role: "user",
+        parts: [{ type: "text", content: "Engine feedback after your move" }],
+      },
+    ];
+    const messages = [...turn(1, 1000), ...turn(2, 1000), ...turn(3, 1000)];
+    expect(trimConversation(messages)).toBe(messages);
+    expect(trimConversation(messages, 1_000_000)).toBe(messages);
+    const trimmed = trimConversation(messages, 3000);
+    expect(trimmed.map((entry) => entry.id)).toEqual(["u2", "a2", "f2", "u3", "a3", "f3"]);
+    // The newest turn alone over the limit: nothing is kept, so memory never exceeds it.
+    expect(trimConversation(messages, 10)).toEqual([]);
+  });
+  it("makes room before a dispatch by dropping older turns, never the current one", () => {
+    const turn = (n: number, size: number): AgentMessage[] => [
+      {
+        id: `u${n}`,
+        role: "user",
+        parts: [{ type: "text", content: `You play White.\n${"x".repeat(size)}` }],
+      },
+      { id: `a${n}`, role: "assistant", parts: [{ type: "text", content: '{"move":"e2e4"}' }] },
+    ];
+    const fits = [...turn(1, 1000), ...turn(2, 1000), ...turn(3, 1000)];
+    const size = (list: AgentMessage[]) => Buffer.byteLength(JSON.stringify(list));
+    // Under the limit: untouched.
+    const whole = [...fits];
+    expect(fitConversation(whole, 1_000_000, "u3")).toBeLessThanOrEqual(1_000_000);
+    expect(whole).toHaveLength(6);
+    // Over: the oldest turn goes, in place, at a turn boundary.
+    const trimmed = [...fits];
+    const left = fitConversation(trimmed, 2600, "u3");
+    expect(trimmed.map((entry) => entry.id)).toEqual(["u2", "a2", "u3", "a3"]);
+    expect(left).toBeLessThanOrEqual(2600);
+    // The current turn alone over the limit: every older turn goes, it stays, and the
+    // returned size says it is still over.
+    const over = [...fits];
+    expect(fitConversation(over, 500, "u3")).toBeGreaterThan(500);
+    expect(over.map((entry) => entry.id)).toEqual(["u3", "a3"]);
+    expect(size(over)).toBeGreaterThan(500);
+  });
+  it("keeps a persistent game going by dropping old history when the next turn would cross the bound", async () => {
+    const old: AgentMessage[] = [
+      {
+        id: "old-turn",
+        role: "user",
+        parts: [{ type: "text", content: `You play White.\n${"x".repeat(60_000)}` }],
+      },
+      { id: "old-reply", role: "assistant", parts: [{ type: "text", content: '{"move":"e2e4"}' }] },
+    ];
+    let dispatched: string[] = [];
+    runAgentLoop.mockImplementation(async (options) => {
+      const pending = [...options.messages];
+      const decision = await options.onBeforeDispatch({ messages: pending });
+      dispatched = pending.map((entry: AgentMessage) => entry.id);
+      const messages = [
+        ...pending,
+        { id: "reply", role: "assistant", parts: [{ type: "text", content: '{"move":"e2e4"}' }] },
+      ];
+      return { messages, stopReason: decision?.veto ? "vetoed" : "completed" };
+    });
+    const match = createMatch({ white: model, black: random, rules: { context: "persistent" } });
+    const memory: NonNullable<Parameters<typeof advanceMatch>[1]>["memory"] = { w: old };
+    // History alone fits (about 60 KB); history plus this turn's prompt does not.
+    await advanceMatch(match, { credentials, memory, conversationMaxBytes: 61_000 });
+    expect(match.termination).not.toBe("event-limit");
+    expect(matchStats(match).moves).toBe(1);
+    expect(dispatched).not.toContain("old-turn");
+    expect(Buffer.byteLength(JSON.stringify(memory.w ?? []))).toBeLessThanOrEqual(61_000);
+  });
+  it("ends a turn unscored instead of dispatching a conversation over the memory bound", async () => {
+    runAgentLoop.mockImplementation(async (options) => {
+      const grown = [
+        ...options.messages,
+        { id: "big", role: "assistant", parts: [{ type: "text", content: "x".repeat(70_000) }] },
+      ];
+      const decision = await options.onBeforeDispatch({ messages: grown });
+      return { messages: grown, stopReason: decision?.veto ? "vetoed" : "completed" };
+    });
+    const match = createMatch({ white: model, black: random, rules: { context: "persistent" } });
+    const memory: NonNullable<Parameters<typeof advanceMatch>[1]>["memory"] = {};
+    await advanceMatch(match, { credentials, memory, conversationMaxBytes: 65_536 });
+    expect(match.termination).toBe("event-limit");
+    expect(match.status).toBe("error");
+    expect(Buffer.byteLength(JSON.stringify(memory.w ?? []))).toBeLessThanOrEqual(65_536);
   });
   it("never dispatches after cancellation or for a human turn", async () => {
     const match = createMatch({ white: model, black: random, rules: {} });

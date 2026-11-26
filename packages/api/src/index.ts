@@ -122,6 +122,33 @@ const requireAdminOr404 = o.middleware(async ({ context, next }) => {
 
 export const adminOr404Procedure = publicProcedure.use(requireAdminOr404);
 
+// `hostedPlayerProcedure` gates paid hosted work any signed-in user may start
+// (chess.create, billed to their own OpenRouter key or, for admins, the
+// operator's): a real session (no API key), a verified email and the forced
+// second factor where the policy asks for one. Whether the user may bill this
+// match (feature flag, connected key, admin-only operator billing, quotas) is
+// the handler's to decide, so its errors can say what to do next.
+const requireHostedPlayer = o.middleware(async ({ context, next }) => {
+  const user = context.session?.user;
+  if (!user || isUserBanned(user)) throw new ORPCError("UNAUTHORIZED");
+  if (context.credential === "api-key")
+    throw new ORPCError("FORBIDDEN", { message: "API keys cannot start hosted matches." });
+  if (!user.emailVerified)
+    throw new ORPCError("FORBIDDEN", {
+      message: "Email verification required.",
+      data: { reason: "unverified" },
+    });
+  if (!(await isTwoFactorPolicySatisfied(user)))
+    throw new ORPCError("FORBIDDEN", { message: "Two-factor authentication setup is required." });
+  return next({
+    context: {
+      session: context.session as NonNullable<Context["session"]>,
+    },
+  });
+});
+
+export const hostedPlayerProcedure = publicProcedure.use(requireHostedPlayer);
+
 // -- authorization registry --------------------------------------------------
 //
 // `pnpm policy:access-matrix` reads these two objects statically (it parses
@@ -146,6 +173,7 @@ export const procedureAccessLevels = {
   protectedProcedure: "authenticated",
   adminProcedure: "admin",
   adminOr404Procedure: "admin",
+  hostedPlayerProcedure: "authenticated",
 } as const satisfies Record<string, ProcedureAccessLevel>;
 
 /** Middleware a router procedure may pass to `.use()`. Custom role helpers register here. */
@@ -154,4 +182,5 @@ export const middlewareAccessLevels = {
   requireRequiredTwoFactor: "authenticated",
   requireAdmin: "admin",
   requireAdminOr404: "admin",
+  requireHostedPlayer: "authenticated",
 } as const satisfies Record<string, ProcedureAccessLevel>;

@@ -5,6 +5,7 @@ import { ListX, Settings, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { BackupStatusCard } from "@/components/admin/backup-status-card";
+import { ChessCapacityCard } from "@/components/admin/chess-capacity-card";
 import { PageHeader, PageShell } from "@/components/page-shell";
 
 export const Route = createFileRoute("/$lang/_app/admin/")({
@@ -20,6 +21,7 @@ function AdminOverview() {
     <PageShell width="wide">
       <PageHeader title={t("admin:overview.title")} description={t("admin:overview.description")} />
       <BackupStatusCard />
+      <ChessCapacityCard />
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {(
           [

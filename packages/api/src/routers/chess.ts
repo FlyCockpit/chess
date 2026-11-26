@@ -10,16 +10,28 @@ import {
 } from "@cockpit-chess/chess";
 import { endingSummarySchema } from "@cockpit-chess/chess/ending";
 import prisma, { type Prisma } from "@cockpit-chess/db";
+import { env as serverEnv } from "@cockpit-chess/env/server";
 import { env } from "@cockpit-chess/env/shared";
-import { chessRunQueue, ensureRunnableJob } from "@cockpit-chess/queue";
+import { chessRunQueue, ensureRunnableJob, redisConnection } from "@cockpit-chess/queue";
+import { readChessEngineStats } from "@cockpit-chess/queue/chess-capacity";
 import { ORPCError } from "@orpc/server";
 import { z } from "zod";
-import { adminOr404Procedure, publicProcedure } from "../index";
+import type { Context } from "../context";
+import {
+  adminOr404Procedure,
+  authenticatedProcedure,
+  checkAdminAuthority,
+  hostedPlayerProcedure,
+  protectedProcedure,
+  publicProcedure,
+} from "../index";
+import { sourceCodeUrl } from "../lib/build-commit";
 import { getModelCatalog } from "../lib/chess-models";
 import { spectatorEvaluationsFor } from "../lib/chess-spectator";
 import { chessStatsColumns, INTERRUPTED_ENDING, STOPPED_ENDING } from "../lib/chess-stats";
 import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagination";
 import { createProcedureBudget } from "../lib/procedure-budget";
+import { openOwnerOpenRouterKey, providerKeySecrets } from "../lib/provider-key";
 import { slugify } from "../lib/slug";
 
 const summary = {
@@ -109,6 +121,9 @@ const ownDraftSelect = {
 const ownInspectSelect = {
   ...ownDraftSelect,
   spectatorEvaluations: true,
+  official: true,
+  createdAt: true,
+  credentialSource: true,
 } satisfies Prisma.ChessMatchSelect;
 const ownIdSelect = { id: true } satisfies Prisma.ChessMatchSelect;
 async function ownDraft<
@@ -140,17 +155,103 @@ function hostedLimits() {
     maxTokens: env.CHESS_MAX_TOKENS,
   };
 }
+/**
+ * Why `chess.create` refused a match, as `error.data.reason`: the web client turns it
+ * into a sentence that says what to do next. Messages stay fixed English.
+ */
+export type ChessCreateRefusal =
+  | "hosted-disabled"
+  | "user-matches-disabled"
+  | "operator-billing-admin-only"
+  | "operator-key-missing"
+  | "openrouter-unavailable"
+  | "not-connected"
+  | "reconnect"
+  | "active-match"
+  | "daily-limit"
+  | "queue-full";
+const refuse = (
+  code:
+    | "SERVICE_UNAVAILABLE"
+    | "FORBIDDEN"
+    | "PRECONDITION_FAILED"
+    | "CONFLICT"
+    | "TOO_MANY_REQUESTS",
+  reason: ChessCreateRefusal,
+  message: string,
+) => new ORPCError(code, { message, data: { reason } });
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** One lock for every create: the queue, active and daily counts are read and written under it. */
+const CREATE_LOCK = "cockpit-chess:chess-create";
+const createInput = matchConfigSchema.extend({
+  /**
+   * Who pays the players: "operator" (the server's key, admins only) or "openrouter"
+   * (the caller's connected key). Omitted: operator for admins, openrouter otherwise.
+   */
+  billing: z.enum(["operator", "openrouter"]).optional(),
+});
+async function isAdminCaller(context: Pick<Context, "session" | "credential">) {
+  return (await checkAdminAuthority(context.session, context.credential)).ok;
+}
+const connectionGateSelect = {
+  status: true,
+  expiresAt: true,
+} satisfies Prisma.OpenRouterConnectionSelect;
+/** Inspect/stop/publish of the caller's own match, shared with the CLI's admin surface. */
+async function inspectOwnMatch(slug: string, ownerId: string) {
+  const row = await ownDraft(slug, ownerId, ownInspectSelect);
+  const archive = checkedArchive(row.archive, row.status);
+  const queuePosition =
+    row.status === "queued"
+      ? (await prisma.chessMatch.count({
+          where: { status: "queued", createdAt: { lt: row.createdAt } },
+        })) + 1
+      : null;
+  return {
+    archive,
+    status: row.status,
+    published: row.published,
+    official: row.official,
+    credentialSource: row.credentialSource === "owner-openrouter" ? "openrouter" : "operator",
+    queuePosition,
+    spectatorEvaluations: spectatorEvaluationsFor({ ...row, archive }),
+  } as const;
+}
+async function publishOwnMatch(slug: string, ownerId: string, published: boolean) {
+  const row = await ownDraft(slug, ownerId, ownIdSelect);
+  await prisma.chessMatch.update({
+    where: { id: row.id },
+    data: { published },
+    select: { id: true },
+  });
+  return { published };
+}
+const capacityMatchSelect = {
+  slug: true,
+  title: true,
+  status: true,
+  createdAt: true,
+  Owner: { select: { name: true } },
+} satisfies Prisma.ChessMatchSelect;
+const CAPACITY_LIST = 50;
 const isP2002 = (error: unknown) =>
   typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 export const chessRouter = {
   info: publicProcedure.handler(() => ({
     hostedEnabled: env.CHESS_HOSTED_ENABLED,
+    /** Signed-in users may connect OpenRouter and run hosted matches on their own key. */
+    userMatchesEnabled:
+      env.CHESS_HOSTED_ENABLED && env.CHESS_USER_MATCHES_ENABLED && providerKeySecrets().length > 0,
+    /** Hosted matches one user may start per rolling 24 hours (one active at a time). */
+    dailyLimit: env.CHESS_USER_DAILY_MATCHES,
     format: "cockpit-chess/v1",
     /** Per-side operator limits, so the create form's maxima follow the server. */
     limits: hostedLimits(),
+    /** The running code's public source (AGPL-3.0 section 13). */
+    sourceCodeUrl: sourceCodeUrl(serverEnv.SOURCE_CODE_URL),
   })),
   /** The models a hosted match can use, for the create form's picker (cached; see chess-models). */
-  models: adminOr404Procedure.handler(async () => {
+  models: authenticatedProcedure.handler(async () => {
     try {
       return await getModelCatalog();
     } catch (error) {
@@ -183,7 +284,7 @@ export const chessRouter = {
       spectatorEvaluations: spectatorEvaluationsFor({ ...row, archive }),
     };
   }),
-  studio: adminOr404Procedure.input(cursorPageInput).handler(async ({ input, context }) => {
+  studio: protectedProcedure.input(cursorPageInput).handler(async ({ input, context }) => {
     const rows = await prisma.chessMatch.findMany({
       where: withCursor({ ownerId: context.session.user.id }, "createdAt", input.cursor, "desc"),
       select: summary,
@@ -192,19 +293,24 @@ export const chessRouter = {
     });
     return cursorPage(rows.map(withEnding), input.limit, "createdAt");
   }),
-  inspect: adminOr404Procedure.input(slugInput).handler(async ({ input, context }) => {
-    const row = await ownDraft(input.slug, context.session.user.id, ownInspectSelect);
-    const archive = checkedArchive(row.archive, row.status);
-    return {
-      archive,
-      status: row.status,
-      published: row.published,
-      spectatorEvaluations: spectatorEvaluationsFor({ ...row, archive }),
-    };
-  }),
-  create: adminOr404Procedure.input(matchConfigSchema).handler(async ({ input, context }) => {
+  inspect: protectedProcedure
+    .input(slugInput)
+    .handler(({ input, context }) => inspectOwnMatch(input.slug, context.session.user.id)),
+  create: hostedPlayerProcedure.input(createInput).handler(async ({ input: request, context }) => {
+    const { billing: requested, ...input } = request;
+    const ownerId = context.session.user.id;
     if (!env.CHESS_HOSTED_ENABLED)
-      throw new ORPCError("SERVICE_UNAVAILABLE", { message: "Hosted inference is disabled" });
+      throw refuse("SERVICE_UNAVAILABLE", "hosted-disabled", "Hosted inference is disabled");
+    const admin = await isAdminCaller(context);
+    if (!admin && !env.CHESS_USER_MATCHES_ENABLED)
+      throw refuse("FORBIDDEN", "user-matches-disabled", "Hosted matches are admin-only here");
+    const billing = requested ?? (admin ? "operator" : "openrouter");
+    if (billing === "operator" && !admin)
+      throw refuse(
+        "FORBIDDEN",
+        "operator-billing-admin-only",
+        "Only admins may bill the operator key",
+      );
     if ([input.white, input.black].some((player) => player.protocol === "human"))
       throw new ORPCError("BAD_REQUEST");
     // No move cap: the rules engine's own draws, the archive limit and these budgets end
@@ -215,26 +321,87 @@ export const chessRouter = {
       input.rules.tokenBudget > limits.maxTokens
     )
       throw new ORPCError("BAD_REQUEST", { message: "Hosted match exceeds the operator limits" });
-    if (
-      [input.white, input.black].some((player) => player.protocol !== "random") &&
-      !env.OPENROUTER_API_KEY
-    )
-      throw new ORPCError("SERVICE_UNAVAILABLE");
-    await spendBudget(context.session.user.id);
+    if (billing === "operator") {
+      if (
+        [input.white, input.black].some((player) => player.protocol !== "random") &&
+        !env.OPENROUTER_API_KEY
+      )
+        throw refuse(
+          "SERVICE_UNAVAILABLE",
+          "operator-key-missing",
+          "The operator key is not configured",
+        );
+    } else {
+      if (!providerKeySecrets().length)
+        throw refuse(
+          "SERVICE_UNAVAILABLE",
+          "openrouter-unavailable",
+          "This server cannot store OpenRouter keys",
+        );
+      const connection = await prisma.openRouterConnection.findUnique({
+        where: { userId: ownerId },
+        select: connectionGateSelect,
+      });
+      if (!connection)
+        throw refuse("PRECONDITION_FAILED", "not-connected", "Connect OpenRouter first");
+      if (
+        connection.status !== "active" ||
+        (connection.expiresAt && connection.expiresAt.getTime() <= Date.now())
+      )
+        throw refuse("PRECONDITION_FAILED", "reconnect", "Reconnect OpenRouter first");
+      // A row this server can no longer open (its sealing secret was rotated away) would
+      // only fail at claim time; refuse now (the check marks it invalid for Settings).
+      if ((await openOwnerOpenRouterKey(ownerId)).state !== "ok")
+        throw refuse("PRECONDITION_FAILED", "reconnect", "Reconnect OpenRouter first");
+    }
+    await spendBudget(ownerId);
     const archive = createMatch(input, "hosted");
     const slug = `${slugify(input.title).slice(0, 110) || "match"}-${archive.id.slice(0, 8)}`;
-    const row = await prisma.chessMatch.create({
-      data: {
-        ...metadata(archive),
-        ownerId: context.session.user.id,
-        slug,
-        status: "queued",
-        official: true,
-        published: false,
-        heartbeatAt: new Date(),
-        archive,
-      },
-      select: { id: true },
+    // Matches billed to the caller's own key carry the per-user caps; admin matches on
+    // the operator key only the queue cap. One lock serializes every create, so the
+    // counts below cannot be raced past (creation is rare: 12 per user per hour).
+    const capped = billing === "openrouter";
+    const row = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CREATE_LOCK}))::text AS locked`;
+      const queued = await tx.chessMatch.count({ where: { status: "queued" } });
+      if (queued >= env.CHESS_QUEUE_MAX)
+        throw refuse("TOO_MANY_REQUESTS", "queue-full", "The match queue is full");
+      if (capped) {
+        const active = await tx.chessMatch.count({
+          where: {
+            ownerId,
+            credentialSource: "owner-openrouter",
+            status: { in: ["queued", "running"] },
+          },
+        });
+        if (active > 0)
+          throw refuse("CONFLICT", "active-match", "You already have a match queued or running");
+        const today = await tx.chessMatch.count({
+          where: {
+            ownerId,
+            credentialSource: "owner-openrouter",
+            createdAt: { gte: new Date(Date.now() - DAY_MS) },
+          },
+        });
+        if (today >= env.CHESS_USER_DAILY_MATCHES)
+          throw refuse("TOO_MANY_REQUESTS", "daily-limit", "Daily hosted match limit reached");
+      }
+      return tx.chessMatch.create({
+        data: {
+          ...metadata(archive),
+          ownerId,
+          slug,
+          status: "queued",
+          // Only the operator's curated runs count on the leaderboard by default; an
+          // admin promotes others with `setOfficial`.
+          official: billing === "operator",
+          published: false,
+          credentialSource: billing === "operator" ? "operator" : "owner-openrouter",
+          heartbeatAt: new Date(),
+          archive,
+        },
+        select: { id: true },
+      });
     });
     try {
       await ensureRunnableJob(chessRunQueue, "chess-run", { matchId: row.id }, `chess-${row.id}`);
@@ -306,18 +473,60 @@ export const chessRouter = {
       }
       return { slug, duplicate: false };
     }),
-  publish: adminOr404Procedure
+  publish: protectedProcedure
     .input(slugInput.extend({ published: z.boolean() }))
-    .handler(async ({ input, context }) => {
-      const row = await ownDraft(input.slug, context.session.user.id, ownIdSelect);
-      await prisma.chessMatch.update({
-        where: { id: row.id },
-        data: { published: input.published },
-        select: { id: true },
+    .handler(({ input, context }) =>
+      publishOwnMatch(input.slug, context.session.user.id, input.published),
+    ),
+  /** Admin curation of the leaderboard: whether a published hosted game counts. */
+  setOfficial: adminOr404Procedure
+    .input(slugInput.extend({ official: z.boolean() }))
+    .handler(async ({ input }) => {
+      const result = await prisma.chessMatch.updateMany({
+        where: { slug: input.slug, published: true, source: "hosted" },
+        data: { official: input.official },
       });
-      return { published: input.published };
+      if (result.count !== 1) throw new ORPCError("NOT_FOUND");
+      return { official: input.official };
     }),
-  stop: adminOr404Procedure.input(slugInput).handler(async ({ input, context }) => {
+  /**
+   * Admin view of hosted capacity: matches running against the worker limit, the queue
+   * against its cap, and the engine pool. Counts plus a bounded list of titles and
+   * owner names; no keys, archives or other private match data.
+   */
+  capacity: adminOr404Procedure.handler(async () => {
+    const [running, queued, matches, engine] = await Promise.all([
+      prisma.chessMatch.count({ where: { status: "running" } }),
+      prisma.chessMatch.count({ where: { status: "queued" } }),
+      prisma.chessMatch.findMany({
+        where: { status: { in: ["running", "queued"] } },
+        select: capacityMatchSelect,
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take: CAPACITY_LIST,
+      }),
+      readChessEngineStats(redisConnection).catch(() => null),
+    ]);
+    return {
+      running,
+      // Live workers' own limits; zero when none reported, the configured value only
+      // when the numbers could not be read at all.
+      concurrencyLimit: engine ? engine.concurrency : env.CHESS_RUN_CONCURRENCY,
+      queued,
+      queueCap: env.CHESS_QUEUE_MAX,
+      // No worker published within the expiry: say so instead of showing 0/0.
+      engine:
+        engine && engine.workers > 0
+          ? {
+              busy: engine.busy,
+              total: engine.total,
+              waiting: engine.waiting,
+              workers: engine.workers,
+            }
+          : null,
+      matches: matches.map(({ Owner, ...match }) => ({ ...match, ownerName: Owner.name })),
+    };
+  }),
+  stop: protectedProcedure.input(slugInput).handler(async ({ input, context }) => {
     const row = await ownDraft(input.slug, context.session.user.id, ownIdSelect);
     await prisma.chessMatch.updateMany({
       where: { id: row.id, status: { in: ["queued", "running"] } },
@@ -434,4 +643,19 @@ export const chessRouter = {
         windowLimit: 500,
       };
     }),
+};
+
+/**
+ * The CLI's copies of inspect and publish (packages/api/src/routers/cli.ts): the same
+ * owner-scoped work, kept behind the admin gate the CLI surface documents.
+ */
+export const chessCliProcedures = {
+  inspect: adminOr404Procedure
+    .input(slugInput)
+    .handler(({ input, context }) => inspectOwnMatch(input.slug, context.session.user.id)),
+  publish: adminOr404Procedure
+    .input(slugInput.extend({ published: z.boolean() }))
+    .handler(({ input, context }) =>
+      publishOwnMatch(input.slug, context.session.user.id, input.published),
+    ),
 };

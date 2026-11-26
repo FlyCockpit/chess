@@ -25,14 +25,30 @@ const { ensureRunnableJob, budget, env, reconcileAdd } = vi.hoisted(() => ({
   budget: vi.fn(),
   env: {
     CHESS_HOSTED_ENABLED: true,
-    OPENROUTER_API_KEY: "test-only",
+    OPENROUTER_API_KEY: "test-only" as string | undefined,
     CHESS_MAX_COST_USD: 25,
     CHESS_MAX_TOKENS: 10_000_000,
+    CHESS_USER_MATCHES_ENABLED: true,
+    CHESS_PROVIDER_KEY_SECRET: "ab".repeat(32) as string | undefined,
+    CHESS_USER_DAILY_MATCHES: 20,
+    CHESS_QUEUE_MAX: 200,
+    CHESS_RUN_CONCURRENCY: 512,
   },
+}));
+const { engineStats } = vi.hoisted(() => ({ engineStats: vi.fn() }));
+const { openKey } = vi.hoisted(() => ({ openKey: vi.fn() }));
+vi.mock("../lib/provider-key", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/provider-key")>()),
+  openOwnerOpenRouterKey: openKey,
+}));
+vi.mock("@cockpit-chess/queue/chess-capacity", () => ({ readChessEngineStats: engineStats }));
+vi.mock("@cockpit-chess/env/server", () => ({
+  env: { SOURCE_CODE_URL: "https://github.com/FlyCockpit/chess" },
 }));
 vi.mock("@cockpit-chess/queue", () => ({
   CHESS_SPECTATOR_JOB_PRIORITY: 10,
   chessRunQueue: {},
+  redisConnection: {},
   chessReconcileQueue: { add: reconcileAdd },
   chessSpectatorJobId: (id: string, ply: number) => `chess-spectator-${id}-${ply}`,
   ensureRunnableJob,
@@ -208,7 +224,17 @@ beforeEach(() => {
   env.CHESS_HOSTED_ENABLED = true;
   env.CHESS_MAX_COST_USD = 25;
   env.CHESS_MAX_TOKENS = 10_000_000;
+  env.CHESS_USER_MATCHES_ENABLED = true;
+  env.CHESS_PROVIDER_KEY_SECRET = "ab".repeat(32);
+  env.OPENROUTER_API_KEY = "test-only";
+  env.CHESS_USER_DAILY_MATCHES = 20;
+  env.CHESS_QUEUE_MAX = 200;
   budget.mockResolvedValue(undefined);
+  // The create transaction runs its callback against the same mock client.
+  db.$transaction.mockImplementation(((fn: (tx: typeof db) => unknown) => fn(db)) as never);
+  db.$queryRaw.mockResolvedValue([] as never);
+  db.chessMatch.count.mockResolvedValue(0);
+  db.openRouterConnection.findUnique.mockResolvedValue(null);
 });
 describe("chess public projection and operator boundaries", () => {
   it("bounds public lists and preserves published visibility alongside the cursor", async () => {
@@ -231,22 +257,33 @@ describe("chess public projection and operator boundaries", () => {
       expect.objectContaining({ where: { slug: "private-game", published: true } }),
     );
   });
-  it.each([null, "user"] as const)(
-    "rejects non-admin writes before storage or scheduling: %s",
-    async (role) => {
-      const api = client(role);
-      await expect(api.create(newConfig())).rejects.toMatchObject({ code: "NOT_FOUND" });
-      await expect(api.importGame({ json: JSON.stringify(match()) })).rejects.toMatchObject({
-        code: "NOT_FOUND",
-      });
-      await expect(api.publish({ slug: "private-game", published: true })).rejects.toMatchObject({
-        code: "NOT_FOUND",
-      });
-      await expect(api.stop({ slug: "private-game" })).rejects.toMatchObject({ code: "NOT_FOUND" });
-      expect(db.chessMatch.create).not.toHaveBeenCalled();
-      expect(ensureRunnableJob).not.toHaveBeenCalled();
-    },
-  );
+  it("rejects anonymous writes before storage or scheduling", async () => {
+    const api = client(null);
+    await expect(api.create(newConfig())).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(api.importGame({ json: JSON.stringify(match()) })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    await expect(api.publish({ slug: "private-game", published: true })).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    await expect(api.stop({ slug: "private-game" })).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+  });
+  it("keeps imports admin-only and refuses a user without a connected key", async () => {
+    const api = client("user");
+    await expect(api.importGame({ json: JSON.stringify(match()) })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    await expect(api.create(newConfig())).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      data: { reason: "not-connected" },
+    });
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+  });
   it("fails closed when hosted inference is off, even for an admin", async () => {
     env.CHESS_HOSTED_ENABLED = false;
     await expect(client().create(newConfig())).rejects.toMatchObject({
@@ -262,7 +299,7 @@ describe("chess public projection and operator boundaries", () => {
     });
   });
   it("accepts budgets up to the configured operator limits and rejects more", async () => {
-    db.chessMatch.create.mockResolvedValue(row());
+    db.chessMatch.create.mockResolvedValue(row() as never);
     ensureRunnableJob.mockResolvedValue({ id: "chess-id" });
     const at = { costBudgetMicros: 25_000_000, tokenBudget: 10_000_000 };
     await expect(client().create({ ...newConfig(), rules: at })).resolves.toMatchObject({
@@ -290,7 +327,7 @@ describe("chess public projection and operator boundaries", () => {
     expect(db.chessMatch.create).not.toHaveBeenCalled();
   });
   it("creates durable queued intent before publishing the deterministic job", async () => {
-    db.chessMatch.create.mockResolvedValue(row());
+    db.chessMatch.create.mockResolvedValue(row() as never);
     ensureRunnableJob.mockResolvedValue({ id: "chess-id" });
     const result = await client().create(newConfig());
     expect(result.slug).toMatch(/^agent-showdown-/);
@@ -312,7 +349,7 @@ describe("chess public projection and operator boundaries", () => {
     archive.source = "hosted";
     finishMatch(archive, "*", "cancelled", "stopped");
     db.chessMatch.findFirst.mockResolvedValue(null);
-    db.chessMatch.create.mockResolvedValue(row());
+    db.chessMatch.create.mockResolvedValue(row() as never);
     await client().importGame({ json: JSON.stringify(archive) });
     expect(db.chessMatch.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -329,7 +366,7 @@ describe("chess public projection and operator boundaries", () => {
     const archive = match();
     finishMatch(archive, "*", "interrupted", "error");
     db.chessMatch.findFirst.mockResolvedValue(null);
-    db.chessMatch.create.mockResolvedValue(row());
+    db.chessMatch.create.mockResolvedValue(row() as never);
     await client().importGame({ json: JSON.stringify(archive) });
     expect(db.chessMatch.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -357,7 +394,7 @@ describe("chess public projection and operator boundaries", () => {
     const json = uploadOfSize(MAX_ARCHIVE_BYTES);
     expect(utf8ByteLength(json)).toBe(MAX_ARCHIVE_BYTES);
     db.chessMatch.findFirst.mockResolvedValue(null);
-    db.chessMatch.create.mockResolvedValue(row());
+    db.chessMatch.create.mockResolvedValue(row() as never);
     await client().importGame({ json });
     expect(db.chessMatch.create).toHaveBeenCalledTimes(1);
   });
@@ -594,7 +631,7 @@ describe("chess public projection and operator boundaries", () => {
     const archive = match();
     finishMatch(archive, "*", "cancelled", "stopped");
     db.chessMatch.findFirst.mockResolvedValue(null);
-    db.chessMatch.create.mockResolvedValue(row());
+    db.chessMatch.create.mockResolvedValue(row() as never);
     await client().importGame({ json: JSON.stringify(archive) });
     expect(db.chessMatch.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -632,7 +669,7 @@ describe("chess public projection and operator boundaries", () => {
   });
   it("logs and errors the row when the hosted job cannot be enqueued", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    db.chessMatch.create.mockResolvedValue(row());
+    db.chessMatch.create.mockResolvedValue(row() as never);
     db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
     ensureRunnableJob.mockRejectedValue(new Error("redis down"));
     await expect(client().create(newConfig())).rejects.toMatchObject({
@@ -650,15 +687,14 @@ describe("chess public projection and operator boundaries", () => {
 });
 
 describe("chess.models", () => {
-  it("is admin-only and maps a catalog outage to SERVICE_UNAVAILABLE", async () => {
+  it("is for signed-in users and maps a catalog outage to SERVICE_UNAVAILABLE", async () => {
     const { resetModelCatalogCache } = await import("../lib/chess-models");
     resetModelCatalogCache();
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response("down", { status: 503 }));
     try {
-      await expect(client("user").models()).rejects.toMatchObject({ code: "NOT_FOUND" });
-      await expect(client(null).models()).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(client(null).models()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
       expect(fetchSpy).not.toHaveBeenCalled();
       await expect(client().models()).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
       fetchSpy.mockResolvedValue(
@@ -674,5 +710,330 @@ describe("chess.models", () => {
       fetchSpy.mockRestore();
       resetModelCatalogCache();
     }
+  });
+});
+
+describe("hosted matches on the user's own OpenRouter key", () => {
+  const connected = () =>
+    db.openRouterConnection.findUnique.mockResolvedValue({
+      status: "active",
+      expiresAt: null,
+    } as never);
+  const userClient = (id = "user-1") =>
+    createRouterClient(chessRouter, { context: context("user", id) });
+  beforeEach(() => {
+    db.chessMatch.create.mockResolvedValue(row() as never);
+    ensureRunnableJob.mockResolvedValue({ id: "chess-id" });
+    openKey.mockResolvedValue({ state: "ok", apiKey: "not-returned", keyHash: "h" });
+  });
+
+  it("asks for a reconnect when this server can no longer open the stored key", async () => {
+    connected();
+    openKey.mockResolvedValue({ state: "unreadable", keyHash: "h" });
+    await expect(userClient().create(newConfig())).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      data: { reason: "reconnect" },
+    });
+    expect(openKey).toHaveBeenCalledWith("user-1");
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
+  });
+
+  it("creates a private, unofficial match billed to the owner's key", async () => {
+    connected();
+    await expect(userClient().create(newConfig())).resolves.toMatchObject({
+      slug: expect.any(String),
+    });
+    expect(db.openRouterConnection.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: "user-1" } }),
+    );
+    expect(db.chessMatch.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          ownerId: "user-1",
+          official: false,
+          published: false,
+          credentialSource: "owner-openrouter",
+        }),
+      }),
+    );
+    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("never lets a non-admin bill the operator key", async () => {
+    connected();
+    await expect(
+      userClient().create({ ...newConfig(), billing: "operator" }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      data: { reason: "operator-billing-admin-only" },
+    });
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses users while the operator has not opened user matches", async () => {
+    env.CHESS_USER_MATCHES_ENABLED = false;
+    connected();
+    await expect(userClient().create(newConfig())).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      data: { reason: "user-matches-disabled" },
+    });
+    // Admins still run operator matches.
+    await expect(client().create(newConfig())).resolves.toBeTruthy();
+  });
+
+  it("asks for a reconnect when the key is invalid or expired", async () => {
+    db.openRouterConnection.findUnique.mockResolvedValue({
+      status: "invalid",
+      expiresAt: null,
+    } as never);
+    await expect(userClient().create(newConfig())).rejects.toMatchObject({
+      data: { reason: "reconnect" },
+    });
+    db.openRouterConnection.findUnique.mockResolvedValue({
+      status: "active",
+      expiresAt: new Date(Date.now() - 1000),
+    } as never);
+    await expect(userClient().create(newConfig())).rejects.toMatchObject({
+      data: { reason: "reconnect" },
+    });
+  });
+
+  it("fails closed without a sealing secret", async () => {
+    env.CHESS_PROVIDER_KEY_SECRET = undefined;
+    connected();
+    await expect(userClient().create(newConfig())).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+      data: { reason: "openrouter-unavailable" },
+    });
+  });
+
+  it("allows one active match per user, counted under the create lock", async () => {
+    connected();
+    db.chessMatch.count.mockImplementation((async (args: { where: Record<string, unknown> }) =>
+      args.where.ownerId && args.where.status ? 1 : 0) as never);
+    await expect(userClient().create(newConfig())).rejects.toMatchObject({
+      code: "CONFLICT",
+      data: { reason: "active-match" },
+    });
+    expect(db.chessMatch.count).toHaveBeenCalledWith({
+      where: {
+        ownerId: "user-1",
+        credentialSource: "owner-openrouter",
+        status: { in: ["queued", "running"] },
+      },
+    });
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
+  });
+
+  it("enforces the rolling daily cap", async () => {
+    connected();
+    env.CHESS_USER_DAILY_MATCHES = 3;
+    db.chessMatch.count.mockImplementation((async (args: { where: Record<string, unknown> }) =>
+      args.where.createdAt ? 3 : 0) as never);
+    await expect(userClient().create(newConfig())).rejects.toMatchObject({
+      code: "TOO_MANY_REQUESTS",
+      data: { reason: "daily-limit" },
+    });
+  });
+
+  it("refuses every create once the queue is full, admins included", async () => {
+    connected();
+    env.CHESS_QUEUE_MAX = 5;
+    db.chessMatch.count.mockImplementation((async (args: { where: Record<string, unknown> }) =>
+      args.where.status === "queued" ? 5 : 0) as never);
+    await expect(userClient().create(newConfig())).rejects.toMatchObject({
+      code: "TOO_MANY_REQUESTS",
+      data: { reason: "queue-full" },
+    });
+    await expect(client().create(newConfig())).rejects.toMatchObject({
+      data: { reason: "queue-full" },
+    });
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
+  });
+
+  it("serializes concurrent creates so the caps cannot be raced", async () => {
+    connected();
+    // A real advisory lock: the second transaction waits until the first commits.
+    let active = 0;
+    let lock = Promise.resolve();
+    db.$transaction.mockImplementation((async (fn: (tx: typeof db) => Promise<unknown>) => {
+      const previous = lock;
+      let release = () => {};
+      lock = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        return await fn(db);
+      } finally {
+        release();
+      }
+    }) as never);
+    db.chessMatch.count.mockImplementation((async (args: { where: Record<string, unknown> }) =>
+      args.where.ownerId && args.where.status ? active : 0) as never);
+    db.chessMatch.create.mockImplementation((async () => {
+      active += 1;
+      return row();
+    }) as never);
+    // Two creates in flight at once; the lock lets exactly one through.
+    const settle = (call: Promise<unknown>) =>
+      call.then(
+        () => "created",
+        () => "refused",
+      );
+    const first = settle(userClient().create(newConfig()));
+    const second = settle(userClient().create(newConfig()));
+    expect([await first, await second].sort()).toEqual(["created", "refused"]);
+    expect(db.chessMatch.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets an admin bill their own key, with the user caps and no official standing", async () => {
+    connected();
+    await client().create({ ...newConfig(), billing: "openrouter" });
+    expect(db.chessMatch.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ official: false, credentialSource: "owner-openrouter" }),
+      }),
+    );
+    expect(db.chessMatch.count).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ ownerId: "owner" }) }),
+    );
+  });
+
+  it("refuses an unverified email before anything else", async () => {
+    const ctx = context("user", "user-1");
+    if (ctx.session) ctx.session.user.emailVerified = false;
+    await expect(
+      createRouterClient(chessRouter, { context: ctx }).create(newConfig()),
+    ).rejects.toMatchObject({ code: "FORBIDDEN", data: { reason: "unverified" } });
+    expect(budget).not.toHaveBeenCalled();
+  });
+
+  it("tells the client whether user matches are open, the daily limit and the source link", async () => {
+    expect(await client(null).info()).toMatchObject({
+      userMatchesEnabled: true,
+      dailyLimit: 20,
+      sourceCodeUrl: expect.stringMatching(/^https:\/\/github\.com\/FlyCockpit\/chess/),
+    });
+    env.CHESS_PROVIDER_KEY_SECRET = undefined;
+    expect(await client(null).info()).toMatchObject({ userMatchesEnabled: false });
+  });
+
+  it("scopes a user's studio, inspect, stop and publish to their own rows", async () => {
+    const api = userClient("user-2");
+    db.chessMatch.findMany.mockResolvedValue([]);
+    await api.studio({ limit: 5 });
+    expect(db.chessMatch.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { AND: [{ ownerId: "user-2" }] } }),
+    );
+    db.chessMatch.findFirst.mockResolvedValue(null);
+    await expect(api.inspect({ slug: "someone-else" })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    await expect(api.publish({ slug: "someone-else", published: true })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    await expect(api.stop({ slug: "someone-else" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    for (const call of db.chessMatch.findFirst.mock.calls)
+      expect(call[0]?.where).toEqual({ slug: "someone-else", ownerId: "user-2" });
+    expect(db.chessMatch.update).not.toHaveBeenCalled();
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("reports a queued match's position and who pays", async () => {
+    const queued = { ...row(), status: "queued", credentialSource: "owner-openrouter" };
+    db.chessMatch.findFirst.mockResolvedValue(queued as never);
+    db.chessMatch.count.mockResolvedValue(2);
+    const result = await userClient("owner").inspect({ slug: "test-game" });
+    expect(result).toMatchObject({ queuePosition: 3, credentialSource: "openrouter" });
+    expect(db.chessMatch.count).toHaveBeenCalledWith({
+      where: { status: "queued", createdAt: { lt: queued.createdAt } },
+    });
+  });
+
+  it("lets only admins mark a published hosted game official", async () => {
+    await expect(
+      userClient().setOfficial({ slug: "test-game", official: true }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
+    await expect(client().setOfficial({ slug: "test-game", official: true })).resolves.toEqual({
+      official: true,
+    });
+    expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
+      where: { slug: "test-game", published: true, source: "hosted" },
+      data: { official: true },
+    });
+    db.chessMatch.updateMany.mockResolvedValue({ count: 0 });
+    await expect(client().setOfficial({ slug: "draft", official: true })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+  });
+
+  it("shows admins live and queued counts and the engine pool, without private data", async () => {
+    await expect(userClient().capacity()).rejects.toMatchObject({ code: "NOT_FOUND" });
+    db.chessMatch.count.mockImplementation((async (args: { where: { status: string } }) =>
+      args.where.status === "running" ? 7 : 3) as never);
+    db.chessMatch.findMany.mockResolvedValue([
+      {
+        slug: "a",
+        title: "A",
+        status: "running",
+        createdAt: new Date("2026-11-26T00:00:00Z"),
+        Owner: { name: "Ada" },
+      },
+    ] as never);
+    engineStats.mockResolvedValue({
+      busy: 2,
+      total: 4,
+      waiting: 1,
+      running: 7,
+      concurrency: 512,
+      workers: 1,
+    });
+    const result = await client().capacity();
+    expect(result).toEqual({
+      running: 7,
+      concurrencyLimit: 512,
+      queued: 3,
+      queueCap: 200,
+      engine: { busy: 2, total: 4, waiting: 1, workers: 1 },
+      matches: [
+        {
+          slug: "a",
+          title: "A",
+          status: "running",
+          createdAt: new Date("2026-11-26T00:00:00Z"),
+          ownerName: "Ada",
+        },
+      ],
+    });
+    expect(db.chessMatch.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 50,
+        select: {
+          slug: true,
+          title: true,
+          status: true,
+          createdAt: true,
+          Owner: { select: { name: true } },
+        },
+      }),
+    );
+    engineStats.mockRejectedValue(new Error("valkey down"));
+    expect(await client().capacity()).toMatchObject({ engine: null, concurrencyLimit: 512 });
+  });
+
+  it("reports no engine when every worker's numbers expired, not 0/0", async () => {
+    db.chessMatch.count.mockResolvedValue(0 as never);
+    db.chessMatch.findMany.mockResolvedValue([] as never);
+    engineStats.mockResolvedValue({
+      busy: 0,
+      total: 0,
+      waiting: 0,
+      running: 0,
+      concurrency: 0,
+      workers: 0,
+    });
+    expect(await client().capacity()).toMatchObject({ engine: null, concurrencyLimit: 0 });
   });
 });

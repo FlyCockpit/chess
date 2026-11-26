@@ -10,7 +10,7 @@ Only indexable content pages belong in `apps/server/src/seo.ts` `PUBLIC_PATHS` f
 
 | Path | Description |
 |------|-------------|
-| `/{lang}/` | Cockpit Chess arena, published live/historical replay (`?game=<slug>`), leaderboard (`?tab=leaderboard`), local baseline lab (`?tab=lab`) and methodology (`?tab=methodology`). Copy lives in the `chess` locale namespace. Studio (`?tab=studio`) exposes operator controls only after admin authentication (signed out it offers an administrator sign-in; signed in without the admin role it says the studio is for administrators); all writes enforce server permissions. Only the canonical arena is in `PUBLIC_PATHS`. This is also the signed-in home (`APP_HOME` in [apps/web/src/lib/app-home.ts](./apps/web/src/lib/app-home.ts)): signing in without a `redirectTo` lands here, and the header shows a signed-in visitor an account link to `/{lang}/settings` (session-cookie hint, [apps/web/src/lib/session-hint.ts](./apps/web/src/lib/session-hint.ts)). |
+| `/{lang}/` | Cockpit Chess arena, published live/historical replay (`?game=<slug>`), leaderboard (`?tab=leaderboard`), local baseline lab (`?tab=lab`) and methodology (`?tab=methodology`). Copy lives in the `chess` locale namespace. Studio (`?tab=studio`) exposes operator controls after admin authentication; when the operator enables user matches, signed-in verified users get their own Studio billed to their connected OpenRouter key (without a connection it links to `/{lang}/settings/openrouter`); all writes enforce server permissions. Only the canonical arena is in `PUBLIC_PATHS`. This is also the signed-in home (`APP_HOME` in [apps/web/src/lib/app-home.ts](./apps/web/src/lib/app-home.ts)): signing in without a `redirectTo` lands here, and the header shows a signed-in visitor an account link to `/{lang}/settings` (session-cookie hint, [apps/web/src/lib/session-hint.ts](./apps/web/src/lib/session-hint.ts)). |
 | `/{lang}/dashboard` | Redirect only (no page): forwards old bookmarks to `/{lang}/` |
 | `/{lang}/login` | Sign in page with SSO, email/password, and 2FA support. Shows a "Sign Up" link to `/{lang}/signup` when `SIGNUP_ENABLED=true` |
 | `/{lang}/signup` | Create-account page (email/password). Gated on `SIGNUP_ENABLED`; redirects to `/{lang}/login` when signup is disabled or the visitor is already signed in |
@@ -27,6 +27,7 @@ All require an active session (enforced by the `_auth` layout).
 | `/{lang}/settings` | Profile settings (name, email display) |
 | `/{lang}/settings/security` | Two-factor authentication enable/disable |
 | `/{lang}/settings/cli` | Command-line access — a freshly minted copy-paste install/update command for the companion CLI (macOS/Linux/WSL and PowerShell; the embedded token expires after 15 minutes) and API key management (create shows the key once; revoke is type-to-confirm). See [packages/api/src/routers/cli.ts](./packages/api/src/routers/cli.ts). |
+| `/{lang}/settings/openrouter` | Connect your own OpenRouter account (OAuth PKCE; only when the operator enables user matches): suggested spend limit and expiry, OpenRouter's live limit/usage numbers, manage and activity links on OpenRouter, disconnect (type-to-confirm). The OAuth callback is the server route `/api/openrouter/callback`, which redirects back here. |
 | `/{lang}/device` | Approve or deny a `cockpit-chess login` device-flow request (`?user_code=` prefills the code; never auto-approved). Better-Auth's verification URL is the lang-less `/device`, which the `$lang` layout redirects here. |
 
 ## Admin Routes
@@ -35,7 +36,7 @@ Gated by the `admin` layout (`apps/web/src/routes/$lang/_app/admin.tsx`). Non-ad
 
 | Path | Description |
 |------|-------------|
-| `/{lang}/admin` | Overview — backup status and shortcuts to users, jobs, and settings |
+| `/{lang}/admin` | Overview — backup status, live hosted-match capacity (running vs limit, queued vs cap, engine pool busy/total; polled every 5 s), and shortcuts to users, jobs, and settings |
 | `/{lang}/admin/users` | User management — invite (Dialog → reveals temp password once), search/filter (active/archived), per-row dropdown actions: promote/demote, archive/restore, delete (AlertDialog with type-to-confirm). Self-actions (demote/archive/delete on your own account) are blocked client- and server-side. |
 | `/{lang}/admin/jobs` | Failed background jobs across all BullMQ queues — queue, job id, attempts, failure reason, timestamp. |
 | `/{lang}/admin/settings` | Admin-only settings panel (e.g. force-2FA toggle) |

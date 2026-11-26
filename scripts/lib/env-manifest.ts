@@ -1050,6 +1050,127 @@ export const ENV_VARS: EnvVar[] = [
     ],
   },
 
+  {
+    key: "CHESS_USER_MATCHES_ENABLED",
+    group: "chess",
+    source: "default",
+    default: "false",
+    advanced: true,
+    example: "false",
+    comment: [
+      "Let verified users connect their own OpenRouter account and run hosted matches",
+      "billed to it (never to OPENROUTER_API_KEY). Needs CHESS_HOSTED_ENABLED=true and",
+      "CHESS_PROVIDER_KEY_SECRET. See docs/deployment.md § Hosted chess for users.",
+    ],
+  },
+  {
+    key: "CHESS_PROVIDER_KEY_SECRET",
+    group: "chess",
+    source: "manual",
+    secret: true,
+    example: "",
+    comment: [
+      "Seals users' connected OpenRouter keys at rest (AES-256-GCM). 64 hex characters:",
+      "`openssl rand -hex 32`. Server and worker need the same value. Losing it",
+      "disconnects every user; rotate with CHESS_PROVIDER_KEY_SECRET_PREVIOUS",
+      "(docs/deployment.md § Rotating the provider key secret).",
+    ],
+  },
+  {
+    key: "CHESS_PROVIDER_KEY_SECRET_PREVIOUS",
+    group: "chess",
+    source: "manual",
+    secret: true,
+    advanced: true,
+    example: "",
+    comment: [
+      "Only while rotating CHESS_PROVIDER_KEY_SECRET: the old value, so keys sealed with",
+      "it still open (and are re-sealed with the new one). Remove it afterwards.",
+    ],
+  },
+  {
+    key: "OPENROUTER_ORIGIN",
+    group: "chess",
+    source: "default",
+    default: "https://openrouter.ai",
+    advanced: true,
+    example: "https://openrouter.ai",
+    comment: [
+      "Where OpenRouter lives. Change it only for a test stack with a mock server;",
+      "https is required unless the host is loopback.",
+    ],
+  },
+  {
+    key: "CHESS_RUN_CONCURRENCY",
+    group: "chess",
+    source: "default",
+    default: "512",
+    advanced: true,
+    example: "512",
+    comment: [
+      "Hosted matches one worker process runs at once (1 to 4096). Matches mostly wait",
+      "on the network; Stockfish work goes through CHESS_ENGINE_POOL_SIZE instead.",
+      "Size it to memory: docs/deployment.md § Sizing hosted chess.",
+    ],
+  },
+  {
+    key: "CHESS_QUEUE_MAX",
+    group: "chess",
+    source: "default",
+    default: "200",
+    advanced: true,
+    example: "200",
+    comment: ["Matches that may wait in the queue before new ones are refused (queue full)."],
+  },
+  {
+    key: "CHESS_USER_DAILY_MATCHES",
+    group: "chess",
+    source: "default",
+    default: "20",
+    advanced: true,
+    example: "20",
+    comment: [
+      "Hosted matches one user may start in a rolling 24 hours (on top of one active",
+      "match at a time). Admin matches on the operator key are not counted.",
+    ],
+  },
+  {
+    key: "CHESS_ENGINE_POOL_SIZE",
+    group: "chess",
+    source: "default",
+    default: "0",
+    advanced: true,
+    example: "0",
+    comment: [
+      "Stockfish processes shared by all matches in one worker process (0 to 256).",
+      "0 picks it from the CPU count: half the cores, at least 2, at most 16.",
+    ],
+  },
+  {
+    key: "CHESS_CONVERSATION_MAX_BYTES",
+    group: "chess",
+    source: "default",
+    default: "2097152",
+    advanced: true,
+    example: "2097152",
+    comment: [
+      "Most private conversation one side of a persistent-context match keeps in",
+      "memory (65536 to 67108864 bytes); older turns are dropped beyond it.",
+    ],
+  },
+  {
+    key: "SOURCE_CODE_URL",
+    group: "chess",
+    source: "default",
+    default: "https://github.com/FlyCockpit/chess",
+    advanced: true,
+    example: "https://github.com/FlyCockpit/chess",
+    comment: [
+      "Public source of the code this server runs (AGPL-3.0 section 13). The footer links",
+      "to <url>/tree/<build commit>. Point it at your own repository if you run a modified copy.",
+    ],
+  },
+
   // --- ratelimit (tuning) --------------------------------------------------
   // Three named budgets, two knobs per family.
   // Family-scaling semantics: a budget describes its family's

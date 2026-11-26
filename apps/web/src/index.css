@@ -1117,6 +1117,14 @@
   max-width: 34.375rem;
   line-height: 1.7;
 }
+/* The AGPL-3.0 section 13 "Source code" link. */
+.cc-footer a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .cc-table {
   width: 100%;
   text-align: left;
@@ -1484,13 +1492,34 @@
   align-content: start;
   min-width: 0;
 }
+/* The admin leaderboard toggle under a published game (official-toggle.tsx). */
+.cc-official-toggle {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 1rem;
+}
+.cc-official-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 44px;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+/* Who pays (create-match-dialog.tsx): spans the sheet above both columns. */
+.cc-create-billing {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
 @media (min-width: 64em) {
   .cc-create-body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: start;
     column-gap: 2rem;
   }
-  .cc-create-body > .cc-catalog-notice {
+  .cc-create-body > .cc-catalog-notice,
+  .cc-create-body > .cc-create-billing {
     grid-column: 1 / -1;
   }
   .cc-create-quick .cc-create-players {

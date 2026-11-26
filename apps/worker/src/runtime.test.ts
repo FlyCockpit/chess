@@ -57,6 +57,9 @@ vi.mock("./operational-alerts.js", () => ({
   closeOperationalAlertConnection: () => state.events.push("alerts-close"),
   sendOperationalFailureAlert: vi.fn(async () => {}),
 }));
+vi.mock("./chess-capacity.js", () => ({
+  startChessCapacity: () => ({ concurrency: 512, poolSize: 4, stop: vi.fn() }),
+}));
 vi.mock("./handlers/chess-run.js", () => ({
   handleChessRunJob: vi.fn(),
   handleChessReconcileJob: vi.fn(),
@@ -117,8 +120,13 @@ describe("startWorkerRuntime", () => {
     expect(state.workers.map((worker) => worker.name).sort()).toEqual(
       Object.values(QUEUE_NAMES).sort(),
     );
+    // Every consumer is concurrency 1 except chess-run (CHESS_RUN_CONCURRENCY).
     expect(
-      state.workers.every((worker) => worker.options.concurrency === 1 && !worker.options.autorun),
+      state.workers.every(
+        (worker) =>
+          worker.options.concurrency === (worker.name === QUEUE_NAMES.chessRun ? 512 : 1) &&
+          !worker.options.autorun,
+      ),
     ).toBe(true);
     expect(state.events.lastIndexOf("scheduler")).toBeLessThan(state.events.indexOf("run"));
     expect(runtime.isReady()).toBe(true);
@@ -273,7 +281,7 @@ describe("startWorkerRuntime", () => {
     await runtime.stop();
   });
 
-  it("registers the chess reconcile scheduler on its own queue, not concurrency-1 chess-run", async () => {
+  it("registers the chess reconcile scheduler on its own queue, not chess-run", async () => {
     const { startWorkerRuntime } = await import("./runtime");
     const runtime = await startWorkerRuntime({ embedded: true, onFatal: vi.fn() });
     expect(state.events).toContain("chess-reconcile-upsert");

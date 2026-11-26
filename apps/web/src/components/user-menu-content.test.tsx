@@ -1,3 +1,4 @@
+import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
 import enNav from "@cockpit-chess/locales/src/en-US/nav.json";
 import { createInstance } from "i18next";
 import type { ReactNode } from "react";
@@ -52,6 +53,10 @@ vi.mock("@cockpit-chess/ui/components/dropdown-menu", () => {
     },
   };
 });
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: () => ({ data: { sourceCodeUrl: "https://github.com/FlyCockpit/chess/tree/abc123" } }),
+}));
+vi.mock("@/utils/orpc", () => ({ orpc: { chess: { info: { queryOptions: () => ({}) } } } }));
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
   useParams: () => ({ lang: "en-US" }),
@@ -83,7 +88,7 @@ const i18n = createInstance();
 beforeAll(async () => {
   await i18n.init({
     lng: "en-US",
-    resources: { "en-US": { nav: enNav } },
+    resources: { "en-US": { nav: enNav, common: enCommon } },
     interpolation: { escapeValue: false },
     react: { useSuspense: false },
   });
@@ -122,7 +127,12 @@ describe("account menu", () => {
     const items = [...html.matchAll(/<div data-slot="item">([\s\S]*?)<\/div>/g)].map((m) =>
       (m[1] ?? "").replace(/<[^>]*>/g, ""),
     );
-    expect(items).toEqual([enNav.items.settings, enNav.items.admin, enNav.userMenu.signOut]);
+    expect(items).toEqual([
+      enNav.items.settings,
+      enNav.items.admin,
+      enCommon.sourceCode,
+      enNav.userMenu.signOut,
+    ]);
     // Its own group after a separator, with an icon like the items above it
     // (so its text lines up with theirs), and nothing after it.
     expect(html).toMatch(

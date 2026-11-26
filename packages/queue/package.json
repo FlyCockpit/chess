@@ -10,6 +10,7 @@
   },
   "exports": {
     "./consumer-health": "./src/consumer-health.ts",
+    "./chess-capacity": "./src/chess-capacity.ts",
     ".": {
       "default": "./src/index.ts"
     },

@@ -13,6 +13,7 @@ import { adminExistsForAppConfig } from "../lib/admin-presence";
 import { authRouter } from "./auth";
 import { chessRouter } from "./chess";
 import { cliAccessRouter } from "./cli-access";
+import { openrouterRouter } from "./openrouter";
 import { queueRouter } from "./queue";
 import { settingsRouter } from "./settings";
 import { setupRouter } from "./setup";
@@ -63,6 +64,9 @@ export const appRouter = {
   setup: setupRouter,
   queue: queueRouter,
   chess: chessRouter,
+  // The caller's own OpenRouter key (Settings → OpenRouter); connecting is the OAuth
+  // flow in apps/server/src/openrouter-routes.ts.
+  openrouter: openrouterRouter,
   users: usersRouter,
   // Web-side companion-CLI access (install command, API keys). The CLI's own
   // API is `cliRouter`, served on /api/cli/rpc — packages/api/src/routers/cli.ts.

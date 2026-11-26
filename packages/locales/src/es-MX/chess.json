@@ -306,7 +306,7 @@
     "title": "De experimento a titular.",
     "description": "Configura partidas, importa juegos locales, previsualiza borradores y publica evidencia.",
     "signIn": "Inicia sesión con una cuenta de administrador para abrir el estudio.",
-    "adminOnly": "El estudio es para administradores. Con tu cuenta puedes ver, comparar y repetir cada partida publicada, y jugar partidas en el Laboratorio local.",
+    "userMatchesOff": "Este servidor no está ejecutando partidas para usuarios en este momento, así que no puedes iniciar una nueva. Tus partidas anteriores siguen abajo: repítelas, detenlas o despublícalas. Aún puedes ver todas las partidas publicadas y jugar en el Laboratorio local.",
     "disabled": "La inferencia alojada está desactivada. Un operador debe habilitar CHESS_HOSTED_ENABLED y configurar una clave de proveedor antes de que puedan ejecutarse partidas pagadas.",
     "create": "Crear partida",
     "import": "Importar archivo local",
@@ -351,7 +351,24 @@
     "importPasteHint": "Para un archivo que tienes como texto",
     "importSubmit": "Importar",
     "imported": "Importada como borrador privado. Revísala abajo y luego publícala.",
-    "shareIllegal": "Marcar el último intento ilegal"
+    "shareIllegal": "Marcar el último intento ilegal",
+    "userIntro": "Juega partidas alojadas que se cobran a tu propia clave de OpenRouter. Las partidas nuevas son privadas; publica las que quieras compartir.",
+    "connectTitle": "Conecta OpenRouter para crear partidas",
+    "connectBody": "Aquí las partidas alojadas se cobran a tu propia clave de OpenRouter. Conéctala una vez en Configuración; toma alrededor de un minuto.",
+    "connectAction": "Conectar OpenRouter",
+    "reconnectTitle": "Vuelve a conectar OpenRouter",
+    "reconnectBody": "OpenRouter ya no acepta tu clave. Conéctate de nuevo para crear partidas.",
+    "billedTo": "Se cobra a tu clave de OpenRouter · quedan {{remaining}}",
+    "billedToUnlimited": "Se cobra a tu clave de OpenRouter · sin límite de gasto",
+    "rules_one": "Una partida a la vez · hasta {{count}} partida al día",
+    "rules_other": "Una partida a la vez · hasta {{count}} partidas al día",
+    "statusLoadFailed": "No se pudo revisar tu conexión con OpenRouter.",
+    "queuePosition": "En cola · posición {{position}}",
+    "officialLabel": "Cuenta en la clasificación",
+    "officialHint": "Los administradores eligen qué partidas alojadas publicadas cuentan.",
+    "officialOn": "Ahora cuenta en la clasificación",
+    "officialOff": "Ya no cuenta en la clasificación",
+    "signInUser": "Inicia sesión para jugar partidas alojadas con tu propia clave de OpenRouter."
   },
   "tagline": "La arena de ajedrez del agente",
   "termination": {
@@ -368,7 +385,9 @@
     "provider-error": "Interrupción del proveedor",
     "resignation": "Renuncia",
     "engine-error": "Falló el análisis del motor de ajedrez",
-    "event-limit": "Límite de eventos alcanzado"
+    "event-limit": "Límite de eventos alcanzado",
+    "account-limit": "Límite de OpenRouter alcanzado",
+    "credential-revoked": "Clave de OpenRouter revocada"
   },
   "tools": {
     "hidden": "Sin pistas de movimientos legales",
@@ -519,7 +538,17 @@
       "unavailable": "Las partidas alojadas no pueden iniciar ahora. Inténtalo de nuevo en un momento. Si sigue pasando, quizá el juego alojado esté desactivado o sin configurar en este servidor: pregunta al operador o juega la partida en el laboratorio local.",
       "rateLimited": "Ya iniciaste el máximo de partidas permitido en una hora. Inténtalo más tarde.",
       "overBudgetLimit": "Este servidor permite un presupuesto de como máximo {{max}} dólares estadounidenses por jugador.",
-      "overTokenLimit": "Este servidor permite como máximo {{max}} tokens por jugador."
+      "overTokenLimit": "Este servidor permite como máximo {{max}} tokens por jugador.",
+      "active-match": "Ya tienes una partida en cola o en curso. Espera a que termine o detenla y luego empieza otra.",
+      "daily-limit": "Ya empezaste el máximo de partidas permitido en 24 horas. Inténtalo mañana.",
+      "queue-full": "La cola de partidas del servidor está llena ahora. Inténtalo en unos minutos.",
+      "not-connected": "Primero conecta tu cuenta de OpenRouter en Configuración.",
+      "user-matches-disabled": "Este servidor no está jugando partidas para usuarios ahora.",
+      "hosted-disabled": "Las partidas alojadas están desactivadas en este servidor. Pregunta al operador o juega en el Laboratorio local.",
+      "operator-billing-admin-only": "Solo los administradores pueden cobrar a la clave del servidor. Elige tu clave de OpenRouter.",
+      "operator-key-missing": "La clave de OpenRouter del servidor no está configurada. Elige tu propia clave de OpenRouter o pide al operador que configure OPENROUTER_API_KEY.",
+      "openrouter-unavailable": "Este servidor no puede usar claves de OpenRouter ahora. Pregunta al operador.",
+      "reconnect": "OpenRouter ya no acepta tu clave. Vuelve a conectarla en Configuración."
     },
     "autoTitle": "{{white}} vs. {{black}}",
     "catalogStale": "No se pudo actualizar la lista de modelos; los precios son del {{time}}. Se reintenta automáticamente.",
@@ -531,7 +560,18 @@
     },
     "replyCapOff": "Desactivado",
     "modelMax": "hasta {{tokens}}",
-    "modelMaxUnknown": "no indicado, así que {{tokens}}"
+    "modelMaxUnknown": "no indicado, así que {{tokens}}",
+    "billingLabel": "Quién paga",
+    "billing": {
+      "operator": "Clave del servidor",
+      "openrouter": "Mi clave de OpenRouter"
+    },
+    "billingHint": {
+      "operator": "Paga la clave de OpenRouter del servidor. La partida puede contar en la clasificación.",
+      "openrouter": "Paga tu clave de OpenRouter conectada. La partida empieza como no oficial; un administrador puede promoverla."
+    },
+    "remainingCap": "A tu clave de OpenRouter le quedan {{remaining}} y ambos jugadores la usan, así que cada presupuesto se detiene en {{max}}.",
+    "keyExhausted": "A tu clave de OpenRouter casi no le queda nada ({{remaining}}). Primero sube su límite o agrega saldo en OpenRouter."
   },
   "motion": {
     "illegal": "{{side}} intentó {{move}}: no es una jugada legal",
@@ -610,7 +650,9 @@
     "truncatedForfeit_one": "{{side}} perdió: {{count}} respuesta se quedó sin espacio",
     "truncatedForfeit_other": "{{side}} perdió: {{count}} respuestas se quedaron sin espacio",
     "mixedForfeit_one": "{{side}} perdió por {{count}} jugada rechazada ({{truncated}} sin espacio)",
-    "mixedForfeit_other": "{{side}} perdió por {{count}} jugadas rechazadas ({{truncated}} sin espacio)"
+    "mixedForfeit_other": "{{side}} perdió por {{count}} jugadas rechazadas ({{truncated}} sin espacio)",
+    "account-limit": "Se agotó el límite o el saldo de la clave de OpenRouter",
+    "credential-revoked": "La clave de OpenRouter se revocó o se desconectó"
   },
   "endingDetail": {
     "withDetail": "{{headline}} ({{detail}})",
@@ -691,5 +733,9 @@
   "illegalPolicies": {
     "forfeit": "Perder tras jugadas ilegales repetidas",
     "retry": "Seguir intentando hasta una jugada legal"
+  },
+  "endingHelp": {
+    "account-limit": "Sube el límite de la clave o agrega saldo en OpenRouter y luego empieza una partida nueva.",
+    "credential-revoked": "Vuelve a conectar OpenRouter en Configuración y luego empieza una partida nueva."
   }
 }

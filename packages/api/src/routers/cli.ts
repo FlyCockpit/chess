@@ -2,7 +2,7 @@ import prisma from "@cockpit-chess/db";
 import type { RouterClient } from "@orpc/server";
 import { authenticatedProcedure, protectedProcedure } from "../index";
 import { CliReleaseUnavailableError, getCliRelease } from "../lib/cli-release";
-import { chessRouter } from "./chess";
+import { chessCliProcedures, chessRouter } from "./chess";
 
 /**
  * The companion CLI's API — served ONLY on `/api/cli/rpc` (bearer credentials:
@@ -26,8 +26,8 @@ import { chessRouter } from "./chess";
 export const cliRouter = {
   chess: {
     importGame: chessRouter.importGame,
-    inspect: chessRouter.inspect,
-    publish: chessRouter.publish,
+    inspect: chessCliProcedures.inspect,
+    publish: chessCliProcedures.publish,
   },
   /** Who the CLI is signed in as, and with which kind of credential. */
   whoami: protectedProcedure.handler(({ context }) => {

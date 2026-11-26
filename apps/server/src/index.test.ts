@@ -44,6 +44,7 @@ vi.mock("./lifecycle.js", () => ({
 vi.mock("./build-commit.js", () => ({ readBuildCommit: () => null }));
 vi.mock("./client-ip.js", () => ({ resolveClientIp: () => "127.0.0.1" }));
 vi.mock("./cli-routes.js", () => ({ mountCliRoutes: vi.fn() }));
+vi.mock("./openrouter-routes.js", () => ({ mountOpenRouterRoutes: vi.fn() }));
 vi.mock("./seo.js", () => ({ registerSeoRoutes: vi.fn() }));
 vi.mock("./ssr-cache.js", () => ({ handleSsrRequest: vi.fn() }));
 vi.mock("./rate-limit.js", () => ({
@@ -51,6 +52,7 @@ vi.mock("./rate-limit.js", () => ({
   credentialBurstLimiter: {},
   credentialLimiter: {},
   devicePollLimiter: {},
+  openrouterLimiter: {},
   readyLimiter: {},
   rpcLimiter: {},
   signinRecipientLimiter: {},

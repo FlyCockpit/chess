@@ -74,6 +74,49 @@ export const FALLBACK_LIMITS: HostedLimits = { maxCostMicros: 25_000_000, maxTok
 export function maxBudgetUsd(limits: HostedLimits) {
   return Math.max(LIMITS.budgetUsd.min, Math.floor(limits.maxCostMicros / 10_000) / 100);
 }
+/** Who pays a hosted match's players: the server's key (admins) or the user's own. */
+export type Billing = "operator" | "openrouter";
+/**
+ * The limits a match billed to the user's own OpenRouter key may use: the operator's
+ * per-side caps, and no more than half the key's remaining limit per side (both
+ * players bill the same key). `remainingMicros` null = the key has no limit.
+ * Advisory: OpenRouter's own limit stays the hard cap.
+ */
+export function billedLimits(limits: HostedLimits, remainingMicros: number | null): HostedLimits {
+  if (remainingMicros === null) return limits;
+  const perSide = Math.max(0, Math.floor(remainingMicros / 2));
+  return { ...limits, maxCostMicros: Math.min(limits.maxCostMicros, perSide) };
+}
+/** Whether the key has too little left for even the smallest budget on both sides. */
+export function keyExhausted(remainingMicros: number | null) {
+  return remainingMicros !== null && remainingMicros < 2 * LIMITS.budgetUsd.min * 1_000_000;
+}
+
+/** `chess.create` refusals the form explains (the server's `data.reason`). */
+export const CREATE_REFUSALS = [
+  "hosted-disabled",
+  "user-matches-disabled",
+  "operator-billing-admin-only",
+  "operator-key-missing",
+  "openrouter-unavailable",
+  "not-connected",
+  "reconnect",
+  "active-match",
+  "daily-limit",
+  "queue-full",
+] as const;
+export type CreateRefusal = (typeof CREATE_REFUSALS)[number];
+/** The refusal a failed create carries, when it is one the form explains. */
+export function createRefusal(error: unknown): CreateRefusal | null {
+  if (!error || typeof error !== "object" || !("data" in error)) return null;
+  const data = (error as { data?: unknown }).data;
+  const reason =
+    data && typeof data === "object" && "reason" in data
+      ? (data as { reason?: unknown }).reason
+      : undefined;
+  return CREATE_REFUSALS.find((value) => value === reason) ?? null;
+}
+
 /** A 1-2-5 series up to `max`, which always ends it: the slider's log-spaced stops. */
 export function budgetStops(min: number, max: number) {
   const stops: number[] = [];

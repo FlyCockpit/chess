@@ -19,6 +19,7 @@ import { QueryBoundary } from "@/components/query-boundary";
 import { WideContent } from "@/components/wide-content";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { isQueryAccessError } from "@/lib/query-access-error";
+import { sessionHintQueryOptions } from "@/lib/session-hint";
 import { orpc } from "@/utils/orpc";
 import { endingHeadlineLabel } from "./ending-label";
 import { replayRefetch } from "./evaluation";
@@ -30,6 +31,10 @@ import { MatchReplay } from "./replay";
 // out of the public landing chunk. The fallback mirrors Studio's pending skeleton.
 const Studio = lazy(() => import("./studio").then((module) => ({ default: module.Studio })));
 const studioFallback = <Skeleton className="mt-12 h-96" />;
+// Admin-only leaderboard curation; lazy for the same reason as Studio (auth client).
+const OfficialToggle = lazy(() =>
+  import("./official-toggle").then((module) => ({ default: module.OfficialToggle })),
+);
 export type ArenaTab = "arena" | "leaderboard" | "lab" | "methodology" | "studio";
 
 function demoGame(white: string, black: string, model: string, title: string) {
@@ -145,6 +150,8 @@ function Arena({
   const online = useNetworkStatus();
   const listPaused = isPending && listFetchStatus === "paused";
   const selected = isQueryAccessError(selectedError) ? undefined : selectedData;
+  // Only a probably-signed-in visitor loads the admin toggle (and its auth client).
+  const { data: signedInHint } = useQuery(sessionHintQueryOptions());
   const games = isQueryAccessError(listError)
     ? []
     : (list?.pages.flatMap((page) => page.items) ?? []);
@@ -180,6 +187,13 @@ function Arena({
           live={current.status === "running"}
           spectator={selected ? { evaluations: selected.spectatorEvaluations } : undefined}
         />
+      )}
+      {selected?.source === "hosted" && signedInHint === true && (
+        <ClientOnly fallback={null}>
+          <Suspense fallback={null}>
+            <OfficialToggle slug={selected.slug} official={selected.official} />
+          </Suspense>
+        </ClientOnly>
       )}
     </>
   );

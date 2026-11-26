@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./runner": "./src/runner.ts",
+    "./engine": "./src/engine.ts",
     "./ending": "./src/ending.ts",
     "./pgn": "./src/pgn.ts",
     "./spectator": "./src/spectator.ts",

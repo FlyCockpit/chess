@@ -114,8 +114,17 @@ export const createModelAdapter = (
     // One retry layer: the runtime's retry/failover adapter owns retries.
     const config: OpenRouterConfig = { retryConfig: { strategy: "none" } };
     if (model.baseUrl) config.serverURL = model.baseUrl;
-    if (cachingEnabled && isAnthropicModel(model.model)) {
-      config.httpClient = createAnthropicCacheHttpClient(HTTPClient);
+    const caches = cachingEnabled && isAnthropicModel(model.model);
+    if (caches || model.headers) {
+      const httpClient = caches ? createAnthropicCacheHttpClient(HTTPClient) : new HTTPClient();
+      const extra = model.headers;
+      if (extra)
+        httpClient.addHook("beforeRequest", (request: Request) => {
+          const headers = new Headers(request.headers);
+          for (const [name, value] of Object.entries(extra)) headers.set(name, value);
+          return new Request(request, { headers });
+        });
+      config.httpClient = httpClient;
     }
     const adapter = createOpenRouterText(model.model as OpenRouterModel, model.apiKey, config);
     return { adapter };
@@ -131,6 +140,7 @@ export const createModelAdapter = (
       ...(model.baseUrl && new URL(model.baseUrl).hostname === "openrouter.ai"
         ? { fetch: anthropicGatewayFetch }
         : {}),
+      ...(model.headers ? { defaultHeaders: model.headers } : {}),
     });
     return { adapter };
   }
@@ -142,6 +152,7 @@ export const createModelAdapter = (
   const adapter = factory(model.model as OpenAIModel, model.apiKey, {
     maxRetries: 0,
     ...(model.baseUrl ? { baseURL: model.baseUrl } : {}),
+    ...(model.headers ? { defaultHeaders: model.headers } : {}),
   });
   // OpenAI-compatible providers cache the request prefix automatically; a stable
   // `prompt_cache_key` routes sibling requests to the same cached prefix. It is a no-op

@@ -235,7 +235,7 @@
     "title": "From experiment to headline.",
     "description": "Configure matches, import local games, preview drafts, and publish evidence.",
     "signIn": "Sign in with an administrator account to open the studio.",
-    "adminOnly": "The studio is for administrators. Your account can watch, compare and replay every published match, and run games in the Local lab.",
+    "userMatchesOff": "This server isn't running matches for users right now, so you can't start a new one. Your earlier matches stay below: replay, stop or unpublish them. You can still watch every published match and play in the Local lab.",
     "disabled": "Hosted inference is off. An operator must enable CHESS_HOSTED_ENABLED and configure a provider key before paid games can run.",
     "create": "Create match",
     "import": "Import local archive",
@@ -280,7 +280,24 @@
     "importPasteHint": "For an archive you have as text",
     "importSubmit": "Import",
     "imported": "Imported as a private draft. Preview it below, then publish it.",
-    "shareIllegal": "Outline the last illegal attempt"
+    "shareIllegal": "Outline the last illegal attempt",
+    "userIntro": "Run hosted matches billed to your own OpenRouter key. New matches are private; publish the ones you want to share.",
+    "connectTitle": "Connect OpenRouter to create matches",
+    "connectBody": "Hosted matches here are billed to your own OpenRouter key. Connect it once in Settings; it takes about a minute.",
+    "connectAction": "Connect OpenRouter",
+    "reconnectTitle": "Reconnect OpenRouter",
+    "reconnectBody": "OpenRouter no longer accepts your key. Connect again to create matches.",
+    "billedTo": "Billed to your OpenRouter key · {{remaining}} left",
+    "billedToUnlimited": "Billed to your OpenRouter key · no spend limit",
+    "rules_one": "One match at a time · up to {{count}} match a day",
+    "rules_other": "One match at a time · up to {{count}} matches a day",
+    "statusLoadFailed": "Couldn't check your OpenRouter connection.",
+    "queuePosition": "Queued · position {{position}}",
+    "officialLabel": "Counts on the leaderboard",
+    "officialHint": "Admins choose which published hosted games count.",
+    "officialOn": "Now counts on the leaderboard",
+    "officialOff": "No longer counts on the leaderboard",
+    "signInUser": "Sign in to run hosted matches on your own OpenRouter key."
   },
   "footer": "Built for the moves that make you look twice.",
   "aiDisclosure": "AI players can make mistakes. Inspect the rules and replay before drawing conclusions.",
@@ -373,7 +390,9 @@
     "provider-error": "Provider interruption",
     "resignation": "Resignation",
     "engine-error": "Chess-engine analysis failed",
-    "event-limit": "Event limit reached"
+    "event-limit": "Event limit reached",
+    "account-limit": "OpenRouter limit reached",
+    "credential-revoked": "OpenRouter key revoked"
   },
   "settings": {
     "tokenAccounting": "Token accounting",
@@ -519,7 +538,17 @@
       "unavailable": "Hosted matches can't start right now. Try again in a moment. If it keeps happening, hosted play may be off or not set up on this server: ask the operator, or run the game in the local lab.",
       "rateLimited": "You've started the most matches allowed in an hour. Try again later.",
       "overBudgetLimit": "This server allows a budget of at most {{max}} US dollars per player.",
-      "overTokenLimit": "This server allows at most {{max}} tokens per player."
+      "overTokenLimit": "This server allows at most {{max}} tokens per player.",
+      "active-match": "You already have a match queued or running. Wait for it to finish or stop it, then start another.",
+      "daily-limit": "You've started the most matches allowed in 24 hours. Try again tomorrow.",
+      "queue-full": "The server's match queue is full right now. Try again in a few minutes.",
+      "not-connected": "Connect your OpenRouter account in Settings first.",
+      "user-matches-disabled": "This server doesn't run matches for users right now.",
+      "hosted-disabled": "Hosted matches are off on this server. Ask the operator, or run the game in the Local lab.",
+      "operator-billing-admin-only": "Only admins can bill the server's key. Choose your OpenRouter key.",
+      "operator-key-missing": "The server's OpenRouter key isn't set up. Choose your own OpenRouter key, or ask the operator to set OPENROUTER_API_KEY.",
+      "openrouter-unavailable": "This server can't use OpenRouter keys right now. Ask the operator.",
+      "reconnect": "OpenRouter no longer accepts your key. Reconnect it in Settings."
     },
     "autoTitle": "{{white}} vs {{black}}",
     "catalogStale": "The model list could not be refreshed; prices are from {{time}}. Retrying automatically.",
@@ -531,7 +560,18 @@
     },
     "replyCapOff": "Off",
     "modelMax": "up to {{tokens}}",
-    "modelMaxUnknown": "not listed, so {{tokens}}"
+    "modelMaxUnknown": "not listed, so {{tokens}}",
+    "billingLabel": "Who pays",
+    "billing": {
+      "operator": "Server key",
+      "openrouter": "My OpenRouter key"
+    },
+    "billingHint": {
+      "operator": "The server's OpenRouter key pays. The match can count on the leaderboard.",
+      "openrouter": "Your connected OpenRouter key pays. The match starts unofficial; an admin can promote it."
+    },
+    "remainingCap": "Your OpenRouter key has {{remaining}} left and both players bill it, so each budget stops at {{max}}.",
+    "keyExhausted": "Your OpenRouter key has almost nothing left ({{remaining}}). Raise its limit or add credits on OpenRouter first."
   },
   "motion": {
     "illegal": "{{side}} tried {{move}}: not a legal move",
@@ -610,7 +650,9 @@
     "truncatedForfeit_one": "{{side}} forfeited: {{count}} reply ran out of space",
     "truncatedForfeit_other": "{{side}} forfeited: {{count}} replies ran out of space",
     "mixedForfeit_one": "{{side}} forfeited: {{count}} rejected move ({{truncated}} ran out of space)",
-    "mixedForfeit_other": "{{side}} forfeited: {{count}} rejected moves ({{truncated}} ran out of space)"
+    "mixedForfeit_other": "{{side}} forfeited: {{count}} rejected moves ({{truncated}} ran out of space)",
+    "account-limit": "The OpenRouter key's limit or credits ran out",
+    "credential-revoked": "The OpenRouter key was revoked or disconnected"
   },
   "endingDetail": {
     "withDetail": "{{headline}} ({{detail}})",
@@ -691,5 +733,9 @@
   "illegalPolicies": {
     "forfeit": "Forfeit after repeated illegal moves",
     "retry": "Keep trying until a legal move"
+  },
+  "endingHelp": {
+    "account-limit": "Raise the key's limit or add credits on OpenRouter, then start a new match.",
+    "credential-revoked": "Reconnect OpenRouter in Settings, then start a new match."
   }
 }

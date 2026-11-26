@@ -1,5 +1,10 @@
 import { boardAt, createMatch, finishMatch, validateArchive } from "@cockpit-chess/chess";
-import { advanceMatch, MATCH_INTERRUPTED } from "@cockpit-chess/chess/runner";
+import {
+  advanceMatch,
+  CREDENTIAL_REVOKED,
+  finishAbortedMatch,
+  MATCH_INTERRUPTED,
+} from "@cockpit-chess/chess/runner";
 import { asCockpitV1 } from "@cockpit-chess/chess/testing";
 import type prismaInstance from "@cockpit-chess/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -60,9 +65,24 @@ const score = (fen: string) => ({
   bestMove: null,
 });
 const { env } = vi.hoisted(() => ({
-  env: { CHESS_HOSTED_ENABLED: false, OPENROUTER_API_KEY: undefined as string | undefined },
+  env: {
+    CHESS_HOSTED_ENABLED: false,
+    OPENROUTER_API_KEY: undefined as string | undefined,
+    CHESS_USER_MATCHES_ENABLED: false,
+    CHESS_PROVIDER_KEY_SECRET: undefined as string | undefined,
+    OPENROUTER_ORIGIN: "https://openrouter.ai",
+    PUBLIC_APP_URL: "https://chess.example" as string | undefined,
+    CHESS_CONVERSATION_MAX_BYTES: 2_097_152,
+  },
 }));
 vi.mock("@cockpit-chess/env/shared", () => ({ env }));
+const { providerKey } = vi.hoisted(() => ({
+  providerKey: { load: vi.fn(), markInvalid: vi.fn() },
+}));
+vi.mock("@cockpit-chess/api/lib/provider-key", () => ({
+  loadOwnerOpenRouterKey: providerKey.load,
+  markOpenRouterKeyInvalid: providerKey.markInvalid,
+}));
 const { default: prisma } = await import("@cockpit-chess/db");
 const db = prisma as DeepMockProxy<typeof prismaInstance>;
 const { handleChessReconcileJob, handleChessRunJob } = await import("./chess-run");
@@ -104,6 +124,8 @@ function row() {
     moveFormat: null,
     ending: null,
     spectatorEvaluations: null,
+    credentialSource: "operator",
+    Owner: { role: "admin" },
   };
 }
 beforeEach(() => {
@@ -117,6 +139,7 @@ beforeEach(() => {
   db.$executeRaw.mockResolvedValue(1);
   ensureJob.mockResolvedValue({});
   evaluatePosition.mockImplementation(async (fen: string) => score(fen));
+  providerKey.markInvalid.mockResolvedValue(undefined);
 });
 /** The spectator evaluations the run merged into the row: ply → evaluated FEN. */
 const updates = () =>
@@ -704,5 +727,231 @@ describe("chess reconcile sweep", () => {
       matchId: "queued-id",
       error: "redis down",
     });
+  });
+});
+
+describe("hosted matches billed to the owner's own OpenRouter key", () => {
+  const CANARY = "sk-or-v1-CANARY0000111122223333444455556666777788889999aaaabbbbccccdddd";
+  const OPERATOR = "sk-or-v1-OPERATOR-not-for-users";
+  const modelPlayer = { name: "Model", model: "vendor/model", protocol: "openai-chat" as const };
+  const catalog = () =>
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({
+        data: [{ id: "vendor/model", pricing: { prompt: "0.000001", completion: "0.000002" } }],
+      }),
+    );
+  /** A user's match: `ownerId` "user-b" owns it, a model plays White. */
+  const userRow = (overrides: Record<string, unknown> = {}) => {
+    const record = row();
+    record.archive = createMatch({ white: modelPlayer, black: player, rules: {} }, "hosted");
+    return {
+      ...record,
+      ownerId: "user-b",
+      credentialSource: "owner-openrouter",
+      official: false,
+      Owner: { role: "user" },
+      ...overrides,
+    };
+  };
+  /** Everything the worker handed to the outside world, for canary checks. */
+  const observable = () =>
+    JSON.stringify(
+      [
+        vi.mocked(console.error).mock.calls,
+        vi.mocked(console.info).mock.calls,
+        db.chessMatch.updateMany.mock.calls,
+        db.$executeRaw.mock.calls,
+        ensureJob.mock.calls,
+        providerKey.markInvalid.mock.calls,
+      ],
+      (_, value) => (typeof value === "bigint" ? value.toString() : value),
+    );
+  let fetchSpy: ReturnType<typeof catalog>;
+  beforeEach(() => {
+    env.CHESS_HOSTED_ENABLED = true;
+    env.CHESS_USER_MATCHES_ENABLED = true;
+    env.CHESS_PROVIDER_KEY_SECRET = "a".repeat(64);
+    env.OPENROUTER_API_KEY = OPERATOR;
+    providerKey.load.mockResolvedValue({ apiKey: CANARY, keyHash: "hash-b" });
+    db.openRouterConnection.findMany.mockResolvedValue([
+      { userId: "user-b", keyHash: "hash-b", status: "active" },
+    ] as never);
+    fetchSpy = catalog();
+  });
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    vi.useRealTimers();
+    env.CHESS_HOSTED_ENABLED = false;
+    env.CHESS_USER_MATCHES_ENABLED = false;
+    env.CHESS_PROVIDER_KEY_SECRET = undefined;
+    env.OPENROUTER_API_KEY = undefined;
+  });
+
+  it("loads the key by the row's owner and never the operator's, with attribution headers", async () => {
+    db.chessMatch.findUnique.mockResolvedValue(userRow() as never);
+    let seen: import("@cockpit-chess/chess/runner").MatchRunnerOptions | undefined;
+    runner.override = async (match, options) => {
+      seen = options;
+      finishMatch(match, "1-0", "resignation");
+      await options?.onUpdate?.(match);
+    };
+    await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(providerKey.load).toHaveBeenCalledTimes(1);
+    expect(providerKey.load).toHaveBeenCalledWith("user-b");
+    expect(seen?.credentials?.w).toMatchObject({
+      apiKey: CANARY,
+      baseUrl: "https://openrouter.ai/api/v1",
+      headers: { "X-OpenRouter-Title": "Cockpit Chess", "HTTP-Referer": "https://chess.example" },
+    });
+    expect(JSON.stringify(seen?.credentials)).not.toContain(OPERATOR);
+    expect(seen?.conversationMaxBytes).toBe(2_097_152);
+    expect(observable()).not.toContain(CANARY);
+  });
+
+  it("never uses another user's key: each match loads its own owner's", async () => {
+    providerKey.load.mockImplementation(async (userId: string) =>
+      userId === "user-a" ? { apiKey: `${CANARY}-A`, keyHash: "hash-a" } : null,
+    );
+    db.chessMatch.findUnique.mockResolvedValue(userRow() as never);
+    let ran = false;
+    runner.override = async () => {
+      ran = true;
+    };
+    await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(providerKey.load).toHaveBeenCalledWith("user-b");
+    expect(providerKey.load).not.toHaveBeenCalledWith("user-a");
+    expect(ran).toBe(false);
+    const terminal = db.chessMatch.updateMany.mock.calls.find(
+      ([input]) => input.data.status === "error",
+    )?.[0];
+    expect(terminal?.data).toMatchObject({ ending: { kind: "credential-revoked" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(observable()).not.toContain(CANARY);
+    expect(observable()).not.toContain(OPERATOR);
+  });
+
+  it("ends a non-admin's queued match unscored when the operator turned user matches off", async () => {
+    env.CHESS_USER_MATCHES_ENABLED = false;
+    db.chessMatch.findUnique.mockResolvedValue(userRow() as never);
+    await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(providerKey.load).not.toHaveBeenCalled();
+    const terminal = db.chessMatch.updateMany.mock.calls.find(
+      ([input]) => input.data.status === "error",
+    )?.[0];
+    expect(terminal?.data).toMatchObject({ ending: { kind: "interrupted" } });
+    // An admin's own-key match still runs with the flag off.
+    vi.clearAllMocks();
+    db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
+    db.chessMatch.findUnique.mockResolvedValue(userRow({ Owner: { role: "admin" } }) as never);
+    runner.override = async (match, options) => {
+      finishMatch(match, "1-0", "resignation");
+      await options?.onUpdate?.(match);
+    };
+    await expect(handleChessRunJob({ data: { matchId: "match-id" } })).resolves.toMatchObject({
+      termination: "resignation",
+    });
+    expect(providerKey.load).toHaveBeenCalledWith("user-b");
+  });
+
+  it.each([
+    { name: "a disconnect", connections: [] },
+    {
+      name: "a different key connected",
+      connections: [{ userId: "user-b", keyHash: "hash-new", status: "active" }],
+    },
+    {
+      name: "the key marked invalid",
+      connections: [{ userId: "user-b", keyHash: "hash-b", status: "invalid" }],
+    },
+  ])("stops the match as credential-revoked on $name mid-match", async ({ connections }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    db.chessMatch.findUnique.mockResolvedValue(userRow() as never);
+    runner.override = async (match, options) => {
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(options?.signal?.aborted).toBe(false);
+      db.openRouterConnection.findMany.mockResolvedValue(connections as never);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(options?.signal?.aborted).toBe(true);
+      expect(options?.signal?.reason).toBe(CREDENTIAL_REVOKED);
+      finishAbortedMatch(match, options?.signal);
+    };
+    const result = await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(result).toMatchObject({ termination: "credential-revoked", result: "*" });
+    expect(providerKey.markInvalid).toHaveBeenCalledWith("user-b", "hash-b");
+    expect(observable()).not.toContain(CANARY);
+  });
+
+  it("applies the switch and the disconnect check to a random-only own-key match too", async () => {
+    const randomOnly = () => {
+      const record = userRow();
+      record.archive = createMatch({ white: player, black: player, rules: {} }, "hosted");
+      return record;
+    };
+    env.CHESS_USER_MATCHES_ENABLED = false;
+    db.chessMatch.findUnique.mockResolvedValue(randomOnly() as never);
+    let ran = false;
+    runner.override = async () => {
+      ran = true;
+    };
+    await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(ran).toBe(false);
+    expect(
+      db.chessMatch.updateMany.mock.calls.find(([input]) => input.data.status === "error")?.[0]
+        ?.data,
+    ).toMatchObject({ ending: { kind: "interrupted" } });
+    // With the switch on, a disconnect mid-match still stops it.
+    env.CHESS_USER_MATCHES_ENABLED = true;
+    vi.clearAllMocks();
+    db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
+    db.openRouterConnection.findMany.mockResolvedValue([
+      { userId: "user-b", keyHash: "hash-b", status: "active" },
+    ] as never);
+    db.chessMatch.findUnique.mockResolvedValue(randomOnly() as never);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    runner.override = async (match, options) => {
+      db.openRouterConnection.findMany.mockResolvedValue([] as never);
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(options?.signal?.reason).toBe(CREDENTIAL_REVOKED);
+      finishAbortedMatch(match, options?.signal);
+    };
+    await expect(handleChessRunJob({ data: { matchId: "match-id" } })).resolves.toMatchObject({
+      termination: "credential-revoked",
+    });
+    expect(providerKey.load).toHaveBeenCalledWith("user-b");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("marks the key invalid when OpenRouter refused it, and redacts it from logged errors", async () => {
+    db.chessMatch.findUnique.mockResolvedValue(userRow() as never);
+    runner.override = async (match, options) => {
+      finishMatch(match, "*", "credential-revoked", "error");
+      await options?.onUpdate?.(match);
+      throw new Error(`upstream said: bad key ${options?.credentials?.w?.apiKey}`);
+    };
+    await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(providerKey.markInvalid).toHaveBeenCalledWith("user-b", "hash-b");
+    expect(
+      vi
+        .mocked(console.error)
+        .mock.calls.flat()
+        .map((entry) => JSON.stringify(entry))
+        .join(),
+    ).toContain("[redacted]");
+    expect(observable()).not.toContain(CANARY);
+  });
+
+  it("keeps the operator key for admin operator matches and leaves user keys alone", async () => {
+    db.chessMatch.findUnique.mockResolvedValue(
+      userRow({ credentialSource: "operator", Owner: { role: "admin" } }) as never,
+    );
+    let seen: import("@cockpit-chess/chess/runner").MatchRunnerOptions | undefined;
+    runner.override = async (match, options) => {
+      seen = options;
+      finishMatch(match, "1-0", "resignation");
+      await options?.onUpdate?.(match);
+    };
+    await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(seen?.credentials?.w?.apiKey).toBe(OPERATOR);
+    expect(providerKey.load).not.toHaveBeenCalled();
   });
 });

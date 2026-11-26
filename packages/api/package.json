@@ -22,6 +22,15 @@
     "./lib/chess-stats": {
       "default": "./src/lib/chess-stats.ts"
     },
+    "./lib/build-commit": {
+      "default": "./src/lib/build-commit.ts"
+    },
+    "./lib/openrouter-account": {
+      "default": "./src/lib/openrouter-account.ts"
+    },
+    "./lib/provider-key": {
+      "default": "./src/lib/provider-key.ts"
+    },
     "./lib/backup-freshness": {
       "default": "./src/lib/backup-freshness.ts"
     },

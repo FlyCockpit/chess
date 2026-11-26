@@ -207,6 +207,77 @@ After the replacement accepts writes or emits job effects, switching targets bac
 
 After a timeout, lost connection or cancellation, keep rollout gated. Inspect the runner/restore process, advisory locks, `_prisma_migrations`, `_cockpit_chess_migration` and the actual target catalog using read-only queries. Process exit alone does not prove a backend effect finished. Establish whether it committed or rolled back before retrying or resolving history. Never edit history rows to force admission; use [the recovery runbook](./schema-migrations.md#recovery-runbook).
 
+## Hosted chess for users
+
+By default only admins run hosted matches, on the operator's `OPENROUTER_API_KEY`. An operator can also let any verified user connect their own OpenRouter account and run hosted matches billed to it. OpenRouter's OAuth PKCE flow gives the server a normal OpenRouter key that belongs to the user, is paid from the user's credits, has the spend limit and expiry the user picked on OpenRouter's consent page, and can be revoked by the user at any time on OpenRouter. No OpenRouter app registration is needed: the app is identified by its callback URL.
+
+To turn it on, set on the server **and** the worker:
+
+| Variable | Value |
+|---|---|
+| `CHESS_HOSTED_ENABLED` | `true` |
+| `CHESS_USER_MATCHES_ENABLED` | `true` (default `false`) |
+| `CHESS_PROVIDER_KEY_SECRET` | 64 hex characters from `openssl rand -hex 32`, the same value on server and worker |
+
+The callback is `<BETTER_AUTH_URL>/api/openrouter/callback`. It must be reachable by the user's browser over `https://` (OpenRouter accepts `http://localhost` only for local development). `OPENROUTER_ORIGIN` stays at its default; only a test stack points it at a mock server.
+
+What users get, and the limits that apply:
+
+- **Who:** signed-in users with a verified email (and the 2FA policy satisfied) connect in Settings → OpenRouter. Admins may connect too and then choose, per match, between the operator key and their own key. Admins can connect even while `CHESS_USER_MATCHES_ENABLED=false`.
+- **Billing:** a user's matches always use that user's key, loaded by the match owner when the worker claims the match. They never fall back to `OPENROUTER_API_KEY`. The per-match budgets (`CHESS_MAX_COST_USD`, `CHESS_MAX_TOKENS`) still cap each side; the key's own OpenRouter limit is the hard cap. The create form caps each side at half of what the key has left.
+- **Endings:** OpenRouter refusing a call for the key's limit or the account's credits (402) ends the match as "account limit"; a revoked, expired or disconnected key (401, or Disconnect in Settings during the match, noticed within one 2-second heartbeat) ends it as "credential revoked" and marks the connection for reconnecting. Both are unscored. If an operator turns `CHESS_USER_MATCHES_ENABLED` off, a user's match that has not started yet ends "interrupted" without spending anything.
+- **Quotas:** one active (queued or running) own-key match per user; at most `CHESS_USER_DAILY_MATCHES` (default 20) own-key matches per user per rolling 24 hours; at most `CHESS_QUEUE_MAX` (default 200) matches waiting in the queue for everyone; and the existing 12 creates per hour per user. The connect endpoints have their own rate limit (20 per 10 minutes per user, refused when Valkey is down).
+- **Visibility:** user matches start private. The owner may publish them. They never count on the leaderboard unless an admin marks a published game "Counts on the leaderboard" (`chess.setOfficial`). Admin matches on the operator key count as before.
+- **Attribution:** hosted calls send `X-OpenRouter-Title: Cockpit Chess` and, when `PUBLIC_APP_URL` is set, `HTTP-Referer`, so users see the app in their OpenRouter activity.
+
+The admin overview shows live capacity: matches running against the concurrency limit, matches queued against the queue cap, and the Stockfish pool's busy and total processes.
+
+### Rotating the provider key secret
+
+`CHESS_PROVIDER_KEY_SECRET` seals every connected key (AES-256-GCM, the user id bound as associated data). Each row records a fingerprint of the secret that sealed it, never the secret. It is not stored in the database or in backups: a database dump alone yields no usable key. Losing the secret disconnects every user (they reconnect in Settings); it never exposes anything.
+
+Routine rotation:
+
+1. Generate a new value with `openssl rand -hex 32`.
+2. On the server and the worker, move the current value to `CHESS_PROVIDER_KEY_SECRET_PREVIOUS` and put the new one in `CHESS_PROVIDER_KEY_SECRET`. Redeploy server and worker together, every replica with both values. A process that holds neither the secret that sealed a row nor its successor cannot open that row: it treats the row as unreadable (the user sees "Reconnect" there, and that process's matches on it end "credential revoked"), but it never marks the row invalid, so processes that do hold the secret keep using it. Only a row whose own secret is configured but that fails to open is marked invalid.
+3. Rows sealed with the previous secret still open, and the worker re-seals each with the new secret the next time that user's match starts.
+4. After the rotation window (for example 30 days), remove `CHESS_PROVIDER_KEY_SECRET_PREVIOUS` and redeploy. Users whose row was never re-sealed see "Reconnect" and connect again (connecting replaces the row).
+
+If the server may be compromised (the database and the environment together), treat every connected key as exposed:
+
+1. Replace `CHESS_PROVIDER_KEY_SECRET` with a new value **without** setting `_PREVIOUS`, and redeploy. No stored key opens any more, so no further match runs on them.
+2. Tell users to revoke their "Cockpit Chess" key on OpenRouter (Settings → OpenRouter → Manage on OpenRouter links to the exact key) and to reconnect.
+3. Rotate `BETTER_AUTH_SECRET`, `OPENROUTER_API_KEY` and the other server secrets as usual.
+
+Users' own limits and expiries (the consent page suggests $10 and 90 days) bound what a leaked key can spend.
+
+## Sizing hosted chess
+
+A worker process runs up to `CHESS_RUN_CONCURRENCY` matches at once (default 512). A match spends almost all its time waiting for a model's reply, so the cost of a running match is memory and a few database writes, not CPU. Stockfish work does not scale with the number of matches: every evaluation (spectator scores, players' engine tool calls and after-move evaluations) goes through one shared pool of `CHESS_ENGINE_POOL_SIZE` single-threaded Stockfish processes per worker process, with a queue. The default (`0`) is half the CPU cores, at least 2 and at most 16. Players' evaluations are served before spectator evaluations, and spectator work never holds the last free process. Each evaluation starts from a cleared engine (`ucinewgame`, `Clear Hash`, `readyok`) and searches a fixed number of nodes, so a score never depends on which game used the process before. A crashed or stuck process is replaced and only that one evaluation is retried once.
+
+Throughput measured on an 8-core x86 host that was also busy with other work (lower bounds):
+
+| Nodes per search | One process | Four processes |
+|---|---|---|
+| 10,000 (default) | about 23 evaluations/s | about 42/s |
+| 100,000 (maximum) | about 3.6/s | about 7.6/s |
+
+A game needs one spectator evaluation per move plus its players' engine calls. Model moves take seconds, so one game asks for well under one evaluation per second: 512 games at 0.2–0.5 evaluations/s each is about 100–250 evaluations/s at the default node count, which is 5–10 processes on otherwise idle cores. With fewer, spectator scores lag behind the game (they are filled in later) and engine tool calls wait their turn; games are not slowed otherwise.
+
+Memory per running match is bounded:
+
+- the archive: at most 2,000,000 bytes of JSON (`MAX_ARCHIVE_BYTES`), a few times that as objects in memory; a typical game is 50–300 KB;
+- each side's private conversation: `CHESS_CONVERSATION_MAX_BYTES` (default 2 MiB). The stored history between turns never exceeds it. Before every request to the model, the oldest completed turns are dropped until the request fits (the turn being played is never cut); only a turn that alone outgrows the limit ends the game, unscored (as a record-size limit). Nothing is checked while a reply streams in, so the turn in flight can go over by at most its own last reply and tool results: at most `maxOutputTokens` of output per request and the tool outputs, which the archive limit bounds;
+- no copy of the last written snapshot is kept, only its length and hash.
+
+So the worst case is about 15 MB per match and a typical match is 1–3 MB: 512 typical matches need roughly 1–1.5 GB on top of the process, and the worst case (every match at both limits) about 7.5 GB. Each Stockfish process adds up to about 150 MB (a Node process capped at 128 MB of heap plus an 8 MiB hash). Lower `CHESS_RUN_CONCURRENCY` on small machines; matches beyond it wait in the queue (up to `CHESS_QUEUE_MAX`).
+
+Database load: one batched heartbeat statement per worker process every 2 seconds (not one per match), one write per move and one per spectator score. Raise `DATABASE_POOL_MAX` on the worker (for example to 20–30) when running hundreds of matches, within the database's connection budget. With more than one worker process, each one applies its own `CHESS_RUN_CONCURRENCY` and pool; the admin view adds them up.
+
+## Source code (AGPL-3.0 section 13)
+
+Cockpit Chess is licensed under the AGPL-3.0. Section 13 requires that users interacting with a modified copy over a network can get its source. Every page links to "Source code": `SOURCE_CODE_URL/tree/<commit>` when the image knows its build commit (the one `/ready` reports), otherwise `SOURCE_CODE_URL` itself. The default is the upstream repository. If you run a modified copy, publish your source and set `SOURCE_CODE_URL` on the server to your repository.
+
 ## Response compression
 
 Attach a Traefik compress middleware to the server router. The generated Compose file already sets `traefik.http.middlewares.<name>.compress` and `traefik.http.routers.<name>.middlewares` labels. Verify a full public page returns `Content-Encoding: br` or `gzip`; small responses can remain uncompressed. The Dokploy verifier reports a non-fatal warning if compression cannot be confirmed.

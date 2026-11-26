@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readBuildCommit } from "./build-commit.js";
+import { readBuildCommit, sourceCodeUrl } from "./build-commit";
 
 describe("readBuildCommit", () => {
   const dirs: string[] = [];
@@ -25,5 +25,17 @@ describe("readBuildCommit", () => {
     expect(readBuildCommit(bundleIn(""))).toBeNull();
     expect(readBuildCommit(bundleIn("abc1234"))).toBeNull();
     expect(readBuildCommit(undefined)).toBeNull();
+  });
+});
+
+describe("sourceCodeUrl", () => {
+  it("links the exact running commit, or the repository when it is unknown", () => {
+    const sha = "b".repeat(40);
+    expect(sourceCodeUrl("https://github.com/FlyCockpit/chess", sha)).toBe(
+      `https://github.com/FlyCockpit/chess/tree/${sha}`,
+    );
+    expect(sourceCodeUrl("https://git.example.com/fork/", null)).toBe(
+      "https://git.example.com/fork",
+    );
   });
 });

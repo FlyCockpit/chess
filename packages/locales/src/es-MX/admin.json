@@ -182,5 +182,30 @@
     "deleteDescription": "Esto elimina permanentemente la cuenta y sus sesiones. Esto no se puede deshacer. Para preservar el contenido creado por un usuario, archívalo en su lugar.",
     "typeEmailToConfirm": "Escribe el correo del usuario para confirmar",
     "copyEmailAriaLabel": "Copiar correo del usuario"
+  },
+  "capacity": {
+    "title": "Partidas alojadas",
+    "description": "Carga en vivo del worker de partidas alojadas. Se actualiza cada pocos segundos.",
+    "running": "En curso",
+    "runningValue": "{{count}} de {{limit}}",
+    "queued": "En cola",
+    "queuedValue": "{{count}} de {{limit}}",
+    "engine": "Grupo de motores",
+    "engineValue": "{{busy}} de {{total}} ocupados",
+    "engineWaiting": "{{count}} en espera",
+    "noWorker": "Ningún worker reportó en los últimos 15 segundos. Las partidas alojadas no empezarán hasta que uno funcione.",
+    "workers_one": "{{count}} worker",
+    "workers_other": "{{count}} workers",
+    "listTitle": "En curso y en cola",
+    "empty": "No hay partidas alojadas en curso ni en cola.",
+    "colTitle": "Partida",
+    "colOwner": "Dueño",
+    "colStatus": "Estado",
+    "colSince": "Desde",
+    "status": {
+      "running": "En curso",
+      "queued": "En cola"
+    },
+    "loadFailed": "No se pudo cargar la capacidad de partidas alojadas."
   }
 }

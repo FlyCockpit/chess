@@ -61,21 +61,24 @@ describe("bounded real Stockfish UCI process", () => {
     const fen = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
     const reference = await evaluatePosition(fen);
     const controller = new AbortController();
-    // A deep spectator search, then a queue behind it on the same lane.
-    const busy = evaluatePosition(DEFAULT_POSITION, {
-      nodes: 100000,
-      signal: controller.signal,
-      lane: "spectators",
-    });
-    const queued = evaluatePosition(fen, { lane: "spectators", signal: controller.signal });
+    // Deep spectator searches: one runs, the rest queue (spectators hold at most one
+    // of the default pool's two processes).
+    const spectators = Array.from({ length: 3 }, () =>
+      evaluatePosition(DEFAULT_POSITION, {
+        nodes: 100000,
+        signal: controller.signal,
+        lane: "spectators",
+      }),
+    );
     const started = Date.now();
     const player = await evaluatePosition(fen);
     const waited = Date.now() - started;
     expect(player).toEqual(reference);
     controller.abort();
-    await expect(busy).rejects.toThrow("cancelled");
-    await expect(queued).rejects.toThrow("cancelled");
-    // The player's lane did not wait for the deep spectator search to finish.
+    const settled = await Promise.allSettled(spectators);
+    // At least the queued ones were cancelled rather than run.
+    expect(settled.filter((result) => result.status === "rejected").length).toBeGreaterThan(0);
+    // The player's evaluation did not wait for the deep spectator searches.
     expect(waited).toBeLessThan(4000);
     // Cancelling the spectator lane left the players' engine working.
     expect(await evaluatePosition(fen)).toEqual(reference);

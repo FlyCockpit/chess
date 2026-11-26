@@ -182,5 +182,30 @@
     "deleteDescription": "This permanently removes the account and its sessions. This cannot be undone. To preserve a user's authored content, archive them instead.",
     "typeEmailToConfirm": "Type the user's email to confirm",
     "copyEmailAriaLabel": "Copy user email"
+  },
+  "capacity": {
+    "title": "Hosted matches",
+    "description": "Live load of the hosted match worker. Refreshes every few seconds.",
+    "running": "Running",
+    "runningValue": "{{count}} of {{limit}}",
+    "queued": "Queued",
+    "queuedValue": "{{count}} of {{limit}}",
+    "engine": "Engine pool",
+    "engineValue": "{{busy}} of {{total}} busy",
+    "engineWaiting": "{{count}} waiting",
+    "noWorker": "No worker reported in the last 15 seconds. Hosted matches won't start until one runs.",
+    "workers_one": "{{count}} worker",
+    "workers_other": "{{count}} workers",
+    "listTitle": "Running and queued",
+    "empty": "No hosted matches are running or queued.",
+    "colTitle": "Match",
+    "colOwner": "Owner",
+    "colStatus": "Status",
+    "colSince": "Since",
+    "status": {
+      "running": "Running",
+      "queued": "Queued"
+    },
+    "loadFailed": "Couldn't load hosted match capacity."
   }
 }

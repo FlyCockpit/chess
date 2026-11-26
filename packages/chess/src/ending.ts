@@ -81,7 +81,11 @@ export type MatchEnding =
    */
   | { kind: "provider-error" }
   | { kind: "engine-error" }
-  | { kind: "event-limit" };
+  | { kind: "event-limit" }
+  /** The paying OpenRouter key's limit or the account's credits ran out. Unscored. */
+  | { kind: "account-limit" }
+  /** The paying OpenRouter key was revoked, expired or disconnected. Unscored. */
+  | { kind: "credential-revoked" };
 
 const PIECES: Record<string, PieceName> = {
   p: "pawn",
@@ -201,6 +205,8 @@ export function matchEnding(match: MatchArchive): MatchEnding {
     case "interrupted":
     case "engine-error":
     case "event-limit":
+    case "account-limit":
+    case "credential-revoked":
       return { kind: match.termination };
   }
 }
@@ -342,6 +348,10 @@ export function endingHeadline(summary: EndingSummary): string {
       return "The chess engine failed";
     case "event-limit":
       return "The game record reached its size limit";
+    case "account-limit":
+      return "The OpenRouter key's limit or credits ran out";
+    case "credential-revoked":
+      return "The OpenRouter key was revoked or disconnected";
   }
 }
 /**
@@ -380,6 +390,8 @@ export function endingDetail(ending: MatchEnding): string | null {
     case "provider-error":
     case "engine-error":
     case "event-limit":
+    case "account-limit":
+    case "credential-revoked":
       return "unscored";
     default:
       return null;

@@ -45,9 +45,46 @@ model ChessMatch {
   /// (`spectatorEvaluationsSchema` in packages/chess/src/spectator.ts). Written in the
   /// background, merged key by key; never part of the archive or the players' context.
   spectatorEvaluations Json?
+  /// Whose OpenRouter key pays for the players: "operator" (the server's
+  /// OPENROUTER_API_KEY, admin matches only) or "owner-openrouter" (the match
+  /// owner's connected key, loaded by owner at claim time; never the operator key).
+  credentialSource     String    @default("operator")
 
   @@index([published, createdAt(sort: Desc), id(sort: Desc)])
   @@index([ownerId, createdAt(sort: Desc)])
   @@index([status, heartbeatAt])
+  @@index([status, createdAt])
   @@map("chess_match")
+}
+
+/// A user's own OpenRouter key, from OpenRouter's OAuth PKCE flow
+/// (apps/server/src/openrouter-routes.ts). One per user. The key is sealed with
+/// AES-256-GCM under CHESS_PROVIDER_KEY_SECRET, with the user id as associated
+/// data (packages/api/src/lib/provider-key.ts); it never leaves the server or
+/// worker. Everything else here is safe to show its owner.
+model OpenRouterConnection {
+  id            String    @id @default(cuid(2))
+  userId        String    @unique
+  User          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+  /// AES-256-GCM ciphertext followed by its 16-byte tag.
+  keyCiphertext Bytes
+  /// The 12-byte random nonce.
+  keyNonce      Bytes
+  /// Which secret sealed the row: the first 16 hex of SHA-256 of the secret.
+  keySecretId   String
+  /// SHA-256 hex of the key: OpenRouter's key page is openrouter.ai/keys/<hash>.
+  keyHash       String
+  /// The key's last four characters, for "sk-or-v1-…abcd".
+  keyHint       String
+  label         String?
+  /// The key's spend limit in micros (integer USD millionths); null = no limit.
+  limitMicros   BigInt?
+  expiresAt     DateTime?
+  /// "active", or "invalid" once OpenRouter refused the key (revoked or expired).
+  status        String    @default("active")
+  lastCheckedAt DateTime  @default(now())
+
+  @@map("openrouter_connection")
 }

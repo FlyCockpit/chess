@@ -42,12 +42,14 @@ import {
   loadLocaleModulePreloads,
   resolveLocaleModulePreload,
 } from "./locale-modulepreload.js";
+import { mountOpenRouterRoutes } from "./openrouter-routes.js";
 import {
   authLimiter,
   createRateLimiterMiddleware,
   credentialBurstLimiter,
   credentialLimiter,
   devicePollLimiter,
+  openrouterLimiter,
   readyLimiter,
   rpcLimiter,
   signinRecipientLimiter,
@@ -431,6 +433,17 @@ if (env.NODE_ENV === "production") {
 // plus the install/download endpoints. Mounted before the catch-all oRPC/SSR
 // handlers below. See cli-routes.ts and packages/api/src/routers/cli.ts.
 mountCliRoutes(app, { onOrpcError: logOrpcError });
+
+// "Connect OpenRouter" (OAuth PKCE): users' own keys for hosted matches. Cookie
+// session, its own fail-closed bucket keyed on the user. See openrouter-routes.ts.
+app.use("/api/openrouter/*", sessionMiddleware);
+app.use("/api/openrouter/*", createRateLimiterMiddleware(openrouterLimiter, { failClosed: true }));
+mountOpenRouterRoutes(app, {
+  store: redisConnection,
+  publicOrigin: env.BETTER_AUTH_URL,
+  webOrigin: env.CORS_ORIGIN ?? env.BETTER_AUTH_URL,
+  openRouterOrigin: env.OPENROUTER_ORIGIN,
+});
 
 // Always validate the header sent by SimpleCsrfProtectionLinkPlugin. Without
 // it, a same-site sibling origin can submit cookie-authenticated multipart

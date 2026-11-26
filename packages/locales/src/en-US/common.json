@@ -86,5 +86,6 @@
     "backOnline": "Back online.",
     "queued": "You're offline. This change will be sent when you reconnect. Keep this tab open.",
     "queuedSent": "Back online. Your offline change was sent."
-  }
+  },
+  "sourceCode": "Source code"
 }

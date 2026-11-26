@@ -17,6 +17,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { SegmentedControl } from "@/components/segmented-control";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
 import { useRangeFieldLabels } from "@/hooks/use-form-field-labels";
 import { networkFailureKind } from "@/lib/network-failure";
@@ -24,10 +25,13 @@ import { friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 import {
   autoTitle,
+  type Billing,
+  billedLimits,
   budgetStops,
   CONTEXT_MODES,
   type CreateMatchValues,
   createMatchSchema,
+  createRefusal,
   DEFAULT_VALUES,
   defaultValuesFor,
   ENGINE_MODES,
@@ -50,7 +54,7 @@ import {
   TOKEN_ACCOUNTING,
   toMatchConfig,
 } from "./create-match-form";
-import { durationLabel } from "./ending-label";
+import { durationLabel, usdLabel } from "./ending-label";
 import { type CatalogState, ModelPicker } from "./model-picker";
 import { ChoiceField, SettingsSection } from "./settings-section";
 import {
@@ -71,15 +75,32 @@ const CATALOG_STALE_POLL_MS = 12_000;
 
 export function CreateMatchDialog({
   disabled,
-  limits = FALLBACK_LIMITS,
+  limits: operatorLimits = FALLBACK_LIMITS,
+  billingOptions = ["operator"],
+  ownKeyRemainingMicros = null,
   onCreated,
 }: {
   disabled: boolean;
   /** The server's per-side operator limits (`chess.info`); the budget fields stop there. */
   limits?: HostedLimits;
+  /**
+   * Who may pay, first = default: an admin has the server key (and their own key once
+   * connected); a user only their own OpenRouter key.
+   */
+  billingOptions?: readonly [Billing, ...Billing[]];
+  /** What the user's own key has left (OpenRouter's number); null = no limit. */
+  ownKeyRemainingMicros?: number | null;
   onCreated: (slug: string) => void;
 }) {
   const { t, i18n } = useTranslation("chess");
+  const [billing, setBilling] = useState<Billing>(billingOptions[0]);
+  const limits = useMemo(
+    () =>
+      billing === "openrouter"
+        ? billedLimits(operatorLimits, ownKeyRemainingMicros)
+        : operatorLimits,
+    [billing, operatorLimits, ownKeyRemainingMicros],
+  );
   const rangeLabels = useRangeFieldLabels();
   const [open, setOpen] = useState(false);
   const [invalid, setInvalid] = useState(false);
@@ -160,7 +181,7 @@ export function CreateMatchDialog({
     onSubmit: ({ value }) => {
       const config = toMatchConfig(value, catalog, t);
       setInvalid(!config.success);
-      if (config.success) mutation.mutate(config.data);
+      if (config.success) mutation.mutate({ ...config.data, billing });
     },
   });
   const values = useStore(form.store, (state) => state.values);
@@ -201,7 +222,17 @@ export function CreateMatchDialog({
           protocol: t(`create.protocols.${resolveProtocol("auto", values[side], catalog)}`),
         })
       : t(`create.protocols.${choice}`);
+  const refusal = createRefusal(mutation.error);
+  const chooseBilling = (next: Billing) => {
+    setBilling(next);
+    // A smaller allowance (the user's own key) pulls a budget above it down to fit.
+    const nextMax = maxBudgetUsd(
+      next === "openrouter" ? billedLimits(operatorLimits, ownKeyRemainingMicros) : operatorLimits,
+    );
+    if (form.getFieldValue("budget") > nextMax) form.setFieldValue("budget", nextMax);
+  };
   const reset = () => {
+    setBilling(billingOptions[0]);
     form.reset(defaultValuesFor(limits));
     setInvalid(false);
     setSections(new Set());
@@ -213,7 +244,16 @@ export function CreateMatchDialog({
       onOpenChange={(next) => {
         if (mutation.isPending) return;
         // Opening starts from defaults within the limits the server reports now.
-        if (next) form.reset(defaultValuesFor(limits));
+        if (next) {
+          setBilling(billingOptions[0]);
+          form.reset(
+            defaultValuesFor(
+              billingOptions[0] === "openrouter"
+                ? billedLimits(operatorLimits, ownKeyRemainingMicros)
+                : operatorLimits,
+            ),
+          );
+        }
         setOpen(next);
         if (!next) reset();
       }}
@@ -258,6 +298,42 @@ export function CreateMatchDialog({
                 </button>
               </p>
             )}
+            <div className="cc-create-billing">
+              {billingOptions.length > 1 && (
+                <div className="cc-choice">
+                  <span className="cc-field-label">{t("create.billingLabel")}</span>
+                  <SegmentedControl
+                    ariaLabel={t("create.billingLabel")}
+                    value={billing}
+                    onChange={chooseBilling}
+                    items={billingOptions.map((option) => ({
+                      value: option,
+                      label: t(`create.billing.${option}`),
+                    }))}
+                  />
+                </div>
+              )}
+              <p className="cc-field-hint">
+                {billing === "openrouter"
+                  ? ownKeyRemainingMicros === null
+                    ? t("studio.billedToUnlimited")
+                    : t("studio.billedTo", {
+                        remaining: usdLabel(i18n.language, ownKeyRemainingMicros),
+                      })
+                  : t("create.billingHint.operator")}
+                {billing === "openrouter" && <> {t("create.billingHint.openrouter")}</>}
+              </p>
+              {billing === "openrouter" &&
+                ownKeyRemainingMicros !== null &&
+                limits.maxCostMicros < operatorLimits.maxCostMicros && (
+                  <p className="cc-field-hint">
+                    {t("create.remainingCap", {
+                      remaining: usdLabel(i18n.language, ownKeyRemainingMicros),
+                      max: currency.format(budgetMax),
+                    })}
+                  </p>
+                )}
+            </div>
             <div className="cc-create-quick">
               <div className="cc-create-players">
                 {(["white", "black"] as const).map((name) => (
@@ -578,11 +654,13 @@ export function CreateMatchDialog({
                   : t(
                       invalid
                         ? "create.errors.invalid"
-                        : errorCode(mutation.error) === "SERVICE_UNAVAILABLE"
-                          ? "create.errors.unavailable"
-                          : errorCode(mutation.error) === "TOO_MANY_REQUESTS"
-                            ? "create.errors.rateLimited"
-                            : "studio.error",
+                        : refusal
+                          ? `create.errors.${refusal}`
+                          : errorCode(mutation.error) === "SERVICE_UNAVAILABLE"
+                            ? "create.errors.unavailable"
+                            : errorCode(mutation.error) === "TOO_MANY_REQUESTS"
+                              ? "create.errors.rateLimited"
+                              : "studio.error",
                     )}
               </p>
             )}

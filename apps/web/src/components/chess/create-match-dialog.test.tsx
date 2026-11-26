@@ -257,4 +257,45 @@ describe("CreateMatchDialog", () => {
     expect(html).toContain(enErrors.offline);
     expect(html).not.toContain(enChess.studio.error);
   });
+  it("says what to do for each refusal the server explains", () => {
+    catalog.state = { data: { models, stale: false }, isError: false, refetch: () => undefined };
+    for (const reason of ["active-match", "daily-limit", "queue-full", "not-connected"] as const) {
+      mutation.state = { isError: true, error: { code: "CONFLICT", data: { reason } } };
+      expect(render().replaceAll("&#x27;", "'")).toContain(enChess.create.errors[reason]);
+    }
+    mutation.state = { isError: false, error: null };
+  });
+  it("bills a user's own key and stops the budget at half of what it has left", () => {
+    catalog.state = { data: { models, stale: false }, isError: false, refetch: () => undefined };
+    const html = renderToStaticMarkup(
+      <I18nextProvider i18n={i18n}>
+        <CreateMatchDialog
+          disabled={false}
+          billingOptions={["openrouter"]}
+          ownKeyRemainingMicros={3_000_000}
+          onCreated={vi.fn()}
+        />
+      </I18nextProvider>,
+    ).replaceAll("&#x27;", "'");
+    expect(html).toContain("Billed to your OpenRouter key · $3.00 left");
+    expect(html).toContain("so each budget stops at $1.50");
+    // No billing choice to make: only one payer.
+    expect(html).not.toContain(enChess.create.billingLabel);
+  });
+  it("lets an admin with a connected key pick who pays, the server key first", () => {
+    catalog.state = { data: { models, stale: false }, isError: false, refetch: () => undefined };
+    const html = renderToStaticMarkup(
+      <I18nextProvider i18n={i18n}>
+        <CreateMatchDialog
+          disabled={false}
+          billingOptions={["operator", "openrouter"]}
+          ownKeyRemainingMicros={null}
+          onCreated={vi.fn()}
+        />
+      </I18nextProvider>,
+    ).replaceAll("&#x27;", "'");
+    expect(html).toContain(enChess.create.billingLabel);
+    expect(html).toMatch(/aria-pressed="true"[^>]*>Server key</);
+    expect(html).toContain(enChess.create.billingHint.operator);
+  });
 });

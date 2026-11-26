@@ -1,16 +1,23 @@
 import { isAdminRole } from "@cockpit-chess/auth/roles";
 import type { LucideIcon } from "lucide-react";
-import { Home, Settings, Shield, SquareTerminal } from "lucide-react";
+import { Home, KeyRound, Settings, Shield, SquareTerminal } from "lucide-react";
 
 type NavAudience = "public" | "authenticated" | "admin";
 type NavPlacement = "desktop" | "mobile" | "userMenu";
-export type AppNavPath = "/" | "/settings" | "/admin" | "/settings/security" | "/settings/cli";
+export type AppNavPath =
+  | "/"
+  | "/settings"
+  | "/admin"
+  | "/settings/security"
+  | "/settings/cli"
+  | "/settings/openrouter";
 export type LangNavRoute =
   | "/$lang"
   | "/$lang/settings"
   | "/$lang/admin"
   | "/$lang/settings/security"
-  | "/$lang/settings/cli";
+  | "/$lang/settings/cli"
+  | "/$lang/settings/openrouter";
 
 export type RouteNavItem = {
   /** Path WITHOUT the `/$lang/` prefix, starts with "/". Use "/" for root. */
@@ -103,6 +110,12 @@ export const settingsNavItems: RouteNavItem[] = [
     path: "/settings/cli",
     labelKey: "settings:navCli",
     icon: SquareTerminal,
+    exact: false,
+  },
+  {
+    path: "/settings/openrouter",
+    labelKey: "settings:navOpenRouter",
+    icon: KeyRound,
     exact: false,
   },
 ];

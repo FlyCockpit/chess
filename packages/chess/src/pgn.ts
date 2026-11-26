@@ -67,6 +67,8 @@ export function pgnTermination(termination: MatchArchive["termination"]) {
     case "provider-error":
     case "engine-error":
     case "event-limit":
+    case "account-limit":
+    case "credential-revoked":
       return "emergency";
     case "playing":
       return "unterminated";

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { originUrl } from "../url.js";
+import { httpUrl, originUrl } from "../url.js";
 import { strictBooleanFlag } from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -108,4 +108,9 @@ export const serverVars = {
   // default keeps a cached public render for up to a minute. Edits to a live
   // URL can take up to this long to appear. See apps/server/src/seo.ts.
   SSR_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).default(60),
+  // The public source of the code this server runs (AGPL-3.0 § 13). The
+  // footer's "Source code" link points at `<url>/tree/<build commit>`, or at
+  // the URL itself when the commit is unknown. Operators running a modified
+  // copy point it at their own repository.
+  SOURCE_CODE_URL: httpUrl("SOURCE_CODE_URL").default("https://github.com/FlyCockpit/chess"),
 };

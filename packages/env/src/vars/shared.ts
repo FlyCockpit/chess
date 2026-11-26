@@ -92,6 +92,53 @@ export const sharedVars = {
   // ($1,000 and 100M tokens, packages/chess MAX_COST_BUDGET_MICROS / MAX_TOKEN_BUDGET).
   CHESS_MAX_COST_USD: z.coerce.number().min(0.01).max(1000).default(25),
   CHESS_MAX_TOKENS: z.coerce.number().int().min(256).max(100_000_000).default(10_000_000),
+  // ---- Users' own OpenRouter keys (docs/deployment.md § Hosted chess for users).
+  // Opens hosted matches to verified users who connect their OpenRouter account;
+  // their matches bill their key, never OPENROUTER_API_KEY. Needs
+  // CHESS_HOSTED_ENABLED and CHESS_PROVIDER_KEY_SECRET too.
+  CHESS_USER_MATCHES_ENABLED: strictBooleanFlag(false),
+  // Seals connected OpenRouter keys at rest (AES-256-GCM): 64 hex characters
+  // (32 random bytes). The server seals, the worker opens. `_PREVIOUS` is read
+  // only while rotating (keys sealed with it are re-sealed on use).
+  CHESS_PROVIDER_KEY_SECRET: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, "CHESS_PROVIDER_KEY_SECRET must be 64 hex characters")
+    .optional(),
+  CHESS_PROVIDER_KEY_SECRET_PREVIOUS: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, "CHESS_PROVIDER_KEY_SECRET_PREVIOUS must be 64 hex characters")
+    .optional(),
+  // Where OpenRouter lives. Only a test stack points this at a mock server;
+  // https is required unless the host is loopback.
+  OPENROUTER_ORIGIN: originUrl("OPENROUTER_ORIGIN")
+    .refine(
+      (value) => {
+        const url = new URL(value);
+        return (
+          url.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+        );
+      },
+      { message: "OPENROUTER_ORIGIN must use https unless it is a loopback host." },
+    )
+    .default("https://openrouter.ai"),
+  // Capacity: matches one worker process runs at once; they mostly wait on the
+  // network. See docs/deployment.md § Sizing hosted chess
+  CHESS_RUN_CONCURRENCY: z.coerce.number().int().min(1).max(4096).default(512),
+  // Matches that may wait in the queue before `chess.create` answers "queue full".
+  CHESS_QUEUE_MAX: z.coerce.number().int().min(1).max(100_000).default(200),
+  // Hosted matches one user may start per rolling 24 hours (admins on the operator key excepted).
+  CHESS_USER_DAILY_MATCHES: z.coerce.number().int().min(1).max(10_000).default(20),
+  // Stockfish processes shared by every match in a worker process. 0 = from the
+  // CPU count (half the cores, at least 2, at most 16).
+  CHESS_ENGINE_POOL_SIZE: z.coerce.number().int().min(0).max(256).default(0),
+  // Most private conversation one side of a persistent-context match keeps in
+  // memory, in bytes; older turns are dropped beyond it.
+  CHESS_CONVERSATION_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .min(65_536)
+    .max(67_108_864)
+    .default(2_097_152),
   // Per-call model override. Falls through to the provider's default
   // (`anthropic/claude-haiku-4-5` for OpenRouter, `claude-haiku-4-5` for
   // direct Anthropic) when unset.

@@ -1,6 +1,12 @@
+import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { chessStatsColumns, INTERRUPTED_ENDING } from "@cockpit-chess/api/lib/chess-stats";
+import {
+  loadOwnerOpenRouterKey,
+  markOpenRouterKeyInvalid,
+} from "@cockpit-chess/api/lib/provider-key";
+import { isAdminRole } from "@cockpit-chess/auth/roles";
 import {
   boardAt,
   catalogOutputLimits,
@@ -9,6 +15,7 @@ import {
   validateArchive,
 } from "@cockpit-chess/chess";
 import {
+  CREDENTIAL_REVOKED,
   finishAbortedMatch,
   MATCH_INTERRUPTED,
   type ProviderCredentials,
@@ -26,6 +33,7 @@ import {
   isLiveJobState,
   type Job,
 } from "@cockpit-chess/queue";
+import { registerHeartbeat } from "./chess-heartbeat";
 import {
   backfillSpectatorEvaluations,
   matchSpectatorFeed,
@@ -44,9 +52,9 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
  *
  * Running rows: the claim holder refreshes `heartbeatAt` every 2s, so five
  * silent minutes means the worker died. Queued rows only carry the create-time
- * heartbeat, so age alone proves nothing (a match can wait behind a long one on
- * the concurrency-1 chess-run queue); they are errored only when their
- * deterministic BullMQ job is missing or terminal.
+ * heartbeat, so age alone proves nothing: a match can wait behind
+ * CHESS_RUN_CONCURRENCY others on the chess-run queue. They are errored only when
+ * their deterministic BullMQ job is missing or terminal.
  *
  * Only the row status flips: get/inspect normalize a running archive snapshot
  * under an error row status, so the archive is not loaded or rewritten here.
@@ -131,6 +139,72 @@ class MatchOwnershipEndedError extends Error {
   }
 }
 
+/**
+ * A hosted match that may not run as stored. Ends it unscored with `termination`
+ * before any inference. Its message is fixed text, never provider or key data.
+ */
+class RunRefusedError extends Error {
+  constructor(
+    message: string,
+    readonly termination: "credential-revoked" | "interrupted" | "provider-error",
+  ) {
+    super(message);
+    this.name = "RunRefusedError";
+  }
+}
+
+/** Same hash for the same snapshot: the last write is remembered without keeping its bytes. */
+const snapshotDigest = (serialized: string) =>
+  `${serialized.length}:${createHash("sha256").update(serialized).digest("base64")}`;
+
+/** OpenRouter app attribution on hosted calls (users see "Cockpit Chess" in their activity). */
+function attributionHeaders(): Record<string, string> {
+  return {
+    "X-OpenRouter-Title": "Cockpit Chess",
+    ...(env.PUBLIC_APP_URL ? { "HTTP-Referer": env.PUBLIC_APP_URL } : {}),
+  };
+}
+
+/**
+ * The key that pays for a hosted match's players.
+ *
+ * - "operator": the server's OPENROUTER_API_KEY (admin matches only; `chess.create`
+ *   never lets anyone else pick it).
+ * - "owner-openrouter": the match owner's connected key, looked up by the row's
+ *   `ownerId` (never by anything in the job) and opened with that owner's id as
+ *   associated data. Never falls back to the operator key: no usable key ends the
+ *   match "credential-revoked".
+ *
+ * If the operator turned user matches off (CHESS_USER_MATCHES_ENABLED=false) while a
+ * non-admin's match was still queued, it ends "interrupted" without inference: the
+ * server stopped it, not the user's key. Admins may keep using their own key while the
+ * flag is off (they may connect one regardless), so their matches still run. A server
+ * without CHESS_PROVIDER_KEY_SECRET cannot open any key; that is the operator's
+ * configuration too, so it also ends "interrupted".
+ */
+async function playerKey(row: {
+  ownerId: string;
+  credentialSource: string;
+  Owner: { role: string | null };
+}): Promise<{ apiKey: string; ownerKey?: { userId: string; keyHash: string } }> {
+  if (!env.CHESS_HOSTED_ENABLED)
+    throw new RunRefusedError("Hosted chess inference is disabled", "provider-error");
+  if (row.credentialSource === "operator") {
+    if (!env.OPENROUTER_API_KEY)
+      throw new RunRefusedError("Hosted chess inference is disabled", "provider-error");
+    return { apiKey: env.OPENROUTER_API_KEY };
+  }
+  if (row.credentialSource !== "owner-openrouter")
+    throw new RunRefusedError("Unknown credential source", "interrupted");
+  if (!env.CHESS_USER_MATCHES_ENABLED && !isAdminRole(row.Owner.role ?? undefined))
+    throw new RunRefusedError("User matches are disabled", "interrupted");
+  if (!env.CHESS_PROVIDER_KEY_SECRET)
+    throw new RunRefusedError("Provider key secret is not configured", "interrupted");
+  const loaded = await loadOwnerOpenRouterKey(row.ownerId);
+  if (!loaded) throw new RunRefusedError("No usable OpenRouter connection", "credential-revoked");
+  return { apiKey: loaded.apiKey, ownerKey: { userId: row.ownerId, keyHash: loaded.keyHash } };
+}
+
 /** No retries of inference after a crash: interrupted runs retain their replay and stay unrated. */
 export async function handleChessRunJob(
   job: Pick<Job<ChessRunJobData>, "data">,
@@ -146,7 +220,13 @@ export async function handleChessRunJob(
   if (claimed.count !== 1) return;
   const row = await prisma.chessMatch.findUnique({
     where: { id: matchId },
-    select: { archive: true, spectatorEvaluations: true },
+    select: {
+      archive: true,
+      spectatorEvaluations: true,
+      ownerId: true,
+      credentialSource: true,
+      Owner: { select: { role: true } },
+    },
   });
   if (!row) return;
   let match: MatchArchive;
@@ -172,32 +252,24 @@ export async function handleChessRunJob(
   const abort = () => controller.abort(MATCH_INTERRUPTED);
   signal?.addEventListener("abort", abort, { once: true });
   if (signal?.aborted) abort();
-  let polling = false;
-  let heartbeatErrors = 0;
   let ownershipEnded = false;
-  const timer = setInterval(() => {
-    if (polling) return;
-    polling = true;
-    void prisma.chessMatch
-      .updateMany({
-        where: { id: matchId, status: "running", runToken },
-        data: { heartbeatAt: new Date() },
-      })
-      .then((result) => {
-        heartbeatErrors = 0;
-        if (result.count !== 1) {
-          ownershipEnded = true;
-          abort();
-        }
-      })
-      .catch(() => {
-        heartbeatErrors += 1;
-        if (heartbeatErrors >= 3) abort();
-      })
-      .finally(() => {
-        polling = false;
-      });
-  }, 2000);
+  let terminalPersisted = false;
+  const revoke = () => controller.abort(CREDENTIAL_REVOKED);
+  const heartbeat: Omit<Parameters<typeof registerHeartbeat>[0], "ownerKey"> & {
+    ownerKey?: { userId: string; keyHash: string };
+  } = {
+    matchId,
+    runToken,
+    onLost: () => {
+      // A terminal write ends the claim itself; only a foreign end aborts the run.
+      if (terminalPersisted) return;
+      ownershipEnded = true;
+      abort();
+    },
+    onRevoked: revoke,
+    onFailing: abort,
+  };
+  const leaveHeartbeat = registerHeartbeat(heartbeat);
   // Spectator evaluation of each committed position, in the background on its own
   // engine lane: it never delays a move, and a failure never touches the game.
   const spectatorStop = new AbortController();
@@ -206,17 +278,17 @@ export async function handleChessRunJob(
     storedSpectatorEvaluations.parse(row.spectatorEvaluations),
     signal ? AbortSignal.any([signal, spectatorStop.signal]) : spectatorStop.signal,
   );
-  let terminalPersisted = false;
   let terminalWriteAttempts = 0;
-  // Last snapshot this run wrote. An unchanged running snapshot is not
-  // rewritten — the heartbeat timer keeps `heartbeatAt` (and the ownership
+  // Digest of the last snapshot this run wrote (not the snapshot itself: an archive
+  // may be 2 MB, and hundreds of matches run at once). An unchanged running snapshot
+  // is not rewritten — the shared heartbeat keeps `heartbeatAt` (and the ownership
   // check) fresh, so skipping costs nothing but a redundant multi-KB write.
   let lastWritten: string | undefined;
   async function persist(archive: MatchArchive) {
     if (ownershipEnded) throw new MatchOwnershipEndedError();
     if (terminalPersisted) return;
-    const serialized = JSON.stringify(archive);
-    if (archive.status === "running" && serialized === lastWritten) return;
+    const digest = snapshotDigest(JSON.stringify(archive));
+    if (archive.status === "running" && digest === lastWritten) return;
     if (archive.status !== "running") terminalWriteAttempts += 1;
     const result = await prisma.chessMatch
       .updateMany({
@@ -239,20 +311,38 @@ export async function handleChessRunJob(
       abort();
       throw new MatchOwnershipEndedError();
     }
-    lastWritten = serialized;
+    lastWritten = digest;
     if (archive.status !== "running") terminalPersisted = true;
     // Only the new moves are replayed here; the analysis runs in the background.
     spectators.update(archive);
   }
+  let ownerKey: { userId: string; keyHash: string } | undefined;
+  // The run's own key, so a message that echoes it (a provider or SDK error) is
+  // redacted before it reaches a log line.
+  let runKey: string | undefined;
+  const logged = (error: unknown) => {
+    const text = message(error);
+    return runKey ? text.replaceAll(runKey, "[redacted]") : text;
+  };
   try {
     const credentials: Partial<Record<"w" | "b", ProviderCredentials>> = {};
     const requiresModel = [match.config.white, match.config.black].some(
       (player) => player.protocol !== "random",
     );
-    if (requiresModel) {
-      if (!env.CHESS_HOSTED_ENABLED || !env.OPENROUTER_API_KEY)
-        throw new Error("Hosted chess inference is disabled");
-      const response = await fetch("https://openrouter.ai/api/v1/models", {
+    // An own-key match passes the same gates whether or not a model plays: the user
+    // matches switch, a usable connection, and the heartbeat's disconnect check (a
+    // random-only match spends no inference but still holds a slot and the engine).
+    const ownKeyMatch = row.credentialSource === "owner-openrouter";
+    const key = requiresModel || ownKeyMatch ? await playerKey(row) : undefined;
+    if (key) {
+      runKey = key.apiKey;
+      if (key.ownerKey) {
+        ownerKey = key.ownerKey;
+        heartbeat.ownerKey = key.ownerKey;
+      }
+    }
+    if (requiresModel && key) {
+      const response = await fetch(`${env.OPENROUTER_ORIGIN}/api/v1/models`, {
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
       });
       if (!response.ok) throw new Error("Model catalog unavailable");
@@ -280,8 +370,10 @@ export async function handleChessRunJob(
         )
           throw new Error("Model pricing unavailable");
         credentials[side] = {
-          apiKey: env.OPENROUTER_API_KEY,
-          baseUrl: "https://openrouter.ai/api/v1",
+          // In memory for this run only: never in the job, the archive, a log or an error.
+          apiKey: key.apiKey,
+          baseUrl: `${env.OPENROUTER_ORIGIN}/api/v1`,
+          headers: attributionHeaders(),
           anthropicAuth: "bearer",
           inputMicrosPerMillion: Math.ceil(inputPrice * 1e12),
           outputMicrosPerMillion: Math.ceil(outputPrice * 1e12),
@@ -291,7 +383,12 @@ export async function handleChessRunJob(
       }
     }
     // The claim token protects writes and cancellation. Reservations persist before dispatch.
-    await runMatch(match, { credentials, signal: controller.signal, onUpdate: persist });
+    await runMatch(match, {
+      credentials,
+      signal: controller.signal,
+      onUpdate: persist,
+      conversationMaxBytes: env.CHESS_CONVERSATION_MAX_BYTES,
+    });
     if (match.status === "running") finishMatch(match, "*", "provider-error", "error");
     if (!terminalPersisted) await persist(match);
   } catch (error) {
@@ -299,12 +396,18 @@ export async function handleChessRunJob(
     if (!ownershipEnded) {
       console.error("[chess-run] Match run ended with an error", {
         matchId,
-        error: message(error),
+        error: logged(error),
       });
     }
     if (!ownershipEnded && match.status === "running") {
       if (controller.signal.aborted) finishAbortedMatch(match, controller.signal);
-      else finishMatch(match, "*", "provider-error", "error");
+      else
+        finishMatch(
+          match,
+          "*",
+          error instanceof RunRefusedError ? error.termination : "provider-error",
+          "error",
+        );
     }
     // A finished game's result survives a failed write. Retry only persistence,
     // with the same claim; exhausted writes are left for stale-run reconciliation.
@@ -320,7 +423,7 @@ export async function handleChessRunJob(
         if (!ownershipEnded)
           console.error("[chess-run] Terminal snapshot write failed", {
             matchId,
-            error: message(persistError),
+            error: logged(persistError),
           });
       }
     }
@@ -333,8 +436,13 @@ export async function handleChessRunJob(
     }
     if (!terminalPersisted) return;
   } finally {
-    clearInterval(timer);
+    leaveHeartbeat();
     signal?.removeEventListener("abort", abort);
+    // OpenRouter refused the owner's key (401), or the connection changed under the
+    // run: ask the owner to reconnect. A compare-and-set on the key's hash, so a key
+    // connected meanwhile is never touched.
+    if (ownerKey && match.termination === "credential-revoked")
+      await markOpenRouterKeyInvalid(ownerKey.userId, ownerKey.keyHash).catch(() => undefined);
   }
   // The result is already written. Give the last positions a short, bounded wait
   // (they were evaluated while the game was played); anything left goes to a backfill.

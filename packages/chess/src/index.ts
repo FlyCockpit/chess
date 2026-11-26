@@ -381,6 +381,10 @@ export const archiveSchema = z
       "engine-error",
       "resignation",
       "event-limit",
+      /** The paying OpenRouter key's limit or the account's credits ran out (hosted, user keys). */
+      "account-limit",
+      /** The paying OpenRouter key was revoked, expired or disconnected mid-match. */
+      "credential-revoked",
     ]),
     // No separate event-count cap: MAX_ARCHIVE_BYTES bounds every archive a reader accepts.
     events: z.array(eventSchema),
@@ -757,9 +761,14 @@ export function validateArchive(input: unknown): MatchArchive {
   if (
     (match.status === "stopped" && (match.termination !== "cancelled" || match.result !== "*")) ||
     (match.status === "error" &&
-      (!["provider-error", "engine-error", "event-limit", "interrupted"].includes(
-        match.termination,
-      ) ||
+      (![
+        "provider-error",
+        "engine-error",
+        "event-limit",
+        "interrupted",
+        "account-limit",
+        "credential-revoked",
+      ].includes(match.termination) ||
         match.result !== "*")) ||
     (match.status === "completed" &&
       (match.result === "*" ||
@@ -770,6 +779,8 @@ export function validateArchive(input: unknown): MatchArchive {
           "engine-error",
           "event-limit",
           "interrupted",
+          "account-limit",
+          "credential-revoked",
         ].includes(match.termination)))
   )
     throw new Error("Invalid terminal status");

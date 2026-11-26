@@ -18,6 +18,8 @@ vi.mock("@/hooks/use-consent", () => ({
   useConsent: () => ({ analytics: false, decided: true, accept: vi.fn(), reject: vi.fn(), reset }),
 }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+// The footer's "Source code" link reads `chess.info`; no server here.
+vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: undefined }) }));
 
 const { ConsentPreferencesButton } = await import(
   "@/components/consent/consent-preferences-button"

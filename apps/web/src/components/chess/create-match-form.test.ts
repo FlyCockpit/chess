@@ -2,13 +2,17 @@ import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import { createInstance, type TFunction } from "i18next";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  billedLimits,
   budgetStops,
   type CatalogModel,
+  CREATE_REFUSALS,
   type CreateMatchValues,
   createMatchSchema,
+  createRefusal,
   DEFAULT_VALUES,
   defaultValuesFor,
   FIELD_SECTION,
+  keyExhausted,
   maxBudgetUsd,
   resolveProtocol,
   searchModels,
@@ -319,5 +323,31 @@ describe("searchModels", () => {
     expect(searchModels(catalog, "HAIKU")).toHaveLength(1);
     expect(searchModels(catalog, "")).toHaveLength(2);
     expect(searchModels(catalog, "mistral")).toEqual([]);
+  });
+});
+
+describe("billing the user's own OpenRouter key", () => {
+  const operator = { maxCostMicros: 25_000_000, maxTokens: 10_000_000 };
+  it("caps each side at half of what the key has left, never above the operator cap", () => {
+    expect(billedLimits(operator, 7_500_000)).toEqual({ ...operator, maxCostMicros: 3_750_000 });
+    expect(billedLimits(operator, 100_000_000)).toEqual(operator);
+    expect(maxBudgetUsd(billedLimits(operator, 7_500_000))).toBe(3.75);
+  });
+  it("leaves a key without a limit at the operator's caps", () => {
+    expect(billedLimits(operator, null)).toBe(operator);
+    expect(keyExhausted(null)).toBe(false);
+  });
+  it("calls a key with less than two minimum budgets left exhausted", () => {
+    expect(keyExhausted(19_999)).toBe(true);
+    expect(keyExhausted(20_000)).toBe(false);
+  });
+  it("reads only the refusals the form explains from a failed create", () => {
+    for (const reason of CREATE_REFUSALS) {
+      expect(createRefusal({ code: "CONFLICT", data: { reason } })).toBe(reason);
+      expect(enChess.create.errors[reason]).toBeTruthy();
+    }
+    expect(createRefusal({ code: "CONFLICT", data: { reason: "nope" } })).toBeNull();
+    expect(createRefusal({ code: "BAD_REQUEST" })).toBeNull();
+    expect(createRefusal(null)).toBeNull();
   });
 });

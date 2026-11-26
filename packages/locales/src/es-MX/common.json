@@ -86,5 +86,6 @@
     "backOnline": "Conexión restablecida.",
     "queued": "No tienes conexión. Este cambio se enviará cuando te vuelvas a conectar. Mantén esta pestaña abierta.",
     "queuedSent": "Conexión restablecida. Se envió tu cambio pendiente."
-  }
+  },
+  "sourceCode": "Código fuente"
 }

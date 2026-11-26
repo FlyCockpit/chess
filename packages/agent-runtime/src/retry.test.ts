@@ -84,3 +84,29 @@ describe("sleepWithAbort", () => {
     vi.useRealTimers();
   });
 });
+
+describe("OpenRouter 402 limit sources", () => {
+  it("retries only the in-flight budget, honouring Retry-After", () => {
+    expect(
+      classifyModelError({
+        status: 402,
+        error: { message: "busy", metadata: { limit_source: "openrouter_in_flight_budget" } },
+        headers: { "retry-after": "2" },
+      }),
+    ).toEqual({
+      retryable: true,
+      status: 402,
+      code: "openrouter_in_flight_budget",
+      retryAfterMs: 2000,
+    });
+  });
+  it("keeps the key limit and credits permanent and names them in the code", () => {
+    expect(
+      classifyModelError({ status: 402, error: { limit_source: "openrouter_key_limit" } }),
+    ).toEqual({ retryable: false, status: 402, code: "openrouter_key_limit" });
+    expect(
+      classifyModelError({ statusCode: 402, message: "Insufficient credits (openrouter_credits)" }),
+    ).toMatchObject({ retryable: false, status: 402, code: "openrouter_credits" });
+    expect(classifyModelError({ status: 402 })).toMatchObject({ retryable: false, status: 402 });
+  });
+});

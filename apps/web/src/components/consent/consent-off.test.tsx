@@ -3,7 +3,10 @@ import { createInstance } from "i18next";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider } from "react-i18next";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+
+// The footer's "Source code" link reads `chess.info`; no server here.
+vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: undefined }) }));
 
 import { ConsentBanner } from "@/components/consent/consent-banner";
 import { ConsentPreferencesButton } from "@/components/consent/consent-preferences-button";

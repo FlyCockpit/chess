@@ -2,6 +2,7 @@
 // contract of `runAgentLoop` itself and the error a tool throws to fail a run.
 export { AgentRuntimeError, FatalToolError } from "./errors";
 export { runAgentLoop } from "./loop";
+export { classifyModelError } from "./retry";
 export { defineTool } from "./tools";
 export type {
   AgentLoopOptions,

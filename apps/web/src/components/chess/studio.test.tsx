@@ -16,6 +16,16 @@ const fixture = vi.hoisted(() => ({
       session?: { user: { role: string } };
     },
   },
+  info: { hostedEnabled: false, userMatchesEnabled: false, dailyLimit: 20 } as Record<
+    string,
+    unknown
+  >,
+  key: {
+    data: { available: true, connected: false } as unknown,
+    isPending: false,
+    isError: false,
+    refetch: vi.fn(),
+  },
   detail: {
     data: undefined as unknown,
     error: undefined as unknown,
@@ -27,7 +37,11 @@ const fixture = vi.hoisted(() => ({
 vi.mock("@tanstack/react-query", () => ({
   useQuery: ({ surface, enabled }: { surface: string; enabled?: boolean }) => {
     if (surface !== "info") fixture.enabled.push(enabled);
-    return surface === "info" ? { data: { hostedEnabled: false } } : fixture.detail;
+    return surface === "info"
+      ? { data: fixture.info }
+      : surface === "key"
+        ? fixture.key
+        : fixture.detail;
   },
   useInfiniteQuery: ({ enabled }: { enabled?: boolean }) => {
     fixture.enabled.push(enabled);
@@ -52,6 +66,7 @@ vi.mock("@/utils/orpc", () => ({
       create: { mutationOptions: () => ({}) },
       importGame: { mutationOptions: () => ({}) },
     },
+    openrouter: { status: { queryOptions: () => ({ surface: "key" }) } },
   },
 }));
 vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => fixture.auth }));
@@ -66,7 +81,23 @@ vi.mock("react", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react")>()),
   useState: (initial: unknown) => [initial === "" ? "selected" : initial, vi.fn()],
 }));
-vi.mock("./create-match-dialog", () => ({ CreateMatchDialog: () => null }));
+vi.mock("./create-match-dialog", () => ({
+  CreateMatchDialog: ({
+    billingOptions,
+    ownKeyRemainingMicros,
+    disabled,
+  }: {
+    billingOptions?: string[];
+    ownKeyRemainingMicros?: number | null;
+    disabled: boolean;
+  }) => (
+    <div
+      data-create={(billingOptions ?? ["operator"]).join(",")}
+      data-remaining={String(ownKeyRemainingMicros)}
+      data-disabled={String(disabled)}
+    />
+  ),
+}));
 vi.mock("./replay", () => ({
   MatchReplay: ({ match }: { match: { config: { title: string } } }) => (
     <div>{match.config.title}</div>
@@ -133,7 +164,7 @@ it("tells a signed-in non-admin what the studio is, without a Sign In", () => {
   fixture.auth = { state: { status: "authenticated", session: { user: { role: "user" } } } };
   try {
     const html = render();
-    expect(html).toContain(enChess.studio.adminOnly);
+    expect(html).toContain(enChess.studio.userMatchesOff.replaceAll("'", "&#x27;"));
     expect(html).not.toContain(enChess.studio.signIn);
     expect(html).not.toContain('data-to="/$lang/login"');
   } finally {
@@ -145,7 +176,7 @@ it("offers a signed-out visitor the administrator sign-in", () => {
   try {
     const html = render();
     expect(html).toContain('data-to="/$lang/login"');
-    expect(html).not.toContain(enChess.studio.adminOnly);
+    expect(html).not.toContain(enChess.studio.userMatchesOff.replaceAll("'", "&#x27;"));
   } finally {
     fixture.auth = { state: { status: "authenticated", session: { user: { role: "admin" } } } };
   }
@@ -176,11 +207,136 @@ it("shows and loads nothing private until the document has recorded the account"
     const html = render();
     expect(html).toContain("h-96");
     expect(html).not.toContain("Earlier account preview");
-    expect(html).not.toContain(enChess.studio.adminOnly);
+    expect(html).not.toContain(enChess.studio.userMatchesOff.replaceAll("'", "&#x27;"));
     expect(fixture.enabled.length).toBeGreaterThan(0);
     expect(fixture.enabled.every((enabled) => enabled === false)).toBe(true);
   } finally {
     fixture.admitted = true;
   }
   expect(render()).toContain("Earlier account preview");
+});
+
+const connectedKey = (overrides: Record<string, unknown> = {}) => ({
+  available: true,
+  connected: true,
+  status: "active",
+  label: "Cockpit Chess",
+  keyHint: "abcd",
+  keyHash: "f".repeat(64),
+  limitMicros: 10_000_000,
+  limitRemainingMicros: 7_500_000,
+  usageMicros: 2_500_000,
+  usageDailyMicros: 0,
+  expiresAt: null,
+  connectedAt: new Date(0).toISOString(),
+  live: true,
+  ...overrides,
+});
+function asUser(run: () => void, info: Record<string, unknown> = {}) {
+  fixture.auth = { state: { status: "authenticated", session: { user: { role: "user" } } } };
+  const before = fixture.info;
+  fixture.info = { hostedEnabled: true, userMatchesEnabled: true, dailyLimit: 20, ...info };
+  try {
+    run();
+  } finally {
+    fixture.auth = { state: { status: "authenticated", session: { user: { role: "admin" } } } };
+    fixture.info = before;
+    fixture.key = { ...fixture.key, data: { available: true, connected: false } };
+  }
+}
+it("sends a user without a connection to Settings instead of the form", () => {
+  asUser(() => {
+    const html = render();
+    expect(html).toContain(enChess.studio.connectTitle);
+    expect(html).toContain('data-to="/$lang/settings/openrouter"');
+    expect(html).not.toContain("data-create");
+    expect(html).not.toContain(enChess.studio.userMatchesOff.replaceAll("'", "&#x27;"));
+  });
+});
+it("asks a user whose key OpenRouter refused to reconnect", () => {
+  asUser(() => {
+    fixture.key = { ...fixture.key, data: connectedKey({ status: "invalid" }) };
+    const html = render();
+    expect(html).toContain(enChess.studio.reconnectTitle);
+    expect(html).not.toContain("data-create");
+  });
+});
+it("offers a connected user the form billed to their key, capped by what it has left", () => {
+  asUser(() => {
+    fixture.key = { ...fixture.key, data: connectedKey() };
+    const html = render();
+    expect(html).toContain('data-create="openrouter"');
+    expect(html).toContain('data-remaining="7500000"');
+    expect(html).toContain('data-disabled="false"');
+    expect(html).toContain("Billed to your OpenRouter key · $7.50 left");
+    expect(html).toContain("One match at a time · up to 20 matches a day");
+  });
+});
+it("disables creating when the key has almost nothing left, and says what to do", () => {
+  asUser(() => {
+    fixture.key = { ...fixture.key, data: connectedKey({ limitRemainingMicros: 5000 }) };
+    const html = render();
+    expect(html).toContain('data-disabled="true"');
+    expect(html).toContain("Raise its limit or add credits on OpenRouter first.");
+  });
+});
+it("treats a key without a limit as uncapped", () => {
+  asUser(() => {
+    fixture.key = {
+      ...fixture.key,
+      data: connectedKey({ limitMicros: null, limitRemainingMicros: null }),
+    };
+    const html = render();
+    expect(html).toContain('data-remaining="null"');
+    expect(html).toContain(enChess.studio.billedToUnlimited);
+  });
+});
+it("keeps a user's own matches reachable but offers no create while user matches are off", () => {
+  asUser(
+    () => {
+      fixture.enabled = [];
+      const html = render();
+      expect(html).toContain(enChess.studio.userMatchesOff.replaceAll("'", "&#x27;"));
+      expect(html).not.toContain("data-create");
+      // The owner's list still loads, so earlier matches can be stopped or unpublished.
+      expect(fixture.enabled).toContain(true);
+    },
+    { userMatchesEnabled: false },
+  );
+});
+it("lets an admin with a connected key choose who pays", () => {
+  fixture.key = { ...fixture.key, data: connectedKey() };
+  try {
+    expect(render()).toContain('data-create="operator,openrouter"');
+  } finally {
+    fixture.key = { ...fixture.key, data: { available: true, connected: false } };
+  }
+  expect(render()).toContain('data-create="operator"');
+});
+it("shows a queued match's position and the next step after an account-limit ending", () => {
+  const archive = createMatch(
+    {
+      title: "Queued match",
+      rules: {},
+      white: { name: "White", model: "random", protocol: "random" },
+      black: { name: "Black", model: "random", protocol: "random" },
+    },
+    "hosted",
+  );
+  fixture.detail = {
+    ...fixture.detail,
+    data: { archive, published: false, queuePosition: 3, spectatorEvaluations: null },
+    isPending: false,
+    isError: false,
+    error: undefined,
+  };
+  expect(render()).toContain("Queued · position 3");
+  const ended = { ...archive, status: "error", result: "*", termination: "account-limit" };
+  fixture.detail = {
+    ...fixture.detail,
+    data: { ...(fixture.detail.data as object), archive: ended, queuePosition: null },
+  };
+  const html = render();
+  expect(html).not.toContain("Queued · position");
+  expect(html).toContain("add credits on OpenRouter, then start a new match");
 });
