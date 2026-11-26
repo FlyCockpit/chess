@@ -1,5 +1,6 @@
 import { authClient } from "@/lib/auth-client";
 import { type AuthSessionState, getAuthSessionState } from "@/lib/auth-session-state";
+import { noteSignedInSession } from "@/lib/document-identity";
 
 import { useNetworkStatus } from "./use-network-status";
 
@@ -7,6 +8,9 @@ import { useNetworkStatus } from "./use-network-status";
 export function useAuthSession(): AuthSessionState {
   const session = authClient.useSession();
   const isOnline = useNetworkStatus();
+  // Idempotent: marks the document private for the back/forward cache before
+  // anything renders this session (lib/document-identity.ts).
+  if (session.data !== null) noteSignedInSession();
 
   return getAuthSessionState({
     data: session.data,

@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * The geometry itself is checked in a browser (`pnpm check:layout`).
  */
 const keyboard = vi.hoisted(() => ({ open: false }));
+const identityWatcher = vi.hoisted(() => vi.fn());
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   // The original for the route files' code-split loader (`lazyRouteComponent`).
@@ -40,6 +41,7 @@ vi.mock("@/components/admin-setup-banner", () => ({ AdminSetupBanner: () => null
 vi.mock("@/components/bottom-nav", () => ({ default: () => null }));
 vi.mock("@/components/header", () => ({ default: () => null }));
 vi.mock("@/components/setup-key-banner", () => ({ SetupKeyBanner: () => null }));
+vi.mock("@/components/route-content-skeleton", () => ({ RouteContentSkeleton: () => null }));
 vi.mock("@/components/pull-to-refresh", () => ({
   default: ({ children }: { children: ReactNode }) => children,
 }));
@@ -47,6 +49,9 @@ vi.mock("@/components/language-switcher", () => ({ LanguageSwitcher: () => null 
 vi.mock("@/hooks/use-document-lang", () => ({ useDocumentLang: () => {} }));
 vi.mock("@/hooks/use-user-locale-sync", () => ({ useUserLocaleSync: () => {} }));
 vi.mock("@/hooks/use-session-hint-sync", () => ({ useSessionHintSync: () => {} }));
+vi.mock("@/hooks/use-reload-on-identity-change", () => ({
+  useReloadOnIdentityChange: identityWatcher,
+}));
 vi.mock("@/components/consent/consent-preferences-button", () => ({
   ConsentPreferencesButton: () => null,
 }));
@@ -60,8 +65,12 @@ const component = (route: unknown) =>
   (route as { options: { component: LazyComponent } }).options.component;
 const AppShell = component(AppRoute);
 const PublicShell = component(PublicRoute);
+const pendingComponent = (route: unknown) =>
+  (route as { options: { pendingComponent: LazyComponent } }).options.pendingComponent;
+const AppShellPendingFrame = pendingComponent(AppRoute);
 // Route components are code-split: load the real ones before rendering them.
 await AppShell.preload?.();
+await AppShellPendingFrame.preload?.();
 await PublicShell.preload?.();
 
 /** The frame: the shell's first `<div>`, the grid that holds header, main and nav. */
@@ -96,6 +105,17 @@ describe("the shell frames span the viewport; only <main> reserves the banner", 
     );
     expect(rule).toContain("--frame-reserve: var(--safe-area-bottom);");
     expect(rule).not.toContain("consent");
+  });
+
+  it("both app shells (pending and loaded) run the identity watcher, not only the root's lazy chunk", () => {
+    // The shell shows the account and a guarded page renders private data at
+    // once, so the watcher must already be connected. See
+    // docs/auth-and-routing.md § Query cache follows identity
+    for (const shell of [AppShell, AppShellPendingFrame]) {
+      identityWatcher.mockClear();
+      frameClasses(shell);
+      expect(identityWatcher).toHaveBeenCalled();
+    }
   });
 
   it("app shell, no keyboard: the frame reserves the BottomNav only, and tells <main> so", () => {

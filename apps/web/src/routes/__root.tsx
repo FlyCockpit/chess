@@ -62,8 +62,9 @@ export interface RouterAppContext {
 
 const APP_NAME = env.VITE_APP_NAME;
 
-// Session machinery stays out of a fresh public landing. Once needed, the single
-// watcher survives layout/tab changes so account switches cannot inherit private cache.
+// Session machinery stays out of a fresh public landing. Once needed, this
+// watcher survives layout/tab changes so account switches cannot inherit private
+// cache; the `_app` shell also runs one eagerly (both share lib/document-identity.ts).
 const IdentityBoundary = lazy(() => import("@/components/identity-boundary"));
 
 export const Route = createRootRouteWithContext<RouterAppContext>()({

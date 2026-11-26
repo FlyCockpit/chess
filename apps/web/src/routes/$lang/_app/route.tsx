@@ -13,6 +13,7 @@ import { RouteContentSkeleton } from "@/components/route-content-skeleton";
 import { SetupKeyBanner } from "@/components/setup-key-banner";
 import { useDocumentLang } from "@/hooks/use-document-lang";
 import { useMobileKeyboard } from "@/hooks/use-mobile-keyboard";
+import { useReloadOnIdentityChange } from "@/hooks/use-reload-on-identity-change";
 import { useSessionHintSync } from "@/hooks/use-session-hint-sync";
 import { useUserLocaleSync } from "@/hooks/use-user-locale-sync";
 import { MAIN_SCROLLER_ID } from "@/lib/main-scroller";
@@ -89,6 +90,12 @@ function AppShellPending() {
  * replaces its skeleton.
  */
 function AppShellFrame({ children }: { children: ReactNode }) {
+  // In the frame itself (the pending shell and the loaded one), not only
+  // through the root's lazily loaded IdentityBoundary: the shell shows the
+  // account and a guarded page renders private data at once, so the identity
+  // watcher is connected by then, never waiting on a chunk. See
+  // docs/auth-and-routing.md § Query cache follows identity
+  useReloadOnIdentityChange();
   const { t } = useTranslation("nav");
   const mobileKeyboardOpen = useMobileKeyboard();
   return (

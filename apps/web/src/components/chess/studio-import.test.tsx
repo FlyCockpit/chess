@@ -34,6 +34,7 @@ vi.mock("@/hooks/use-auth-session", () => ({
     state: { status: "authenticated", session: { user: { role: "admin" } } },
   }),
 }));
+vi.mock("@/hooks/use-document-admits", () => ({ useDocumentAdmits: () => true }));
 vi.mock("@/hooks/use-entity-mutation", () => ({
   useEntityMutation: () => ({ isPending: false, isError: false, mutate: vi.fn(), reset: vi.fn() }),
 }));

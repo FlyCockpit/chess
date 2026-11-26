@@ -8,6 +8,8 @@ import { I18nextProvider } from "react-i18next";
 import { beforeAll, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
+  admitted: true,
+  enabled: [] as unknown[],
   auth: {
     state: { status: "authenticated", session: { user: { role: "admin" } } } as {
       status: string;
@@ -23,15 +25,20 @@ const fixture = vi.hoisted(() => ({
   },
 }));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: ({ surface }: { surface: string }) =>
-    surface === "info" ? { data: { hostedEnabled: false } } : fixture.detail,
-  useInfiniteQuery: () => ({
-    data: { pages: [{ items: [] }] },
-    isPending: false,
-    isError: false,
-    refetch: vi.fn(),
-    fetchNextPage: vi.fn(),
-  }),
+  useQuery: ({ surface, enabled }: { surface: string; enabled?: boolean }) => {
+    if (surface !== "info") fixture.enabled.push(enabled);
+    return surface === "info" ? { data: { hostedEnabled: false } } : fixture.detail;
+  },
+  useInfiniteQuery: ({ enabled }: { enabled?: boolean }) => {
+    fixture.enabled.push(enabled);
+    return {
+      data: { pages: [{ items: [] }] },
+      isPending: false,
+      isError: false,
+      refetch: vi.fn(),
+      fetchNextPage: vi.fn(),
+    };
+  },
 }));
 vi.mock("@/utils/orpc", () => ({
   orpc: {
@@ -48,6 +55,7 @@ vi.mock("@/utils/orpc", () => ({
   },
 }));
 vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => fixture.auth }));
+vi.mock("@/hooks/use-document-admits", () => ({ useDocumentAdmits: () => fixture.admitted }));
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ to, children }: { to: string; children: ReactNode }) => <a data-to={to}>{children}</a>,
 }));
@@ -141,4 +149,38 @@ it("offers a signed-out visitor the administrator sign-in", () => {
   } finally {
     fixture.auth = { state: { status: "authenticated", session: { user: { role: "admin" } } } };
   }
+});
+it("shows and loads nothing private until the document has recorded the account", () => {
+  // A public tab no session guard covers: until the root watcher (or a guard)
+  // has recorded this admin as the document's identity, a switch could go
+  // unnoticed and the cache could still hold the previous account's answers.
+  const archive = createMatch(
+    {
+      title: "Earlier account preview",
+      rules: {},
+      white: { name: "White", model: "random", protocol: "random" },
+      black: { name: "Black", model: "random", protocol: "random" },
+    },
+    "local",
+  );
+  fixture.detail = {
+    ...fixture.detail,
+    data: { archive, published: false },
+    error: undefined,
+    isPending: false,
+    isError: false,
+  };
+  fixture.admitted = false;
+  fixture.enabled = [];
+  try {
+    const html = render();
+    expect(html).toContain("h-96");
+    expect(html).not.toContain("Earlier account preview");
+    expect(html).not.toContain(enChess.studio.adminOnly);
+    expect(fixture.enabled.length).toBeGreaterThan(0);
+    expect(fixture.enabled.every((enabled) => enabled === false)).toBe(true);
+  } finally {
+    fixture.admitted = true;
+  }
+  expect(render()).toContain("Earlier account preview");
 });

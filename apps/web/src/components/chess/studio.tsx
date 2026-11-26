@@ -26,6 +26,7 @@ import { InlineRetry } from "@/components/inline-retry";
 import { LoadMore } from "@/components/load-more";
 import { QueryBoundary } from "@/components/query-boundary";
 import { useAuthSession } from "@/hooks/use-auth-session";
+import { useDocumentAdmits } from "@/hooks/use-document-admits";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
 import { fileDropTargetRef } from "@/lib/file-drop-registry";
 import { isQueryAccessError } from "@/lib/query-access-error";
@@ -47,7 +48,14 @@ import { drawShareCard, lastIllegalSquares, SHARE_HEIGHT, SHARE_WIDTH } from "./
 export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
   const { t, i18n } = useTranslation("chess");
   const { state } = useAuthSession();
-  const admin = state.status === "authenticated" && hasRole(state.session.user.role ?? "", "admin");
+  // No session guard covers this public tab: the admin's data shows (and
+  // loads) only once the document has recorded this account as its own
+  // (docs/auth-and-routing.md § Query cache follows identity).
+  const admitted = useDocumentAdmits(
+    state.status === "authenticated" ? state.session.user.id : undefined,
+  );
+  const admin =
+    state.status === "authenticated" && admitted && hasRole(state.session.user.role ?? "", "admin");
   const [selected, setSelected] = useState("");
   const {
     data,
@@ -95,7 +103,8 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
   const stop = useEntityMutation(orpc.chess.stop.mutationOptions(), {
     invalidateKey: orpc.chess.key(),
   });
-  if (state.status === "pending") return <Skeleton className="mt-12 h-96" />;
+  if (state.status === "pending" || (state.status === "authenticated" && !admitted))
+    return <Skeleton className="mt-12 h-96" />;
   return (
     <>
       <div className="cc-page-intro">

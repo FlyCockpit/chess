@@ -10,6 +10,12 @@ import ErrorState from "./components/error-state";
 import { NotFoundPage } from "./components/not-found-page";
 import { RouteContentSkeleton } from "./components/route-content-skeleton";
 import i18n, { createRequestI18n } from "./i18n";
+import {
+  onDocumentReplaced,
+  sealQueryClient,
+  skipErrorToastForIdentity,
+  watchDocumentRestore,
+} from "./lib/document-identity";
 import { MAIN_SCROLLER_SELECTOR } from "./lib/main-scroller";
 import { routeTree } from "./routeTree.gen";
 import { friendly } from "./utils/friendly-error";
@@ -68,6 +74,10 @@ export function getRouter() {
         // forever. Server-side failures already surface through the loader →
         // defaultErrorComponent path.
         if (typeof window === "undefined") return;
+        // Before any opt-out: a 401 asks Better Auth to check the session once
+        // (a session lost elsewhere then replaces the document,
+        // lib/document-identity.ts) instead of toasting once per mounted query.
+        if (skipErrorToastForIdentity(error, "query")) return;
         // Polling queries that already render inline state opt out with
         // `meta: { skipGlobalErrorToast: true }` — symmetric with the mutation
         // cache below — so a flaky connection doesn't spam toasts on top of
@@ -92,6 +102,9 @@ export function getRouter() {
         // Same SSR guard as the query cache: no Toaster drains the queue on
         // the server.
         if (typeof window === "undefined") return;
+        // Before the opt-out, so a 401 on an action with its own error UI
+        // still checks the session.
+        if (skipErrorToastForIdentity(error, "mutation")) return;
         if (mutation.meta?.skipGlobalErrorToast) return;
         const fallback = mutation.meta?.errorFallbackKey
           ? i18n.t(mutation.meta.errorFallbackKey)
@@ -100,6 +113,15 @@ export function getRouter() {
       },
     }),
   });
+
+  // A signed-in copy of this document restored from the back/forward cache
+  // reloads instead of showing a page nobody re-checked; and when another
+  // identity is confirmed, this client's data is dropped before the reload
+  // (lib/document-identity.ts). Client only; no-ops during SSR.
+  watchDocumentRestore();
+  if (typeof window !== "undefined") {
+    onDocumentReplaced(() => sealQueryClient(queryClient));
+  }
 
   const router = createRouter({
     routeTree,
