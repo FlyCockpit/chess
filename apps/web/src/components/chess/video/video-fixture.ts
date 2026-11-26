@@ -15,7 +15,11 @@ export function videoFixtureGame(): MatchArchive {
       title: "Fixture: Scholar's mate",
       white: { name: "GPT-4.1 Nano", model: "openai/gpt-4.1-nano", protocol: "openai-chat" },
       black: { name: "GPT-4.1 Mini", model: "openai/gpt-4.1-mini", protocol: "openai-chat" },
-      rules: { trashTalk: true, engineEvaluation: "after-move", timeBudgetMs: 120_000 },
+      rules: {
+        remarks: "trash-talk",
+        engineEvaluation: "after-move",
+        clock: { w: 120_000, b: 120_000 },
+      },
     },
     "hosted",
   );

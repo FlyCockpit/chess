@@ -317,3 +317,94 @@ it.skipIf(process.platform === "win32")(
     expect(await readFile(outside, "utf8")).toBe("private");
   },
 );
+
+describe("the human's clock on a timed local board", () => {
+  const timed = matchConfigSchema.parse({
+    white: { name: "White", model: "human", protocol: "human" },
+    black: { name: "Black", model: "human", protocol: "human" },
+    rules: { engineEvaluation: "off", clock: { w: 30000, b: 30000 }, turnTimeoutMs: 30000 },
+  });
+  const rpc = (server: Server, name: string, json: unknown) =>
+    request(server, `/rpc/${name}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-csrf-token": "orpc" },
+      chunks: [JSON.stringify({ json })],
+    });
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+  const startTimed = async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.spyOn(storage, "writeGame").mockResolvedValue(undefined);
+    const local = await start({ assetSource: await embeddedSource() });
+    expect((await rpc(local.server, "create", timed)).status).toBe(200);
+    await settle();
+    return local;
+  };
+  const stateOf = async (server: Server) =>
+    JSON.parse((await rpc(server, "state", null)).body).json.match;
+  afterEach(() => vi.useRealTimers());
+
+  it("charges the time a move took to the mover's clock", async () => {
+    const local = await startTimed();
+    vi.advanceTimersByTime(5000);
+    const moved = await rpc(local.server, "move", { move: "e2e4", expectedSeq: 0 });
+    expect(moved.status).toBe(200);
+    const match = await stateOf(local.server);
+    expect(match.status).toBe("running");
+    expect(match.events.map((event: { type: string }) => event.type)).toEqual([
+      "timing",
+      "attempt",
+    ]);
+    expect(match.events[0]).toMatchObject({ side: "w", elapsedMs: 5000 });
+  });
+  it("refuses a move made after the clock ran out and records the time forfeit", async () => {
+    const local = await startTimed();
+    // Only the clock moves: the forfeit timer has not fired yet.
+    vi.setSystemTime(Date.now() + 31000);
+    await rpc(local.server, "move", { move: "e2e4", expectedSeq: 0 });
+    const match = await stateOf(local.server);
+    expect(match).toMatchObject({ status: "completed", termination: "timeout", result: "0-1" });
+    expect(match.events.some((event: { type: string }) => event.type === "attempt")).toBe(false);
+  });
+  it("holds humans to their clock only, never the shorter per-move limit", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.spyOn(storage, "writeGame").mockResolvedValue(undefined);
+    const local = await start({ assetSource: await embeddedSource() });
+    const config = { ...timed, rules: { ...timed.rules, clock: { w: 60000, b: 60000 } } };
+    config.rules.turnTimeoutMs = 5000;
+    expect((await rpc(local.server, "create", config)).status).toBe(200);
+    await settle();
+    vi.advanceTimersByTime(10000); // twice the per-move limit
+    await rpc(local.server, "move", { move: "e2e4", expectedSeq: 0 });
+    await settle();
+    vi.advanceTimersByTime(1000);
+    await rpc(local.server, "move", { move: "e7e5", expectedSeq: 2 });
+    await settle();
+    let match = await stateOf(local.server);
+    expect(match.status).toBe("running");
+    expect(match.events.filter((event: { type: string }) => event.type === "attempt")).toHaveLength(
+      2,
+    );
+    // White has 50 s left: still playing a second before, out of time at 50 s.
+    vi.advanceTimersByTime(49000);
+    await settle();
+    expect((await stateOf(local.server)).status).toBe("running");
+    vi.advanceTimersByTime(1000);
+    await settle();
+    match = await stateOf(local.server);
+    expect(match).toMatchObject({ status: "completed", termination: "timeout", result: "0-1" });
+  });
+  it("ends the game on time when the human never moves", async () => {
+    const local = await startTimed();
+    vi.advanceTimersByTime(30000);
+    await settle();
+    const match = await stateOf(local.server);
+    expect(match).toMatchObject({ status: "completed", termination: "timeout", result: "0-1" });
+    expect(match.events).toEqual([expect.objectContaining({ type: "timing", elapsedMs: 30000 })]);
+    expect(storage.writeGame).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({ termination: "timeout" }),
+    );
+  });
+});

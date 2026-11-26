@@ -3,11 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   boardAt,
+  clockLeftMs,
   createMatch,
   finishMatch,
   type MatchArchive,
   matchConfigSchema,
-  submitMove,
+  playHumanTurn,
 } from "@cockpit-chess/chess";
 import type { LocalState } from "@cockpit-chess/chess/local-contract";
 import {
@@ -113,6 +114,32 @@ export async function startLocalChess(
   let closePromise: Promise<void> | undefined;
   const requests = new Set<Promise<unknown>>();
   let memory: MatchRunnerOptions["memory"] = {};
+  /** When the human's current turn started, and the timer that forfeits it on time. */
+  type HumanTurn = { started: number; seq: number; timer?: ReturnType<typeof setTimeout> };
+  let humanTurn = null as HumanTurn | null;
+  const clearHumanTurn = () => {
+    if (humanTurn?.timer) clearTimeout(humanTurn.timer);
+    humanTurn = null;
+  };
+  /** Starts the human's clock when it is a human's turn on a running board. */
+  function armHumanTurn() {
+    if (closing || humanTurn || match.status !== "running") return;
+    const chess = boardAt(match);
+    const side = chess.turn();
+    if ((side === "w" ? match.config.white : match.config.black).protocol !== "human") return;
+    const turn: HumanTurn = { started: Date.now(), seq: match.events.length };
+    humanTurn = turn;
+    const left = clockLeftMs(match, side);
+    if (left === null) return;
+    turn.timer = setTimeout(() => {
+      if (humanTurn !== turn || busy || match.status !== "running") return;
+      if (match.events.length !== turn.seq) return;
+      humanTurn = null;
+      playHumanTurn(match, boardAt(match), Date.now() - turn.started);
+      void persist(match).catch(() => options.onError?.(t("cli.persistFailed")));
+    }, left);
+    turn.timer.unref?.();
+  }
   const state = (): LocalState => ({
     match,
     busy,
@@ -137,6 +164,7 @@ export async function startLocalChess(
     } finally {
       busy = false;
       await persist(match);
+      armHumanTurn();
     }
   }
   function schedule() {
@@ -156,6 +184,7 @@ export async function startLocalChess(
         });
       }
       const next = createMatch(input);
+      clearHumanTurn();
       busy = true;
       controller = new AbortController();
       memory = {};
@@ -185,8 +214,10 @@ export async function startLocalChess(
         try {
           // Human moves bypass the runner, so apply the same archive limit here.
           if (!endAtArchiveLimit(match)) {
-            const event = submitMove(match, chess, input.move);
-            if (event.accepted) await evaluateAfterMove(match, { signal: controller.signal });
+            const started = humanTurn?.started ?? Date.now();
+            clearHumanTurn();
+            const event = playHumanTurn(match, chess, Date.now() - started, input.move);
+            if (event?.accepted) await evaluateAfterMove(match, { signal: controller.signal });
           }
           await persist(match);
         } finally {
@@ -198,6 +229,7 @@ export async function startLocalChess(
     stop: os.handler(async () => {
       if (closing) throw new ORPCError("CONFLICT");
       controller.abort();
+      clearHumanTurn();
       if (match.status === "running") finishMatch(match, "*", "cancelled", "stopped");
       await persist(match);
       return state();
@@ -317,6 +349,7 @@ export async function startLocalChess(
     close: () => {
       if (closePromise) return closePromise;
       closing = true;
+      clearHumanTurn();
       closePromise = (async () => {
         // Stop admission before draining: a failed write must never skip close.
         const closed = new Promise<void>((resolve, reject) =>

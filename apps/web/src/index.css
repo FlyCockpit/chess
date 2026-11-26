@@ -1437,3 +1437,86 @@
 .cc-catalog-notice {
   font-size: 12px;
 }
+
+/* Time control (create dialog and Local lab). */
+.cc-time-control {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.cc-time-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cc-time-preset {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--cc-line-strong);
+  border-radius: 999px;
+  background: var(--cc-raised);
+  color: var(--cc-text);
+  font-size: 14px;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+.cc-time-preset:hover {
+  background: var(--cc-hover);
+}
+.cc-time-preset[aria-pressed="true"] {
+  border-color: var(--cc-accent-line);
+  background: var(--cc-accent);
+  color: var(--cc-accent-fg);
+  font-weight: 600;
+}
+.cc-time-sides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  gap: 12px;
+}
+.cc-time-side {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.cc-time-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.cc-time-inputs label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--cc-muted);
+  font-size: 14px;
+}
+.cc-time-inputs input {
+  min-height: 44px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--cc-line-strong);
+  border-radius: 5px;
+  background: var(--cc-raised);
+  color: var(--cc-text);
+  font-size: 16px;
+}
+.cc-card-ending {
+  margin-top: 6px;
+  color: var(--cc-text-soft);
+  font-size: 14px;
+  font-weight: 600;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-time-preset {
+    transition: none;
+  }
+}

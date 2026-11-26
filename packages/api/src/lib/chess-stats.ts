@@ -1,8 +1,10 @@
 import { type MatchArchive, matchStats } from "@cockpit-chess/chess";
+import { type EndingSummary, endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
 import type { Prisma } from "@cockpit-chess/db";
 
 /**
- * Typed leaderboard columns derived from a finished archive.
+ * Typed leaderboard columns, and the match card's short ending, derived from a finished
+ * archive.
  *
  * The single derivation point for `ChessMatch.result` / `white*` / `black*`:
  * the worker's terminal persist and `chess.importGame` both write exactly this,
@@ -26,5 +28,14 @@ export function chessStatsColumns(match: MatchArchive) {
     whiteCostMicros: white.costMicros === null ? null : BigInt(white.costMicros),
     blackCostMicros: black.costMicros === null ? null : BigInt(black.costMicros),
     moveFormat: match.config.rules.moveFormat,
+    ending: endingSummary(matchEnding(match)),
   } satisfies Prisma.ChessMatchUncheckedUpdateManyInput;
 }
+
+/**
+ * The card endings of the status-only writes, which leave the archive snapshot as it
+ * was: an operator stop reads as cancelled, an error over a running snapshot as
+ * interrupted (the same normalization `chess.get` / `chess.inspect` apply).
+ */
+export const STOPPED_ENDING = { kind: "cancelled" } satisfies EndingSummary;
+export const INTERRUPTED_ENDING = { kind: "interrupted" } satisfies EndingSummary;

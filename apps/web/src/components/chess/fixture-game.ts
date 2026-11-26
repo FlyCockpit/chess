@@ -1,18 +1,24 @@
-import { Chess, createMatch, type MatchArchive, submitMove } from "@cockpit-chess/chess";
+import {
+  Chess,
+  createMatch,
+  type MatchArchive,
+  type RemarkTone,
+  submitMove,
+} from "@cockpit-chess/chess";
 
 /**
  * A short fixture game for tests: commentary on, after-move evaluations, a
  * rejected attempt, and the remark/eval values the UI tests assert on.
  */
-export function fixtureGame(options: { evaluations?: boolean; trashTalk?: boolean } = {}) {
-  const { evaluations = true, trashTalk = true } = options;
+export function fixtureGame(options: { evaluations?: boolean; remarks?: RemarkTone } = {}) {
+  const { evaluations = true, remarks = "trash-talk" } = options;
   const match: MatchArchive = createMatch(
     {
       title: "Fixture",
       white: { name: "GPT-4.1 Nano", model: "openai/gpt-4.1-nano", protocol: "openai-chat" },
       black: { name: "openai/gpt-4.1-mini", model: "openai/gpt-4.1-mini", protocol: "openai-chat" },
       rules: {
-        trashTalk,
+        remarks,
         engineEvaluation: evaluations ? "after-move" : "off",
       },
     },

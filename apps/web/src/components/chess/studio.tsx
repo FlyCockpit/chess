@@ -27,6 +27,7 @@ import { useEntityMutation } from "@/hooks/use-entity-mutation";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { orpc } from "@/utils/orpc";
 import { CreateMatchDialog } from "./create-match-dialog";
+import { endingHeadlineLabel } from "./ending-label";
 import { MatchReplay } from "./replay";
 import { drawShareCard, SHARE_HEIGHT, SHARE_WIDTH } from "./share-card";
 
@@ -130,6 +131,9 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                       <p>
                         {game.whiteName} × {game.blackName}
                       </p>
+                      {game.ending && (
+                        <p className="cc-card-ending">{endingHeadlineLabel(t, game.ending)}</p>
+                      )}
                       <div className="cc-export-row">
                         <button type="button" onClick={() => setSelected(game.slug)}>
                           {t("studio.preview")}

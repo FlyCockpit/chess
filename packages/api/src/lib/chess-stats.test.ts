@@ -1,4 +1,5 @@
-import { createMatch, finishMatch } from "@cockpit-chess/chess";
+import { boardAt, createMatch, finishMatch, submitMove } from "@cockpit-chess/chess";
+import { endingSummarySchema } from "@cockpit-chess/chess/ending";
 import { describe, expect, it } from "vitest";
 import { chessStatsColumns } from "./chess-stats";
 
@@ -11,9 +12,9 @@ describe("chessStatsColumns", () => {
   });
   it("derives per-side typed columns, with cost as integer micros", () => {
     const match = createMatch({ white: model, black: baseline, rules: {} });
-    finishMatch(match, "1-0", "resignation");
+    finishMatch(match, "0-1", "resignation");
     expect(chessStatsColumns(match)).toEqual({
-      result: "1-0",
+      result: "0-1",
       whiteModel: "vendor/model",
       whiteProtocol: "anthropic",
       blackModel: "random",
@@ -23,6 +24,18 @@ describe("chessStatsColumns", () => {
       whiteCostMicros: 0n,
       blackCostMicros: 0n,
       moveFormat: "strict",
+      ending: { kind: "resignation", side: "w" },
+    });
+  });
+  it("stores the card's short ending, including the forfeit's attempt count", () => {
+    const match = createMatch({ white: baseline, black: baseline, rules: { maxAttempts: 2 } });
+    const chess = boardAt(match);
+    submitMove(match, chess, "e2e5");
+    submitMove(match, chess, "e2e6");
+    expect(endingSummarySchema.parse(chessStatsColumns(match)?.ending)).toEqual({
+      kind: "illegal-forfeit",
+      side: "w",
+      illegal: 2,
     });
   });
 });

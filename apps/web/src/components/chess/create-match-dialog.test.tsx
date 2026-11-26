@@ -91,8 +91,14 @@ describe("CreateMatchDialog", () => {
     expect(html).toContain("White model");
     expect(html).toContain("Black model");
     expect(html).toContain(
-      "Fresh context · Legal-move tool · Strict format · $0.10 budget · 80 plies",
+      "Untimed · Fresh context · Legal-move tool · Strict format · $0.10 budget",
     );
+    // The time control is on the quick path, before the advanced sections.
+    expect(html.indexOf("Time control")).toBeLessThan(html.indexOf("<h3>Advanced settings"));
+    for (const preset of [">Untimed<", ">5 min<", ">10 min<", ">30 min<", ">Custom<"])
+      expect(html).toContain(preset);
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain("No clock: only the per-move safety limit applies.");
     expect(html).toContain(">Start match<");
     expect(html.indexOf("White model")).toBeLessThan(html.indexOf("<h3>Advanced settings"));
     // Catalog facts for the chosen model: name, provider, context and prices.
@@ -115,14 +121,23 @@ describe("CreateMatchDialog", () => {
     expect(html).toContain("Neither side is told which model it is playing.");
     expect(html).toContain("The model can call a tool that lists the legal moves.");
     expect(html).toContain("No Stockfish. The game view has no evaluation bar.");
-    expect(html).toContain("The game ends as a draw after this many half-moves (2 to 200).");
+    expect(html).not.toContain("half-moves");
+    // The remark tone is one choice with an explanation of the selected tone.
+    expect(html).toContain(">Remarks<");
+    for (const tone of [">No remarks<", ">Commentary<", ">Trash talk<"])
+      expect(html).toContain(tone);
+    expect(html).toContain("Players send only their move.");
+    expect(html).toContain(
+      "A safety limit for one move. Blank uses 1 min: one minute, never longer than a side&#x27;s clock. 1–300 seconds.",
+    );
     // Raw ids live only in the advanced part.
     const quick = html.slice(0, html.indexOf("<h3>Advanced settings"));
     expect(quick).not.toContain("openai-chat");
   });
   it("keeps the hosted bounds on the number inputs", () => {
     const html = render();
-    expect(html).toMatch(/min="2" max="200"/);
+    expect(html).not.toMatch(/max="200"/);
+    expect(html).toMatch(/min="1" max="300"/);
     expect(html).toContain('min="0.01"');
     expect(html).toContain('max="1"');
     expect(html).toContain('min="256"');

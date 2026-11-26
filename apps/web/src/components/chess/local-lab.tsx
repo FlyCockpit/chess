@@ -21,7 +21,7 @@ export function LocalLab() {
       title: t("lab.baseline"),
       white: { name: t("lab.human"), model: "human", protocol: "human" },
       black: { name: t("lab.random"), model: "random", protocol: "random" },
-      rules: { maxPlies: 200 },
+      rules: {},
     });
   const [match, setMatch] = useState<MatchArchive>(fresh);
   const [imported, setImported] = useState<MatchArchive | null>(null);

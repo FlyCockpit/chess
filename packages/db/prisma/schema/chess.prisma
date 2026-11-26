@@ -34,6 +34,10 @@ model ChessMatch {
   blackCostMicros BigInt?
   /// The ruleset's move format ("strict" | "lenient"), denormalized for leaderboard labels.
   moveFormat      String?
+  /// How the match ended, as the short summary match cards show
+  /// (`endingSummarySchema` in packages/chess/src/ending.ts). Written with the stats
+  /// columns on the terminal write; null while running.
+  ending          Json?
 
   @@index([published, createdAt(sort: Desc), id(sort: Desc)])
   @@index([ownerId, createdAt(sort: Desc)])

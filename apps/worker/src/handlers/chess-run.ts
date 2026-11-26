@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import { chessStatsColumns } from "@cockpit-chess/api/lib/chess-stats";
+import { chessStatsColumns, INTERRUPTED_ENDING } from "@cockpit-chess/api/lib/chess-stats";
 import { boardAt, finishMatch, type MatchArchive, validateArchive } from "@cockpit-chess/chess";
 import {
   finishAbortedMatch,
@@ -93,7 +93,7 @@ export async function handleChessReconcileJob(job: Pick<Job<ChessReconcileJobDat
       }
       const result = await prisma.chessMatch.updateMany({
         where: { id: row.id, status: row.status, heartbeatAt: row.heartbeatAt },
-        data: { status: "error", runToken: null },
+        data: { status: "error", runToken: null, ending: INTERRUPTED_ENDING },
       });
       errored += result.count;
     } catch (error) {
@@ -145,7 +145,7 @@ export async function handleChessRunJob(
     });
     await prisma.chessMatch.updateMany({
       where: { id: matchId, status: "running", runToken },
-      data: { status: "error", runToken: null },
+      data: { status: "error", runToken: null, ending: INTERRUPTED_ENDING },
     });
     return;
   }

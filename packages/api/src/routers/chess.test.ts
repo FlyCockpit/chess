@@ -66,7 +66,8 @@ function context(role: "admin" | "user" | null = "admin", id = "owner"): Context
 const client = (role: "admin" | "user" | null = "admin") =>
   createRouterClient(chessRouter, { context: context(role) });
 const baseline = { name: "Baseline", model: "random", protocol: "random" as const };
-const match = () => createMatch({ white: baseline, black: baseline, rules: { maxPlies: 8 } });
+const match = () => createMatch({ white: baseline, black: baseline, rules: {} });
+const newConfig = () => ({ white: baseline, black: baseline, rules: {} });
 function row() {
   const archive = match();
   return {
@@ -212,7 +213,7 @@ describe("chess public projection and operator boundaries", () => {
     "rejects non-admin writes before storage or scheduling: %s",
     async (role) => {
       const api = client(role);
-      await expect(api.create(match().config)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(api.create(newConfig())).rejects.toMatchObject({ code: "NOT_FOUND" });
       await expect(api.importGame({ json: JSON.stringify(match()) })).rejects.toMatchObject({
         code: "NOT_FOUND",
       });
@@ -226,14 +227,14 @@ describe("chess public projection and operator boundaries", () => {
   );
   it("fails closed when hosted inference is off, even for an admin", async () => {
     env.CHESS_HOSTED_ENABLED = false;
-    await expect(client().create(match().config)).rejects.toMatchObject({
+    await expect(client().create(newConfig())).rejects.toMatchObject({
       code: "SERVICE_UNAVAILABLE",
     });
     expect(db.chessMatch.create).not.toHaveBeenCalled();
   });
   it("rejects an unloadable initial FEN as input validation before charging the budget", async () => {
     await expect(
-      client().create({ ...match().config, initialFen: "not a fen" }),
+      client().create({ ...newConfig(), initialFen: "not a fen" }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(budget).not.toHaveBeenCalled();
     expect(db.chessMatch.create).not.toHaveBeenCalled();
@@ -241,7 +242,7 @@ describe("chess public projection and operator boundaries", () => {
   it("creates durable queued intent before publishing the deterministic job", async () => {
     db.chessMatch.create.mockResolvedValue(row());
     ensureRunnableJob.mockResolvedValue({ id: "chess-id" });
-    const result = await client().create(match().config);
+    const result = await client().create(newConfig());
     expect(result.slug).toMatch(/^agent-showdown-/);
     expect(budget).toHaveBeenCalledWith("owner");
     expect(db.chessMatch.create).toHaveBeenCalledWith(
@@ -338,7 +339,11 @@ describe("chess public projection and operator boundaries", () => {
       expect.objectContaining({ where: { slug: "test-game", ownerId: "owner" } }),
     );
     const args = db.chessMatch.updateMany.mock.calls[0]?.[0];
-    expect(args?.data).toEqual({ status: "stopped", runToken: null });
+    expect(args?.data).toEqual({
+      status: "stopped",
+      runToken: null,
+      ending: { kind: "cancelled" },
+    });
   });
   it("excludes imported, draft, interrupted, and incomplete games from the bounded leaderboard", async () => {
     db.chessMatch.findMany.mockResolvedValue([]);
@@ -509,7 +514,7 @@ describe("chess public projection and operator boundaries", () => {
     db.chessMatch.create.mockResolvedValue(row());
     db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
     ensureRunnableJob.mockRejectedValue(new Error("redis down"));
-    await expect(client().create(match().config)).rejects.toMatchObject({
+    await expect(client().create(newConfig())).rejects.toMatchObject({
       code: "SERVICE_UNAVAILABLE",
     });
     expect(log).toHaveBeenCalledWith("[chess] Failed to enqueue hosted match", {
@@ -518,7 +523,7 @@ describe("chess public projection and operator boundaries", () => {
     });
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
       where: { id: "id", status: "queued" },
-      data: { status: "error" },
+      data: { status: "error", ending: { kind: "interrupted" } },
     });
   });
 });

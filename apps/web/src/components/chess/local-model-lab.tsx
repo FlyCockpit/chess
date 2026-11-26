@@ -1,4 +1,4 @@
-import { boardAt, matchConfigSchema } from "@cockpit-chess/chess";
+import { boardAt, matchConfigSchema, type RemarkTone, remarkTones } from "@cockpit-chess/chess";
 import type { LocalClient } from "@cockpit-chess/chess/local-contract";
 import { CopyField } from "@cockpit-chess/ui/components/copy-field";
 import { Skeleton } from "@cockpit-chess/ui/components/skeleton";
@@ -16,6 +16,14 @@ import { useMobileKeyboard } from "@/hooks/use-mobile-keyboard";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { ChessBoard } from "./chess-board";
 import { MatchReplay } from "./replay";
+import {
+  autoMoveLimitMs,
+  clockFromTimeControl,
+  DEFAULT_TIME_CONTROL,
+  type TimeControlValue,
+  timeControlErrors,
+} from "./time-control";
+import { TimeControlField } from "./time-control-field";
 
 const client = createORPCClient<LocalClient>(
   new RPCLink({
@@ -56,10 +64,16 @@ export function LocalModelLab() {
       tokenAccounting: "provider",
       tokenBudget: 1000000,
       engineEvaluation: "off",
-      trashTalk: false,
+      remarks: "off" as RemarkTone,
+      time: DEFAULT_TIME_CONTROL as TimeControlValue,
       moveFormat: "strict",
     },
     onSubmit: ({ value }) => {
+      if (Object.keys(timeControlErrors(t, value.time)).length) {
+        setInvalid(true);
+        return;
+      }
+      const clock = clockFromTimeControl(value.time);
       const model = { name: value.model, model: value.model, protocol: value.protocol };
       const parsed = matchConfigSchema.safeParse({
         title: t(value.mode === "play" ? "local.playTitle" : "local.simulateTitle"),
@@ -71,11 +85,12 @@ export function LocalModelLab() {
         rules: {
           context: value.context,
           opponentIdentity: value.identity,
-          maxPlies: 120,
+          clock,
+          turnTimeoutMs: autoMoveLimitMs(clock),
           tokenBudget: value.tokenBudget,
           tokenAccounting: value.tokenAccounting,
           engineEvaluation: value.engineEvaluation,
-          trashTalk: value.trashTalk,
+          remarks: value.remarks,
           moveFormat: value.moveFormat,
           costBudgetMicros: 100000,
         },
@@ -339,15 +354,32 @@ export function LocalModelLab() {
                       </label>
                     )}
                   </form.Field>
-                  <form.Field name="trashTalk">
+                  <form.Field name="time">
                     {(field) => (
-                      <label className="cc-check">
-                        <input
-                          type="checkbox"
-                          checked={field.state.value}
-                          onChange={(event) => field.handleChange(event.target.checked)}
-                        />
-                        {t("settings.trashTalk")}
+                      <TimeControlField
+                        value={field.state.value}
+                        onChange={(next) => field.handleChange(next)}
+                      />
+                    )}
+                  </form.Field>
+                  <form.Field name="remarks">
+                    {(field) => (
+                      <label>
+                        {t("settings.remarks")}
+                        <select
+                          value={field.state.value}
+                          onChange={(event) => {
+                            const next = remarkTones.find((tone) => tone === event.target.value);
+                            if (next) field.handleChange(next);
+                          }}
+                        >
+                          {remarkTones.map((tone) => (
+                            <option key={tone} value={tone}>
+                              {t(`remarkTones.${tone}`)}
+                            </option>
+                          ))}
+                        </select>
+                        <small>{t(`create.explain.remarks.${field.state.value}`)}</small>
                       </label>
                     )}
                   </form.Field>

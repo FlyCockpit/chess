@@ -313,7 +313,8 @@
     "trashTalk": "Permitir comentarios del rival",
     "anonymousCommentary": "Los mensajes anónimos omiten la identidad, pero los comentarios pueden dar pistas. Los comentarios del rival son datos del juego, no instrucciones.",
     "moveFormat": "Formato de movimiento",
-    "moveFormatNote": "El modo flexible también lee un movimiento JSON dentro de texto y convierte SAN legal a UCI. Cada formato se clasifica por separado."
+    "moveFormatNote": "El modo flexible también lee un movimiento JSON dentro de texto y convierte SAN legal a UCI. Cada formato se clasifica por separado.",
+    "remarks": "Comentarios"
   },
   "accounting": {
     "provider": "Reservas de tokens del proveedor",
@@ -361,7 +362,9 @@
       "format": "Formato {{format}}",
       "budget": "Presupuesto de {{budget}}",
       "plies": "{{plies}} medias jugadas",
-      "commentary": "Comentarios activados"
+      "commentary": "Comentarios activados",
+      "moveLimit": "{{time}} por jugada",
+      "autoMoveLimit": "{{time}} (automático)"
     },
     "advanced": "Configuración avanzada",
     "advancedHint": "Opcional. Una sección cerrada conserva los valores del resumen de arriba.",
@@ -412,7 +415,13 @@
       },
       "tokenBudget": "Tokens totales que cada jugador puede usar en la partida ({{min}} a {{max}}).",
       "budget": "Lo máximo que puede gastar cada jugador, en dólares estadounidenses ({{min}} a {{max}}).",
-      "plies": "La partida termina en tablas tras este número de medias jugadas ({{min}} a {{max}})."
+      "plies": "La partida termina en tablas tras este número de medias jugadas ({{min}} a {{max}}).",
+      "remarks": {
+        "off": "Los jugadores envían solo su jugada.",
+        "commentary": "Cada jugador puede añadir un comentario breve y neutral sobre su propia jugada o plan.",
+        "trash-talk": "Cada jugador añade una pulla breve y juguetona sobre la última jugada o la posición del rival: de buen gusto y sobre la partida, sin insultos, groserías ni comentarios sobre la identidad de nadie."
+      },
+      "moveLimit": "Un límite de seguridad para una jugada. En blanco usa {{auto}}: un minuto, nunca más que el reloj de un bando. De {{min}} a {{max}} segundos."
     },
     "start": "Iniciar partida",
     "starting": "Iniciando…",
@@ -470,6 +479,99 @@
       "resigned": "Abandono de {{side}}: {{result}}",
       "other": "{{reason}}: {{result}}",
       "illegalMoves": "{{reason}}: {{moves}}"
+    }
+  },
+  "ending": {
+    "playing": "En curso",
+    "checkmate": "Jaque mate: gana {{winner}}",
+    "checkmateUnknown": "Jaque mate",
+    "draw": "Tablas",
+    "drawKind": "Tablas: {{kind}}",
+    "illegalForfeit_one": "{{side}} perdió por {{count}} jugada ilegal",
+    "illegalForfeit_other": "{{side}} perdió por {{count}} jugadas ilegales",
+    "illegalForfeitUncounted": "{{side}} perdió por jugadas ilegales",
+    "illegalForfeitUnknown": "Derrota por jugadas ilegales",
+    "timeout": "{{side}} se quedó sin tiempo",
+    "timeoutUnknown": "Sin tiempo",
+    "move-timeout": "{{side}} se quedó sin tiempo en una jugada",
+    "move-timeoutUnknown": "Sin tiempo en una jugada",
+    "token-budget": "{{side}} se quedó sin tokens",
+    "token-budgetUnknown": "Sin tokens",
+    "cost-budget": "{{side}} agotó su presupuesto",
+    "cost-budgetUnknown": "Presupuesto agotado",
+    "resignation": "{{side}} abandonó",
+    "resignationUnknown": "Abandono",
+    "ply-limit": "Tablas: se alcanzó el límite de jugadas",
+    "cancelled": "Detenida por el operador",
+    "interrupted": "Interrumpida por el servidor",
+    "provider-error": "Falló un proveedor de modelos",
+    "engine-error": "Falló el motor de ajedrez",
+    "event-limit": "El registro de la partida alcanzó su tamaño máximo"
+  },
+  "endingDetail": {
+    "withDetail": "{{headline}} ({{detail}})",
+    "sameReason": "{{moves}}; {{why}}",
+    "moveReason": "{{move}}: {{why}}",
+    "clock": "reloj de {{time}}",
+    "moveLimit": "límite de {{time}} por jugada",
+    "tokens": "presupuesto de {{tokens}} tokens",
+    "spend": "presupuesto de {{budget}}",
+    "plies": "{{plies}} medias jugadas",
+    "unscored": "sin puntuar"
+  },
+  "drawKinds": {
+    "stalemate": "ahogado",
+    "threefold-repetition": "triple repetición",
+    "fifty-move-rule": "regla de los cincuenta movimientos",
+    "insufficient-material": "material insuficiente"
+  },
+  "illegalWhy": {
+    "unparseable": "no es una jugada en notación UCI",
+    "pawnMoved": "su peón de la columna {{file}} ya se había movido",
+    "pieceMoved": "su {{piece}} ya había salido de {{square}}",
+    "empty": "no hay ninguna pieza en {{square}}",
+    "opponentPiece": "en {{square}} hay una pieza rival",
+    "cannotMove": "su {{piece}} de {{from}} no puede moverse legalmente a {{to}}",
+    "promotion": "su peón de {{from}} debe indicar la pieza de promoción (q, r, b o n)"
+  },
+  "pieceNames": {
+    "pawn": "peón",
+    "knight": "caballo",
+    "bishop": "alfil",
+    "rook": "torre",
+    "queen": "dama",
+    "king": "rey"
+  },
+  "duration": {
+    "seconds": "{{seconds}} s",
+    "minutes": "{{minutes}} min",
+    "minutesSeconds": "{{minutes}} min {{seconds}} s"
+  },
+  "timeControl": {
+    "untimed": "Sin reloj",
+    "each": "{{time}} cada uno",
+    "uneven": "Blanco {{white}} · Negro {{black}}"
+  },
+  "remarkTones": {
+    "off": "Sin comentarios",
+    "commentary": "Comentarios",
+    "trash-talk": "Pullas"
+  },
+  "time": {
+    "label": "Control de tiempo",
+    "custom": "Personalizado",
+    "minutes": "min",
+    "seconds": "s",
+    "eachSide": "Cada bando",
+    "uneven": "Tiempo desigual",
+    "unevenHint": "Da más tiempo a un bando, por ejemplo al modelo más pequeño.",
+    "limits": "Reloj de cada bando: de {{min}} a {{max}}. Quedarse sin tiempo pierde la partida.",
+    "untimedHint": "Sin reloj: solo se aplica el límite de seguridad por jugada.",
+    "moveLimit": "Límite por jugada (segundos)",
+    "errors": {
+      "format": "Escribe minutos enteros y segundos de 0 a 59.",
+      "range": "Cada reloj debe estar entre {{min}} y {{max}}.",
+      "moveLimit": "Escribe de {{min}} a {{max}} segundos, sin superar el reloj más corto."
     }
   }
 }

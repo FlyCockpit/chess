@@ -7,6 +7,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./runner": "./src/runner.ts",
+    "./ending": "./src/ending.ts",
+    "./pgn": "./src/pgn.ts",
+    "./testing": "./src/testing.ts",
     "./local-contract": "./src/local-contract.ts"
   },
   "scripts": {

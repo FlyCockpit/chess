@@ -1,5 +1,6 @@
 import { createMatch, validateArchive } from "@cockpit-chess/chess";
 import { advanceMatch, MATCH_INTERRUPTED } from "@cockpit-chess/chess/runner";
+import { asCockpitV1 } from "@cockpit-chess/chess/testing";
 import type prismaInstance from "@cockpit-chess/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type DeepMockProxy, mockReset } from "vitest-mock-extended";
@@ -42,8 +43,9 @@ const { default: prisma } = await import("@cockpit-chess/db");
 const db = prisma as DeepMockProxy<typeof prismaInstance>;
 const { handleChessReconcileJob, handleChessRunJob } = await import("./chess-run");
 const player = { name: "Baseline", model: "random", protocol: "random" as const };
+/** A cockpit-v1 match with a 2-ply cap: hosted v1 matches still running at deploy resume. */
 const archive = () =>
-  createMatch({ white: player, black: player, rules: { maxPlies: 2 } }, "hosted");
+  asCockpitV1(createMatch({ white: player, black: player, rules: {} }, "hosted"), { maxPlies: 2 });
 function row() {
   return {
     id: "match-id",
@@ -74,6 +76,7 @@ function row() {
     whiteCostMicros: null,
     blackCostMicros: null,
     moveFormat: null,
+    ending: null,
   };
 }
 beforeEach(() => {
@@ -114,6 +117,22 @@ describe("durable chess worker", () => {
     expect(
       record.events.filter((event) => event.type === "attempt" && event.accepted),
     ).toHaveLength(2);
+  });
+  it("plays a cockpit-v2 baseline to the rules engine's own ending, with no move cap", async () => {
+    // Twenty plies short of the fifty-move rule: the engine's own ending comes quickly.
+    const v2 = createMatch(
+      { white: player, black: player, rules: {}, initialFen: "7k/8/8/8/8/8/8/R6K w - - 80 80" },
+      "hosted",
+    );
+    db.chessMatch.findUnique.mockResolvedValue({ ...row(), archive: v2 });
+    const result = await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(["checkmate", "draw"]).toContain(result?.termination);
+    const terminal = db.chessMatch.updateMany.mock.calls.find(
+      ([input]) => input.data.status === "completed",
+    )?.[0];
+    const record = validateArchive(terminal?.data.archive);
+    expect(record.config.rules.version).toBe("cockpit-v2");
+    expect(record.termination).toBe(result?.termination);
   });
   it("interrupts an already-aborted hosted run without dispatching inference", async () => {
     const controller = new AbortController();
@@ -177,7 +196,7 @@ describe("durable chess worker", () => {
     const claim = db.chessMatch.updateMany.mock.calls[0]?.[0];
     expect(db.chessMatch.updateMany).toHaveBeenLastCalledWith({
       where: { id: "match-id", status: "running", runToken: claim?.data.runToken },
-      data: { status: "error", runToken: null },
+      data: { status: "error", runToken: null, ending: { kind: "interrupted" } },
     });
   });
   it("ends model runs with provider-error if hosted inference is disabled", async () => {
@@ -373,7 +392,7 @@ describe("chess reconcile sweep", () => {
     );
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
       where: { id: row.id, status: "running", heartbeatAt: row.heartbeatAt },
-      data: { status: "error", runToken: null },
+      data: { status: "error", runToken: null, ending: { kind: "interrupted" } },
     });
     expect(getJob).not.toHaveBeenCalled();
   });
@@ -396,7 +415,7 @@ describe("chess reconcile sweep", () => {
     await handleChessReconcileJob({ data: { reason: "cron" } });
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
       where: { id: row.id, status: "queued", heartbeatAt: row.heartbeatAt },
-      data: { status: "error", runToken: null },
+      data: { status: "error", runToken: null, ending: { kind: "interrupted" } },
     });
   });
   it.each([false, true])(
@@ -440,7 +459,7 @@ describe("chess reconcile sweep", () => {
       });
       expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
         where: { id: orphan.id, status: "queued", heartbeatAt },
-        data: { status: "error", runToken: null },
+        data: { status: "error", runToken: null, ending: { kind: "interrupted" } },
       });
       await sweep();
       expect(db.chessMatch.findMany.mock.calls[5]?.[0]?.where?.OR).toBeUndefined();

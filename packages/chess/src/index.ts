@@ -34,45 +34,117 @@ export const playerSchema = z
     protocol: z.enum([...MODEL_PROTOCOLS, "random", "human"]),
   })
   .strict();
-export const rulesSchema = z
+const sharedRules = {
+  context: z.enum(["fresh", "persistent"]).default("fresh"),
+  opponentIdentity: z.enum(["hidden", "disclosed"]).default("hidden"),
+  representation: z.enum(["fen", "ascii", "pieces"]).default("ascii"),
+  legalMoves: z.enum(["hidden", "tool", "provided"]).default("tool"),
+  /** "lenient" also extracts a JSON reply embedded in prose and converts legal SAN to UCI. */
+  moveFormat: z.enum(["strict", "lenient"]).default("strict"),
+  tokenAccounting: z.enum(["provider", "cl100k_base"]).default("provider"),
+  engineEvaluation: z.enum(["off", "tool", "after-move", "both"]).default("off"),
+  engineNodes: z.number().int().min(1000).max(100000).default(10000),
+  engineCallsPerTurn: z.number().int().min(1).max(8).default(2),
+  maxAttempts: z.number().int().min(1).max(10).default(3),
+  /** Per-move safety limit; never longer than either side's clock. */
+  turnTimeoutMs: z.number().int().min(1000).max(300000).default(60000),
+  maxDispatches: z.number().int().min(1).max(12).default(6),
+  maxOutputTokens: z.number().int().min(64).max(4096).default(512),
+  tokenBudget: z.number().int().min(256).max(1000000).default(1000000),
+  costBudgetMicros: z.number().int().min(100).max(100000000).default(1000000),
+};
+/**
+ * The first ruleset, kept so archives recorded under it still read, validate and
+ * replay exactly as they were played: a ply cap, one shared per-player time allowance
+ * and an on/off remark switch (shown as "Commentary"). New matches use cockpit-v2.
+ */
+export const rulesV1Schema = z
   .object({
-    version: z.literal("cockpit-v1").default("cockpit-v1"),
-    context: z.enum(["fresh", "persistent"]).default("fresh"),
-    opponentIdentity: z.enum(["hidden", "disclosed"]).default("hidden"),
-    representation: z.enum(["fen", "ascii", "pieces"]).default("ascii"),
-    legalMoves: z.enum(["hidden", "tool", "provided"]).default("tool"),
+    // Keys in the order cockpit-v1 serialized them: the rules key hashes
+    // JSON.stringify(rules), so a re-parsed v1 archive must keep the same order.
+    version: z.literal("cockpit-v1"),
+    context: sharedRules.context,
+    opponentIdentity: sharedRules.opponentIdentity,
+    representation: sharedRules.representation,
+    legalMoves: sharedRules.legalMoves,
     trashTalk: z.boolean().default(false),
-    /** "lenient" also extracts a JSON reply embedded in prose and converts legal SAN to UCI. */
-    moveFormat: z.enum(["strict", "lenient"]).default("strict"),
-    tokenAccounting: z.enum(["provider", "cl100k_base"]).default("provider"),
-    engineEvaluation: z.enum(["off", "tool", "after-move", "both"]).default("off"),
-    engineNodes: z.number().int().min(1000).max(100000).default(10000),
-    engineCallsPerTurn: z.number().int().min(1).max(8).default(2),
-    maxAttempts: z.number().int().min(1).max(10).default(3),
+    moveFormat: sharedRules.moveFormat,
+    tokenAccounting: sharedRules.tokenAccounting,
+    engineEvaluation: sharedRules.engineEvaluation,
+    engineNodes: sharedRules.engineNodes,
+    engineCallsPerTurn: sharedRules.engineCallsPerTurn,
+    maxAttempts: sharedRules.maxAttempts,
     maxPlies: z.number().int().min(2).max(600).default(200),
-    turnTimeoutMs: z.number().int().min(1000).max(300000).default(60000),
-    maxDispatches: z.number().int().min(1).max(12).default(6),
-    maxOutputTokens: z.number().int().min(64).max(4096).default(512),
-    tokenBudget: z.number().int().min(256).max(1000000).default(1000000),
+    turnTimeoutMs: sharedRules.turnTimeoutMs,
+    maxDispatches: sharedRules.maxDispatches,
+    maxOutputTokens: sharedRules.maxOutputTokens,
+    tokenBudget: sharedRules.tokenBudget,
     timeBudgetMs: z.number().int().min(1000).max(3600000).default(600000),
-    costBudgetMicros: z.number().int().min(100).max(100000000).default(1000000),
+    costBudgetMicros: sharedRules.costBudgetMicros,
   })
   .strict();
-export const matchConfigSchema = z
+/** Bounds of one side's clock (also the form's limits): 30 s to 60 min. */
+export const CLOCK_MIN_MS = 30_000;
+export const CLOCK_MAX_MS = 3_600_000;
+const clockMs = z.number().int().min(CLOCK_MIN_MS).max(CLOCK_MAX_MS);
+export const remarkTones = ["off", "commentary", "trash-talk"] as const;
+export type RemarkTone = (typeof remarkTones)[number];
+/**
+ * cockpit-v2: no move cap (the rules engine's own draws, the archive limit and the
+ * spend budgets end every game), a remark tone, and an optional per-side clock
+ * (null = untimed: only the per-move safety limit applies).
+ * See README.md § Rules and endings
+ */
+export const rulesV2Schema = z
   .object({
-    title: z.string().min(1).max(140).default("Agent showdown"),
-    white: playerSchema,
-    black: playerSchema,
-    rules: rulesSchema,
-    initialFen: z
-      .string()
-      .max(160)
-      .refine(isLoadableFen, { message: "Invalid FEN" })
-      .default(DEFAULT_POSITION),
+    version: z.literal("cockpit-v2").default("cockpit-v2"),
+    ...sharedRules,
+    remarks: z.enum(remarkTones).default("off"),
+    clock: z.object({ w: clockMs, b: clockMs }).strict().nullable().default(null),
   })
-  .strict();
+  .strict()
+  .refine(
+    (rules) => !rules.clock || rules.turnTimeoutMs <= Math.min(rules.clock.w, rules.clock.b),
+    {
+      message: "The per-move limit cannot be longer than a side's clock",
+      path: ["turnTimeoutMs"],
+    },
+  );
+/** Every ruleset an archive may carry. New matches are created only with cockpit-v2. */
+export const rulesSchema = z.union([rulesV2Schema, rulesV1Schema]);
+export type RulesV1 = z.infer<typeof rulesV1Schema>;
+export type RulesV2 = z.infer<typeof rulesV2Schema>;
+/** The remark tone a ruleset asks for (v1's switch was neutral "Commentary"). */
+export function remarkTone(rules: Rules): RemarkTone {
+  if (rules.version === "cockpit-v1") return rules.trashTalk ? "commentary" : "off";
+  return rules.remarks;
+}
+/** One side's whole-game clock in ms, or null when the game is untimed. */
+export function sideClockMs(rules: Rules, side: Side): number | null {
+  if (rules.version === "cockpit-v1") return rules.timeBudgetMs;
+  return rules.clock?.[side] ?? null;
+}
+/** The move cap of a cockpit-v1 archive; cockpit-v2 has none. */
+export function plyLimit(rules: Rules): number | null {
+  return rules.version === "cockpit-v1" ? rules.maxPlies : null;
+}
+const configFields = {
+  title: z.string().min(1).max(140).default("Agent showdown"),
+  white: playerSchema,
+  black: playerSchema,
+  initialFen: z
+    .string()
+    .max(160)
+    .refine(isLoadableFen, { message: "Invalid FEN" })
+    .default(DEFAULT_POSITION),
+};
+/** A new match's configuration (current ruleset only). */
+export const matchConfigSchema = z.object({ ...configFields, rules: rulesV2Schema }).strict();
+/** A recorded match's configuration, under any ruleset version. */
+export const archivedConfigSchema = z.object({ ...configFields, rules: rulesSchema }).strict();
 export type Player = z.infer<typeof playerSchema>;
 export type MatchConfig = z.infer<typeof matchConfigSchema>;
+export type ArchivedConfig = z.infer<typeof archivedConfigSchema>;
 export type Rules = z.infer<typeof rulesSchema>;
 export type Side = "w" | "b";
 
@@ -184,7 +256,7 @@ export const archiveSchema = z
     format: z.literal("cockpit-chess/v1"),
     id: z.string().uuid(),
     createdAt: z.string().datetime(),
-    config: matchConfigSchema,
+    config: archivedConfigSchema,
     source: z.enum(["local", "hosted", "demo"]),
     status: z.enum(["running", "completed", "stopped", "error"]),
     result: z.enum(["1-0", "0-1", "1/2-1/2", "*"]),
@@ -193,7 +265,10 @@ export const archiveSchema = z
       "checkmate",
       "draw",
       "illegal-forfeit",
+      /** The side's whole-game clock ran out. */
       "timeout",
+      /** The per-move safety limit ran out (the clock, if any, had time left). */
+      "move-timeout",
       "token-budget",
       "cost-budget",
       "ply-limit",
@@ -284,11 +359,14 @@ export function finishMatch(
 export function settleBoard(match: MatchArchive, chess: Chess) {
   if (chess.isCheckmate()) finishMatch(match, chess.turn() === "w" ? "0-1" : "1-0", "checkmate");
   else if (chess.isDraw()) finishMatch(match, "1/2-1/2", "draw");
-  else if (
-    match.events.filter((event) => event.type === "attempt" && event.accepted).length >=
-    match.config.rules.maxPlies
-  )
-    finishMatch(match, "1/2-1/2", "ply-limit");
+  else {
+    const limit = plyLimit(match.config.rules);
+    if (
+      limit !== null &&
+      match.events.filter((event) => event.type === "attempt" && event.accepted).length >= limit
+    )
+      finishMatch(match, "1/2-1/2", "ply-limit");
+  }
 }
 export function submitMove(
   match: MatchArchive,
@@ -322,7 +400,7 @@ export function submitMove(
     fen: chess.fen(),
     san,
     reason,
-    comment: match.config.rules.trashTalk ? comment.slice(0, 500) : "",
+    comment: remarkTone(match.config.rules) === "off" ? "" : comment.slice(0, 500),
     ...(normalizedFrom !== undefined && match.config.rules.moveFormat === "lenient"
       ? { normalizedFrom: normalizedFrom.slice(0, 256) }
       : {}),
@@ -335,6 +413,46 @@ export function submitMove(
   )
     finishMatch(match, side === "w" ? "0-1" : "1-0", "illegal-forfeit");
   return event;
+}
+/**
+ * What remains of the side to move's clock, in ms (never below zero), or null when the
+ * game is untimed. Counts recorded turns only, not the turn in progress.
+ */
+export function clockLeftMs(match: MatchArchive, side: Side): number | null {
+  const clock = sideClockMs(match.config.rules, side);
+  return clock === null ? null : Math.max(0, clock - matchStats(match, side).elapsedMs);
+}
+/**
+ * A human's turn on the local companion (hosted games have no human players). Charges
+ * the turn's wall time to the side's clock as a timing event, then forfeits on time
+ * when the clock ran out, else submits `move`. Without a move it is the clock's expiry.
+ * Humans have no per-move limit: that safety limit bounds inference, not people.
+ * Returns the attempt, or null when the side lost on time.
+ */
+export function playHumanTurn(
+  match: MatchArchive,
+  chess: Chess,
+  elapsedMs: number,
+  move?: string,
+): AttemptEvent | null {
+  const side = chess.turn();
+  const left = clockLeftMs(match, side);
+  if (left !== null) {
+    match.events.push({
+      type: "timing",
+      seq: match.events.length,
+      at: new Date().toISOString(),
+      side,
+      ply: match.events.filter((event) => event.type === "attempt" && event.accepted).length,
+      elapsedMs: Math.max(0, Math.round(elapsedMs)),
+    });
+    if (elapsedMs >= left || move === undefined) {
+      finishMatch(match, side === "w" ? "0-1" : "1-0", "timeout");
+      return null;
+    }
+  }
+  if (move === undefined) throw new Error("An untimed human turn cannot expire");
+  return submitMove(match, chess, move);
 }
 export function matchStats(match: MatchArchive, side?: Side) {
   const events = match.events.filter((event) => !side || event.side === side);
@@ -414,6 +532,7 @@ export function validateArchive(input: unknown): MatchArchive {
   let ply = 0;
   let illegalThisTurn = 0;
   let terminal = chess.isGameOver();
+  const limit = plyLimit(match.config.rules) ?? Number.POSITIVE_INFINITY;
   const dispatches = new Map<number, { side: Side; ply: number }>();
   for (const [index, event] of match.events.entries()) {
     if (event.seq !== index || event.ply !== ply || event.side !== chess.turn())
@@ -463,7 +582,7 @@ export function validateArchive(input: unknown): MatchArchive {
         ? "illegal"
         : "unparseable";
     if (event.reason !== reason) throw new Error("Attempt reason mismatch");
-    if (!match.config.rules.trashTalk && event.comment)
+    if (remarkTone(match.config.rules) === "off" && event.comment)
       throw new Error("Commentary violates ruleset");
     if (event.normalizedFrom !== undefined && match.config.rules.moveFormat !== "lenient")
       throw new Error("Move normalization violates ruleset");
@@ -472,9 +591,7 @@ export function validateArchive(input: unknown): MatchArchive {
       illegalThisTurn = 0;
     } else illegalThisTurn += 1;
     terminal =
-      chess.isGameOver() ||
-      ply >= match.config.rules.maxPlies ||
-      illegalThisTurn >= match.config.rules.maxAttempts;
+      chess.isGameOver() || ply >= limit || illegalThisTurn >= match.config.rules.maxAttempts;
   }
   if (match.status === "running" && terminal) throw new Error("Running game is terminal");
   if (
@@ -484,10 +601,7 @@ export function validateArchive(input: unknown): MatchArchive {
     throw new Error("Invalid checkmate result");
   if (match.termination === "draw" && (!chess.isDraw() || match.result !== "1/2-1/2"))
     throw new Error("Invalid draw result");
-  if (
-    match.termination === "ply-limit" &&
-    (ply < match.config.rules.maxPlies || match.result !== "1/2-1/2")
-  )
+  if (match.termination === "ply-limit" && (ply < limit || match.result !== "1/2-1/2"))
     throw new Error("Invalid ply limit");
   if (
     match.termination === "illegal-forfeit" &&
@@ -518,8 +632,12 @@ export function validateArchive(input: unknown): MatchArchive {
         ].includes(match.termination)))
   )
     throw new Error("Invalid terminal status");
+  if (match.termination === "timeout" && sideClockMs(match.config.rules, chess.turn()) === null)
+    throw new Error("Clock forfeit in an untimed game");
   if (
-    ["timeout", "token-budget", "cost-budget", "resignation"].includes(match.termination) &&
+    ["timeout", "move-timeout", "token-budget", "cost-budget", "resignation"].includes(
+      match.termination,
+    ) &&
     match.result !== (chess.turn() === "w" ? "0-1" : "1-0")
   )
     throw new Error("Invalid side-to-move forfeit");
@@ -528,26 +646,10 @@ export function validateArchive(input: unknown): MatchArchive {
       ? "checkmate"
       : chess.isDraw()
         ? "draw"
-        : ply >= match.config.rules.maxPlies
+        : ply >= limit
           ? "ply-limit"
           : "illegal-forfeit";
     if (match.termination !== expected) throw new Error("Terminal board result mismatch");
   }
   return match;
-}
-export function exportPgn(match: MatchArchive): string {
-  const chess = boardAt(match);
-  chess.header(
-    "Event",
-    match.config.title,
-    "White",
-    match.config.white.name,
-    "Black",
-    match.config.black.name,
-    "Result",
-    match.result,
-    "CockpitRules",
-    JSON.stringify(match.config.rules),
-  );
-  return chess.pgn();
 }

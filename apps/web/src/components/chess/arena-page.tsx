@@ -21,6 +21,7 @@ import { WideContent } from "@/components/wide-content";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { orpc } from "@/utils/orpc";
 import { ChessBoard } from "./chess-board";
+import { endingHeadlineLabel } from "./ending-label";
 import { LocalLab } from "./local-lab";
 import { MatchReplay } from "./replay";
 
@@ -36,7 +37,7 @@ function demoGame(white: string, black: string, model: string, title: string) {
       title,
       white: { name: white, model, protocol: "random" },
       black: { name: black, model, protocol: "random" },
-      rules: { maxPlies: 20 },
+      rules: {},
     },
     "demo",
   );
@@ -220,6 +221,9 @@ function Arena({
                 <p>
                   {game.whiteName} <span aria-hidden="true">×</span> {game.blackName}
                 </p>
+                {game.ending && (
+                  <p className="cc-card-ending">{endingHeadlineLabel(t, game.ending)}</p>
+                )}
                 <div className="cc-rule-tags mt-4">
                   <span>{t(`context.${game.contextMode}`)}</span>
                   <span>{t(game.official ? "arena.official" : "arena.local")}</span>

@@ -241,7 +241,7 @@ describe("frame plan", () => {
       {
         white: { name: "W", model: "w", protocol: "random" },
         black: { name: "B", model: "b", protocol: "random" },
-        rules: { maxPlies: 600 },
+        rules: {},
       },
       "hosted",
     );

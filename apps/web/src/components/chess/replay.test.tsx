@@ -57,7 +57,7 @@ describe("MatchReplay", () => {
   it("lists remarks with their moves as plain text, never markup or links", () => {
     const html = render(fixtureGame());
     expect(html).toContain("Table talk");
-    expect(html).toContain("Commentary on");
+    expect(html).toContain("Trash talk");
     expect(html).toContain("Move 1 · e4");
     expect(html).toContain("Your move, &lt;b&gt;tin can&lt;/b&gt;.");
     expect(html).not.toContain("<b>tin can</b>");
@@ -66,9 +66,9 @@ describe("MatchReplay", () => {
     // The rejected attempt's remark is tied to the move it came with.
     expect(html).toContain("Move 2 · a1a8");
   });
-  it("says commentary is off in the header when it was not allowed", () => {
-    const html = render(fixtureGame({ trashTalk: false }));
-    expect(html).toContain("Commentary off");
+  it("says remarks were off in the header when the tone was off", () => {
+    const html = render(fixtureGame({ remarks: "off" }));
+    expect(html).toContain("No remarks");
     expect(html).not.toContain("Table talk");
   });
   it("shows a model id under the name only when it differs", () => {

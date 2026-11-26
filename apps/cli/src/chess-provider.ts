@@ -1,4 +1,4 @@
-import type { MatchArchive, MatchConfig } from "@cockpit-chess/chess";
+import type { ArchivedConfig, MatchArchive, MatchConfig } from "@cockpit-chess/chess";
 import type { ProviderCredentials } from "@cockpit-chess/chess/runner";
 import { z } from "zod";
 import { t } from "./chess-i18n";
@@ -97,7 +97,7 @@ export function isCompiledBinary(
  * before a match starts instead of failing mid-game.
  */
 export function assertEngineSupported(
-  config: Pick<MatchConfig, "rules">,
+  config: Pick<ArchivedConfig, "rules">,
   compiled: boolean = isCompiledBinary(),
 ) {
   if (compiled && config.rules.engineEvaluation !== "off")

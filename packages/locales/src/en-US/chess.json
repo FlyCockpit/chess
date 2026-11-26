@@ -313,7 +313,8 @@
     "trashTalk": "Allow opponent commentary",
     "anonymousCommentary": "Identity is withheld in anonymous prompts, but commentary can reveal clues. Opponent remarks are untrusted game data.",
     "moveFormat": "Move format",
-    "moveFormatNote": "Lenient also reads a JSON move embedded in prose and converts legal SAN to UCI. Each format is ranked separately."
+    "moveFormatNote": "Lenient also reads a JSON move embedded in prose and converts legal SAN to UCI. Each format is ranked separately.",
+    "remarks": "Remarks"
   },
   "accounting": {
     "provider": "Provider token reservations",
@@ -361,7 +362,9 @@
       "format": "{{format}} format",
       "budget": "{{budget}} budget",
       "plies": "{{plies}} plies",
-      "commentary": "Commentary on"
+      "commentary": "Commentary on",
+      "moveLimit": "{{time}} per move",
+      "autoMoveLimit": "{{time}} (automatic)"
     },
     "advanced": "Advanced settings",
     "advancedHint": "Optional. A closed section keeps the values in the summary above.",
@@ -412,7 +415,13 @@
       },
       "tokenBudget": "Total tokens each player may use in the game ({{min}} to {{max}}).",
       "budget": "The most each player may spend, in US dollars ({{min}} to {{max}}).",
-      "plies": "The game ends as a draw after this many half-moves ({{min}} to {{max}})."
+      "plies": "The game ends as a draw after this many half-moves ({{min}} to {{max}}).",
+      "remarks": {
+        "off": "Players send only their move.",
+        "commentary": "Each player may add one short, neutral remark about its own move or plan.",
+        "trash-talk": "Each player adds one short, playful jab at the opponent's last move or position: tasteful and about the game, no slurs, profanity or remarks about anyone's identity."
+      },
+      "moveLimit": "A safety limit for one move. Blank uses {{auto}}: one minute, never longer than a side's clock. {{min}}–{{max}} seconds."
     },
     "start": "Start match",
     "starting": "Starting…",
@@ -470,6 +479,99 @@
       "resigned": "{{side}} resigned: {{result}}",
       "other": "{{reason}}: {{result}}",
       "illegalMoves": "{{reason}}: {{moves}}"
+    }
+  },
+  "ending": {
+    "playing": "In progress",
+    "checkmate": "Checkmate: {{winner}} wins",
+    "checkmateUnknown": "Checkmate",
+    "draw": "Draw",
+    "drawKind": "Draw: {{kind}}",
+    "illegalForfeit_one": "{{side}} forfeited: {{count}} illegal move",
+    "illegalForfeit_other": "{{side}} forfeited: {{count}} illegal moves",
+    "illegalForfeitUncounted": "{{side}} forfeited: illegal moves",
+    "illegalForfeitUnknown": "Forfeit after illegal moves",
+    "timeout": "{{side}} ran out of time",
+    "timeoutUnknown": "Out of time",
+    "move-timeout": "{{side}} ran out of time for one move",
+    "move-timeoutUnknown": "Out of time for one move",
+    "token-budget": "{{side}} ran out of tokens",
+    "token-budgetUnknown": "Out of tokens",
+    "cost-budget": "{{side}} ran out of spend",
+    "cost-budgetUnknown": "Out of spend",
+    "resignation": "{{side}} resigned",
+    "resignationUnknown": "Resignation",
+    "ply-limit": "Draw: move limit reached",
+    "cancelled": "Stopped by the operator",
+    "interrupted": "Interrupted by the server",
+    "provider-error": "A model provider failed",
+    "engine-error": "The chess engine failed",
+    "event-limit": "The game record reached its size limit"
+  },
+  "endingDetail": {
+    "withDetail": "{{headline}} ({{detail}})",
+    "sameReason": "{{moves}}; {{why}}",
+    "moveReason": "{{move}}: {{why}}",
+    "clock": "{{time}} clock",
+    "moveLimit": "{{time}} per-move limit",
+    "tokens": "{{tokens}} token budget",
+    "spend": "{{budget}} budget",
+    "plies": "{{plies}} plies",
+    "unscored": "unscored"
+  },
+  "drawKinds": {
+    "stalemate": "stalemate",
+    "threefold-repetition": "threefold repetition",
+    "fifty-move-rule": "fifty-move rule",
+    "insufficient-material": "insufficient material"
+  },
+  "illegalWhy": {
+    "unparseable": "not a move in UCI notation",
+    "pawnMoved": "its {{file}}-pawn had already moved",
+    "pieceMoved": "its {{piece}} had already left {{square}}",
+    "empty": "there is no piece on {{square}}",
+    "opponentPiece": "{{square}} holds an opposing piece",
+    "cannotMove": "its {{piece}} on {{from}} cannot legally move to {{to}}",
+    "promotion": "its pawn on {{from}} must name a promotion piece (q, r, b or n)"
+  },
+  "pieceNames": {
+    "pawn": "pawn",
+    "knight": "knight",
+    "bishop": "bishop",
+    "rook": "rook",
+    "queen": "queen",
+    "king": "king"
+  },
+  "duration": {
+    "seconds": "{{seconds}} s",
+    "minutes": "{{minutes}} min",
+    "minutesSeconds": "{{minutes}} min {{seconds}} s"
+  },
+  "timeControl": {
+    "untimed": "Untimed",
+    "each": "{{time}} each",
+    "uneven": "White {{white}} · Black {{black}}"
+  },
+  "remarkTones": {
+    "off": "No remarks",
+    "commentary": "Commentary",
+    "trash-talk": "Trash talk"
+  },
+  "time": {
+    "label": "Time control",
+    "custom": "Custom",
+    "minutes": "min",
+    "seconds": "s",
+    "eachSide": "Each side",
+    "uneven": "Uneven time",
+    "unevenHint": "Give one side more time, for example the smaller model.",
+    "limits": "Each side's clock: {{min}} to {{max}}. Running out of time loses the game.",
+    "untimedHint": "No clock: only the per-move safety limit applies.",
+    "moveLimit": "Per-move limit (seconds)",
+    "errors": {
+      "format": "Enter whole minutes, and seconds from 0 to 59.",
+      "range": "Each clock must be between {{min}} and {{max}}.",
+      "moveLimit": "Enter {{min}}–{{max}} seconds, no longer than the shorter clock."
     }
   }
 }

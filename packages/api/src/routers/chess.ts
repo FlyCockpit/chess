@@ -8,6 +8,7 @@ import {
   utf8ByteLength,
   validateArchive,
 } from "@cockpit-chess/chess";
+import { endingSummarySchema } from "@cockpit-chess/chess/ending";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { env } from "@cockpit-chess/env/shared";
 import { chessRunQueue, ensureRunnableJob } from "@cockpit-chess/queue";
@@ -15,7 +16,7 @@ import { ORPCError } from "@orpc/server";
 import { z } from "zod";
 import { adminOr404Procedure, publicProcedure } from "../index";
 import { getModelCatalog } from "../lib/chess-models";
-import { chessStatsColumns } from "../lib/chess-stats";
+import { chessStatsColumns, INTERRUPTED_ENDING, STOPPED_ENDING } from "../lib/chess-stats";
 import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagination";
 import { createProcedureBudget } from "../lib/procedure-budget";
 import { slugify } from "../lib/slug";
@@ -34,7 +35,14 @@ const summary = {
   rulesKey: true,
   contextMode: true,
   identityMode: true,
+  ending: true,
 } satisfies Prisma.ChessMatchSelect;
+/** The stored short ending; anything malformed reads as unknown rather than failing the list. */
+const cardEnding = endingSummarySchema.nullable().catch(null);
+const withEnding = <Row extends { ending: Prisma.JsonValue }>(row: Row) => ({
+  ...row,
+  ending: cardEnding.parse(row.ending),
+});
 const slugInput = z.object({
   slug: z
     .string()
@@ -145,7 +153,7 @@ export const chessRouter = {
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: pageTake(input.limit),
     });
-    return cursorPage(rows, input.limit, "createdAt");
+    return cursorPage(rows.map(withEnding), input.limit, "createdAt");
   }),
   get: publicProcedure.input(slugInput).handler(async ({ input }) => {
     const row = await prisma.chessMatch.findFirst({
@@ -153,7 +161,7 @@ export const chessRouter = {
       select: { ...summary, archive: true },
     });
     if (!row) throw new ORPCError("NOT_FOUND");
-    return { ...row, archive: checkedArchive(row.archive, row.status) };
+    return { ...withEnding(row), archive: checkedArchive(row.archive, row.status) };
   }),
   studio: adminOr404Procedure.input(cursorPageInput).handler(async ({ input, context }) => {
     const rows = await prisma.chessMatch.findMany({
@@ -162,7 +170,7 @@ export const chessRouter = {
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: pageTake(input.limit),
     });
-    return cursorPage(rows, input.limit, "createdAt");
+    return cursorPage(rows.map(withEnding), input.limit, "createdAt");
   }),
   inspect: adminOr404Procedure.input(slugInput).handler(async ({ input, context }) => {
     const row = await ownDraft(input.slug, context.session.user.id, ownDraftSelect);
@@ -177,11 +185,9 @@ export const chessRouter = {
       throw new ORPCError("SERVICE_UNAVAILABLE", { message: "Hosted inference is disabled" });
     if ([input.white, input.black].some((player) => player.protocol === "human"))
       throw new ORPCError("BAD_REQUEST");
-    if (
-      input.rules.costBudgetMicros > 1000000 ||
-      input.rules.maxPlies > 200 ||
-      input.rules.tokenBudget > 1000000
-    )
+    // No move cap: the rules engine's own draws, the archive limit and these budgets end
+    // every game; the clock bounds are the schema's own. See README.md § Rules and endings
+    if (input.rules.costBudgetMicros > 1000000 || input.rules.tokenBudget > 1000000)
       throw new ORPCError("BAD_REQUEST", { message: "Hosted match exceeds the operator limits" });
     if (
       [input.white, input.black].some((player) => player.protocol !== "random") &&
@@ -213,7 +219,7 @@ export const chessRouter = {
       });
       await prisma.chessMatch.updateMany({
         where: { id: row.id, status: "queued" },
-        data: { status: "error" },
+        data: { status: "error", ending: INTERRUPTED_ENDING },
       });
       throw new ORPCError("SERVICE_UNAVAILABLE");
     }
@@ -291,7 +297,7 @@ export const chessRouter = {
       where: { id: row.id, status: { in: ["queued", "running"] } },
       // Leave the last durable event snapshot intact: a read-modify-write here
       // could erase a move persisted between the lookup and cancellation.
-      data: { status: "stopped", runToken: null },
+      data: { status: "stopped", runToken: null, ending: STOPPED_ENDING },
     });
     return { stopped: true };
   }),

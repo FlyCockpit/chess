@@ -3,11 +3,13 @@ import {
   Chess,
   type Color,
   type EngineEvaluation,
-  exportPgn,
   type MatchArchive,
   type MatchEvent,
   matchStats,
+  remarkTone,
 } from "@cockpit-chess/chess";
+import { type MatchEnding, matchEnding } from "@cockpit-chess/chess/ending";
+import { exportPgn } from "@cockpit-chess/chess/pgn";
 import { CodeSnippet } from "@cockpit-chess/ui/components/code-snippet";
 import { CopyField } from "@cockpit-chess/ui/components/copy-field";
 import {
@@ -24,6 +26,7 @@ import { memo, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useReplayClock } from "@/hooks/use-replay-clock";
 import { ChessBoard } from "./chess-board";
+import { endingLabel, remarkToneLabel, timeControlLabel } from "./ending-label";
 import { EvalBar, EvalGraph } from "./eval-bar";
 import {
   evaluationSeries,
@@ -186,8 +189,21 @@ const TimelineRow = memo(function TimelineRow({
   );
 });
 
-export function downloadGame(match: MatchArchive, format: "json" | "pgn") {
-  const blob = new Blob([format === "json" ? JSON.stringify(match, null, 2) : exportPgn(match)], {
+/** PGN `[Site]`: this instance's public origin; a loopback lab has none, so the default applies. */
+function pgnSite(origin = location.origin) {
+  const host = new URL(origin).hostname;
+  return /^(localhost|127(?:\.\d+){3}|\[::1\])$/.test(host) ? undefined : origin;
+}
+export function downloadGame(
+  match: MatchArchive,
+  format: "json" | "pgn",
+  describeEnding?: (ending: MatchEnding) => string,
+) {
+  const text =
+    format === "json"
+      ? JSON.stringify(match, null, 2)
+      : exportPgn(match, { site: pgnSite(), describeEnding });
+  const blob = new Blob([text], {
     type: format === "json" ? "application/json" : "application/x-chess-pgn",
   });
   const url = URL.createObjectURL(blob);
@@ -258,7 +274,13 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
   const evalPoint = pointForPosition(series, index, frame.fen);
   const graphPoint = graphCursor(graph, evalPoint, index);
   const showEval = series.length > 0;
-  const commentary = match.config.rules.trashTalk;
+  const tone = remarkTone(match.config.rules);
+  const commentary = tone !== "off";
+  const describeEnding = useCallback(
+    (ending: MatchEnding) => endingLabel(t, i18n.language, ending),
+    [t, i18n.language],
+  );
+  const ending = useMemo(() => describeEnding(matchEnding(match)), [describeEnding, match]);
   const currentRemark = commentary
     ? remarks.filter((remark) => remark.index <= index).at(-1)
     : undefined;
@@ -396,14 +418,15 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
           <span className="cc-pill">{match.result}</span>
         </div>
         <h2>{match.config.title}</h2>
-        <p className="cc-muted">{t(`termination.${match.termination}`)}</p>
+        <p className="cc-muted cc-ending-text">{ending}</p>
         <div className="cc-rule-tags">
           <span>{t(`context.${match.config.rules.context}`)}</span>
           <span>{t(`identity.${match.config.rules.opponentIdentity}`)}</span>
           <span>{t(`tools.${match.config.rules.legalMoves}`)}</span>
           <span>{t(`accounting.${match.config.rules.tokenAccounting}`)}</span>
           <span>{t(`engineModes.${match.config.rules.engineEvaluation}`)}</span>
-          <span>{t(commentary ? "replay.commentaryOn" : "replay.commentaryOff")}</span>
+          <span>{timeControlLabel(t, match.config.rules)}</span>
+          <span>{remarkToneLabel(t, tone)}</span>
         </div>
         {evaluation && (
           <div className="cc-engine-summary">
@@ -515,7 +538,7 @@ export function MatchReplay({ match, live = false }: { match: MatchArchive; live
             <Download size={15} />
             {t("replay.json")}
           </button>
-          <button type="button" onClick={() => downloadGame(match, "pgn")}>
+          <button type="button" onClick={() => downloadGame(match, "pgn", describeEnding)}>
             {t("replay.pgn")}
           </button>
           <VideoExportDialog match={match} />

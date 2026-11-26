@@ -29,13 +29,22 @@ import {
   LIMITS,
   MOVE_FORMATS,
   PROTOCOL_CHOICES,
+  REMARK_TONES,
   resolveProtocol,
   type SectionId,
   summaryParts,
   TOKEN_ACCOUNTING,
   toMatchConfig,
 } from "./create-match-form";
+import { durationLabel } from "./ending-label";
 import { type CatalogState, ModelPicker } from "./model-picker";
+import {
+  autoMoveLimitMs,
+  clockFromTimeControl,
+  MOVE_LIMIT_SECONDS,
+  timeControlErrors,
+} from "./time-control";
+import { TimeControlField } from "./time-control-field";
 
 /** How often an open dialog asks again while its catalog copy is stale or its refresh failed. */
 const CATALOG_STALE_POLL_MS = 12_000;
@@ -209,6 +218,13 @@ export function CreateMatchDialog({
       return copy;
     });
   const summary = summaryParts(values, t, currency).join(" · ");
+  const validClock = Object.keys(timeControlErrors(t, values.time)).length
+    ? null
+    : clockFromTimeControl(values.time);
+  const autoMoveLimit = autoMoveLimitMs(validClock);
+  const moveLimitText = values.moveLimit.trim()
+    ? t("duration.seconds", { seconds: values.moveLimit.trim() })
+    : t("create.summary.autoMoveLimit", { time: durationLabel(t, autoMoveLimit) });
   const derivedTitle = autoTitle(values, catalog, t);
   const needsTools =
     values.tools === "tool" ||
@@ -293,6 +309,14 @@ export function CreateMatchDialog({
                 </form.Field>
               ))}
             </div>
+            <form.Field name="time">
+              {(field) => (
+                <TimeControlField
+                  value={field.state.value}
+                  onChange={(next) => field.handleChange(next)}
+                />
+              )}
+            </form.Field>
             <form.Field name="title">
               {(field) => (
                 <TextField
@@ -366,7 +390,7 @@ export function CreateMatchDialog({
                   t(`tools.${values.tools}`),
                   t(`moveFormats.${values.moveFormat}`),
                   t(`engineModes.${values.engineEvaluation}`),
-                  t(values.trashTalk ? "replay.commentaryOn" : "replay.commentaryOff"),
+                  t(`remarkTones.${values.remarks}`),
                 ].join(" · ")}
               >
                 <form.Field name="context">
@@ -418,22 +442,20 @@ export function CreateMatchDialog({
                     />
                   )}
                 </form.Field>
-                <form.Field name="trashTalk">
+                <form.Field name="remarks">
                   {(field) => (
-                    <div className="cc-choice cc-choice-wide">
-                      <label className="cc-check">
-                        <input
-                          type="checkbox"
-                          name={field.name}
-                          checked={field.state.value}
-                          onChange={(event) => field.handleChange(event.target.checked)}
-                        />
-                        {t("settings.trashTalk")}
-                      </label>
-                      <p className="cc-field-hint">
-                        {t("create.explain.trashTalk")} {t("settings.anonymousCommentary")}
-                      </p>
-                    </div>
+                    <ChoiceField
+                      field={field}
+                      label={t("settings.remarks")}
+                      options={REMARK_TONES}
+                      optionLabel={(value) => t(`remarkTones.${value}`)}
+                      explain={(value) => (
+                        <>
+                          {t(`create.explain.remarks.${value}`)}
+                          {value !== "off" && <> {t("settings.anonymousCommentary")}</>}
+                        </>
+                      )}
+                    />
                   )}
                 </form.Field>
               </Section>
@@ -450,7 +472,7 @@ export function CreateMatchDialog({
                       ? currency.format(Number(values.budget))
                       : values.budget,
                   }),
-                  t("create.summary.plies", { plies: values.maxPlies }),
+                  t("create.summary.moveLimit", { time: moveLimitText }),
                 ].join(" · ")}
               >
                 <form.Field name="tokenAccounting">
@@ -500,18 +522,23 @@ export function CreateMatchDialog({
                     />
                   )}
                 </form.Field>
-                <form.Field name="maxPlies">
+                <form.Field name="moveLimit">
                   {(field) => (
                     <TextField
                       field={field}
                       type="number"
                       inputMode="numeric"
                       autoComplete="off"
-                      min={LIMITS.plies.min}
-                      max={LIMITS.plies.max}
+                      min={MOVE_LIMIT_SECONDS.min}
+                      max={MOVE_LIMIT_SECONDS.max}
                       step={1}
-                      label={t("studio.plies")}
-                      description={t("create.explain.plies", LIMITS.plies)}
+                      placeholder={String(autoMoveLimit / 1000)}
+                      label={t("time.moveLimit")}
+                      description={t("create.explain.moveLimit", {
+                        auto: durationLabel(t, autoMoveLimit),
+                        min: MOVE_LIMIT_SECONDS.min,
+                        max: MOVE_LIMIT_SECONDS.max,
+                      })}
                     />
                   )}
                 </form.Field>

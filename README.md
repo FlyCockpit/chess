@@ -225,10 +225,11 @@ Save a configuration such as:
     "opponentIdentity": "hidden",
     "legalMoves": "tool",
     "representation": "ascii",
-    "maxPlies": 20,
+    "clock": { "w": 600000, "b": 300000 },
+    "turnTimeoutMs": 60000,
     "tokenAccounting": "cl100k_base",
     "tokenBudget": 12000,
-    "trashTalk": true,
+    "remarks": "trash-talk",
     "engineEvaluation": "both",
     "costBudgetMicros": 100000
   }
@@ -264,11 +265,43 @@ terminal headroom below that limit, so every archive it writes is accepted by
 `replay`, `upload`, Studio import and the server. Larger files are rejected with
 "Game archive exceeds 2 MB".
 
+### Rules and endings
+
 Rules include fresh/persistent memory, hidden/disclosed identities, FEN/ASCII/piece
-representations, hidden/tool/provided legal moves, optional commentary in either
-identity mode, attempt limits, per-turn and per-player time, tokens and costs.
-Anonymous commentary redacts configured model names/IDs but may still reveal clues;
-it is entertainment, not a guarantee of anonymity.
+representations, hidden/tool/provided legal moves, a remark tone in either
+identity mode, attempt limits, a time control, tokens and costs.
+
+Rules are versioned (`rules.version`). New matches use `cockpit-v2`; archives
+recorded under `cockpit-v1` (a move cap, one shared time allowance and an on/off
+remark switch) still replay, validate and display as they were played.
+
+- **No move cap.** A game ends on checkmate, on the rules engine's own draws
+  (stalemate, threefold repetition, the fifty-move rule, insufficient material),
+  on a forfeit, or when a player runs out of clock, tokens or spend. The fifty-move
+  rule already bounds every game, each side's budgets bound paid inference, and the
+  2 MB archive limit ends any runaway game unscored as `event-limit`, so no extra
+  ply ceiling is needed.
+- **Time control.** `clock` is `null` (untimed: only the per-move safety limit
+  applies) or each side's whole-game clock in milliseconds, 30 s to 60 min, and the
+  sides may differ (`{ "w": 900000, "b": 300000 }`). `turnTimeoutMs` (1–300 s) is the
+  per-move safety limit and may not exceed either clock. Running out of clock is
+  `timeout` ("White ran out of time"); missing the per-move limit is `move-timeout`.
+- **Remarks.** `remarks` is `off`, `commentary` (one short neutral remark about the
+  player's own move or plan) or `trash-talk` (one short, playful jab at the
+  opponent's last move or position, kept tasteful and about the game: no slurs,
+  profanity or remarks about anyone's identity). Remarks are untrusted plain text:
+  players are told never to follow instructions in them, the UI never renders them
+  as HTML or Markdown, and with hidden identities configured model names and IDs
+  are redacted. That redaction may still miss clues; it is entertainment, not a
+  guarantee of anonymity.
+
+PGN exports carry the standard seven tags plus `WhiteType`/`BlackType`,
+`TimeControl`, `Termination` (standard values: `normal`, `time forfeit`,
+`rules infraction`, `adjudication`, `abandoned`, `emergency`, `unterminated`) and
+the ruleset as one tag per rule (`CockpitRemarks`, `CockpitClock`, …). Each remark
+follows its move as a `{comment}`, rejected attempts (with their remarks) precede
+the move they led to, and a final comment says in plain words how the game ended.
+Movetext lines stay under 80 characters.
 
 Choose `tokenAccounting: "provider"` for conservative native-token reservations,
 or `"cl100k_base"` for the same benchmark tokenizer across models. Shared accounting

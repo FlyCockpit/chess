@@ -1,6 +1,8 @@
-import { boardAt, type MatchArchive, matchStats } from "@cockpit-chess/chess";
+import { boardAt, type MatchArchive, matchStats, remarkTone } from "@cockpit-chess/chess";
+import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
 import type { TFunction } from "i18next";
 import { drawBoard } from "./board-canvas";
+import { endingHeadlineLabel, remarkToneLabel, timeControlLabel } from "./ending-label";
 import { evaluationSeries, pointForPosition, shortScore } from "./evaluation";
 
 /** The share graphic: 1200×675, fixed colours (it is an image, not themed UI). */
@@ -77,12 +79,13 @@ export function drawShareCard(
     620,
   );
   ctx.fillText(
-    `${t(`context.${match.config.rules.context}`)} · ${t(`identity.${match.config.rules.opponentIdentity}`)}`,
+    `${timeControlLabel(t, match.config.rules)} · ${t(`context.${match.config.rules.context}`)} · ${t(`identity.${match.config.rules.opponentIdentity}`)}`,
     56,
     476,
     620,
   );
-  ctx.fillText(t(`termination.${match.termination}`), 56, 506, 620);
+  // The same short reason a match card shows (the full sentence lives in the game view).
+  ctx.fillText(endingHeadlineLabel(t, endingSummary(matchEnding(match))), 56, 506, 620);
   ctx.font = "16px sans-serif";
   ctx.fillText(
     `${t("studio.noSamples")} · ${match.source} · ${match.config.rules.version}`,
@@ -99,7 +102,7 @@ export function drawShareCard(
     620,
   );
   ctx.fillText(
-    `${t(`accounting.${match.config.rules.tokenAccounting}`)} · ${t(`engineModes.${match.config.rules.engineEvaluation}`)}`,
+    `${t(`accounting.${match.config.rules.tokenAccounting}`)} · ${t(`engineModes.${match.config.rules.engineEvaluation}`)} · ${remarkToneLabel(t, remarkTone(match.config.rules))}`,
     56,
     600,
     620,

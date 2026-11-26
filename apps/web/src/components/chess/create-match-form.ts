@@ -4,10 +4,21 @@ import {
   type ModelProtocol,
   matchConfigSchema,
   protocolForModel,
+  type RemarkTone,
   type Rules,
+  remarkTones,
 } from "@cockpit-chess/chess";
 import type { TFunction } from "i18next";
 import { z } from "zod";
+import {
+  clockFromTimeControl,
+  DEFAULT_TIME_CONTROL,
+  MOVE_LIMIT_SECONDS,
+  moveLimitMs,
+  type TimeControlValue,
+  timeControlErrors,
+  timeControlSummary,
+} from "./time-control";
 
 /**
  * The create-match form's model: defaults, validation, the one-line summary and
@@ -34,13 +45,13 @@ export const LEGAL_MOVE_MODES = ["hidden", "tool", "provided"] as const;
 export const MOVE_FORMATS = ["strict", "lenient"] as const;
 export const ENGINE_MODES = ["off", "tool", "after-move", "both"] as const;
 export const TOKEN_ACCOUNTING = ["provider", "cl100k_base"] as const;
+export const REMARK_TONES = remarkTones;
 
 /** The hosted operator limits `chess.create` enforces, mirrored for inline errors. */
 export const LIMITS = {
   title: 140,
   model: 160,
   name: 80,
-  plies: { min: 2, max: 200 },
   budgetUsd: { min: 0.01, max: 1 },
   tokens: { min: 256, max: 1_000_000 },
 } as const;
@@ -56,12 +67,14 @@ export type CreateMatchValues = {
   tools: Rules["legalMoves"];
   moveFormat: Rules["moveFormat"];
   engineEvaluation: Rules["engineEvaluation"];
-  trashTalk: boolean;
+  remarks: RemarkTone;
+  time: TimeControlValue;
   tokenAccounting: Rules["tokenAccounting"];
   /** Numeric inputs stay strings in the form; the schema parses them. */
   tokenBudget: string;
   budget: string;
-  maxPlies: string;
+  /** Per-move safety limit in seconds; "" = automatic (1 min, never above a clock). */
+  moveLimit: string;
 };
 
 /** The same defaults the form always started from; only the protocol is now derived. */
@@ -76,11 +89,12 @@ export const DEFAULT_VALUES: CreateMatchValues = {
   tools: "tool",
   moveFormat: "strict",
   engineEvaluation: "off",
-  trashTalk: false,
+  remarks: "off",
+  time: DEFAULT_TIME_CONTROL,
   tokenAccounting: "provider",
   tokenBudget: "1000000",
   budget: "0.10",
-  maxPlies: "80",
+  moveLimit: "",
 };
 
 export type SectionId = "players" | "rules" | "limits";
@@ -93,11 +107,11 @@ export const FIELD_SECTION: Partial<Record<keyof CreateMatchValues, SectionId>> 
   tools: "rules",
   moveFormat: "rules",
   engineEvaluation: "rules",
-  trashTalk: "rules",
+  remarks: "rules",
   tokenAccounting: "limits",
   tokenBudget: "limits",
   budget: "limits",
-  maxPlies: "limits",
+  moveLimit: "limits",
 };
 
 /**
@@ -130,25 +144,39 @@ export function createMatchSchema(t: TFunction<"chess">) {
     .trim()
     .min(1, { message: t("create.errors.model") })
     .max(LIMITS.model, { message: t("create.errors.modelLength", { max: LIMITS.model }) });
-  return z.object({
-    title: z.string().max(LIMITS.title, {
-      message: t("create.errors.title", { max: LIMITS.title }),
-    }),
-    white: model,
-    black: model,
-    whiteProtocol: z.enum(PROTOCOL_CHOICES),
-    blackProtocol: z.enum(PROTOCOL_CHOICES),
-    identity: z.enum(IDENTITY_MODES),
-    context: z.enum(CONTEXT_MODES),
-    tools: z.enum(LEGAL_MOVE_MODES),
-    moveFormat: z.enum(MOVE_FORMATS),
-    engineEvaluation: z.enum(ENGINE_MODES),
-    trashTalk: z.boolean(),
-    tokenAccounting: z.enum(TOKEN_ACCOUNTING),
-    tokenBudget: numberInRange(t, LIMITS.tokens, 1),
-    budget: numberInRange(t, LIMITS.budgetUsd, 0.01),
-    maxPlies: numberInRange(t, LIMITS.plies, 1),
-  });
+  return z
+    .object({
+      title: z.string().max(LIMITS.title, {
+        message: t("create.errors.title", { max: LIMITS.title }),
+      }),
+      white: model,
+      black: model,
+      whiteProtocol: z.enum(PROTOCOL_CHOICES),
+      blackProtocol: z.enum(PROTOCOL_CHOICES),
+      identity: z.enum(IDENTITY_MODES),
+      context: z.enum(CONTEXT_MODES),
+      tools: z.enum(LEGAL_MOVE_MODES),
+      moveFormat: z.enum(MOVE_FORMATS),
+      engineEvaluation: z.enum(ENGINE_MODES),
+      remarks: z.enum(REMARK_TONES),
+      time: z.custom<TimeControlValue>().superRefine((value, context) => {
+        for (const [side, message] of Object.entries(timeControlErrors(t, value)))
+          context.addIssue({ code: "custom", message, path: [side] });
+      }),
+      tokenAccounting: z.enum(TOKEN_ACCOUNTING),
+      tokenBudget: numberInRange(t, LIMITS.tokens, 1),
+      budget: numberInRange(t, LIMITS.budgetUsd, 0.01),
+      moveLimit: z.string(),
+    })
+    .superRefine((value, context) => {
+      if (Object.keys(timeControlErrors(t, value.time)).length) return;
+      if (moveLimitMs(value.moveLimit, clockFromTimeControl(value.time)) === null)
+        context.addIssue({
+          code: "custom",
+          path: ["moveLimit"],
+          message: t("time.errors.moveLimit", MOVE_LIMIT_SECONDS),
+        });
+    });
 }
 
 export function findModel(catalog: readonly CatalogModel[] | undefined, id: string) {
@@ -192,6 +220,10 @@ export function toMatchConfig(
   const whiteName = playerName(value.white, catalog);
   const blackName = playerName(value.black, catalog);
   const title = value.title.trim() || autoTitle(value, catalog, t);
+  if (Object.keys(timeControlErrors(t, value.time)).length) return { success: false };
+  const clock = clockFromTimeControl(value.time);
+  const turnTimeoutMs = moveLimitMs(value.moveLimit, clock);
+  if (turnTimeoutMs === null) return { success: false };
   const parsed = matchConfigSchema.safeParse({
     title,
     white: {
@@ -208,19 +240,20 @@ export function toMatchConfig(
       context: value.context,
       opponentIdentity: value.identity,
       legalMoves: value.tools,
-      maxPlies: Number(value.maxPlies),
       costBudgetMicros: Math.round(Number(value.budget) * 1_000_000),
       tokenBudget: Number(value.tokenBudget),
       tokenAccounting: value.tokenAccounting,
       engineEvaluation: value.engineEvaluation,
-      trashTalk: value.trashTalk,
+      remarks: value.remarks,
       moveFormat: value.moveFormat,
+      clock,
+      turnTimeoutMs,
     },
   });
   return parsed.success ? { success: true, data: parsed.data } : { success: false };
 }
 
-/** "Fresh context · Legal-move tool · Strict format · $0.10 budget · 80 plies", plus non-defaults. */
+/** "Untimed · Fresh context · Legal-move tool · Strict format · $0.10 budget", plus non-defaults. */
 export function summaryParts(
   value: CreateMatchValues,
   t: TFunction<"chess">,
@@ -228,16 +261,16 @@ export function summaryParts(
 ) {
   const budget = Number(value.budget);
   const parts = [
+    timeControlSummary(t, value.time),
     t(`context.${value.context}`),
     t(`tools.${value.tools}`),
     t("create.summary.format", { format: t(`moveFormats.${value.moveFormat}`) }),
     t("create.summary.budget", {
       budget: Number.isFinite(budget) ? currency.format(budget) : value.budget,
     }),
-    t("create.summary.plies", { plies: value.maxPlies }),
   ];
   if (value.engineEvaluation !== "off") parts.push(t(`engineModes.${value.engineEvaluation}`));
-  if (value.trashTalk) parts.push(t("create.summary.commentary"));
+  if (value.remarks !== "off") parts.push(t(`remarkTones.${value.remarks}`));
   if (value.identity === "disclosed") parts.push(t("identity.disclosed"));
   return parts;
 }

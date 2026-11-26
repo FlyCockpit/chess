@@ -4,7 +4,6 @@ import {
   boardAt,
   createMatch,
   DEFAULT_POSITION,
-  exportPgn,
   finishMatch,
   legalMoves,
   type MatchEvent,
@@ -13,6 +12,7 @@ import {
   submitMove,
   validateArchive,
 } from "./index";
+import { exportPgn } from "./pgn";
 
 const player = { name: "Baseline", model: "random", protocol: "random" as const };
 const game = (rules = {}) => createMatch({ white: player, black: player, rules });
@@ -33,8 +33,10 @@ describe("authoritative chess and portable archives", () => {
     const match = game();
     finishMatch(match, "1-0", "cancelled", "stopped");
     expect(() => validateArchive(match)).toThrow("Invalid terminal status");
-    finishMatch(match, "1-0", "timeout");
+    finishMatch(match, "1-0", "move-timeout");
     expect(() => validateArchive(match)).toThrow("Invalid side-to-move forfeit");
+    finishMatch(match, "0-1", "timeout");
+    expect(() => validateArchive(match)).toThrow("Clock forfeit in an untimed game");
   });
   it("accepts interruption only as an unscored error", () => {
     const match = game();
@@ -124,7 +126,7 @@ describe("authoritative chess and portable archives", () => {
     expect(() => validateArchive(tampered)).toThrow();
   });
   it("supports anonymous commentary and provides piece-specific legal moves", () => {
-    const anonymous = game({ opponentIdentity: "hidden", trashTalk: true });
+    const anonymous = game({ opponentIdentity: "hidden", remarks: "trash-talk" });
     expect(
       submitMove(anonymous, boardAt(anonymous), "e2e4", "Your king looks nervous.").comment,
     ).toBe("Your king looks nervous.");

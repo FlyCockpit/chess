@@ -4,6 +4,7 @@ import {
   type Color,
   type EngineEvaluation,
   type MatchArchive,
+  sideClockMs,
 } from "@cockpit-chess/chess";
 import { shortScore, toolEvaluation, whiteShare } from "../evaluation";
 
@@ -50,14 +51,16 @@ export type VideoFeatures = { evalBar: boolean; remarks: boolean; clocks: boolea
 export function videoFeatures(match: MatchArchive): VideoFeatures {
   let evalBar = false;
   let remarks = false;
+  // Clocks only in timed games (an untimed game has no clock to run down).
   let clocks = false;
+  const timed = sideClockMs(match.config.rules, "w") !== null;
   for (const event of match.events) {
     if (event.type === "evaluation") evalBar = true;
     else if (event.type === "tool" && event.name === "engine_eval" && toolEvaluation(event.output))
       evalBar = true;
     else if (event.type === "attempt" && event.accepted && cleanRemark(event.comment))
       remarks = true;
-    else if (event.type === "timing") clocks = true;
+    else if (event.type === "timing" && timed) clocks = true;
   }
   return { evalBar, remarks, clocks };
 }
@@ -205,8 +208,8 @@ export function buildVideoPlan(
   const size = VIDEO_SIZES[options.aspect];
   const chess = new Chess(match.config.initialFen);
   const remaining: Record<Color, number> = {
-    w: match.config.rules.timeBudgetMs,
-    b: match.config.rules.timeBudgetMs,
+    w: sideClockMs(match.config.rules, "w") ?? 0,
+    b: sideClockMs(match.config.rules, "b") ?? 0,
   };
   const evaluations = new Map<string, EngineEvaluation>();
   type Position = {

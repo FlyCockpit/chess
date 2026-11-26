@@ -12,6 +12,7 @@ import {
   summaryParts,
   toMatchConfig,
 } from "./create-match-form";
+import { applyPreset, selectedPreset, timeControlErrors } from "./time-control";
 
 let t: TFunction<"chess">;
 beforeAll(async () => {
@@ -51,6 +52,49 @@ const errorsFor = (value: Partial<CreateMatchValues>) => {
   return result.success ? [] : result.error.issues.map((issue) => String(issue.path[0]));
 };
 
+/** An uneven clock: White minutes, Black minutes, optional Black seconds. */
+const uneven = (white: string, black: string, blackSeconds = "0") => ({
+  timed: true,
+  uneven: true,
+  white: { minutes: white, seconds: "0" },
+  black: { minutes: black, seconds: blackSeconds },
+});
+
+describe("time control", () => {
+  it("maps presets, custom and uneven times onto rules.clock and a derived move limit", () => {
+    const at = (time: CreateMatchValues["time"], moveLimit = "") => {
+      const config = toMatchConfig({ ...DEFAULT_VALUES, time, moveLimit }, undefined, t);
+      if (!config.success) throw new Error("expected a valid config");
+      return config.data.rules;
+    };
+    expect(at(DEFAULT_VALUES.time)).toMatchObject({ clock: null, turnTimeoutMs: 60000 });
+    for (const minutes of [5, 10, 30])
+      expect(at(applyPreset(DEFAULT_VALUES.time, minutes))).toMatchObject({
+        clock: { w: minutes * 60000, b: minutes * 60000 },
+        turnTimeoutMs: 60000,
+      });
+    expect(at(uneven("15", "5"))).toMatchObject({ clock: { w: 900000, b: 300000 } });
+    // Black's clock does not follow White's while times are even.
+    const even = { ...applyPreset(DEFAULT_VALUES.time, 5), black: { minutes: "1", seconds: "0" } };
+    expect(at(even).clock).toEqual({ w: 300000, b: 300000 });
+    // The automatic move limit never outlasts the shorter clock; a typed one is kept.
+    expect(at(uneven("2", "0", "45")).turnTimeoutMs).toBe(45000);
+    expect(at(uneven("2", "1"), "20").turnTimeoutMs).toBe(20000);
+    expect(selectedPreset(applyPreset(DEFAULT_VALUES.time, 10))).toBe(10);
+    expect(selectedPreset(uneven("10", "10"))).toBe(10);
+    expect(selectedPreset(uneven("15", "5"))).toBe("custom");
+    expect(selectedPreset(DEFAULT_VALUES.time)).toBe("untimed");
+    expect(selectedPreset(applyPreset(uneven("15", "5"), "untimed"))).toBe("untimed");
+  });
+  it("names the server's limits in its errors", () => {
+    expect(timeControlErrors(t, uneven("0", "0", "20"))).toEqual({
+      white: "Each clock must be between 30 s and 60 min.",
+      black: "Each clock must be between 30 s and 60 min.",
+    });
+    expect(timeControlErrors(t, DEFAULT_VALUES.time)).toEqual({});
+  });
+});
+
 describe("defaults", () => {
   it("start the same match the old form did, with a derived title and names", () => {
     const config = toMatchConfig(DEFAULT_VALUES, undefined, t);
@@ -69,12 +113,14 @@ describe("defaults", () => {
       legalMoves: "tool",
       moveFormat: "strict",
       engineEvaluation: "off",
-      trashTalk: false,
+      remarks: "off",
       tokenAccounting: "provider",
       tokenBudget: 1000000,
       costBudgetMicros: 100000,
-      maxPlies: 80,
+      clock: null,
+      turnTimeoutMs: 60000,
     });
+    expect(config.data.rules).not.toHaveProperty("maxPlies");
   });
   it("keep a typed title and translate the derived one", () => {
     const typed = toMatchConfig({ ...DEFAULT_VALUES, title: "  Grudge match " }, undefined, t);
@@ -87,11 +133,21 @@ describe("defaults", () => {
   });
   it("summarise in one line", () => {
     expect(summaryParts(DEFAULT_VALUES, t, usd).join(" · ")).toBe(
-      "Fresh context · Legal-move tool · Strict format · $0.10 budget · 80 plies",
+      "Untimed · Fresh context · Legal-move tool · Strict format · $0.10 budget",
     );
     expect(
-      summaryParts({ ...DEFAULT_VALUES, trashTalk: true, engineEvaluation: "after-move" }, t, usd),
-    ).toEqual(expect.arrayContaining(["Evaluation after each move", "Commentary on"]));
+      summaryParts(
+        { ...DEFAULT_VALUES, remarks: "trash-talk", engineEvaluation: "after-move" },
+        t,
+        usd,
+      ),
+    ).toEqual(expect.arrayContaining(["Evaluation after each move", "Trash talk"]));
+    expect(
+      summaryParts({ ...DEFAULT_VALUES, time: applyPreset(DEFAULT_VALUES.time, 10) }, t, usd)[0],
+    ).toBe("10 min each");
+    expect(summaryParts({ ...DEFAULT_VALUES, time: uneven("15", "5") }, t, usd)[0]).toBe(
+      "White 15 min · Black 5 min",
+    );
   });
   it("are valid", () => {
     expect(errorsFor({})).toEqual([]);
@@ -117,16 +173,24 @@ describe("protocol", () => {
 
 describe("validation keeps the hosted bounds", () => {
   it.each([
-    [{ maxPlies: "1" }, "maxPlies"],
-    [{ maxPlies: "201" }, "maxPlies"],
-    [{ maxPlies: "20.5" }, "maxPlies"],
+    [{ moveLimit: "0" }, "moveLimit"],
+    [{ moveLimit: "301" }, "moveLimit"],
+    [{ moveLimit: "20.5" }, "moveLimit"],
+    // The per-move limit may not outlast the shorter clock (here Black's 45 s).
+    [{ time: uneven("2", "0", "45"), moveLimit: "46" }, "moveLimit"],
+    [{ time: uneven("10", "0", "20") }, "time"],
+    [{ time: uneven("61", "5") }, "time"],
+    [
+      { time: { ...applyPreset(DEFAULT_VALUES.time, 5), white: { minutes: "4", seconds: "60" } } },
+      "time",
+    ],
     [{ budget: "0.001" }, "budget"],
     [{ budget: "1.01" }, "budget"],
     [{ budget: "" }, "budget"],
     // The old input's step: whole cents only.
     [{ budget: "0.015" }, "budget"],
     [{ tokenBudget: "1000.5" }, "tokenBudget"],
-    [{ maxPlies: "abc" }, "maxPlies"],
+    [{ moveLimit: "abc" }, "moveLimit"],
     [{ tokenBudget: "255" }, "tokenBudget"],
     [{ tokenBudget: "1000001" }, "tokenBudget"],
     [{ white: "  " }, "white"],
@@ -136,8 +200,11 @@ describe("validation keeps the hosted bounds", () => {
     expect(errorsFor(value)).toEqual([field]);
   });
   it.each([
-    { maxPlies: "2" },
-    { maxPlies: "200" },
+    { moveLimit: "1" },
+    { moveLimit: "300" },
+    { time: applyPreset(DEFAULT_VALUES.time, 30), moveLimit: "300" },
+    { time: uneven("1", "0", "30") },
+    { time: uneven("60", "0", "30"), moveLimit: "30" },
     { budget: "0.01" },
     { budget: "1" },
     { tokenBudget: "256" },
@@ -153,8 +220,9 @@ describe("validation keeps the hosted bounds", () => {
   it("maps every advanced field to its section", () => {
     expect(FIELD_SECTION.whiteProtocol).toBe("players");
     expect(FIELD_SECTION.identity).toBe("players");
-    expect(FIELD_SECTION.trashTalk).toBe("rules");
-    expect(FIELD_SECTION.maxPlies).toBe("limits");
+    expect(FIELD_SECTION.remarks).toBe("rules");
+    expect(FIELD_SECTION.moveLimit).toBe("limits");
+    expect(FIELD_SECTION.time).toBeUndefined();
     expect(FIELD_SECTION.white).toBeUndefined();
   });
 });
