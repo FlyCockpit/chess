@@ -112,6 +112,7 @@ function startIdentityChecks(refetch: () => unknown): { stop: () => void } {
   };
   const sessionCheck = () => check();
   const retry = () => {
+    if (readSessionIdentity() === null && !isDocumentIdentityUnverified()) return;
     if (document.visibilityState !== "hidden" && navigator.onLine !== false) void check();
   };
   const disconnectPeers = connectIdentityPeers(sessionCheck);

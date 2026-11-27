@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useRetryOnReconnect } from "@/hooks/use-retry-on-reconnect";
 import { useRouteImportFailure } from "@/hooks/use-route-import-failure";
+import { markRouteIdentityUnconfirmed } from "@/lib/document-identity";
 import { isFetchFailure } from "@/lib/network-failure";
 
 import { friendly } from "../utils/friendly-error";
@@ -24,7 +25,13 @@ export default function ErrorState({ error }: ErrorComponentProps) {
   // Re-run guarded ancestors before recovering children, including render
   // errors on otherwise successful matches. A boundary reset alone can
   // reuse the previous session context without running its guard.
-  const retry = () => void router.invalidate({ forcePending: true }).catch(() => {});
+  const retry = () => {
+    const confirmRecovery = markRouteIdentityUnconfirmed();
+    void router
+      .invalidate({ forcePending: true })
+      .then(confirmRecovery)
+      .catch(() => {});
+  };
   useRetryOnReconnect(retry, !online);
 
   if (!online || isFetchFailure(error)) {
