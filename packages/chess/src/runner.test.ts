@@ -1,5 +1,6 @@
 import type { AgentLoopOptions, AgentMessage } from "@cockpit-chess/agent-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { matchEnding } from "./ending";
 import {
   archiveByteLength,
@@ -12,6 +13,7 @@ import {
   MAX_REPLY_BYTES,
   type MatchArchive,
   type MatchEvent,
+  MODEL_PROTOCOLS,
   matchStats,
   serializeArchive,
   submitMove,
@@ -41,7 +43,7 @@ import {
   turnPrompt,
 } from "./runner";
 import { asCockpitV1 } from "./testing";
-import { sharedOutputTokens } from "./tokenizer";
+import { countSharedTokens, sharedOutputTokens } from "./tokenizer";
 
 const { runAgentLoop, evaluatePosition } = vi.hoisted(() => ({
   runAgentLoop: vi.fn(),
@@ -99,7 +101,7 @@ describe("bounded local and worker match runner", () => {
     });
     expect(turnPrompt(visible, "w")).toContain("vendor/secret-model");
   });
-  it("enables prompt caching only for persistent context, keyed per match and side", async () => {
+  it("enables prompt caching in both context modes, keyed per match and side", async () => {
     const reply = async (options: { messages: AgentMessage[] }) => ({
       messages: [
         ...options.messages,
@@ -121,8 +123,93 @@ describe("bounded local and worker match runner", () => {
     });
     const fresh = createMatch({ white: model, black: random, rules: { context: "fresh" } });
     await advanceMatch(fresh, { credentials });
-    expect(runAgentLoop.mock.calls[1]?.[0]).toMatchObject({ cache: false });
+    expect(runAgentLoop.mock.calls[1]?.[0]).toMatchObject({
+      cache: true,
+      cacheKey: `chess-${fresh.id}-w`,
+    });
   });
+  it.each(MODEL_PROTOCOLS)(
+    "keeps the %s cacheable instructions and schemas byte-identical across turns",
+    async (protocol) => {
+      for (const context of ["fresh", "persistent"] as const) {
+        runAgentLoop.mockClear();
+        const player = { ...model, protocol };
+        const match = createMatch({
+          white: player,
+          black: player,
+          rules: { context, legalMoves: "tool", engineEvaluation: "tool", remarks: "commentary" },
+        });
+        const memory = {};
+        const moves = ["e2e4", "e7e5", "g1f3", "b8c6"];
+        runAgentLoop.mockImplementation(async (options: AgentLoopOptions) => {
+          await options.onBeforeDispatch?.({
+            messages: options.messages,
+            iteration: 0,
+            lastDispatchAt: null,
+          });
+          await options.onUsage?.({
+            inputTokens: 2000,
+            outputTokens: 20,
+            cachedInputTokens: 1800,
+            cacheCreationInputTokens: 0,
+          });
+          return {
+            messages: [
+              ...options.messages,
+              {
+                id: crypto.randomUUID(),
+                role: "assistant",
+                parts: [
+                  {
+                    type: "text",
+                    content: JSON.stringify({ move: moves.shift(), comment: "A move." }),
+                  },
+                ],
+              },
+            ],
+            usage: {},
+            stopReason: "completed",
+          };
+        });
+        for (let turn = 0; turn < 4; turn++)
+          await advanceMatch(match, {
+            credentials: { w: credentials.w, b: credentials.w },
+            memory,
+          });
+        const calls = runAgentLoop.mock.calls.map(([call]) => call as AgentLoopOptions);
+        expect(calls).toHaveLength(4);
+        const prefix = (call: AgentLoopOptions) =>
+          JSON.stringify({
+            system: call.systemPrompt,
+            tools: call.tools?.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              schema: z.toJSONSchema(tool.inputSchema),
+            })),
+          });
+        for (const side of [0, 1]) {
+          const first = calls[side];
+          const next = calls[side + 2];
+          if (!first || !next) throw new Error("Missing turn");
+          expect(prefix(next)).toBe(prefix(first));
+          expect(countSharedTokens(first.systemPrompt)).toBeGreaterThanOrEqual(1024);
+          expect(next.cacheKey).toBe(first.cacheKey);
+          expect(next.model.provider).toBe(protocol);
+          expect(next.messages.at(-1)?.parts).not.toEqual(first.messages.at(-1)?.parts);
+          expect(first.systemPrompt).not.toContain(match.id);
+          expect(first.systemPrompt).not.toContain(match.createdAt);
+          if (context === "persistent") expect(next.messages.slice(0, 1)).toEqual(first.messages);
+          else expect(next.messages).toHaveLength(1);
+        }
+        expect(matchStats(match)).toMatchObject({
+          cachedInputTokens: 7200,
+          cacheCreationInputTokens: 0,
+          cacheReadShare: 0.9,
+        });
+        expect(validateArchive(JSON.parse(serializeArchive(match)))).toEqual(match);
+      }
+    },
+  );
   it("records illegal attempts, supplies retry feedback within the turn, then accepts correction", async () => {
     const match = createMatch({ white: model, black: random, rules: {} });
     runAgentLoop

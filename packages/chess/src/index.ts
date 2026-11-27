@@ -352,6 +352,9 @@ export const eventSchema = z.discriminatedUnion("type", [
       dispatch: z.number().int().nonnegative(),
       inputTokens: z.number().int().nonnegative(),
       outputTokens: z.number().int().nonnegative(),
+      /** Absent on legacy archives or when the provider did not report cache usage. */
+      cachedInputTokens: z.number().int().nonnegative().optional(),
+      cacheCreationInputTokens: z.number().int().nonnegative().optional(),
       costMicros: z.number().int().nonnegative().nullable(),
     })
     .strict(),
@@ -655,6 +658,24 @@ export function matchStats(match: MatchArchive, side?: Side) {
     truncatedAttempts: attempts.filter((event) => event.reason === "truncated").length,
     inputTokens: usage.reduce((n, event) => n + event.inputTokens, 0),
     outputTokens: usage.reduce((n, event) => n + event.outputTokens, 0),
+    cachedInputTokens: usage.reduce((n, event) => n + (event.cachedInputTokens ?? 0), 0),
+    cacheCreationInputTokens: usage.reduce(
+      (n, event) => n + (event.cacheCreationInputTokens ?? 0),
+      0,
+    ),
+    /**
+     * Reported reads / reported input: a lower bound when cache usage is omitted.
+     * The installed adapters omit explicit zero cache counts too. All-unknown
+     * legacy/provider usage stays null, rather than being labeled a cache miss.
+     */
+    cacheReadShare:
+      usage.some(
+        (event) =>
+          event.cachedInputTokens !== undefined || event.cacheCreationInputTokens !== undefined,
+      ) && usage.reduce((n, event) => n + event.inputTokens, 0) > 0
+        ? usage.reduce((n, event) => n + (event.cachedInputTokens ?? 0), 0) /
+          usage.reduce((n, event) => n + event.inputTokens, 0)
+        : null,
     elapsedMs: events.reduce((n, event) => n + (event.type === "timing" ? event.elapsedMs : 0), 0),
     /** Provider-reported cost so far (usage reports without a cost count as 0). */
     reportedCostMicros: usage.reduce((n, event) => n + (event.costMicros ?? 0), 0),
@@ -723,6 +744,12 @@ export function validateArchive(input: unknown): MatchArchive {
       const reservation = dispatches.get(event.dispatch);
       if (reservation?.side !== event.side || reservation.ply !== event.ply)
         throw new Error("Usage without reservation");
+      // Gemini can report a write and a read of the same prefix in one request.
+      if (
+        (event.cachedInputTokens ?? 0) > event.inputTokens ||
+        (event.cacheCreationInputTokens ?? 0) > event.inputTokens
+      )
+        throw new Error("Cache usage exceeds input tokens");
     }
     if (event.type !== "attempt") continue;
     if (event.before !== chess.fen()) throw new Error("Position mismatch");

@@ -78,12 +78,27 @@ export const injectAnthropicCacheBreakpoints = (body: unknown): boolean => {
 };
 
 /**
+ * Gemini implicit caching is best-effort. Cache the fixed system message
+ * explicitly through OpenRouter so fresh and persistent turns both reuse it.
+ * Keep the changing user tail outside the breakpoint. Unlike Anthropic, Gemini
+ * only uses the final content breakpoint; do not move it onto the turn message.
+ */
+export const injectGeminiCacheBreakpoint = (body: unknown): boolean => {
+  if (!isRecord(body) || !Array.isArray(body.messages)) return false;
+  const system = body.messages.find(
+    (message): message is Record<string, unknown> =>
+      isRecord(message) && (message.role === "system" || message.role === "developer"),
+  );
+  return system ? applyCacheControlToMessage(system) : false;
+};
+
+/**
  * A `beforeRequest` hook that rewrites the outgoing JSON body with Anthropic cache
  * breakpoints. No-ops (returns `undefined`, leaving the request untouched) for non-JSON or
  * unreadable bodies, or when nothing needed changing.
  */
 export const createAnthropicCacheBeforeRequestHook =
-  () =>
+  (mode: "anthropic" | "gemini" = "anthropic") =>
   async (request: Request): Promise<Request | undefined> => {
     const contentType = request.headers.get("content-type") ?? "";
     if (!contentType.includes("json")) return undefined;
@@ -95,7 +110,9 @@ export const createAnthropicCacheBeforeRequestHook =
       return undefined;
     }
 
-    if (!injectAnthropicCacheBreakpoints(payload)) return undefined;
+    const inject =
+      mode === "gemini" ? injectGeminiCacheBreakpoint : injectAnthropicCacheBreakpoints;
+    if (!inject(payload)) return undefined;
 
     // `new Request(request, { body })` copies method, headers, and signal from the
     // original and overrides only the (already-read-from-a-clone) body.
@@ -107,8 +124,11 @@ export const createAnthropicCacheBeforeRequestHook =
  * Returned as its own module boundary so `adapters.ts` never imports the SDK's hook types
  * directly.
  */
-export const createAnthropicCacheHttpClient = (HttpClientCtor: typeof HTTPClient): HTTPClient => {
+export const createAnthropicCacheHttpClient = (
+  HttpClientCtor: typeof HTTPClient,
+  mode: "anthropic" | "gemini" = "anthropic",
+): HTTPClient => {
   const httpClient = new HttpClientCtor();
-  httpClient.addHook("beforeRequest", createAnthropicCacheBeforeRequestHook());
+  httpClient.addHook("beforeRequest", createAnthropicCacheBeforeRequestHook(mode));
   return httpClient;
 };

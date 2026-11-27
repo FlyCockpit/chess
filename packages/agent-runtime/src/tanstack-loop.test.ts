@@ -213,8 +213,8 @@ describe("executeTanstackLoop cache wiring", () => {
       {
         type: "RUN_FINISHED",
         usage: [
-          { inputTokens: 100, outputTokens: 20, cachedInputTokens: 80 },
-          { inputTokens: 30, outputTokens: 5, cachedInputTokens: 10 },
+          { inputTokens: 100, outputTokens: 20, cachedInputTokens: 80, cacheWriteInputTokens: 10 },
+          { inputTokens: 30, outputTokens: 5, cachedInputTokens: 10, cacheWriteInputTokens: 5 },
         ],
         metadata: {
           tanstack: {

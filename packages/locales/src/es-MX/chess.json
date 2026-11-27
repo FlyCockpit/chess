@@ -291,7 +291,9 @@
       "output-truncated": "La respuesta se cortó en su límite de salida antes de dar una jugada.",
       "max-iterations": "La respuesta usó todas las rondas del modelo del intento sin dar una jugada.",
       "illegal": "La respuesta terminó; su jugada no es legal en esta posición."
-    }
+    },
+    "cacheUsage": "Lecturas de caché reportadas: {{tokens}} tokens (al menos {{share}} de la entrada reportada).",
+    "cacheUnknown": "Lecturas de caché reportadas: {{tokens}} tokens; porcentaje de caché no disponible."
   },
   "stats": {
     "plies": "Movimientos legales",

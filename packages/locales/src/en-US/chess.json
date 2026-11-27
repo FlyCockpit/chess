@@ -182,7 +182,9 @@
       "output-truncated": "The reply was cut off at its output limit before it gave a move.",
       "max-iterations": "The reply used every model round of the attempt without giving a move.",
       "illegal": "The reply finished; its move is not legal in this position."
-    }
+    },
+    "cacheUsage": "Reported cache reads: {{tokens}} tokens (at least {{share}} of reported input).",
+    "cacheUnknown": "Reported cache reads: {{tokens}} tokens; cache share unavailable."
   },
   "leaderboard": {
     "title": "Earned on the board.",

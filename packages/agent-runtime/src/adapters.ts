@@ -4,7 +4,7 @@ import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { createOpenaiChat, createOpenaiChatCompletions } from "@tanstack/ai-openai";
 import { createOpenRouterText } from "@tanstack/ai-openrouter";
 
-import { createAnthropicCacheHttpClient } from "./openrouter-cache";
+import { createAnthropicCacheHttpClient, injectGeminiCacheBreakpoint } from "./openrouter-cache";
 import type { AgentModel } from "./types";
 
 type OpenAIModel = Parameters<typeof createOpenaiChat>[0];
@@ -17,6 +17,17 @@ type OpenRouterConfig = NonNullable<Parameters<typeof createOpenRouterText>[2]>;
  * Anthropic models routed through OpenRouter; the SDK slug is `anthropic/<model>`.
  */
 const isAnthropicModel = (model: string): boolean => model.startsWith("anthropic/");
+const isGeminiModel = (model: string): boolean => /^~?google\/gemini-/.test(model);
+
+/** Native Chat Completions bypasses the OpenRouter SDK's beforeRequest hook. */
+const geminiGatewayFetch: typeof fetch = (input, init) => {
+  if (typeof init?.body !== "string") return globalThis.fetch(input, init);
+  const body: unknown = JSON.parse(init.body);
+  return globalThis.fetch(
+    input,
+    injectGeminiCacheBreakpoint(body) ? { ...init, body: JSON.stringify(body) } : init,
+  );
+};
 
 // The adapter emits nullable optional fields that the Messages gateway rejects.
 // Normalize ordinary function definitions while preserving actual cache controls.
@@ -115,16 +126,20 @@ export const createModelAdapter = (
     // whose outbound zod schema strips unknown fields, so the breakpoints can't be attached
     // through the public `chat()` surface. Instead we intercept the SDK's HTTPClient
     // `beforeRequest` hook — the one place the fully-serialized JSON body is still mutable —
-    // and rewrite it there. Applied only for Anthropic models and only when caching is on
-    // (default); a silent no-op otherwise (non-Anthropic models get no hook; other providers
-    // ignore the field). See ./openrouter-cache.ts.
+    // and rewrite it there. Gemini gets a fixed system-content breakpoint too;
+    // its implicit caching alone did not produce reliable hits in real matches.
+    // Other models keep their implicit caching. See ./openrouter-cache.ts.
     const cachingEnabled = cache?.enabled ?? true;
     // One retry layer: the runtime's retry/failover adapter owns retries.
     const config: OpenRouterConfig = { retryConfig: { strategy: "none" } };
     if (model.baseUrl) config.serverURL = model.baseUrl;
-    const caches = cachingEnabled && isAnthropicModel(model.model);
+    const cachesAnthropic = cachingEnabled && isAnthropicModel(model.model);
+    const cachesGemini = cachingEnabled && isGeminiModel(model.model);
+    const caches = cachesAnthropic || cachesGemini;
     if (caches || model.headers || model.beforeDispatch) {
-      const httpClient = caches ? createAnthropicCacheHttpClient(HTTPClient) : new HTTPClient();
+      const httpClient = caches
+        ? createAnthropicCacheHttpClient(HTTPClient, cachesGemini ? "gemini" : "anthropic")
+        : new HTTPClient();
       const guard = model.beforeDispatch;
       if (guard)
         httpClient.addHook("beforeRequest", (request: Request) => {
@@ -144,6 +159,16 @@ export const createModelAdapter = (
     return { adapter };
   }
 
+  // OpenRouter's native protocol endpoints use this header for provider affinity.
+  // Other hosts keep their own routing semantics; cache:false also disables it.
+  const headers =
+    (cache?.enabled ?? true) &&
+    cache?.cacheKey &&
+    model.baseUrl &&
+    new URL(model.baseUrl).hostname === "openrouter.ai"
+      ? { ...model.headers, "x-session-id": cache.cacheKey }
+      : model.headers;
+
   if (model.provider === "anthropic") {
     const adapter = createAnthropicChat(model.model as AnthropicModel, model.apiKey, {
       auth: model.anthropicAuth ?? "api-key",
@@ -159,7 +184,7 @@ export const createModelAdapter = (
         if (model.beforeDispatch) return { fetch: guardedFetch(model.beforeDispatch, base) };
         return base ? { fetch: base } : {};
       })(),
-      ...(model.headers ? { defaultHeaders: model.headers } : {}),
+      ...(headers ? { defaultHeaders: headers } : {}),
     });
     return { adapter };
   }
@@ -167,12 +192,24 @@ export const createModelAdapter = (
   // The two OpenAI wire protocols are distinct: createOpenaiChat uses Responses,
   // while compatible chat-only providers need createOpenaiChatCompletions.
   const factory = model.provider === "openai-chat" ? createOpenaiChatCompletions : createOpenaiChat;
+  const gatewayFetch =
+    model.provider === "openai-chat" &&
+    (cache?.enabled ?? true) &&
+    isGeminiModel(model.model) &&
+    model.baseUrl &&
+    new URL(model.baseUrl).hostname === "openrouter.ai"
+      ? geminiGatewayFetch
+      : undefined;
   // `maxRetries: 0` — one retry layer: the runtime's retry/failover adapter owns retries.
   const adapter = factory(model.model as OpenAIModel, model.apiKey, {
     maxRetries: 0,
-    ...(model.beforeDispatch ? { fetch: guardedFetch(model.beforeDispatch) } : {}),
+    ...(model.beforeDispatch
+      ? { fetch: guardedFetch(model.beforeDispatch, gatewayFetch) }
+      : gatewayFetch
+        ? { fetch: gatewayFetch }
+        : {}),
     ...(model.baseUrl ? { baseURL: model.baseUrl } : {}),
-    ...(model.headers ? { defaultHeaders: model.headers } : {}),
+    ...(headers ? { defaultHeaders: headers } : {}),
   });
   // OpenAI-compatible providers cache the request prefix automatically; a stable
   // `prompt_cache_key` routes sibling requests to the same cached prefix. It is a no-op

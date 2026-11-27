@@ -749,6 +749,17 @@ export function MatchReplay({
             reserved: count.format(stats.peakReservedTokens),
           })}
         </p>
+        <p className="cc-muted mb-4 text-xs cc-cache-usage">
+          {stats.cacheReadShare === null
+            ? t("replay.cacheUnknown", { tokens: count.format(stats.cachedInputTokens) })
+            : t("replay.cacheUsage", {
+                tokens: count.format(stats.cachedInputTokens),
+                share: new Intl.NumberFormat(i18n.language, {
+                  style: "percent",
+                  maximumFractionDigits: 1,
+                }).format(stats.cacheReadShare),
+              })}
+        </p>
         <details className="cc-muted mb-4 text-xs">
           <summary className="cursor-pointer py-3">{t("replay.rules")}</summary>
           <CodeSnippet code={rulesJson} copyLabel={t("replay.copyRules")} />

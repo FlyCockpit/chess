@@ -3,9 +3,40 @@ import { describe, expect, it } from "vitest";
 import {
   createAnthropicCacheBeforeRequestHook,
   injectAnthropicCacheBreakpoints,
+  injectGeminiCacheBreakpoint,
 } from "./openrouter-cache";
 
 const EPHEMERAL = { type: "ephemeral" };
+
+describe("Gemini fixed system breakpoint", () => {
+  it("keeps dynamic user messages and tools outside the content breakpoint", () => {
+    const body = {
+      messages: [
+        { role: "system", content: "fixed" },
+        { role: "user", content: "changing" },
+      ],
+      tools: [{ name: "board" }],
+    };
+    expect(injectGeminiCacheBreakpoint(body)).toBe(true);
+    expect(body.messages[0]).toEqual({
+      role: "system",
+      content: [{ type: "text", text: "fixed", cache_control: EPHEMERAL }],
+    });
+    expect(body.messages[1]).toEqual({ role: "user", content: "changing" });
+    expect(body.tools).toEqual([{ name: "board" }]);
+  });
+  it("accepts developer content and tolerates absent or empty system messages", () => {
+    const body = { messages: [{ role: "developer", content: "fixed" }] };
+    expect(injectGeminiCacheBreakpoint(body)).toBe(true);
+    for (const value of [
+      null,
+      {},
+      { messages: "invalid" },
+      { messages: [{ role: "system", content: "" }] },
+    ])
+      expect(injectGeminiCacheBreakpoint(value)).toBe(false);
+  });
+});
 
 describe("injectAnthropicCacheBreakpoints", () => {
   it("promotes a string system message to a text part carrying cache_control", () => {

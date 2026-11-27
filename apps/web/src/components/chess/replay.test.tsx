@@ -53,6 +53,36 @@ const scored = (match: MatchArchive, cp: number): SpectatorEvaluations =>
   );
 
 describe("MatchReplay", () => {
+  it("shows reported cache reads and their input share beside match cost", async () => {
+    await i18n.changeLanguage("en-US");
+    const match = fixtureGame();
+    const base = { at: match.createdAt, side: "w" as const, ply: 0 };
+    match.events.push({
+      ...base,
+      seq: match.events.length,
+      type: "usage",
+      dispatch: 0,
+      inputTokens: 4000,
+      outputTokens: 20,
+      cachedInputTokens: 3000,
+      cacheCreationInputTokens: 500,
+      costMicros: 1200,
+    });
+    expect(render(match)).toContain(
+      "Reported cache reads: 3,000 tokens (at least 75% of reported input).",
+    );
+    await i18n.changeLanguage("es-MX");
+    const html = render(match);
+    expect(html).toContain("3,000");
+    expect(html).toContain("75");
+    expect(html).not.toContain("replay.cacheUsage");
+    expect(html).not.toContain("Reported cache reads");
+    await i18n.changeLanguage("en-US");
+  });
+  it("keeps cache share unknown for legacy archives without cache reports", () => {
+    expect(render(fixtureGame())).toContain("cache share unavailable");
+    expect(render(fixtureGame())).not.toContain("at least 0%");
+  });
   it("shows the reply cap in the rules", () => {
     const match = fixtureGame();
     expect(render(match)).toContain("No reply cap");

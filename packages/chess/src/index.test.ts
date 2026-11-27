@@ -21,6 +21,56 @@ import { exportPgn } from "./pgn";
 const player = { name: "Baseline", model: "random", protocol: "random" as const };
 const game = (rules = {}) => createMatch({ white: player, black: player, rules });
 describe("authoritative chess and portable archives", () => {
+  it("round-trips optional cache counts and derives the weighted input-token share", () => {
+    const match = game();
+    for (const [dispatch, inputTokens, cachedInputTokens, cacheCreationInputTokens] of [
+      [0, 1000, 0, 900],
+      [1, 3000, 2400, 100],
+    ] as const) {
+      const base = { at: match.createdAt, side: "w" as const, ply: 0 };
+      match.events.push({
+        ...base,
+        seq: match.events.length,
+        type: "reservation",
+        dispatch,
+        tokens: 5000,
+        costMicros: 10,
+      });
+      match.events.push({
+        ...base,
+        seq: match.events.length,
+        type: "usage",
+        dispatch,
+        inputTokens,
+        cachedInputTokens,
+        cacheCreationInputTokens,
+        outputTokens: 10,
+        costMicros: 1,
+      });
+    }
+    expect(validateArchive(JSON.parse(JSON.stringify(match)))).toEqual(match);
+    expect(matchStats(match)).toMatchObject({
+      cachedInputTokens: 2400,
+      cacheCreationInputTokens: 1000,
+      cacheReadShare: 0.6,
+    });
+    const first = match.events[1];
+    if (first?.type !== "usage") throw new Error("Missing fixture usage");
+    delete first.cachedInputTokens;
+    delete first.cacheCreationInputTokens;
+    expect(validateArchive(match)).toEqual(match);
+    expect(matchStats(match).cacheReadShare).toBe(0.6);
+    expect(matchStats(game()).cacheReadShare).toBeNull();
+    // A Gemini cache creation can also read the prefix during that same request.
+    first.cachedInputTokens = 900;
+    first.cacheCreationInputTokens = 900;
+    expect(validateArchive(match)).toEqual(match);
+    first.cachedInputTokens = 1001;
+    expect(() => validateArchive(match)).toThrow("Cache usage exceeds input tokens");
+    first.cachedInputTokens = 0;
+    first.cacheCreationInputTokens = 1001;
+    expect(() => validateArchive(match)).toThrow("Cache usage exceeds input tokens");
+  });
   it("settles terminal starting positions and rejects contradictory imported outcomes", () => {
     const terminal = createMatch({
       white: player,
