@@ -120,6 +120,13 @@ function row() {
     identityMode: "hidden",
     runToken: "token",
     heartbeatAt: new Date(),
+    turnType: "idle",
+    turnId: null,
+    turnSide: null,
+    turnExpectedSeq: null,
+    turnStartedAt: null,
+    turnDeadline: null,
+    pendingMove: null,
     archive: match,
     result: null,
     whiteModel: null,
@@ -168,6 +175,21 @@ const spectatorWrites = () =>
   });
 afterEach(() => vi.useRealTimers());
 describe("durable chess worker", () => {
+  it("rejects a stored snapshot missing current turn state before invoking any runner", async () => {
+    const record = row();
+    const { turn: _turn, ...old } = record.archive;
+    db.chessMatch.findUnique.mockResolvedValue({ ...record, archive: old });
+    const run = vi.fn();
+    runner.override = run;
+    await handleChessRunJob({ data: { matchId: record.id } });
+    expect(run).not.toHaveBeenCalled();
+    expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: record.id, status: "running" }),
+        data: expect.objectContaining({ status: "error", runToken: null }),
+      }),
+    );
+  });
   it("does no work unless it atomically claims the queued match", async () => {
     db.chessMatch.updateMany.mockResolvedValue({ count: 0 });
     await handleChessRunJob({ data: { matchId: "match-id" } });

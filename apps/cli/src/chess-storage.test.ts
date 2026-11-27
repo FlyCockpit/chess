@@ -77,6 +77,27 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 describe("chess storage", () => {
+  it("reads the current parked human snapshot and rejects a missing turn", async () => {
+    const match = createMatch({
+      white: { name: "Human", model: "human", protocol: "human" },
+      black: model,
+      rules: {},
+    });
+    match.turn = {
+      type: "human",
+      turnId: "11111111-1111-4111-8111-111111111111",
+      side: "w",
+      expectedSeq: 0,
+      startedAt: "2026-11-27T00:00:00.000Z",
+      deadline: "2026-11-27T00:01:00.000Z",
+    };
+    const file = path.join(dir, "human.json");
+    await writeGame(file, match);
+    expect(await readGame(file)).toEqual(match);
+    const { turn: _turn, ...old } = match;
+    await writeFile(file, JSON.stringify(old));
+    await expect(readGame(file)).rejects.toThrow(/unsupported ruleset or archive/i);
+  });
   it("round-trips an archive without leaving temporary files", async () => {
     const match = createMatch({ white: player, black: player, rules: {} });
     const file = path.join(dir, "game.json");

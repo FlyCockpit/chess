@@ -364,6 +364,7 @@ describe("the human's clock on a timed local board", () => {
     expect(moved.status).toBe(200);
     const match = await stateOf(local.server);
     expect(match.status).toBe("running");
+    expect(match.turn).toEqual({ type: "idle" });
     expect(match.events.map((event: { type: string }) => event.type)).toEqual([
       "timing",
       "attempt",

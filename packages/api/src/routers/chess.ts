@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   createMatch,
+  finishMatch,
   isOldRulesVersion,
   MAX_ARCHIVE_BYTES,
   type MatchArchive,
@@ -32,12 +33,19 @@ import { admitHostedMatch } from "../lib/chess-locks";
 import { getModelCatalog } from "../lib/chess-models";
 import { spectatorEvaluationsFor } from "../lib/chess-spectator";
 import { chessStatsColumns, INTERRUPTED_ENDING, STOPPED_ENDING } from "../lib/chess-stats";
+import {
+  type ChessTurnColumns,
+  chessTurnFromColumns,
+  chessTurnMetadata,
+  chessTurnSelect,
+} from "../lib/chess-turn";
 import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagination";
 import { createProcedureBudget } from "../lib/procedure-budget";
 import { openOwnerOpenRouterKey, providerKeySecrets } from "../lib/provider-key";
 import { slugify } from "../lib/slug";
 
 const summary = {
+  ...chessTurnSelect,
   id: true,
   slug: true,
   createdAt: true,
@@ -62,14 +70,29 @@ const cardEnding = endingSummarySchema.nullable().catch(null);
  * A card: the stored short ending, and `oldRules` when the game was played under a
  * ruleset this build no longer reads (it lists, but has no replay).
  */
-const withEnding = <Row extends { ending: Prisma.JsonValue; rulesVersion: string | null }>({
-  rulesVersion,
-  ...row
-}: Row) => ({
-  ...row,
-  ending: cardEnding.parse(row.ending),
-  oldRules: isOldRulesVersion(rulesVersion),
-});
+const withEnding = <
+  Row extends ChessTurnColumns & { ending: Prisma.JsonValue; rulesVersion: string | null },
+>(
+  input: Row,
+) => {
+  const {
+    rulesVersion,
+    turnType: _turnType,
+    turnId: _turnId,
+    turnSide: _turnSide,
+    turnExpectedSeq: _turnExpectedSeq,
+    turnStartedAt: _turnStartedAt,
+    turnDeadline: _turnDeadline,
+    pendingMove: _pendingMove,
+    ...row
+  } = input;
+  return {
+    ...row,
+    ending: cardEnding.parse(row.ending),
+    oldRules: isOldRulesVersion(rulesVersion),
+    turn: chessTurnMetadata(chessTurnFromColumns(input)),
+  };
+};
 const slugInput = z.object({
   slug: z
     .string()
@@ -119,20 +142,14 @@ function checkedArchive(
   try {
     const archive = replay ? validateArchive(input) : parseArchive(input);
     if (status === "stopped") {
-      archive.status = "stopped";
-      archive.result = "*";
-      archive.termination = "cancelled";
+      finishMatch(archive, "*", "cancelled", "stopped");
     }
     const parsedEnding =
       status === "error" && ending !== undefined ? cardEnding.parse(ending) : null;
     if (status === "error" && parsedEnding?.kind === "credential-revoked") {
-      archive.status = "error";
-      archive.result = "*";
-      archive.termination = "credential-revoked";
+      finishMatch(archive, "*", "credential-revoked", "error");
     } else if (status === "error" && archive.status === "running") {
-      archive.status = "error";
-      archive.result = "*";
-      archive.termination = "interrupted";
+      finishMatch(archive, "*", "interrupted", "error");
     }
     return archive;
   } catch (error) {
@@ -252,6 +269,7 @@ async function inspectOwnMatch(slug: string, ownerId: string) {
       : null;
   return {
     archive,
+    turn: chessTurnMetadata(archive.turn),
     status: row.status,
     published: row.published,
     official: row.official,
@@ -329,6 +347,7 @@ export const chessRouter = {
     return {
       ...withEnding(rest),
       archive,
+      turn: chessTurnMetadata(archive.turn),
       spectatorEvaluations: spectatorEvaluationsFor({ ...row, archive }),
     };
   }),

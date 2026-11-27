@@ -14,6 +14,7 @@ import { createRouterClient } from "@orpc/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type DeepMockProxy, mockReset } from "vitest-mock-extended";
 import type { Context } from "../context";
+import { chessTurnColumns } from "../lib/chess-turn";
 
 vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
@@ -99,6 +100,7 @@ const newConfig = () => ({ white: baseline, black: baseline, rules: {} });
 function row() {
   const archive = match();
   return {
+    ...chessTurnColumns({ type: "idle" }),
     id: "id",
     slug: "test-game",
     createdAt: new Date(),
@@ -240,6 +242,52 @@ beforeEach(() => {
   db.openRouterConnection.findUnique.mockResolvedValue(null);
 });
 describe("chess public projection and operator boundaries", () => {
+  it("projects bounded turn metadata without leaking the pending input into cards", async () => {
+    const record = row();
+    const archive = createMatch(
+      {
+        white: { name: "Human", model: "human", protocol: "human" },
+        black: baseline,
+        rules: {},
+      },
+      "hosted",
+    );
+    archive.turn = {
+      type: "human-move",
+      turnId: "11111111-1111-4111-8111-111111111111",
+      side: "w",
+      expectedSeq: 0,
+      startedAt: "2026-11-27T00:00:00.000Z",
+      deadline: "2026-11-27T00:01:00.000Z",
+      pendingMove: { move: "e2e4", receivedAt: "2026-11-27T00:00:01.000Z" },
+    };
+    db.chessMatch.findMany.mockResolvedValue([
+      { ...record, ...chessTurnColumns(archive.turn), archive },
+    ]);
+    const cards = await client(null).list({ limit: 10 });
+    const card = cards.items[0];
+    expect(card?.turn).toMatchObject({
+      type: "human-move",
+      turnId: archive.turn.turnId,
+      expectedSeq: 0,
+    });
+    expect(card?.turn).not.toHaveProperty("pendingMove");
+    expect(card).not.toHaveProperty("pendingMove");
+    expect(db.chessMatch.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 11 }));
+  });
+  it("rejects stored archives missing the current turn on public and owner readers", async () => {
+    const record = row();
+    const { turn: _turn, ...old } = record.archive;
+    db.chessMatch.findFirst.mockResolvedValue({ ...record, archive: old });
+    await expect(client(null).get({ slug: "test-game" })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Unsupported archive",
+    });
+    await expect(client().inspect({ slug: "test-game" })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Unsupported archive",
+    });
+  });
   it("bounds public lists and preserves published visibility alongside the cursor", async () => {
     db.chessMatch.findMany.mockResolvedValue([]);
     await client(null).list({ limit: 5 });

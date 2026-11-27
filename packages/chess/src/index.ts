@@ -1,9 +1,20 @@
 import { Chess, DEFAULT_POSITION, type Square } from "chess.js";
 import { z } from "zod";
 import { assertPinnedPrompt, pinnedPromptSchema, pinPrompt, promptVersionSchema } from "./prompts";
+import { turnStateSchema } from "./turn";
 
 export type { Color, PieceSymbol, Square } from "chess.js";
 export { Chess, DEFAULT_POSITION } from "chess.js";
+export type { ActiveTurn, TurnExpectation, TurnState } from "./turn";
+export {
+  acceptHumanMove,
+  beginTurn,
+  clearTurn,
+  expectTurn,
+  MAX_TURN_MS,
+  pendingHumanMoveSchema,
+  turnStateSchema,
+} from "./turn";
 
 /** True when chess.js can load the position, so `new Chess(fen)` will not throw later. */
 function isLoadableFen(fen: string): boolean {
@@ -376,10 +387,26 @@ export const archiveSchema = z
       /** The paying OpenRouter key was revoked, expired or disconnected mid-match. */
       "credential-revoked",
     ]),
+    turn: turnStateSchema,
     // No separate event-count cap: MAX_ARCHIVE_BYTES bounds every archive a reader accepts.
     events: z.array(eventSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((match, context) => {
+    const turn = match.turn;
+    if (turn.type === "idle") return;
+    const human = match.config[turn.side === "w" ? "white" : "black"].protocol === "human";
+    if (
+      match.status !== "running" ||
+      match.termination !== "playing" ||
+      match.result !== "*" ||
+      (turn.type === "model" ? human : !human) ||
+      turn.expectedSeq > match.events.length ||
+      (turn.type !== "model" && turn.expectedSeq !== match.events.length) ||
+      Date.parse(turn.deadline) - Date.parse(turn.startedAt) > match.config.rules.turnTimeoutMs
+    )
+      context.addIssue({ code: "custom", message: "Invalid archive turn state", path: ["turn"] });
+  });
 export type MatchArchive = z.infer<typeof archiveSchema>;
 
 /** The canonical archive file form; MAX_ARCHIVE_BYTES is measured on exactly this. */
@@ -430,6 +457,7 @@ export function createMatch(
     status: "running",
     result: "*",
     termination: "playing",
+    turn: { type: "idle" },
     events: [],
   };
   settleBoard(match, new Chess(config.initialFen));
@@ -458,6 +486,7 @@ export function finishMatch(
   match.status = status;
   match.result = result;
   match.termination = termination;
+  match.turn = { type: "idle" };
 }
 export function settleBoard(match: MatchArchive, chess: Chess) {
   if (chess.isCheckmate()) finishMatch(match, chess.turn() === "w" ? "0-1" : "1-0", "checkmate");
@@ -694,6 +723,12 @@ export function validateArchive(input: unknown): MatchArchive {
   for (const [index, event] of match.events.entries()) {
     if (event.seq !== index || event.ply !== ply || event.side !== chess.turn())
       throw new Error("Invalid event order");
+    if (
+      match.turn.type === "model" &&
+      index === match.turn.expectedSeq &&
+      chess.turn() !== match.turn.side
+    )
+      throw new Error("Invalid model turn anchor");
     if (event.type === "evaluation") {
       const previous = match.events[index - 1];
       if (
@@ -744,6 +779,8 @@ export function validateArchive(input: unknown): MatchArchive {
       throw new Error("Move validation mismatch");
     if (event.reason !== attemptReason(san, event.move, event.stopReason))
       throw new Error("Attempt reason mismatch");
+    if (san !== null && match.turn.type === "model" && index >= match.turn.expectedSeq)
+      throw new Error("Model turn spans a completed turn");
     if (san !== null && (event.reply !== undefined || event.stopReason !== undefined))
       throw new Error("Reply record on an accepted move");
     if (match.config.rules.remarks === "off" && event.comment)
@@ -756,6 +793,8 @@ export function validateArchive(input: unknown): MatchArchive {
     } else illegalThisTurn += 1;
     terminal = chess.isGameOver() || forfeitsAfter(match.config.rules, illegalThisTurn);
   }
+  if (match.turn.type !== "idle" && match.turn.side !== chess.turn())
+    throw new Error("Turn does not match side to move");
   if (match.status === "running" && terminal) throw new Error("Running game is terminal");
   if (
     match.termination === "checkmate" &&

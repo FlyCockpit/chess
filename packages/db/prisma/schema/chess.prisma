@@ -23,6 +23,16 @@ model ChessMatch {
   identityMode         String
   runToken             String?
   heartbeatAt          DateTime?
+  /// Internal turn state: idle | model (claimed) | human (parked) | human-move (ready).
+  /// Human waits/ready inputs have no runToken and consume no worker slot.
+  turnType             String    @default("idle")
+  turnId               String?
+  turnSide             String?
+  turnExpectedSeq      Int?
+  turnStartedAt        DateTime?
+  turnDeadline         DateTime?
+  /// One bounded UCI input + server receipt time; never a list or inference context.
+  pendingMove          Json?
   archive              Json
   /// Leaderboard stats, derived once from the archive on its terminal write
   /// (apps/worker persist, chess.importGame). Null until the match finishes;
@@ -59,6 +69,7 @@ model ChessMatch {
   @@index([ownerId, createdAt(sort: Desc)])
   @@index([promptVersion, createdAt(sort: Desc), id(sort: Desc)])
   @@index([status, heartbeatAt])
+  @@index([turnType, turnDeadline, id])
   @@index([status, createdAt])
   @@map("chess_match")
 }
