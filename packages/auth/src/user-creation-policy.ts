@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Locale } from "@cockpit-chess/config/locales";
+import { APIError } from "better-auth/api";
 
 type UserCreationMode = "admin-bootstrap" | "admin-invite";
 
@@ -58,4 +59,55 @@ export function markUserCreatedUnderGrant(): void {
 
 export function wasUserCreatedUnderGrant(): boolean {
   return userCreationModeStorage.getStore()?.created === true;
+}
+
+/** Better-Auth's admin route that creates a user (`auth.api.createUser`). */
+const ADMIN_CREATE_USER_PATH = "/admin/create-user";
+
+/**
+ * Better-Auth routes where an IdP signs the user in: the OAuth/OIDC callback
+ * (`/callback/<providerId>`, the genericOAuth SSO provider) and an ID-token
+ * sign-in (`/sign-in/social`). Their `emailVerified` is the IdP's
+ * `email_verified` claim, which this app trusts (docs/auth-and-routing.md
+ * § Admin invites).
+ */
+function isIdpSignInPath(path: string | undefined): boolean {
+  return path === "/sign-in/social" || (path?.startsWith("/callback/") ?? false);
+}
+
+/**
+ * Two rules for every user row Better-Auth creates
+ * (`databaseHooks.user.create.before`):
+ *
+ * - `/admin/create-user` runs only under the `admin-invite` grant, that is
+ *   only from `users.invite` (packages/api) on the server. Admins invite
+ *   through that procedure, which never lets anyone choose the password or
+ *   the verification state. An HTTP call to Better-Auth's own route (an admin
+ *   session can reach `/api/auth/admin/*`) is refused, sign-up enabled or not.
+ * - A new user is created verified only on an IdP sign-in. Everywhere else
+ *   (sign-up forces `false` itself; an admin could pass
+ *   `data: { emailVerified: true }`) the address is unproved until the link
+ *   mailed to it is used.
+ *
+ * Server code that writes the user table through Prisma (the SETUP_KEY
+ * first-admin claim, packages/api/src/lib/admin-bootstrap.ts) does not pass
+ * through here; see docs/auth-and-routing.md § Admin invites.
+ */
+export function refuseUnprovedUserCreation(
+  user: { emailVerified?: unknown },
+  context: { path?: string } | null | undefined,
+): void {
+  const path = context?.path;
+  if (path === ADMIN_CREATE_USER_PATH && getAllowedUserCreationMode() !== "admin-invite") {
+    throw new APIError("FORBIDDEN", {
+      message: "Invite users from the admin dashboard.",
+      code: "ADMIN_CREATE_USER_UNSUPPORTED",
+    });
+  }
+  if (user.emailVerified === true && !isIdpSignInPath(path)) {
+    throw new APIError("BAD_REQUEST", {
+      message: "An email address is verified only through the link mailed to it.",
+      code: "EMAIL_VERIFICATION_BY_MAIL_ONLY",
+    });
+  }
 }

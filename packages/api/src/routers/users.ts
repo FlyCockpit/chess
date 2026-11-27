@@ -1,6 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { auth } from "@cockpit-chess/auth";
 import { isUserBanned } from "@cockpit-chess/auth/ban";
+import {
+  inviteStateSelect,
+  isInvitePending,
+  recordResetLinkMailed,
+} from "@cockpit-chess/auth/password-reset-links";
 import { runWithAllowedUserCreation } from "@cockpit-chess/auth/user-creation-policy";
 import { SUPPORTED_LOCALES } from "@cockpit-chess/config/locales";
 import prisma, { type Prisma } from "@cockpit-chess/db";
@@ -14,8 +19,6 @@ import { createProcedureBudget } from "../lib/procedure-budget";
 import {
   createSetPasswordLink,
   INVITE_LINK_TTL_DAYS,
-  inviteStateSelect,
-  isInvitePending,
   SetPasswordLinkRefusedError,
 } from "../lib/set-password-link";
 
@@ -109,6 +112,12 @@ const INVITE_TARGET_SELECT = {
  * be emailed: the admin then has to pass it on themselves (one-time reveal in
  * the admin UI). When the email went out, the link exists only in the
  * invitee's inbox.
+ *
+ * Only a mailed link verifies the address when it is spent
+ * (@cockpit-chess/auth/password-reset-links): a link the admin passes on sets
+ * the password, and the invitee then confirms the address through the mail
+ * sign-in sends them. Otherwise anyone holding a revealed link could make an
+ * address nobody controls "verified".
  */
 type InviteDelivery =
   | { userId: string; emailSent: true }
@@ -120,7 +129,7 @@ async function deliverInvite(args: {
   email: string;
   locale: string;
 }): Promise<InviteDelivery> {
-  let link: { url: string; expiresAt: Date };
+  let link: { url: string; expiresAt: Date; token: string };
   try {
     link = await createSetPasswordLink({ userId: args.userId, locale: args.locale });
   } catch (err) {
@@ -149,21 +158,32 @@ async function deliverInvite(args: {
       // The admin is waiting on this response; the mailer's own send deadline
       // bounds it, and a failure falls back to the link reveal.
       await sendEmail({ to: args.email, subject, html });
-      return { userId: args.userId, emailSent: true };
     } catch (err) {
       // Never log the link: it is a credential until it is spent.
       console.warn(
         "[users.invite] failed to send invite email",
         err instanceof Error ? `${err.name}: ${err.message}` : "unknown error",
       );
+      return revealLink(args.userId, link);
     }
+    // Mailed: spending it proves the inbox. The mail is out either way, so a
+    // failed record only means the invitee confirms the address through the
+    // mail sign-in sends them; never hand the admin the link after that.
+    try {
+      await recordResetLinkMailed({ token: link.token, userId: args.userId, email: args.email });
+    } catch (err) {
+      console.error(
+        "[users.invite] failed to record the mailed invite link",
+        err instanceof Error ? `${err.name}: ${err.message}` : "unknown error",
+      );
+    }
+    return { userId: args.userId, emailSent: true };
   }
-  return {
-    userId: args.userId,
-    emailSent: false,
-    setPasswordUrl: link.url,
-    expiresAt: link.expiresAt,
-  };
+  return revealLink(args.userId, link);
+}
+
+function revealLink(userId: string, link: { url: string; expiresAt: Date }): InviteDelivery {
+  return { userId, emailSent: false, setPasswordUrl: link.url, expiresAt: link.expiresAt };
 }
 
 const USER_SELECT = {
@@ -269,9 +289,11 @@ export const usersRouter = {
       //
       // The account starts unverified, and the invite email is the only mail:
       // createUser sends no verification mail, and sign-in's resend
-      // (`sendOnSignIn`) needs the correct password, which nobody has. Spending
-      // the link proves the inbox and marks the email verified then
-      // (`onPasswordReset`), so an invite to a mistyped address never yields
+      // (`sendOnSignIn`) needs the correct password, which nobody has yet.
+      // Spending a MAILED link proves the inbox and marks the email verified
+      // then (@cockpit-chess/auth/password-reset-links); a link revealed to
+      // the admin only sets the password, and sign-in then mails the invitee
+      // a verification link. So an invite to a mistyped address never yields
       // a verified account.
       const unusablePassword = generateUnusablePassword();
 
@@ -342,8 +364,7 @@ export const usersRouter = {
    * Pending is decided server-side by `isInvitePending` (unverified, only a
    * credential account, never signed in) — not by `emailVerified` alone, which
    * an active SSO user can also have. Anything else is refused with
-   * INVITE_NOT_PENDING (409), and `createSetPasswordLink` independently refuses
-   * any user with a non-credential account, under its per-user lock.
+   * INVITE_NOT_PENDING (409).
    *
    * The checks here are a fast path; `createSetPasswordLink` repeats them
    * under the lock a finishing password reset also takes, so an invitee who

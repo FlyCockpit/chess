@@ -3,10 +3,7 @@ import { DEVICE_FLOW_SESSION_ORIGIN } from "@cockpit-chess/config/cli";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { hashPassword } from "better-auth/crypto";
 import { lockCliCredentials, withCliCredentialLockSlot } from "./device-redemption-lock.js";
-import {
-  lockSetPasswordLinks,
-  RESET_PASSWORD_IDENTIFIER_PREFIX,
-} from "./set-password-link-lock.js";
+import { deleteResetLinks, lockSetPasswordLinks } from "./set-password-link-lock.js";
 
 /**
  * The Prisma writes that revoke every standing companion-CLI credential a user
@@ -103,11 +100,11 @@ async function runRevocation(
  * reset. Every other outstanding reset link for the user is deleted as well,
  * under the set-password-link lock an invite resend holds while it mints one.
  *
- * Completing a reset also proves control of the mailbox — the token only ever
- * reaches the user through an emailed link, or through an admin invite the
- * admin vouched for — so an unverified account is marked verified in the same
- * transaction. Without that, an invited user (created unverified) who has just
- * set their password would be refused at sign-in by `requireEmailVerification`.
+ * Spending the link verifies the email only when that link was mailed, and
+ * that happens in the `/reset-password` after-hook, which knows the token
+ * (password-reset-links.ts `verifyEmailIfResetLinkWasMailed`): this callback
+ * is told only the user. A link revealed to the admin (the invite mail was not
+ * sent) proves nothing about the mailbox.
  *
  * Better-Auth calls this AFTER it has committed the new password and consumed
  * the reset token, so a throw here does not undo the reset: the password is
@@ -139,20 +136,17 @@ export async function revokeCredentialsAfterPasswordReset(
         where: { value: userId, identifier: { startsWith: TWO_FACTOR_CHALLENGE_PREFIX } },
       }),
       // Serialized with an admin's invite resend (set-password-link-lock.ts):
-      // a link minted while this reset was finishing is deleted here, and a
-      // resend that waits for this lock finds the account verified and refuses.
+      // a link minted while this reset was finishing is deleted here. A resend
+      // after it mints again only while the account is still a pending invite
+      // (a revealed link verifies nothing); a mailed link's verification, in
+      // the /reset-password after-hook, deletes the user's links once more
+      // under the same lock (password-reset-links.ts).
       // Taken after the CLI-credential lock, which nothing that holds this one
       // ever waits for, so the order cannot deadlock.
       lockSetPasswordLinks(userId),
       // The reset is spent; any other reset link for the user (an older
       // forgot-password mail, an invite link) dies with it.
-      prisma.verification.deleteMany({
-        where: { value: userId, identifier: { startsWith: RESET_PASSWORD_IDENTIFIER_PREFIX } },
-      }),
-      prisma.user.updateMany({
-        where: { id: userId, emailVerified: false },
-        data: { emailVerified: true },
-      }),
+      deleteResetLinks(userId),
     ],
     sleep,
   );

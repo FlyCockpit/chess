@@ -1,12 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { auth } from "@cockpit-chess/auth";
 import { isUserBanned } from "@cockpit-chess/auth/ban";
+import { withLockSlot } from "@cockpit-chess/auth/lock-slots";
+import { inviteStateSelect, isInvitePending } from "@cockpit-chess/auth/password-reset-links";
 import {
+  deleteResetLinks,
+  lockSetPasswordLinks,
   RESET_PASSWORD_IDENTIFIER_PREFIX,
-  setPasswordLinkLockKey,
 } from "@cockpit-chess/auth/set-password-link-lock";
 import { DEFAULT_LOCALE, isSupportedLocale } from "@cockpit-chess/config/locales";
-import prisma, { type Prisma } from "@cockpit-chess/db";
+import prisma from "@cockpit-chess/db";
 import { env } from "@cockpit-chess/env/server";
 
 /**
@@ -17,47 +20,6 @@ import { env } from "@cockpit-chess/env/server";
  */
 export const INVITE_LINK_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const INVITE_LINK_TTL_DAYS = INVITE_LINK_TTL_SECONDS / (24 * 60 * 60);
-
-/** Better-Auth's id for an email/password account (`Account.providerId`). */
-const CREDENTIAL_PROVIDER_ID = "credential";
-
-/**
- * What decides whether a user is still an unfinished invite. Bounded: two
- * account rows are enough to tell "exactly one" from "more", and one live
- * session is enough to tell "never signed in" from "signed in".
- */
-export function inviteStateSelect(now: Date) {
-  return {
-    emailVerified: true,
-    accounts: { select: { providerId: true }, take: 2 },
-    sessions: { where: { expiresAt: { gt: now } }, select: { id: true }, take: 1 },
-  } satisfies Prisma.UserSelect;
-}
-
-/**
- * Pending invite = an account nobody has started using: email not verified,
- * exactly one Account row and it is the email/password ("credential") one, and
- * no live session.
- *
- * `emailVerified === false` alone is NOT enough. Better-Auth's genericOAuth
- * copies the IdP's `email_verified ?? false`, so an active SSO user can be
- * unverified; minting a set-password link for them would let whoever holds it
- * add a password next to the SSO identity — an account takeover that also
- * skips the IdP's MFA. The non-credential account rule covers that, and the
- * live-session rule covers an account in use by any other route.
- */
-export function isInvitePending(row: {
-  emailVerified: boolean;
-  accounts: { providerId: string }[];
-  sessions: { id: string }[];
-}): boolean {
-  return (
-    !row.emailVerified &&
-    row.accounts.length === 1 &&
-    row.accounts[0]?.providerId === CREDENTIAL_PROVIDER_ID &&
-    row.sessions.length === 0
-  );
-}
 
 /**
  * Why no link was minted, decided under the per-user lock:
@@ -90,8 +52,14 @@ export class SetPasswordLinkRefusedError extends Error {
  * `GET /api/auth/reset-password/:token` validation and redirect, and the web
  * `/$lang/reset-password` page spends it with `authClient.resetPassword`. That
  * keeps every reset-side guarantee — single use, session revocation, the
- * `onPasswordReset` credential revocation and email verification — with no
- * second password-setting path.
+ * `onPasswordReset` credential revocation, and email verification when the
+ * link was mailed — with no second password-setting path.
+ *
+ * Minting verifies nothing. The caller records the link as mailed
+ * (`recordResetLinkMailed` in @cockpit-chess/auth/password-reset-links, with
+ * the returned `token`) only once the invite mail was accepted; only then
+ * does spending it verify the address. A link revealed to the admin sets the
+ * password and is spendable only while the invite is still pending.
  *
  * Minting directly (instead of calling `auth.api.requestPasswordReset`) is what
  * lets the invite pick its own expiry and email template without changing
@@ -100,10 +68,12 @@ export class SetPasswordLinkRefusedError extends Error {
  * Eligibility is decided inside the minting transaction, under the per-user
  * lock (`setPasswordLinkLockKey`) that a finishing password reset also takes
  * (packages/auth/src/credential-revocation.ts): the user must exist, not be
- * archived, and still be a pending invite ({@link isInvitePending}). A
- * caller's own earlier check is only a fast path; this one is race-free,
- * because the reset either verified the account before this check, or
- * deletes the link minted here right after.
+ * archived, and still be a pending invite (`isInvitePending`). A
+ * caller's own earlier check is only a fast path; this one is race-free:
+ * anything that activates the account (a mailed reset's verification,
+ * verify-email, an IdP link) deletes the user's links under the same lock,
+ * so it either committed before this check or deletes the link minted here
+ * right after. The transaction runs in a lock slot (lock-slots.ts).
  *
  * Every earlier unused reset link for the user is deleted in the same
  * transaction that writes the new one, under a per-user advisory lock, so a
@@ -129,7 +99,7 @@ export async function createSetPasswordLink({
   userId: string;
   locale: unknown;
   now?: Date;
-}): Promise<{ url: string; expiresAt: Date }> {
+}): Promise<{ url: string; expiresAt: Date; token: string }> {
   const authContext = await auth.$context;
   // Widened on purpose: today's config sets neither key, so the inferred
   // options type has no such properties; this keeps the runtime guard for the
@@ -150,34 +120,33 @@ export async function createSetPasswordLink({
   // 32 random bytes, URL-safe: the token rides in a URL path segment.
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(now.getTime() + INVITE_LINK_TTL_SECONDS * 1000);
-  const lockKey = setPasswordLinkLockKey(userId);
-  await prisma.$transaction(async (tx) => {
-    // Serializes link minting per user, and with a finishing reset, until
-    // this transaction ends.
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
-    const target = await tx.user.findUnique({
-      where: { id: userId },
-      select: { banned: true, banExpires: true, ...inviteStateSelect(now) },
-    });
-    if (!target) throw new SetPasswordLinkRefusedError("missing");
-    if (!isInvitePending(target)) throw new SetPasswordLinkRefusedError("not-pending");
-    if (isUserBanned(target)) throw new SetPasswordLinkRefusedError("archived");
-    await tx.verification.deleteMany({
-      where: { value: userId, identifier: { startsWith: RESET_PASSWORD_IDENTIFIER_PREFIX } },
-    });
-    await tx.verification.create({
-      data: {
-        identifier: `${RESET_PASSWORD_IDENTIFIER_PREFIX}${token}`,
-        value: userId,
-        expiresAt,
-      },
-      select: { id: true },
-    });
-  });
+  await withLockSlot(() =>
+    prisma.$transaction(async (tx) => {
+      // Serializes link minting per user, and with a finishing reset or an
+      // activation, until this transaction ends.
+      await lockSetPasswordLinks(userId, tx);
+      const target = await tx.user.findUnique({
+        where: { id: userId },
+        select: { banned: true, banExpires: true, ...inviteStateSelect(now) },
+      });
+      if (!target) throw new SetPasswordLinkRefusedError("missing");
+      if (!isInvitePending(target)) throw new SetPasswordLinkRefusedError("not-pending");
+      if (isUserBanned(target)) throw new SetPasswordLinkRefusedError("archived");
+      await deleteResetLinks(userId, tx);
+      await tx.verification.create({
+        data: {
+          identifier: `${RESET_PASSWORD_IDENTIFIER_PREFIX}${token}`,
+          value: userId,
+          expiresAt,
+        },
+        select: { id: true },
+      });
+    }),
+  );
 
   const callbackURL = inviteCallbackUrl(locale);
   const url = `${authContext.baseURL}/reset-password/${token}?callbackURL=${encodeURIComponent(callbackURL)}`;
-  return { url, expiresAt };
+  return { url, expiresAt, token };
 }
 
 /**

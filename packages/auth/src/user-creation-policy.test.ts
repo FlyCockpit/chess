@@ -1,3 +1,4 @@
+import { APIError } from "better-auth/api";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -5,6 +6,7 @@ import {
   getGrantedUserLocale,
   getUserCreationBlockReason,
   markUserCreatedUnderGrant,
+  refuseUnprovedUserCreation,
   runWithAllowedUserCreation,
   SIGNUP_DISABLED_MESSAGE,
   wasUserCreatedUnderGrant,
@@ -73,5 +75,57 @@ describe("signup-disabled decision", () => {
 
   it("keeps the stable message the admin-invite error translation matches on", () => {
     expect(SIGNUP_DISABLED_MESSAGE).toMatch(/sign-?up.*disabled/i);
+  });
+});
+
+describe("refuseUnprovedUserCreation", () => {
+  function refusal(run: () => void): string | undefined {
+    try {
+      run();
+    } catch (error) {
+      expect(error).toBeInstanceOf(APIError);
+      return (error as APIError).body?.code;
+    }
+    return undefined;
+  }
+  const create = { path: "/admin/create-user" };
+
+  it("lets /admin/create-user run only under the admin-invite grant", () => {
+    expect(refusal(() => refuseUnprovedUserCreation({}, create))).toBe(
+      "ADMIN_CREATE_USER_UNSUPPORTED",
+    );
+    runWithAllowedUserCreation("admin-bootstrap", () => {
+      expect(refusal(() => refuseUnprovedUserCreation({}, create))).toBe(
+        "ADMIN_CREATE_USER_UNSUPPORTED",
+      );
+    });
+    runWithAllowedUserCreation("admin-invite", () => {
+      expect(refusal(() => refuseUnprovedUserCreation({ emailVerified: false }, create))).toBe(
+        undefined,
+      );
+    });
+  });
+
+  it("creates a verified user only on an IdP sign-in", () => {
+    for (const path of ["/sign-up/email", "/admin/create-user", undefined]) {
+      runWithAllowedUserCreation("admin-invite", () => {
+        expect(refusal(() => refuseUnprovedUserCreation({ emailVerified: true }, { path }))).toBe(
+          "EMAIL_VERIFICATION_BY_MAIL_ONLY",
+        );
+      });
+    }
+    expect(refusal(() => refuseUnprovedUserCreation({ emailVerified: true }, null))).toBe(
+      "EMAIL_VERIFICATION_BY_MAIL_ONLY",
+    );
+    for (const path of ["/callback/sso", "/sign-in/social"]) {
+      expect(refusal(() => refuseUnprovedUserCreation({ emailVerified: true }, { path }))).toBe(
+        undefined,
+      );
+    }
+    expect(
+      refusal(() =>
+        refuseUnprovedUserCreation({ emailVerified: false }, { path: "/sign-up/email" }),
+      ),
+    ).toBe(undefined);
   });
 });

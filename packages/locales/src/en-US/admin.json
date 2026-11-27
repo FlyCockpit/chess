@@ -178,7 +178,7 @@
     "resendFailed": "Couldn't resend that invite. Try again.",
     "inviteNotPending": "This person has already started using their account or signs in another way, so there's no invite to resend.",
     "revealTitle": "Send this link to {{email}}",
-    "revealDescription": "The invite email couldn't be sent, so pass this link on yourself through a channel you trust. It lets them choose their password.",
+    "revealDescription": "The invite email couldn't be sent, so pass this link on yourself through a channel you trust. It lets them choose their password. They confirm their email address when they first sign in: we email them a link then.",
     "setPasswordLinkLabel": "One-time set-password link",
     "copySetPasswordLinkAriaLabel": "Copy set-password link",
     "setPasswordLinkHint": "Shown only once. It works one time and expires {{date}}. Anyone with the link can claim this account, so don't post it anywhere public. If it's lost or expires, use Resend invite.",

@@ -13,6 +13,25 @@ const env = vi.hoisted(
     },
 );
 vi.mock("@cockpit-chess/env/server", () => ({ env }));
+vi.mock("@cockpit-chess/env/shared", () => ({ env: { DATABASE_POOL_MAX: 10 } }));
+// The real lock slots, observed: the mint's transaction must run inside one.
+const slot = vi.hoisted(() => ({ held: 0, transactionsInSlot: 0 }));
+vi.mock("@cockpit-chess/auth/lock-slots", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@cockpit-chess/auth/lock-slots")>();
+  return {
+    ...actual,
+    withLockSlot: vi.fn(async <T>(fn: () => Promise<T>, options?: { nested?: number }) =>
+      actual.withLockSlot(async () => {
+        slot.held += 1;
+        try {
+          return await fn();
+        } finally {
+          slot.held -= 1;
+        }
+      }, options),
+    ),
+  };
+});
 const authOptions = vi.hoisted(
   () => ({}) as { verification?: { storeIdentifier?: string }; secondaryStorage?: object },
 );
@@ -26,6 +45,7 @@ vi.mock("@cockpit-chess/auth", () => ({
 }));
 
 const { default: prisma } = await import("@cockpit-chess/db");
+const { withLockSlot } = await import("@cockpit-chess/auth/lock-slots");
 const {
   createSetPasswordLink,
   INVITE_LINK_TTL_DAYS,
@@ -51,11 +71,16 @@ const pendingInvitee = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  slot.held = 0;
+  slot.transactionsInSlot = 0;
   delete env.CORS_ORIGIN;
   delete authOptions.verification;
   delete authOptions.secondaryStorage;
   // The interactive transaction runs its callback against the same mock.
-  db.$transaction.mockImplementation(async (operation: (tx: unknown) => unknown) => operation(db));
+  db.$transaction.mockImplementation(async (operation: (tx: unknown) => unknown) => {
+    if (slot.held > 0) slot.transactionsInSlot += 1;
+    return operation(db);
+  });
   db.$executeRaw.mockResolvedValue(1);
   db.user.findUnique.mockResolvedValue(pendingInvitee);
   db.verification.deleteMany.mockResolvedValue({ count: 0 });
@@ -69,7 +94,11 @@ describe("createSetPasswordLink", () => {
   // `internalAdapter.createVerificationValue`, and `resetPassword` looks up
   // `reset-password:<token>` and reads the user id from `value`.
   it("writes a Better-Auth reset-password row that expires after the invite TTL", async () => {
-    const { url, expiresAt } = await createSetPasswordLink({ userId: "u1", locale: "es-MX", now });
+    const {
+      url,
+      expiresAt,
+      token: returned,
+    } = await createSetPasswordLink({ userId: "u1", locale: "es-MX", now });
 
     expect(INVITE_LINK_TTL_DAYS).toBe(7);
     expect(expiresAt).toEqual(new Date(now.getTime() + INVITE_LINK_TTL_SECONDS * 1000));
@@ -81,6 +110,9 @@ describe("createSetPasswordLink", () => {
     // The link is Better-Auth's own token callback, redirecting to the web
     // reset page in the invitee's locale, flagged as an invite.
     const token = written.identifier.slice("reset-password:".length);
+    // The caller records the token as mailed once the invite mail went out
+    // (recordResetLinkMailed); only then does spending it verify the address.
+    expect(returned).toBe(token);
     const parsed = new URL(url);
     expect(`${parsed.origin}${parsed.pathname}`).toBe(
       `https://api.example.com/api/auth/reset-password/${token}`,
@@ -106,6 +138,16 @@ describe("createSetPasswordLink", () => {
     expect(order(db.$executeRaw)).toBeLessThan(order(db.user.findUnique));
     expect(order(db.user.findUnique)).toBeLessThan(order(db.verification.deleteMany));
     expect(order(db.verification.deleteMany)).toBeLessThan(order(db.verification.create));
+  });
+
+  // The transaction pins a pooled connection while it may wait for the lock,
+  // so it runs in a lock slot (lock-slots.ts), with no nested reservation.
+  it("runs the locked transaction in one lock slot", async () => {
+    await createSetPasswordLink({ userId: "u1", locale: "en-US", now });
+    expect(withLockSlot).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withLockSlot).mock.calls[0]?.[1]).toBeUndefined();
+    expect(slot.transactionsInSlot).toBe(1);
+    expect(slot.held).toBe(0);
   });
 
   // Decided under the lock a finishing password reset also takes, so an

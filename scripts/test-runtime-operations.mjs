@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -266,10 +267,241 @@ async function deviceFlowRaceCheck() {
   }
 }
 
+/**
+ * Admin invites on real Postgres with the real Better-Auth handler: only a
+ * mailed link verifies the email, neither a resend racing the invitee's own
+ * password setup nor ordinary email verification leaves a working link to an
+ * activated account, and a revealed link is refused once the account is
+ * active. Every side takes the per-user set-password-link lock
+ * (packages/auth/src/set-password-link-lock.ts, password-reset-links.ts).
+ *
+ * Resets go through the password-write lock exactly as apps/server mounts it
+ * (`withPasswordWriteLock` around the Better-Auth handler): the account hooks
+ * refuse a password write outside it.
+ */
+async function inviteRaceCheck() {
+  const [{ auth }, links, linkLock, writeLock, setPassword, { default: prisma }, { loadPg }] =
+    await Promise.all([
+      import("../packages/auth/src/index.ts"),
+      import("../packages/auth/src/password-reset-links.ts"),
+      import("../packages/auth/src/set-password-link-lock.ts"),
+      import("../packages/auth/src/password-write-lock.ts"),
+      import("../packages/api/src/lib/set-password-link.ts"),
+      import("../packages/db/src/index.ts"),
+      import("./db/lib/prisma.mjs"),
+    ]);
+  const pg = loadPg();
+  const observer = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await observer.connect();
+  const created = [];
+  const invitee = async (label) => {
+    const id = `invite-${label}-${randomUUID()}`;
+    created.push(id);
+    await prisma.user.create({
+      data: { id, name: "Invitee", email: `${id}@example.test`, emailVerified: false },
+    });
+    // users.invite's unusable password: a credential nobody holds.
+    await prisma.account.create({
+      data: {
+        id: randomUUID(),
+        userId: id,
+        accountId: id,
+        providerId: "credential",
+        password: await auth.$context.then((c) => c.password.hash(randomUUID())),
+      },
+    });
+    return { id, email: `${id}@example.test` };
+  };
+  const tokenOf = (url) => new URL(url).pathname.split("/").at(-1);
+  const mint = async (user, { mailed }) => {
+    const link = await setPassword.createSetPasswordLink({ userId: user.id, locale: "en-US" });
+    assert.equal(tokenOf(link.url), link.token);
+    if (mailed) {
+      assert.equal(
+        await links.recordResetLinkMailed({
+          token: link.token,
+          userId: user.id,
+          email: user.email,
+        }),
+        true,
+      );
+    }
+    return link.token;
+  };
+  // As apps/server mounts it: POST /reset-password runs holding the target
+  // user's password-write lock.
+  const spend = (token) => {
+    const request = new Request(`${process.env.BETTER_AUTH_URL}/api/auth/reset-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: process.env.BETTER_AUTH_URL },
+      body: JSON.stringify({ token, newPassword: `invitee-${randomUUID()}` }),
+    });
+    return writeLock.withPasswordWriteLock(
+      links.RESET_PASSWORD_PATH,
+      request,
+      () => auth.handler(request),
+      { getSession: (headers) => auth.api.getSession({ headers }) },
+    );
+  };
+  const verified = async (user) =>
+    (await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).emailVerified;
+  const resetLinks = (user) =>
+    prisma.verification.count({
+      where: {
+        value: user.id,
+        identifier: { startsWith: linkLock.RESET_PASSWORD_IDENTIFIER_PREFIX },
+      },
+    });
+  const waitForAdvisoryWaiters = async (label, count) => {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const { rows } = await observer.query(
+        `SELECT count(*)::int AS n FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+         WHERE a.datname = current_database() AND l.locktype = 'advisory' AND NOT l.granted`,
+      );
+      if (rows[0].n >= count) return;
+      await delay(25);
+    }
+    throw new Error(`Timed out waiting for: ${label}`);
+  };
+  try {
+    // 1. A mailed invite link verifies the email once spent; the account is
+    //    then active, so a resend is refused under the lock.
+    const mailedUser = await invitee("mailed");
+    const ok = await spend(await mint(mailedUser, { mailed: true }));
+    assert.equal(ok.status, 200, await ok.clone().text());
+    assert.equal(await verified(mailedUser), true, "a mailed link verifies the email");
+    await assert.rejects(
+      setPassword.createSetPasswordLink({ userId: mailedUser.id, locale: "en-US" }),
+      setPassword.SetPasswordLinkRefusedError,
+    );
+    assert.equal(await resetLinks(mailedUser), 0);
+
+    // 2. A link revealed to the admin sets the password, verifies nothing, and
+    //    leaves the invite pending: a mailed resend then verifies.
+    const shownUser = await invitee("shown");
+    const shown = await spend(await mint(shownUser, { mailed: false }));
+    assert.equal(shown.status, 200, await shown.clone().text());
+    assert.equal(await verified(shownUser), false, "a revealed link proves no mailbox");
+    const resent = await spend(await mint(shownUser, { mailed: true }));
+    assert.equal(resent.status, 200, await resent.clone().text());
+    assert.equal(await verified(shownUser), true);
+
+    // 3. The race: the invitee spends a mailed link while an admin resends.
+    //    A holder keeps the set-password-link lock, so the reset's revocation
+    //    (inside its password-write lock) and the resend both queue behind
+    //    it; whatever order they then run in, the account ends verified with
+    //    no working reset link.
+    const racedUser = await invitee("raced");
+    const racedToken = await mint(racedUser, { mailed: true });
+    const holder = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await holder.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        linkLock.setPasswordLinkLockKey(racedUser.id),
+      ]);
+      const resetting = spend(racedToken);
+      await waitForAdvisoryWaiters("the reset waiting on the set-password-link lock", 1);
+      const resending = setPassword
+        .createSetPasswordLink({ userId: racedUser.id, locale: "en-US" })
+        .then(
+          (link) => ({ token: link.token }),
+          (error) => ({ error }),
+        );
+      await waitForAdvisoryWaiters("the resend queued behind it", 2);
+      await holder.query("COMMIT");
+      const reset = await resetting;
+      assert.equal(reset.status, 200, await reset.clone().text());
+      const resend = await resending;
+      assert.equal(await verified(racedUser), true);
+      assert.equal(await resetLinks(racedUser), 0, "no reset link outlives the activation");
+      if (resend.token) {
+        const late = await spend(resend.token);
+        assert.equal(late.status, 400, "the raced resend's link is dead");
+      } else {
+        assert.ok(resend.error instanceof setPassword.SetPasswordLinkRefusedError);
+      }
+    } finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      await holder.end();
+    }
+
+    // 4. A revealed-link invitee sets a password, an admin resend during an
+    //    SMTP outage reveals another link, then the invitee verifies through
+    //    the ordinary verification mail: the activation deletes that leftover
+    //    link (packages/auth/src/account-activation.ts), so its holder cannot
+    //    replace the active account's password.
+    const verifyingUser = await invitee("verify-email");
+    const first = await spend(await mint(verifyingUser, { mailed: false }));
+    assert.equal(first.status, 200, await first.clone().text());
+    const leftover = await mint(verifyingUser, { mailed: false });
+    const authApi = createRequire(
+      new URL("../packages/auth/package.json", import.meta.url),
+    ).resolve("better-auth/api");
+    const { createEmailVerificationToken } = await import(authApi);
+    const verifyToken = await createEmailVerificationToken(
+      (await auth.$context).secret,
+      verifyingUser.email,
+    );
+    const verifiedRes = await auth.handler(
+      new Request(
+        `${process.env.BETTER_AUTH_URL}/api/auth/verify-email?token=${encodeURIComponent(verifyToken)}`,
+      ),
+    );
+    assert.equal(verifiedRes.status, 200, await verifiedRes.clone().text());
+    assert.equal(await verified(verifyingUser), true);
+    assert.equal(await resetLinks(verifyingUser), 0, "verification deletes leftover reset links");
+    assert.equal((await spend(leftover)).status, 400, "the revealed resend link is dead");
+    await assert.rejects(
+      setPassword.createSetPasswordLink({ userId: verifyingUser.id, locale: "en-US" }),
+      setPassword.SetPasswordLinkRefusedError,
+    );
+
+    // 5. Correctness does not hang on that cleanup: a revealed link that
+    //    survived it (written here as if every cleanup attempt had failed) is
+    //    refused at redemption and deleted, while a mailed forgot-password
+    //    link still resets the active account.
+    const linkRow = async (user, token) =>
+      prisma.verification.create({
+        data: {
+          identifier: `${linkLock.RESET_PASSWORD_IDENTIFIER_PREFIX}${token}`,
+          value: user.id,
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+    const survivor = `survivor-${randomUUID()}`;
+    await linkRow(verifyingUser, survivor);
+    const refused = await spend(survivor);
+    assert.equal(refused.status, 400, "a revealed link to an active account is refused");
+    assert.equal((await refused.json()).code, "INVALID_TOKEN");
+    assert.equal(await resetLinks(verifyingUser), 0, "the refused link is deleted");
+    const forgot = `forgot-${randomUUID()}`;
+    await linkRow(verifyingUser, forgot);
+    assert.equal(
+      await links.recordResetLinkMailed({
+        token: forgot,
+        userId: verifyingUser.id,
+        email: verifyingUser.email,
+      }),
+      true,
+    );
+    const forgotRes = await spend(forgot);
+    assert.equal(forgotRes.status, 200, await forgotRes.clone().text());
+    console.log(
+      "invites: mailed-only verification, resend/reset race, activation cleanup and redemption rules hold on real Postgres (5 cases).",
+    );
+  } finally {
+    await prisma.user.deleteMany({ where: { id: { in: created } } });
+    await observer.end();
+    await prisma.$disconnect();
+  }
+}
+
 async function main() {
   if (process.argv[2] === "--runtime-child") {
     assert.equal(process.env.RUNTIME_OPERATIONS_CHILD, "owned-disposable-services");
     if (process.argv[3] === "device-flow") await deviceFlowRaceCheck();
+    else if (process.argv[3] === "invite-race") await inviteRaceCheck();
     else await runtimeCheck(process.argv[3]);
     return;
   }
@@ -409,10 +641,17 @@ async function main() {
       BETTER_AUTH_SECRET: randomUUID() + randomUUID(),
       BETTER_AUTH_URL: "https://app.example.test",
     };
+    // The invite race loads the same Better-Auth instance, with its own
+    // throwaway secret.
+    const inviteEnv = {
+      BETTER_AUTH_SECRET: randomUUID() + randomUUID(),
+      BETTER_AUTH_URL: "https://app.example.test",
+    };
     for (const [mode, extra] of [
       ["embedded", {}],
       ["external", {}],
       ["device-flow", deviceEnv],
+      ["invite-race", inviteEnv],
     ]) {
       const result = execFileSync(
         process.execPath,

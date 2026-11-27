@@ -15,10 +15,15 @@ import {
   renderVerifyEmail,
   sendEmail,
 } from "@cockpit-chess/mailer";
-import { betterAuth } from "better-auth";
+import { BASE_ERROR_CODES, betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
-import { createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { admin, deviceAuthorization, genericOAuth, twoFactor } from "better-auth/plugins";
+import {
+  afterAccountCreate,
+  afterUserUpdate,
+  noteVerificationWrite,
+} from "./account-activation.js";
 import {
   passwordChangeRevocationTarget,
   revokeCredentialsAfterPasswordChange,
@@ -29,7 +34,15 @@ import {
   removeDeviceSessionIfUnlocked,
 } from "./device-redemption-lock.js";
 import { deviceFlowSessionData } from "./device-session-origin.js";
+import { refuseEmailChange } from "./email-change-policy.js";
 import { createPasswordPepper } from "./password-pepper.js";
+import {
+  isResetLinkRedeemable,
+  recordResetLinkMailed,
+  resetTokenOf,
+  spentResetToken,
+  verifyEmailIfResetLinkWasMailed,
+} from "./password-reset-links.js";
 import {
   fencePasswordSessionAfter,
   fencePasswordSessionBefore,
@@ -48,6 +61,7 @@ import {
   getGrantedUserLocale,
   getUserCreationBlockReason,
   markUserCreatedUnderGrant,
+  refuseUnprovedUserCreation,
 } from "./user-creation-policy.js";
 import { withVerificationCallback } from "./verification-callback.js";
 
@@ -142,9 +156,11 @@ export const auth = betterAuth({
     // the user's password-write lock (password-write-lock.ts).
     revokeSessionsOnPasswordReset: true,
     // Session revocation does not reach API keys: they authenticate from their
-    // own row. Revoke them (and any device-flow login still in flight) once the
-    // new password is committed, and mark the mailbox verified — see
-    // credential-revocation.ts. Better-Auth calls this AFTER committing the
+    // own row. Revoke them (and any device-flow login still in flight) and the
+    // user's other reset links once the new password is committed — see
+    // credential-revocation.ts. (Whether the reset also verifies the email is
+    // decided in the `/reset-password` after-hook below, which knows the
+    // token.) Better-Auth calls this AFTER committing the
     // password and consuming the token, so a throw cannot undo the reset; the
     // revocation therefore retries (idempotently) and, if it still fails, logs a
     // SECURITY error and makes the request report failure — the user then
@@ -155,7 +171,7 @@ export const auth = betterAuth({
     // Reset links (forgot-password) keep Better-Auth's 1-hour default. Admin
     // invites mint their own, longer-lived set-password token through the same
     // `reset-password:` verification rows (packages/api/src/lib/set-password-link.ts).
-    sendResetPassword: async ({ user, url }) => {
+    sendResetPassword: async ({ user, url, token }) => {
       // Same locale-resolution dance as sendVerificationEmail: Better-Auth's
       // callback `user` is typed against the base user shape, so `locale`
       // (an additionalField) isn't on it. Fetch the row via Prisma so the
@@ -179,6 +195,19 @@ export const auth = betterAuth({
         subject,
         html,
       });
+      // The link went to the mailbox, so spending it proves the address, and
+      // it stays spendable once the account is active (password-reset-links.ts).
+      // The mail is already out: a failed record must not fail the request. The
+      // link then counts as not mailed (refused for an active account, fail
+      // closed); the user requests another.
+      try {
+        await recordResetLinkMailed({ token, userId: user.id, email: user.email });
+      } catch (err) {
+        console.error(
+          "[auth] recording a mailed reset link failed:",
+          err instanceof Error ? `${err.name}: ${err.message}` : "unknown error",
+        );
+      }
     },
   },
   emailVerification: {
@@ -273,6 +302,17 @@ export const auth = betterAuth({
   // a `secondaryStorage` first — the defaults are not safe behind a proxy.
   rateLimit: { enabled: false },
   hooks: {
+    // A reset link the admin was shown (not mailed) is spendable only while
+    // the account is a pending invite, so one left over after activation is
+    // dead here even if the activation's tidy-up failed. Refused exactly like
+    // an expired token, which the reset page already handles
+    // (password-reset-links.ts `isResetLinkRedeemable`).
+    before: createAuthMiddleware(async (ctx) => {
+      const token = resetTokenOf({ path: ctx.path, body: ctx.body, query: ctx.query });
+      if (token && !(await isResetLinkRedeemable(token))) {
+        throw APIError.from("BAD_REQUEST", BASE_ERROR_CODES.INVALID_TOKEN);
+      }
+    }),
     // A password change that signs out other devices (the web settings form
     // always asks for that) means "my old password may have leaked": revoke
     // the user's CLI credentials too. Better-Auth already deleted the session
@@ -285,6 +325,27 @@ export const auth = betterAuth({
       // so it is no account-existence oracle (signup-response.ts).
       if (ctx.path === SIGN_UP_EMAIL_PATH) {
         return neutralizeSignUpResponse(ctx, { signupEnabled: SIGNUP_ENABLED });
+      }
+      // A spent reset link verifies the email only if it was mailed
+      // (password-reset-links.ts). The password is already set, so a failure
+      // here is logged, never surfaced: the user can verify through
+      // verify-email, which sign-in offers.
+      const resetToken = spentResetToken({
+        path: ctx.path,
+        body: ctx.body,
+        query: ctx.query,
+        returned: ctx.context.returned,
+      });
+      if (resetToken) {
+        try {
+          await verifyEmailIfResetLinkWasMailed(resetToken);
+        } catch (err) {
+          console.error(
+            "[auth] verifying the email of a mailed reset link failed:",
+            err instanceof Error ? `${err.name}: ${err.message}` : "unknown error",
+          );
+        }
+        return;
       }
       const target = passwordChangeRevocationTarget({
         path: ctx.path,
@@ -443,9 +504,14 @@ export const auth = betterAuth({
       // Once the write has committed, the after hook confirms the lock was
       // still held; a write that landed after it lapsed is quarantined
       // (scrambled hash, every session revoked) and the request fails.
+      // Linking an IdP identity activates an invited account: its leftover
+      // set-password links die (account-activation.ts).
       create: {
         before: async (account, context) => guardPasswordAccountCreate(account, context),
-        after: async () => confirmPasswordWriteLocked({ hash: passwordPepper.hash }),
+        after: async (account) => {
+          await confirmPasswordWriteLocked({ hash: passwordPepper.hash });
+          await afterAccountCreate(account);
+        },
       },
       update: {
         before: async (data) => guardPasswordAccountUpdate(data),
@@ -460,8 +526,22 @@ export const auth = betterAuth({
       },
     },
     user: {
+      // No email change in this app, and no admin-asserted verification
+      // (email-change-policy.ts). A write that verifies the email activates
+      // the account: its leftover set-password links die once it is
+      // committed (account-activation.ts).
+      update: {
+        before: async (data, context) => {
+          refuseEmailChange(data, context);
+          noteVerificationWrite(data, context);
+        },
+        after: async (user, context) => afterUserUpdate(user, context),
+      },
       create: {
         before: async (user, context) => {
+          // Only users.invite reaches /admin/create-user, and only an IdP
+          // sign-in creates a verified user (user-creation-policy.ts).
+          refuseUnprovedUserCreation(user, context);
           const email = user.email?.toLowerCase();
           const creationMode = getAllowedUserCreationMode();
           const blockReason = getUserCreationBlockReason({ signupEnabled: SIGNUP_ENABLED });

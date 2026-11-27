@@ -7,6 +7,9 @@
     ".": {
       "default": "./src/index.ts"
     },
+    "./password-reset-links": {
+      "default": "./src/password-reset-links.ts"
+    },
     "./password-pepper-store": {
       "default": "./src/password-pepper-store.ts"
     },
@@ -18,6 +21,9 @@
     },
     "./device-redemption-lock": {
       "default": "./src/device-redemption-lock.ts"
+    },
+    "./lock-slots": {
+      "default": "./src/lock-slots.ts"
     },
     "./password-sign-in-fence": {
       "default": "./src/password-sign-in-fence.ts"

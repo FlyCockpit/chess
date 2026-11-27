@@ -63,7 +63,7 @@ describe("CLI credential lock", () => {
 });
 
 describe("revokeCredentialsAfterPasswordReset", () => {
-  it("revokes API keys, every session, device codes, two-factor challenges and other reset links and verifies the email in one transaction", async () => {
+  it("revokes API keys, every session, device codes, two-factor challenges and other reset links in one transaction, and never verifies the email", async () => {
     await revokeCredentialsAfterPasswordReset("u1");
     expect(db.$transaction).toHaveBeenCalledTimes(1);
     expect(db.$transaction).toHaveBeenCalledWith([
@@ -75,7 +75,6 @@ describe("revokeCredentialsAfterPasswordReset", () => {
       "verification.deleteMany",
       "setPasswordLinkLock",
       "verification.deleteMany",
-      "user.updateMany",
     ]);
     // Every session again, after Better-Auth wrote the new hash: a sign-in
     // that verified the old one may have inserted its session in between.
@@ -90,11 +89,10 @@ describe("revokeCredentialsAfterPasswordReset", () => {
     expect(db.verification.deleteMany).toHaveBeenCalledWith({
       where: { value: "u1", identifier: { startsWith: "reset-password:" } },
     });
-    // Only an unverified row flips; a verified one is left untouched.
-    expect(db.user.updateMany).toHaveBeenCalledWith({
-      where: { id: "u1", emailVerified: false },
-      data: { emailVerified: true },
-    });
+    // A reset alone proves nothing about the mailbox: an invite link may have
+    // been shown to the admin. Only a mailed link verifies, in the
+    // /reset-password after-hook (password-reset-links.ts).
+    expect(db.user.updateMany).not.toHaveBeenCalled();
   });
 
   // Better-Auth has already committed the password and consumed the token when
@@ -112,12 +110,19 @@ describe("revokeCredentialsAfterPasswordReset", () => {
     });
     expect(db.$transaction).toHaveBeenCalledTimes(3);
     expect(sleeps).toEqual([100, 400]);
-    // Each attempt gets fresh write promises, and still verifies the email.
+    // Each attempt gets fresh write promises, and still deletes the reset
+    // links under the set-password-link lock.
     expect(db.apiKey.deleteMany).toHaveBeenCalledTimes(3);
-    expect(db.user.updateMany).toHaveBeenCalledTimes(3);
+    expect(
+      db.verification.deleteMany.mock.calls.filter(
+        ([args]) => args?.where?.identifier?.startsWith === "reset-password:",
+      ),
+    ).toHaveLength(3);
     for (const call of db.$transaction.mock.calls) {
-      expect(call[0]).toContain("user.updateMany");
+      expect(call[0]).toContain("setPasswordLinkLock");
+      expect(call[0]).toContain("verification.deleteMany");
     }
+    expect(db.user.updateMany).not.toHaveBeenCalled();
   });
 
   it("logs loudly with only the user id and rethrows after the last attempt", async () => {

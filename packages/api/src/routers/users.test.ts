@@ -61,6 +61,16 @@ vi.mock("../lib/set-password-link", async (importOriginal) => ({
   createSetPasswordLink,
 }));
 const { SetPasswordLinkRefusedError } = await import("../lib/set-password-link");
+// Only a mailed link verifies the address once spent: the router records it
+// after the send. The pending-invite rule itself is real: the router and the
+// minter share it.
+const recordResetLinkMailed = vi.hoisted(() => vi.fn());
+vi.mock("@cockpit-chess/auth/password-reset-links", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@cockpit-chess/auth/password-reset-links")>()),
+  recordResetLinkMailed,
+}));
+// The real module graph reaches lock-slots.ts, which reads the pool size.
+vi.mock("@cockpit-chess/env/shared", () => ({ env: { DATABASE_POOL_MAX: 10 } }));
 
 // Capture how each budget is declared and which key it is charged against,
 // and let a test make the next consume throw (`createProcedureBudget` has its
@@ -154,7 +164,9 @@ describe("usersRouter", () => {
     createSetPasswordLink.mockResolvedValue({
       url: SET_PASSWORD_URL,
       expiresAt: LINK_EXPIRES_AT,
+      token: "tok",
     });
+    recordResetLinkMailed.mockResolvedValue(true);
   });
 
   describe("auth gates", () => {
@@ -390,6 +402,31 @@ describe("usersRouter", () => {
       expect(sendEmailMock).toHaveBeenCalledWith(
         expect.objectContaining({ to: "new@example.com" }),
       );
+      // Only a mailed link verifies the address once spent; recorded after the send.
+      expect(recordResetLinkMailed).toHaveBeenCalledWith({
+        token: "tok",
+        userId: "new-user-id",
+        email: "new@example.com",
+      });
+      expect(sendEmailMock.mock.invocationCallOrder[0]).toBeLessThan(
+        recordResetLinkMailed.mock.invocationCallOrder[0] ?? 0,
+      );
+    });
+
+    it("keeps a mailed invite mailed when recording it fails, and never logs or reveals the link", async () => {
+      authApi.api.createUser.mockResolvedValue({ user: { id: "new-user-id" } });
+      sendEmailMock.mockResolvedValue(undefined);
+      recordResetLinkMailed.mockRejectedValue(new Error("db blip"));
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const client = createRouterClient(usersRouter, { context: buildContext() });
+      const res = await client.invite({ email: "new@example.com", name: "New", locale: "en-US" });
+
+      expect(res).toEqual({ userId: "new-user-id", emailSent: true });
+      expect(errorLog).toHaveBeenCalled();
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain(SET_PASSWORD_URL);
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain("tok");
+      errorLog.mockRestore();
     });
 
     it("creates the account under the invite grant, in the chosen language", async () => {
@@ -455,6 +492,8 @@ describe("usersRouter", () => {
         setPasswordUrl: SET_PASSWORD_URL,
         expiresAt: LINK_EXPIRES_AT,
       });
+      // A link the admin passes on proves nothing about the mailbox.
+      expect(recordResetLinkMailed).not.toHaveBeenCalled();
     });
 
     it("skips SMTP entirely and returns the link when email is not configured", async () => {
@@ -470,6 +509,7 @@ describe("usersRouter", () => {
 
       expect(sendEmailMock).not.toHaveBeenCalled();
       expect(res).toMatchObject({ emailSent: false, setPasswordUrl: SET_PASSWORD_URL });
+      expect(recordResetLinkMailed).not.toHaveBeenCalled();
     });
 
     it("reports a link failure without undoing the created user", async () => {
@@ -630,9 +670,35 @@ describe("usersRouter", () => {
       expect(sendEmailMock).toHaveBeenCalledWith(
         expect.objectContaining({ to: "pending@example.com" }),
       );
+      // The mailed link is recorded after the send, so spending it verifies.
+      expect(recordResetLinkMailed).toHaveBeenCalledWith({
+        token: "tok",
+        userId: "u2",
+        email: "pending@example.com",
+      });
+      expect(sendEmailMock.mock.invocationCallOrder[0]).toBeLessThan(
+        recordResetLinkMailed.mock.invocationCallOrder[0] ?? 0,
+      );
     });
 
-    it("returns the link to the admin when it can't be emailed", async () => {
+    it("keeps a mailed resend mailed when recording it fails, and never logs or reveals the link", async () => {
+      db.user.findUnique.mockResolvedValue(pending);
+      sendEmailMock.mockResolvedValue(undefined);
+      recordResetLinkMailed.mockRejectedValue(new Error("db blip"));
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const client = createRouterClient(usersRouter, { context: buildContext() });
+      await expect(client.resendInvite({ userId: "u2" })).resolves.toEqual({
+        userId: "u2",
+        emailSent: true,
+      });
+      expect(errorLog).toHaveBeenCalled();
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain(SET_PASSWORD_URL);
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain("tok");
+      errorLog.mockRestore();
+    });
+
+    it("returns the link to the admin when it can't be emailed, and records nothing", async () => {
       mailer.configured = false;
       db.user.findUnique.mockResolvedValue(pending);
 
@@ -641,6 +707,22 @@ describe("usersRouter", () => {
         emailSent: false,
         setPasswordUrl: SET_PASSWORD_URL,
       });
+      expect(recordResetLinkMailed).not.toHaveBeenCalled();
+    });
+
+    it("returns the link to the admin when the resend mail fails, and records nothing", async () => {
+      db.user.findUnique.mockResolvedValue(pending);
+      sendEmailMock.mockRejectedValue(new Error("SMTP down"));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const client = createRouterClient(usersRouter, { context: buildContext() });
+      await expect(client.resendInvite({ userId: "u2" })).resolves.toMatchObject({
+        emailSent: false,
+        setPasswordUrl: SET_PASSWORD_URL,
+      });
+      expect(recordResetLinkMailed).not.toHaveBeenCalled();
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(SET_PASSWORD_URL);
+      warn.mockRestore();
     });
 
     // A verified account is in use: handing an admin a working set-password
