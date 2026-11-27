@@ -30,6 +30,69 @@ afterEach(() => {
 });
 
 describe("shared chess heartbeat", () => {
+  it("uses monotonic elapsed time when the wall clock goes backwards", () => {
+    const one = claim("rollback");
+    const done = registerHeartbeat(one);
+    leave = [done];
+    const started = performance.now();
+    const mono = vi.spyOn(performance, "now").mockReturnValue(started + 8000);
+    vi.setSystemTime(Date.now() - 60_000);
+    try {
+      expect(() => done.assertUsable()).toThrow("ownership could not be confirmed");
+      expect(one.onFailing).toHaveBeenCalledTimes(1);
+    } finally {
+      mono.mockRestore();
+    }
+  });
+  it("fences a hung database call and checks elapsed time before dispatch after a clock jump", async () => {
+    const one = claim("hung");
+    const done = registerHeartbeat(one);
+    leave = [done];
+    let settle = (_value: { count: number }) => {};
+    const pending = new Promise<{ count: number }>((resolve) => {
+      settle = resolve;
+    });
+    db.chessMatch.updateMany.mockReturnValueOnce(pending as never);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(() => done.assertUsable()).not.toThrow();
+    // No timer callback needed: the synchronous actual-request guard fails closed.
+    vi.setSystemTime(Date.now() + 8000);
+    expect(() => done.assertUsable()).toThrow("ownership could not be confirmed");
+    expect(one.onFailing).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(1);
+    expect(one.onFailing).toHaveBeenCalledTimes(1);
+    settle({ count: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  it("refreshes new claims after a query timeout and ignores the late old result", async () => {
+    const old = claim("old");
+    const done = registerHeartbeat(old);
+    let settle = (_value: { count: number }) => {};
+    const pending = new Promise<{ count: number }>((resolve) => {
+      settle = resolve;
+    });
+    db.chessMatch.updateMany.mockReturnValueOnce(pending as never);
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(old.onFailing).toHaveBeenCalledTimes(1);
+    done();
+    const fresh = claim("fresh");
+    const freshDone = registerHeartbeat(fresh);
+    leave = [freshDone];
+    db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(db.chessMatch.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: { status: "running", OR: [{ id: "fresh", runToken: "token-fresh" }] },
+      }),
+    );
+    expect(() => freshDone.assertUsable()).not.toThrow();
+    settle({ count: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(old.onLost).not.toHaveBeenCalled();
+    expect(fresh.onLost).not.toHaveBeenCalled();
+    expect(() => freshDone.assertUsable()).not.toThrow();
+  });
   it("refreshes every claim with one UPDATE per tick, however many matches run", async () => {
     const claims = Array.from({ length: 300 }, (_, index) => claim(`m${index}`));
     leave = claims.map(registerHeartbeat);

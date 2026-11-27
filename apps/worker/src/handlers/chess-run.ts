@@ -191,6 +191,10 @@ async function playerKey(row: {
   if (!env.CHESS_HOSTED_ENABLED)
     throw new RunRefusedError("Hosted chess inference is disabled", "provider-error");
   if (row.credentialSource === "operator") {
+    // Re-check queued authority: demotion between create and claim must not spend
+    // the operator's funds. Own-key matches never reach this branch.
+    if (!isAdminRole(row.Owner.role ?? undefined))
+      throw new RunRefusedError("Operator billing requires an admin owner", "interrupted");
     if (!env.OPENROUTER_API_KEY)
       throw new RunRefusedError("Hosted chess inference is disabled", "provider-error");
     return { apiKey: env.OPENROUTER_API_KEY };
@@ -398,7 +402,12 @@ export async function handleChessRunJob(
           baseUrl: `${env.OPENROUTER_ORIGIN}/api/v1`,
           headers: attributionHeaders(),
           // The key-use lease, checked synchronously before every provider request.
-          ...(keyLease ? { beforeDispatch: keyLease.assertUsable } : {}),
+          beforeDispatch: () => {
+            controller.signal.throwIfAborted();
+            leaveHeartbeat.assertUsable();
+            keyLease?.assertUsable();
+            controller.signal.throwIfAborted();
+          },
           anthropicAuth: "bearer",
           inputMicrosPerMillion: Math.ceil(inputPrice * 1e12),
           outputMicrosPerMillion: Math.ceil(outputPrice * 1e12),

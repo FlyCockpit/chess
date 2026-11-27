@@ -12,7 +12,7 @@ import {
 import type prismaInstance from "@cockpit-chess/db";
 import { createRouterClient } from "@orpc/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DeepMockProxy } from "vitest-mock-extended";
+import { type DeepMockProxy, mockReset } from "vitest-mock-extended";
 import type { Context } from "../context";
 
 vi.mock("@cockpit-chess/db", async () => {
@@ -220,6 +220,8 @@ function uploadOfSize(target: number, fill = "x"): string {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  mockReset(db);
+  ensureRunnableJob.mockReset().mockResolvedValue({});
   invalidateForceTwoFactorSettingsCache();
   db.appSetting.findMany.mockResolvedValue([]);
   env.CHESS_HOSTED_ENABLED = true;
@@ -378,6 +380,27 @@ describe("chess public projection and operator boundaries", () => {
       }),
     );
     expect(ensureRunnableJob).toHaveBeenCalledWith({}, "chess-run", { matchId: "id" }, "chess-id");
+  });
+  it("never admits or enqueues when the fail-closed procedure budget is unavailable", async () => {
+    budget.mockRejectedValue(new Error("scheduling unavailable"));
+    await expect(client().create(newConfig())).rejects.toThrow();
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+  });
+  it("never overwrites a claimed or stopped match after an ambiguous enqueue failure", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    db.chessMatch.create.mockResolvedValue(row() as never);
+    ensureRunnableJob.mockRejectedValue(new Error("queue reply lost"));
+    db.chessMatch.updateMany.mockResolvedValue({ count: 0 });
+    await expect(client().create(newConfig())).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+    });
+    expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: { id: "id", status: "queued" },
+      data: { status: "error", ending: { kind: "interrupted" } },
+    });
+    log.mockRestore();
   });
   it("imports a replay-validated private archive without granting official provenance", async () => {
     const archive = match();
@@ -854,7 +877,11 @@ describe("hosted matches on the user's own OpenRouter key", () => {
       data: { reason: "not-connected" },
     });
     expect(db.openRouterConnection.findFirst).toHaveBeenCalledWith({
-      where: { userId: "user-1", status: "active" },
+      where: {
+        userId: "user-1",
+        status: "active",
+        OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }],
+      },
       select: { id: true },
     });
     expect(db.chessMatch.create).not.toHaveBeenCalled();
@@ -1048,7 +1075,13 @@ describe("hosted matches on the user's own OpenRouter key", () => {
     const result = await userClient("owner").inspect({ slug: "test-game" });
     expect(result).toMatchObject({ queuePosition: 3, credentialSource: "openrouter" });
     expect(db.chessMatch.count).toHaveBeenCalledWith({
-      where: { status: "queued", createdAt: { lt: queued.createdAt } },
+      where: {
+        status: "queued",
+        OR: [
+          { createdAt: { lt: queued.createdAt } },
+          { createdAt: queued.createdAt, id: { lt: queued.id } },
+        ],
+      },
     });
   });
 

@@ -43,24 +43,49 @@ const count = (value: unknown) =>
 export async function readChessEngineStats(
   connection: StatsRedis,
 ): Promise<ChessEnginePoolStats & { workers: number }> {
-  const keys: string[] = [];
+  const keys = new Set<string>();
   let cursor = "0";
-  // Bounded: one key per live worker process; stop after a few hundred.
+  let scans = 0;
+  let truncated = false;
+  // SCAN may repeat keys or return empty batches with a nonzero cursor. Bound
+  // both work and result size, and count each worker at most once.
   do {
     const [next, batch] = await connection.scan(cursor, "MATCH", `${KEY}*`, "COUNT", 100);
     cursor = next;
-    keys.push(...batch);
-  } while (cursor !== "0" && keys.length < 500);
+    for (const key of batch) {
+      if (keys.size >= 500 && !keys.has(key)) {
+        truncated = true;
+        break;
+      }
+      keys.add(key);
+    }
+    scans += 1;
+  } while (cursor !== "0" && keys.size < 500 && scans < 10);
+  // SCAN MATCH walks the whole shared keyspace, including unrelated queue/cache
+  // entries. A bounded prefix is unavailable telemetry, never a complete total.
+  if (cursor !== "0" || truncated) throw new Error("Hosted capacity scan incomplete");
   const total = { busy: 0, total: 0, waiting: 0, running: 0, concurrency: 0, workers: 0 };
-  if (!keys.length) return total;
+  if (!keys.size) return total;
   for (const raw of await connection.mget(...keys)) {
     if (!raw) continue;
-    let parsed: Record<string, unknown>;
+    let parsed: unknown;
     try {
-      parsed = JSON.parse(raw) as Record<string, unknown>;
+      parsed = JSON.parse(raw);
     } catch {
       continue;
     }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
+    if (
+      !("busy" in parsed) ||
+      !("total" in parsed) ||
+      !("waiting" in parsed) ||
+      !("running" in parsed) ||
+      !("concurrency" in parsed) ||
+      ![parsed.busy, parsed.total, parsed.waiting, parsed.running, parsed.concurrency].every(
+        (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
+      )
+    )
+      continue;
     total.workers += 1;
     total.busy += count(parsed.busy);
     total.total += count(parsed.total);

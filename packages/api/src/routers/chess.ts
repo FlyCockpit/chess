@@ -27,7 +27,7 @@ import {
   publicProcedure,
 } from "../index";
 import { sourceCodeUrl } from "../lib/build-commit";
-import { CHESS_CREATE_LOCK } from "../lib/chess-locks";
+import { admitHostedMatch } from "../lib/chess-locks";
 import { getModelCatalog } from "../lib/chess-models";
 import { spectatorEvaluationsFor } from "../lib/chess-spectator";
 import { chessStatsColumns, INTERRUPTED_ENDING, STOPPED_ENDING } from "../lib/chess-stats";
@@ -206,7 +206,6 @@ const refuse = (
   reason: ChessCreateRefusal,
   message: string,
 ) => new ORPCError(code, { message, data: { reason } });
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** One lock for every create: the queue, active and daily counts are read and written under it. */
 const createInput = matchConfigSchema.extend({
   /**
@@ -232,7 +231,13 @@ async function inspectOwnMatch(slug: string, ownerId: string) {
   const queuePosition =
     row.status === "queued"
       ? (await prisma.chessMatch.count({
-          where: { status: "queued", createdAt: { lt: row.createdAt } },
+          where: {
+            status: "queued",
+            OR: [
+              { createdAt: { lt: row.createdAt } },
+              { createdAt: row.createdAt, id: { lt: row.id } },
+            ],
+          },
         })) + 1
       : null;
   return {
@@ -393,38 +398,12 @@ export const chessRouter = {
     // counts below cannot be raced past (creation is rare: 12 per user per hour).
     const capped = billing === "openrouter";
     const row = await prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CHESS_CREATE_LOCK}))::text AS locked`;
-      const queued = await tx.chessMatch.count({ where: { status: "queued" } });
-      if (queued >= env.CHESS_QUEUE_MAX)
-        throw refuse("TOO_MANY_REQUESTS", "queue-full", "The match queue is full");
-      if (capped) {
-        // Again under the lock a Disconnect takes: a key deleted since the check above
-        // must not get a match queued after Disconnect cancelled the queued ones.
-        const connected = await tx.openRouterConnection.findFirst({
-          where: { userId: ownerId, status: "active" },
-          select: { id: true },
-        });
-        if (!connected)
-          throw refuse("PRECONDITION_FAILED", "not-connected", "Connect OpenRouter first");
-        const active = await tx.chessMatch.count({
-          where: {
-            ownerId,
-            credentialSource: "owner-openrouter",
-            status: { in: ["queued", "running"] },
-          },
-        });
-        if (active > 0)
-          throw refuse("CONFLICT", "active-match", "You already have a match queued or running");
-        const today = await tx.chessMatch.count({
-          where: {
-            ownerId,
-            credentialSource: "owner-openrouter",
-            createdAt: { gte: new Date(Date.now() - DAY_MS) },
-          },
-        });
-        if (today >= env.CHESS_USER_DAILY_MATCHES)
-          throw refuse("TOO_MANY_REQUESTS", "daily-limit", "Daily hosted match limit reached");
-      }
+      await admitHostedMatch(tx, {
+        ownerId,
+        ownKey: capped,
+        queueMax: env.CHESS_QUEUE_MAX,
+        dailyMax: env.CHESS_USER_DAILY_MATCHES,
+      });
       return tx.chessMatch.create({
         data: {
           ...metadata(archive),

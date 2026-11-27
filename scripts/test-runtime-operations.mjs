@@ -1004,10 +1004,305 @@ async function inviteRaceCheck() {
   }
 }
 
+/** Real database races; invoked only by this file's owned disposable-service child. */
+async function chessAdmissionCheck() {
+  console.log("chess: loading isolated admission fixture");
+  const [
+    { default: prisma },
+    { admitHostedMatch, CHESS_CREATE_LOCK },
+    queues,
+    worker,
+    chess,
+    { loadPg },
+  ] = await Promise.all([
+    import("../packages/db/src/index.ts"),
+    import("../packages/api/src/lib/chess-locks.ts"),
+    import("../packages/queue/src/index.ts"),
+    import("../apps/worker/src/handlers/chess-run.ts"),
+    import("../packages/chess/src/index.ts"),
+    import("./db/lib/prisma.mjs"),
+  ]);
+  const pg = loadPg();
+  const observer = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await observer.connect();
+  const owners = [];
+  const player = { name: "Baseline", model: "random", protocol: "random" };
+  const makeRow = (ownerId, overrides = {}) => ({
+    ownerId,
+    slug: `admission-${randomUUID()}`,
+    title: "Admission fixture",
+    whiteName: "Baseline",
+    blackName: "Baseline",
+    status: "queued",
+    source: "hosted",
+    rulesKey: "fixture",
+    contextMode: "fresh",
+    identityMode: "hidden",
+    credentialSource: "owner-openrouter",
+    heartbeatAt: new Date(),
+    archive: chess.createMatch({ white: player, black: player, rules: {} }, "hosted"),
+    ...overrides,
+  });
+  const owner = async () => {
+    const user = await prisma.user.create({
+      data: {
+        name: "Admission fixture",
+        email: `${randomUUID()}@example.test`,
+        emailVerified: true,
+      },
+    });
+    owners.push(user.id);
+    // Admission reads metadata only. This is deliberately not an executable provider key.
+    await prisma.openRouterConnection.create({
+      data: {
+        userId: user.id,
+        keyCiphertext: new Uint8Array([0]),
+        keyNonce: new Uint8Array(12),
+        keySecretId: "fixture",
+        keyHash: randomUUID(),
+        keyHint: "test",
+        status: "active",
+      },
+    });
+    return user.id;
+  };
+  const admit = (
+    ownerId,
+    { queueMax = 200, dailyMax = 20, ownKey = true, finished = false } = {},
+  ) =>
+    prisma.$transaction(async (tx) => {
+      await admitHostedMatch(tx, { ownerId, queueMax, dailyMax, ownKey });
+      return tx.chessMatch.create({
+        data: makeRow(ownerId, {
+          credentialSource: ownKey ? "owner-openrouter" : "operator",
+          status: finished ? "stopped" : "queued",
+        }),
+      });
+    });
+  const outcomes = async (calls) => {
+    const results = await Promise.allSettled(calls);
+    const accepted = results.filter((result) => result.status === "fulfilled");
+    const reasons = results
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason?.data?.reason);
+    return { accepted, reasons };
+  };
+  try {
+    console.log("chess: connected; testing simultaneous active/daily/queue admission");
+    const first = await owner();
+    let result = await outcomes([admit(first), admit(first), admit(first)]);
+    assert.equal(result.accepted.length, 1);
+    assert.deepEqual(result.reasons, ["active-match", "active-match"]);
+    await prisma.chessMatch.updateMany({ where: { ownerId: first }, data: { status: "stopped" } });
+
+    // A stopped/error game still consumes the rolling daily allowance. Old rows don't.
+    await prisma.chessMatch.create({
+      data: makeRow(first, {
+        status: "error",
+        createdAt: new Date(Date.now() - 86_400_000 - 60_000),
+      }),
+    });
+    result = await outcomes([
+      admit(first, { dailyMax: 2, finished: true }),
+      admit(first, { dailyMax: 2, finished: true }),
+    ]);
+    assert.equal(result.accepted.length, 1);
+    assert.deepEqual(result.reasons, ["daily-limit"]);
+    await prisma.chessMatch.updateMany({ where: { ownerId: first }, data: { status: "stopped" } });
+    await assert.rejects(
+      admit(first, { dailyMax: 2 }),
+      (error) => error.data?.reason === "daily-limit",
+    );
+
+    // Distinct owners and operator billing compete for the same final queue slot.
+    const second = await owner();
+    result = await outcomes([
+      admit(first, { ownKey: false, queueMax: 1 }),
+      admit(second, { ownKey: true, queueMax: 1 }),
+    ]);
+    assert.equal(result.accepted.length, 1);
+    assert.deepEqual(result.reasons, ["queue-full"]);
+    await prisma.chessMatch.updateMany({
+      where: { ownerId: { in: owners } },
+      data: { status: "stopped" },
+    });
+
+    console.log("chess: testing expiry/disconnect while admission waits on the lock");
+    for (const disconnect of [false, true]) {
+      const expiresAt = new Date(Date.now() + 2000);
+      if (!disconnect)
+        await prisma.openRouterConnection.update({
+          where: { userId: second },
+          data: { expiresAt },
+        });
+      let release;
+      let entered;
+      const inside = new Promise((resolve) => {
+        entered = resolve;
+      });
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      const holding = prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CHESS_CREATE_LOCK}))::text AS locked`;
+        if (disconnect) await tx.openRouterConnection.deleteMany({ where: { userId: second } });
+        entered();
+        await gate;
+      });
+      await inside;
+      const waiting = admit(second);
+      const rejected = assert.rejects(waiting, (error) => error.data?.reason === "not-connected");
+      try {
+        let blocked = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          const { rows } = await observer.query(`
+            SELECT count(*)::int AS n FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+            WHERE l.locktype = 'advisory' AND NOT l.granted
+              AND a.datname = current_database() AND a.query LIKE '%pg_advisory_xact_lock%'
+          `);
+          if (rows[0].n > 0) {
+            blocked = true;
+            break;
+          }
+          await delay(10);
+        }
+        assert.equal(blocked, true, "create must reach the advisory-lock wait");
+        if (!disconnect) {
+          assert.ok(
+            Date.now() < expiresAt.getTime(),
+            "key must still be live when create starts waiting",
+          );
+          await delay(expiresAt.getTime() - Date.now() + 25);
+        }
+      } finally {
+        release();
+        await holding;
+      }
+      await rejected;
+    }
+
+    // Exercise the real worker claim CAS against a concurrent stop. Invalid archive
+    // guarantees that even a claim winner cannot invoke an engine/provider.
+    console.log("chess: testing stop versus real worker claims");
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const row = await prisma.chessMatch.create({ data: makeRow(first, { archive: {} }) });
+      await Promise.all([
+        worker.handleChessRunJob({ data: { matchId: row.id } }),
+        prisma.chessMatch.updateMany({
+          where: { id: row.id, ownerId: first, status: { in: ["queued", "running"] } },
+          data: { status: "stopped", runToken: null },
+        }),
+      ]);
+      const after = await prisma.chessMatch.findUniqueOrThrow({ where: { id: row.id } });
+      assert.ok(["stopped", "error"].includes(after.status));
+      assert.equal(after.runToken, null);
+      await worker.handleChessRunJob({ data: { matchId: row.id } });
+      assert.equal(
+        (await prisma.chessMatch.findUniqueOrThrow({ where: { id: row.id } })).status,
+        after.status,
+      );
+    }
+
+    // Simulate a restarted worker finding missing/terminal queue jobs and dead claims.
+    console.log("chess: testing real queue restart reconciliation");
+    const stale = new Date(Date.now() - 360_000);
+    const missing = await prisma.chessMatch.create({
+      data: makeRow(first, { heartbeatAt: stale }),
+    });
+    const live = await prisma.chessMatch.create({ data: makeRow(first, { heartbeatAt: stale }) });
+    const terminal = await prisma.chessMatch.create({
+      data: makeRow(first, { heartbeatAt: stale }),
+    });
+    const dead = await prisma.chessMatch.create({
+      data: makeRow(first, { heartbeatAt: stale, status: "running", runToken: randomUUID() }),
+    });
+    const fresh = await prisma.chessMatch.create({
+      data: makeRow(first, { status: "running", runToken: randomUUID() }),
+    });
+    await queues.ensureRunnableJob(
+      queues.chessRunQueue,
+      "chess-run",
+      { matchId: live.id },
+      `chess-${live.id}`,
+    );
+    await queues.chessRunQueue.add(
+      "chess-run",
+      { matchId: terminal.id },
+      { jobId: `chess-${terminal.id}` },
+    );
+    // No consumer runs here; put a terminal job in Redis using BullMQ's own worker.
+    const consumerConnection = queues.createRedisConnection({ maxRetriesPerRequest: null });
+    const consumer = new queues.Worker(queues.QUEUE_NAMES.chessRun, async () => {}, {
+      connection: consumerConnection,
+      autorun: false,
+    });
+    try {
+      console.log("chess: taking one queued job through BullMQ to completion");
+      const claimToken = randomUUID();
+      const claimed = await consumer.getNextJob(claimToken, { block: false });
+      assert.ok(claimed);
+      await claimed.moveToCompleted({}, claimToken, false);
+    } finally {
+      await consumer.close();
+      consumerConnection.disconnect();
+    }
+    console.log("chess: reconciling missing, completed, live and fresh claims");
+    // Whichever waiting job was claimed is now terminal; the other remains live.
+    const checked = await worker.handleChessReconcileJob({ data: { reason: "cron" } });
+    assert.ok(checked.errored >= 3);
+    assert.equal(
+      (await prisma.chessMatch.findUniqueOrThrow({ where: { id: missing.id } })).status,
+      "error",
+    );
+    assert.equal(
+      (await prisma.chessMatch.findUniqueOrThrow({ where: { id: dead.id } })).status,
+      "error",
+    );
+    assert.equal(
+      (await prisma.chessMatch.findUniqueOrThrow({ where: { id: fresh.id } })).status,
+      "running",
+    );
+    const states = await Promise.all(
+      [live, terminal].map(
+        async (row) =>
+          (await prisma.chessMatch.findUniqueOrThrow({ where: { id: row.id } })).status,
+      ),
+    );
+    assert.deepEqual(states.sort(), ["error", "queued"]);
+    await queues.chessRunQueue.drain();
+    const unknown = await prisma.chessMatch.create({
+      data: makeRow(first, { heartbeatAt: stale }),
+    });
+    // A missing Redis connection is not evidence that the deterministic job is
+    // missing. The same production reconcile path must leave intent untouched.
+    queues.redisConnection.disconnect();
+    await worker.handleChessReconcileJob({ data: { reason: "cron" } });
+    assert.equal(
+      (await prisma.chessMatch.findUniqueOrThrow({ where: { id: unknown.id } })).status,
+      "queued",
+    );
+    console.log(
+      "chess: real PG simultaneous active/daily/queue admission, expiry/disconnect lock wait, stop/claim CAS and restart reconciliation passed.",
+    );
+  } finally {
+    console.log("chess: cleaning up owned fixtures and connections");
+    await observer.end();
+    await prisma.user.deleteMany({ where: { id: { in: owners } } });
+    await Promise.all(
+      Object.values(queues)
+        .filter((value) => value instanceof queues.Queue)
+        .map((queue) => queue.close()),
+    );
+    queues.redisConnection.disconnect();
+    await prisma.$disconnect();
+  }
+}
+
 async function main() {
   if (process.argv[2] === "--runtime-child") {
     assert.equal(process.env.RUNTIME_OPERATIONS_CHILD, "owned-disposable-services");
     if (process.argv[3] === "device-flow") await deviceFlowRaceCheck();
+    else if (process.argv[3] === "chess-admission") await chessAdmissionCheck();
     else if (process.argv[3] === "invite-race") await inviteRaceCheck();
     else if (process.argv[3] === "password-signin-race") await passwordSignInRaceCheck();
     else await runtimeCheck(process.argv[3]);
@@ -1016,6 +1311,7 @@ async function main() {
   if (process.argv[2] !== "--disposable-services") {
     throw new Error("Use node scripts/test-runtime-operations.mjs --disposable-services.");
   }
+  assert.ok(process.argv[3] === undefined || process.argv[3] === "--chess-admission-only");
   // Container names only. TEST_CONTAINER_PREFIX (shared with backup:test and
   // db:test-migrations) keeps this run's containers under your own prefix; an
   // empty or invalid value is an error, never the default.
@@ -1162,7 +1458,9 @@ async function main() {
       ["device-flow", deviceEnv],
       ["invite-race", inviteEnv],
       ["password-signin-race", inviteEnv],
+      ["chess-admission", {}],
     ]) {
+      if (process.argv[3] === "--chess-admission-only" && mode !== "chess-admission") continue;
       const result = execFileSync(
         process.execPath,
         ["--import", "tsx", file, "--runtime-child", mode],
@@ -1174,11 +1472,11 @@ async function main() {
             RUNTIME_OPERATIONS_CHILD: "owned-disposable-services",
           },
           timeout: 45_000,
-          stdio: ["ignore", "pipe", "pipe"],
+          stdio: mode === "chess-admission" ? "inherit" : ["ignore", "pipe", "pipe"],
           encoding: "utf8",
         },
       );
-      process.stdout.write(result);
+      if (mode !== "chess-admission") process.stdout.write(result);
     }
   } finally {
     const cleanupErrors = [];

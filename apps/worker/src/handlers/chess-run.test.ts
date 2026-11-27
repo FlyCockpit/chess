@@ -253,6 +253,7 @@ describe("durable chess worker", () => {
     // A write that never returns: moves, heartbeats and the terminal write still land,
     // and the run lets go after its bounded wait.
     vi.clearAllMocks();
+    mockReset(db);
     db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
     db.chessMatch.findUnique.mockResolvedValue(row());
     ensureJob.mockResolvedValue({});
@@ -427,6 +428,71 @@ describe("durable chess worker", () => {
       db.chessMatch.findUnique.mockResolvedValue(record);
       await handleChessRunJob({ data: { matchId: "match-id" } });
       expect(seen).toMatchObject({ maxOutputTokens: 65536, contextLength: 163840 });
+    } finally {
+      fetch.mockRestore();
+      env.CHESS_HOSTED_ENABLED = false;
+      env.OPENROUTER_API_KEY = undefined;
+    }
+  });
+  it("fences operator dispatch after ownership confirmation expires, without needing a timer tick", async () => {
+    vi.useFakeTimers();
+    env.CHESS_HOSTED_ENABLED = true;
+    env.OPENROUTER_API_KEY = "test-only";
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        data: [{ id: "vendor/model", pricing: { prompt: "0", completion: "0" } }],
+      }),
+    );
+    const record = row();
+    record.archive = createMatch(
+      {
+        white: { name: "Model", model: "vendor/model", protocol: "openai-chat" },
+        black: player,
+        rules: {},
+      },
+      "hosted",
+    );
+    db.chessMatch.findUnique.mockResolvedValue(record);
+    runner.override = async (match, options) => {
+      const dispatch = options?.credentials?.w?.beforeDispatch;
+      expect(dispatch).toBeTypeOf("function");
+      expect(() => dispatch?.()).not.toThrow();
+      vi.setSystemTime(Date.now() + 8000);
+      expect(() => dispatch?.()).toThrow();
+      expect(options?.signal?.reason).toBe(MATCH_INTERRUPTED);
+      finishAbortedMatch(match, options?.signal ?? new AbortController().signal);
+    };
+    try {
+      expect(await handleChessRunJob({ data: { matchId: "match-id" } })).toMatchObject({
+        termination: "interrupted",
+      });
+      expect(fetch).toHaveBeenCalledTimes(1); // catalog only; no inference
+    } finally {
+      fetch.mockRestore();
+      env.CHESS_HOSTED_ENABLED = false;
+      env.OPENROUTER_API_KEY = undefined;
+    }
+  });
+  it("does not bill operator inference for an owner demoted while queued", async () => {
+    env.CHESS_HOSTED_ENABLED = true;
+    env.OPENROUTER_API_KEY = "test-only";
+    const fetch = vi.spyOn(globalThis, "fetch");
+    const record = row();
+    record.Owner.role = "user";
+    record.archive = createMatch(
+      {
+        white: { name: "Model", model: "vendor/model", protocol: "openai-chat" },
+        black: player,
+        rules: {},
+      },
+      "hosted",
+    );
+    db.chessMatch.findUnique.mockResolvedValue(record);
+    try {
+      expect(await handleChessRunJob({ data: { matchId: "match-id" } })).toMatchObject({
+        termination: "interrupted",
+      });
+      expect(fetch).not.toHaveBeenCalled();
     } finally {
       fetch.mockRestore();
       env.CHESS_HOSTED_ENABLED = false;
