@@ -290,6 +290,7 @@
     "connectAction": "Connect OpenRouter",
     "reconnectTitle": "Reconnect OpenRouter",
     "reconnectBody": "OpenRouter no longer accepts your key. Connect again to create matches.",
+    "unreadableBody": "This server can't open your saved key, usually because its encryption secret changed. Connect again to create matches, or ask the operator to check CHESS_PROVIDER_KEY_SECRET.",
     "billedTo": "Billed to your OpenRouter key · {{remaining}} left",
     "billedToUnlimited": "Billed to your OpenRouter key · no spend limit",
     "rules_one": "One match at a time · up to {{count}} match a day",
@@ -301,6 +302,7 @@
     "officialOn": "Now counts on the leaderboard",
     "officialOff": "No longer counts on the leaderboard",
     "signInUser": "Sign in to run hosted matches on your own OpenRouter key.",
+    "signInAction": "Sign in",
     "openSettings": "Open OpenRouter settings"
   },
   "footer": "Built for the moves that make you look twice.",

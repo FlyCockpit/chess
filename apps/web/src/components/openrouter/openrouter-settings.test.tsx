@@ -1,14 +1,22 @@
 import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
 import enSettings from "@cockpit-chess/locales/src/en-US/settings.json";
+import esCommon from "@cockpit-chess/locales/src/es-MX/common.json";
+import esSettings from "@cockpit-chess/locales/src/es-MX/settings.json";
 import { createInstance } from "i18next";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider } from "react-i18next";
-import { beforeAll, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
   error: undefined as unknown,
   onSuccess: undefined as undefined | ((result: { stopped: string }) => void),
+  disconnectOptions: undefined as
+    | undefined
+    | {
+        retry?: (failureCount: number, error: unknown) => boolean;
+        onSuccess: (result: { stopped: string }) => void;
+      },
   toast: vi.fn(),
   query: {
     data: undefined as unknown,
@@ -37,7 +45,11 @@ vi.mock("@/utils/orpc", () => ({
       key: () => ["openrouter"],
       status: { queryOptions: () => ({}) },
       disconnect: {
-        mutationOptions: (options: { onSuccess: (result: { stopped: string }) => void }) => {
+        mutationOptions: (options: {
+          retry?: (failureCount: number, error: unknown) => boolean;
+          onSuccess: (result: { stopped: string }) => void;
+        }) => {
+          fixture.disconnectOptions = options;
           fixture.onSuccess = options.onSuccess;
           return options;
         },
@@ -58,11 +70,18 @@ const i18n = createInstance();
 beforeAll(async () => {
   await i18n.init({
     lng: "en-US",
-    resources: { "en-US": { common: enCommon, settings: enSettings } },
+    resources: {
+      "en-US": { common: enCommon, settings: enSettings },
+      "es-MX": { common: esCommon, settings: esSettings },
+    },
     defaultNS: "settings",
     interpolation: { escapeValue: false },
     react: { useSuspense: false },
   });
+});
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  await i18n.changeLanguage("en-US");
 });
 const copy = enSettings.openrouter;
 /** The static renderer escapes apostrophes. */
@@ -183,4 +202,31 @@ it.each(["none", "stopped", "pending"] as const)("reports disconnect outcome %s"
   render(connected());
   fixture.onSuccess?.({ stopped });
   expect(fixture.toast).toHaveBeenLastCalledWith(copy.disconnectDialog.toast[stopped]);
+});
+
+it("formats the suggested spend limit in the active locale's hint", async () => {
+  expect(render({ available: true, connected: false })).toContain("$10.00 is a good start");
+  await i18n.changeLanguage("es-MX");
+  const html = renderToStaticMarkup(
+    <I18nextProvider i18n={i18n}>
+      <OpenRouterSettings lang="es-MX" notice={null} onDismissNotice={() => {}} />
+    </I18nextProvider>,
+  );
+  expect(html).toContain("USD 10.00 es un buen comienzo");
+  expect(html).not.toContain("$10");
+});
+
+it("retries disconnect once on an online network drop, and never on HTTP errors or offline", () => {
+  render(connected());
+  const retry = fixture.disconnectOptions?.retry;
+  expect(retry).toBeTypeOf("function");
+
+  vi.stubGlobal("navigator", { onLine: true });
+  expect(retry?.(0, new TypeError("Failed to fetch"))).toBe(true);
+  expect(retry?.(1, new TypeError("Failed to fetch"))).toBe(false);
+  expect(retry?.(0, { status: 429, code: "TOO_MANY_REQUESTS" })).toBe(false);
+  expect(retry?.(0, { status: 503, code: "SERVICE_UNAVAILABLE" })).toBe(false);
+
+  vi.stubGlobal("navigator", { onLine: false });
+  expect(retry?.(0, new TypeError("Failed to fetch"))).toBe(false);
 });

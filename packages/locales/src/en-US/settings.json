@@ -119,7 +119,7 @@
       "revoke": "You can disconnect here at any time: this server deletes the key and stops your queued or running match on it. Revoking the key on OpenRouter also stops a running match, at its next request."
     },
     "limitLabel": "Spend limit for this key",
-    "limitHint": "The most this key can ever spend. $10 is a good start; you can raise it later on OpenRouter.",
+    "limitHint": "The most this key can ever spend. {{amount}} is a good start; you can raise it later on OpenRouter.",
     "noLimit": "No limit",
     "expiryLabel": "Key expires after",
     "expiryHint": "After this the key stops working and you connect again. 90 days is a good default.",

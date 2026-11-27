@@ -41,3 +41,4 @@ export function chessStatsColumns(match: MatchArchive) {
  */
 export const STOPPED_ENDING = { kind: "cancelled" } satisfies EndingSummary;
 export const INTERRUPTED_ENDING = { kind: "interrupted" } satisfies EndingSummary;
+export const CREDENTIAL_REVOKED_ENDING = { kind: "credential-revoked" } satisfies EndingSummary;

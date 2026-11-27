@@ -361,6 +361,7 @@
     "connectAction": "Conectar OpenRouter",
     "reconnectTitle": "Vuelve a conectar OpenRouter",
     "reconnectBody": "OpenRouter ya no acepta tu clave. Conéctate de nuevo para crear partidas.",
+    "unreadableBody": "Este servidor no puede abrir tu clave guardada, por lo general porque cambió su secreto de cifrado. Conéctate de nuevo para crear partidas o pídele al operador que revise CHESS_PROVIDER_KEY_SECRET.",
     "billedTo": "Se cobra a tu clave de OpenRouter · quedan {{remaining}}",
     "billedToUnlimited": "Se cobra a tu clave de OpenRouter · sin límite de gasto",
     "rules_one": "Una partida a la vez · hasta {{count}} partida al día",
@@ -372,6 +373,7 @@
     "officialOn": "Ahora cuenta en la clasificación",
     "officialOff": "Ya no cuenta en la clasificación",
     "signInUser": "Inicia sesión para jugar partidas alojadas con tu propia clave de OpenRouter.",
+    "signInAction": "Iniciar sesión",
     "openSettings": "Abrir configuración de OpenRouter"
   },
   "tagline": "La arena de ajedrez del agente",

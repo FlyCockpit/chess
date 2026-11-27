@@ -135,16 +135,14 @@ function asErrorShape(error: unknown): ErrorShape | null {
   return error as ErrorShape;
 }
 
+function readRetryAfter(source: unknown): unknown {
+  if (!source || typeof source !== "object") return undefined;
+  const record = source as { retryAfter?: unknown; retryAfterSeconds?: unknown };
+  return record.retryAfter ?? record.retryAfterSeconds;
+}
+
 function getRetryAfter(e: ErrorShape): number | null {
-  const fromData =
-    e.data && typeof e.data === "object" && "retryAfter" in e.data
-      ? (e.data as { retryAfter?: unknown }).retryAfter
-      : undefined;
-  const fromCause =
-    e.cause && typeof e.cause === "object" && "retryAfter" in e.cause
-      ? (e.cause as { retryAfter?: unknown }).retryAfter
-      : undefined;
-  const raw = fromData ?? fromCause;
+  const raw = readRetryAfter(e.data) ?? readRetryAfter(e.cause);
   const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : Number.NaN;
   return Number.isFinite(n) && n > 0 ? Math.ceil(n) : null;
 }

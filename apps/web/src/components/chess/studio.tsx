@@ -177,7 +177,13 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
   ) : !ownKey ? (
     <div className="cc-empty mb-8">
       <h3>{t("studio.reconnectTitle")}</h3>
-      <p>{t("studio.reconnectBody")}</p>
+      <p>
+        {t(
+          keyStatus.invalidReason === "unreadable"
+            ? "studio.unreadableBody"
+            : "studio.reconnectBody",
+        )}
+      </p>
       {settingsLink(t("studio.connectAction"))}
     </div>
   ) : (
@@ -221,7 +227,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
             params={{ lang: i18n.language }}
             search={{ redirectTo: `/${i18n.language}/?tab=studio` }}
           >
-            {t("studio.signIn")}
+            {t("studio.signInAction")}
           </Link>
         </div>
       ) : (

@@ -266,12 +266,12 @@ describe("openrouter.disconnect", () => {
     expect(JSON.stringify(fake.valkey.published)).not.toContain("CANARY");
   });
 
-  it("cancels queued own-key matches in the delete's transaction", async () => {
+  it("cancels queued own-key matches as credential-revoked in the delete's transaction", async () => {
     await client("user-c").disconnect();
     expect(db.$transaction).toHaveBeenCalledTimes(1);
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
       where: { ownerId: "user-c", credentialSource: "owner-openrouter", status: "queued" },
-      data: { status: "stopped", runToken: null, ending: { kind: "cancelled" } },
+      data: { status: "error", runToken: null, ending: { kind: "credential-revoked" } },
     });
     expect(db.openRouterConnection.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
       db.chessMatch.updateMany.mock.invocationCallOrder[0] ?? 0,

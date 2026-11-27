@@ -426,6 +426,54 @@ describe("chess public projection and operator boundaries", () => {
       result: "*",
     });
   });
+  it("normalizes a queued own-key match cancelled by Disconnect as credential-revoked", async () => {
+    const archive = match();
+    db.chessMatch.findFirst.mockResolvedValue({
+      ...row(),
+      status: "error",
+      ending: { kind: "credential-revoked" },
+      archive,
+    });
+    const inspected = await client("user").inspect({ slug: "test-game" });
+    expect(inspected.archive).toMatchObject({
+      status: "error",
+      termination: "credential-revoked",
+      result: "*",
+    });
+    const published = await client(null).get({ slug: "test-game" });
+    expect(published.archive).toMatchObject({
+      status: "error",
+      termination: "credential-revoked",
+      result: "*",
+    });
+  });
+  it("normalizes a terminal-FEN queued match cancelled by Disconnect as credential-revoked", async () => {
+    const archive = createMatch({
+      white: baseline,
+      black: baseline,
+      rules: {},
+      initialFen: "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1",
+    });
+    expect(archive.status).toBe("completed");
+    db.chessMatch.findFirst.mockResolvedValue({
+      ...row(),
+      status: "error",
+      ending: { kind: "credential-revoked" },
+      archive,
+    });
+    const inspected = await client("user").inspect({ slug: "test-game" });
+    expect(inspected.archive).toMatchObject({
+      status: "error",
+      termination: "credential-revoked",
+      result: "*",
+    });
+    const published = await client(null).get({ slug: "test-game" });
+    expect(published.archive).toMatchObject({
+      status: "error",
+      termination: "credential-revoked",
+      result: "*",
+    });
+  });
   it("accepts an upload of exactly the shared archive limit", async () => {
     const json = uploadOfSize(MAX_ARCHIVE_BYTES);
     expect(utf8ByteLength(json)).toBe(MAX_ARCHIVE_BYTES);

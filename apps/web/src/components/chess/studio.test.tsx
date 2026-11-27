@@ -172,14 +172,25 @@ it("tells a signed-in non-admin what the studio is, without a Sign In", () => {
     fixture.auth = { state: { status: "authenticated", session: { user: { role: "admin" } } } };
   }
 });
-it("offers a signed-out visitor the administrator sign-in", () => {
+it("offers a signed-out visitor the right sign-in prompt and button", () => {
   fixture.auth = { state: { status: "anonymous" } };
+  const before = fixture.info;
   try {
-    const html = render();
-    expect(html).toContain('data-to="/$lang/login"');
-    expect(html).not.toContain(enChess.studio.userMatchesOff.replaceAll("'", "&#x27;"));
+    fixture.info = { ...before, userMatchesEnabled: false };
+    const adminOnly = render();
+    expect(adminOnly).toContain('data-to="/$lang/login"');
+    expect(adminOnly).toContain(enChess.studio.signIn);
+    expect(adminOnly).toContain(`>${enChess.studio.signInAction}</a>`);
+    expect(adminOnly).not.toContain(enChess.studio.userMatchesOff.replaceAll("'", "&#x27;"));
+
+    fixture.info = { ...before, userMatchesEnabled: true };
+    const open = render();
+    expect(open).toContain(enChess.studio.signInUser);
+    expect(open).toContain(`>${enChess.studio.signInAction}</a>`);
+    expect(open).not.toContain(enChess.studio.signIn);
   } finally {
     fixture.auth = { state: { status: "authenticated", session: { user: { role: "admin" } } } };
+    fixture.info = before;
   }
 });
 it("shows and loads nothing private until the document has recorded the account", () => {
@@ -254,12 +265,25 @@ it("sends a user without a connection to Settings instead of the form", () => {
     expect(html).not.toContain(enChess.studio.userMatchesOff.replaceAll("'", "&#x27;"));
   });
 });
-it("asks a user whose key OpenRouter refused to reconnect", () => {
+it("asks a user whose key OpenRouter refused to reconnect, and explains an unreadable key", () => {
   asUser(() => {
-    fixture.key = { ...fixture.key, data: connectedKey({ status: "invalid" }) };
-    const html = render();
-    expect(html).toContain(enChess.studio.reconnectTitle);
-    expect(html).not.toContain("data-create");
+    fixture.key = {
+      ...fixture.key,
+      data: connectedKey({ status: "invalid", invalidReason: "rejected" }),
+    };
+    const rejected = render();
+    expect(rejected).toContain(enChess.studio.reconnectTitle);
+    expect(rejected).toContain(enChess.studio.reconnectBody);
+    expect(rejected).not.toContain("data-create");
+
+    fixture.key = {
+      ...fixture.key,
+      data: connectedKey({ status: "invalid", invalidReason: "unreadable" }),
+    };
+    const unreadable = render();
+    expect(unreadable).toContain(enChess.studio.reconnectTitle);
+    expect(unreadable).toContain(enChess.studio.unreadableBody.replaceAll("'", "&#x27;"));
+    expect(unreadable).not.toContain(enChess.studio.reconnectBody);
   });
 });
 it("offers a connected user the form billed to their key, capped by what it has left", () => {

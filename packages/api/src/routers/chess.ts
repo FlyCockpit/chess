@@ -105,7 +105,12 @@ const ARCHIVE_TOO_LARGE = `Game archive exceeds ${MAX_ARCHIVE_BYTES} bytes (2 MB
  * Row status is authoritative over the snapshot: stop and reconcile flip only
  * the row, so a running snapshot is normalized here to match it.
  */
-function checkedArchive(input: unknown, status?: string, replay = false) {
+function checkedArchive(
+  input: unknown,
+  status?: string,
+  replay = false,
+  ending?: Prisma.JsonValue,
+) {
   try {
     const archive = replay ? validateArchive(input) : archiveSchema.parse(input);
     if (status === "stopped") {
@@ -113,7 +118,13 @@ function checkedArchive(input: unknown, status?: string, replay = false) {
       archive.result = "*";
       archive.termination = "cancelled";
     }
-    if (status === "error" && archive.status === "running") {
+    const parsedEnding =
+      status === "error" && ending !== undefined ? cardEnding.parse(ending) : null;
+    if (status === "error" && parsedEnding?.kind === "credential-revoked") {
+      archive.status = "error";
+      archive.result = "*";
+      archive.termination = "credential-revoked";
+    } else if (status === "error" && archive.status === "running") {
       archive.status = "error";
       archive.result = "*";
       archive.termination = "interrupted";
@@ -132,6 +143,7 @@ const ownDraftSelect = {
 } satisfies Prisma.ChessMatchSelect;
 const ownInspectSelect = {
   ...ownDraftSelect,
+  ending: true,
   rulesVersion: true,
   spectatorEvaluations: true,
   official: true,
@@ -216,7 +228,7 @@ async function inspectOwnMatch(slug: string, ownerId: string) {
   // Studio offers no preview of an old-rules game; the CLI gets a reason, not "invalid".
   if (isOldRulesVersion(row.rulesVersion))
     throw new ORPCError("BAD_REQUEST", { message: OLD_RULES_MESSAGE });
-  const archive = checkedArchive(row.archive, row.status);
+  const archive = checkedArchive(row.archive, row.status, false, row.ending);
   const queuePosition =
     row.status === "queued"
       ? (await prisma.chessMatch.count({
@@ -296,7 +308,7 @@ export const chessRouter = {
     // An old-rules game has no replay: say so with its card instead of failing the read.
     if (isOldRulesVersion(row.rulesVersion))
       return { ...withEnding(rest), archive: null, spectatorEvaluations: null };
-    const archive = checkedArchive(stored, row.status);
+    const archive = checkedArchive(stored, row.status, false, row.ending);
     return {
       ...withEnding(rest),
       archive,

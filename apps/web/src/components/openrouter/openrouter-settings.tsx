@@ -19,6 +19,7 @@ import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { QueryBoundary } from "@/components/query-boundary";
 import { SegmentedControl } from "@/components/segmented-control";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
+import { networkFailureKind } from "@/lib/network-failure";
 import {
   type CallbackNotice,
   ConnectError,
@@ -194,7 +195,11 @@ function ConnectCard({
                   : openRouterMoney(i18n.language, choice * 1_000_000),
             }))}
           />
-          <p className="text-xs text-muted-foreground">{t("settings:openrouter.limitHint")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("settings:openrouter.limitHint", {
+              amount: openRouterMoney(i18n.language, (DEFAULT_LIMIT ?? 10) * 1_000_000),
+            })}
+          </p>
         </div>
         <div className="min-w-0 space-y-1.5" role="group" aria-labelledby={expiryId}>
           <p id={expiryId} className="text-sm font-medium">
@@ -246,6 +251,11 @@ function ConnectedView({ status, lang }: { status: Connected; lang: string }) {
   const [disconnecting, setDisconnecting] = useState(false);
   const disconnect = useEntityMutation(
     orpc.openrouter.disconnect.mutationOptions({
+      // Disconnect is idempotent on the server, so retry once if the connection drops
+      // before the response arrives (e.g. a proxy reset while the server finished it).
+      retry: (failureCount, error) =>
+        failureCount < 1 && networkFailureKind(error) === "unreachable",
+      retryDelay: 500,
       onSuccess: (result) => {
         setDisconnecting(false);
         toast.success(t(`settings:openrouter.disconnectDialog.toast.${result.stopped}`));

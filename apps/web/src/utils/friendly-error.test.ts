@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../i18n", () => ({ default: { t: (key: string) => key } }));
+vi.mock("../i18n", () => ({
+  default: {
+    t: (key: string, params?: Record<string, unknown>) =>
+      params && "seconds" in params ? `${key}:${String(params.seconds)}` : key,
+  },
+}));
 
 const {
   authRequestFailure,
@@ -30,6 +35,16 @@ describe("friendly: network failures say what to do", () => {
   it("keeps mapping server answers by code, offline or not", () => {
     offline();
     expect(friendly({ status: 409, code: "CONFLICT" })).toBe("errors:conflict");
+  });
+
+  it("includes the wait time from both retryAfter and oRPC procedure-budget retryAfterSeconds", () => {
+    online();
+    expect(friendly({ status: 429, code: "TOO_MANY_REQUESTS", data: { retryAfter: 12 } })).toBe(
+      "errors:rateLimitedWithSeconds:12",
+    );
+    expect(
+      friendly({ status: 429, code: "TOO_MANY_REQUESTS", data: { retryAfterSeconds: 42 } }),
+    ).toBe("errors:rateLimitedWithSeconds:42");
   });
 });
 

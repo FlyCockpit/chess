@@ -13,7 +13,7 @@ import {
 import { ORPCError } from "@orpc/server";
 import { checkAdminAuthority, protectedProcedure } from "../index";
 import { CHESS_CREATE_LOCK } from "../lib/chess-locks";
-import { STOPPED_ENDING } from "../lib/chess-stats";
+import { CREDENTIAL_REVOKED_ENDING } from "../lib/chess-stats";
 import {
   fetchOpenRouterKeyInfo,
   OpenRouterAccountError,
@@ -289,7 +289,7 @@ export const openrouterRouter = {
         if (!after)
           await tx.chessMatch.updateMany({
             where: { ownerId: userId, credentialSource: "owner-openrouter", status: "queued" },
-            data: { status: "stopped", runToken: null, ending: STOPPED_ENDING },
+            data: { status: "error", runToken: null, ending: CREDENTIAL_REVOKED_ENDING },
           });
         return { found, revoked: recorded, connected: after?.keyHash ?? null };
       },

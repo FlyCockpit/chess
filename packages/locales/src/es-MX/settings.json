@@ -119,7 +119,7 @@
       "revoke": "Puedes desconectarla aquí en cualquier momento: este servidor elimina la clave y detiene tu partida en espera o en curso que la use. Revocar la clave en OpenRouter también detiene una partida en curso, en su siguiente solicitud."
     },
     "limitLabel": "Límite de gasto de esta clave",
-    "limitHint": "Lo máximo que esta clave podrá gastar. $10 es un buen comienzo; puedes subirlo después en OpenRouter.",
+    "limitHint": "Lo máximo que esta clave podrá gastar. {{amount}} es un buen comienzo; puedes subirlo después en OpenRouter.",
     "noLimit": "Sin límite",
     "expiryLabel": "La clave caduca después de",
     "expiryHint": "Después de este plazo la clave deja de funcionar y vuelves a conectarte. 90 días es un buen valor.",
