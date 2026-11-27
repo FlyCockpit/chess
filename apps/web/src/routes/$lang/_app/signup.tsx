@@ -49,7 +49,9 @@ function SignupPage() {
   const {
     data: configData,
     isPending: configPending,
-    isError: configError,
+    // Only a first load that failed: a failed background refetch (refocus,
+    // reconnect) keeps the loaded config and the form with what was typed.
+    isLoadingError: configError,
     refetch: refetchConfig,
   } = useQuery(orpc.appConfig.queryOptions());
   const { t } = useTranslation(["auth", "common"]);
@@ -152,11 +154,20 @@ function SignUpForm({ onSignedUp }: { onSignedUp: (email: string) => void }) {
   const form = useForm({
     defaultValues: { name: "", email: "", password: "" },
     onSubmit: async ({ value }) => {
-      const result = await authClient.signUp.email({
-        email: value.email,
-        password: value.password,
-        name: value.name,
-      });
+      let result: Awaited<ReturnType<typeof authClient.signUp.email>>;
+      try {
+        result = await authClient.signUp.email({
+          email: value.email,
+          password: value.password,
+          name: value.name,
+        });
+      } catch (err) {
+        // The request itself failed (offline, server unreachable): say so,
+        // and the same details can be sent again (as login.tsx does).
+        console.error("[signup.signUp]", err);
+        toast.error(friendly(err, t("auth:errors.couldNotCreateAccount")));
+        return;
+      }
       if (result.error) {
         console.error("[signup.signUp]", result.error);
         toast.error(
