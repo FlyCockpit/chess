@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { withLockSlot } from "./lock-slots.js";
 import {
-  deleteResetLinks,
   lockSetPasswordLinks,
   RESET_PASSWORD_IDENTIFIER_PREFIX,
 } from "./set-password-link-lock.js";
@@ -30,13 +29,9 @@ import {
  * shown link left over after the invitee activated the account is dead at
  * redemption, whether or not the activation's tidy-up deleted it.
  *
- * Every transaction here takes the user's set-password-link lock
- * (set-password-link-lock.ts) and nothing else, so it fits the lock order
- * password-write → cli-credentials → set-password-link: inside a reset it
- * runs while the request holds the password-write lock, and nothing holding
- * the set-password-link lock waits for another lock. Each runs in a lock slot
- * (lock-slots.ts); inside a reset that is the slot the password-write lock
- * reserved for its nested lock transactions, which run one after another.
+ * Lock order is password-write → cli-credentials → set-password-link.
+ * Early checks/mailed records reserve one lock slot; consume admission uses
+ * the reset's bound transaction and its reserved nested slot.
  */
 
 /** Better-Auth's endpoint that spends a reset token (`POST /api/auth/reset-password`). */
@@ -150,14 +145,8 @@ export async function recordResetLinkMailed(input: {
  * an IdP linked) it is refused and deleted. An unknown or expired token is
  * left to Better-Auth, which refuses it itself.
  *
- * The invite state is read under the set-password-link lock, the lock minting
- * and activation tidy-up take, so it sees their committed result. (A mailed
- * link needs no lock: it is spendable in every state. A record written while
- * this runs is checked again under the lock, after its writer committed.)
- * Better-Auth spends the token after this returns, outside that lock (still
- * inside the request's password-write lock): an activation committing in
- * that gap orders the reset just before the activation, which is a reset the
- * link was allowed to make anyway (and the reset revokes the sessions).
+ * This is early refusal before the revocation sweep. The authoritative check
+ * runs again in admitResetSpend inside the password commit transaction.
  *
  * A forgot-password link whose "mailed" record failed to write
  * (sendResetPassword logs it) is refused for a verified account: fail
@@ -208,38 +197,52 @@ function parseMailed(value: string): { userId: string; email: string } | null {
 }
 
 /**
- * Runs after Better-Auth spent the reset token `token` (a successful
- * `POST /reset-password`). If that token was mailed, in one transaction under
- * the user's set-password-link lock: the "mailed" row is consumed, the email
- * is marked verified (only while it is still the address the link went to),
- * and every other reset link of the user is deleted. Returns whether the
- * email was verified. A token that was not mailed changes nothing here.
+ * Authoritative admission at Better Auth's consumeOne seam, on the SAME
+ * transaction/client as token consumption, session deletion and password write.
+ * The caller holds password-write; CLI credentials precede this setup lock.
+ * Mailbox verification and deletion of competing links commit with this
+ * password, or all roll back. No after-hook can establish this property.
  */
-export async function verifyEmailIfResetLinkWasMailed(token: string): Promise<boolean> {
-  const identifier = mailedIdentifier(token);
-  return withLockSlot(() =>
-    prisma.$transaction(async (tx) => {
-      const mailed = await tx.verification.findFirst({
-        where: { identifier },
-        select: { value: true },
-      });
-      if (!mailed) return false;
-      const target = parseMailed(mailed.value);
-      if (!target) {
-        await tx.verification.deleteMany({ where: { identifier } });
-        return false;
-      }
-      await lockSetPasswordLinks(target.userId, tx);
-      const consumed = await tx.verification.deleteMany({ where: { identifier } });
-      if (consumed.count === 0) return false;
-      const verified = await tx.user.updateMany({
-        where: { id: target.userId, email: target.email },
-        data: { emailVerified: true },
-      });
-      await deleteResetLinks(target.userId, tx);
-      return verified.count > 0;
-    }),
-  );
+export async function admitResetSpend(
+  tx: Pick<Prisma.TransactionClient, "$executeRaw" | "verification" | "user">,
+  token: string,
+  now = new Date(),
+): Promise<boolean> {
+  const identifier = `${RESET_PASSWORD_IDENTIFIER_PREFIX}${token}`;
+  const first = await tx.verification.findFirst({ where: { identifier }, select: { value: true } });
+  if (!first) return true; // Better Auth refuses the missing token.
+  const userId = first.value;
+  await lockSetPasswordLinks(userId, tx);
+  const link = await tx.verification.findFirst({
+    where: { identifier, value: userId, expiresAt: { gt: now } },
+    select: { id: true },
+  });
+  if (!link) return false;
+  const mailed = await tx.verification.findFirst({
+    where: { identifier: mailedIdentifier(token), expiresAt: { gt: now } },
+    select: { value: true },
+  });
+  const target = mailed ? parseMailed(mailed.value) : null;
+  const user = await tx.user.findUnique({
+    where: { id: userId },
+    select: { ...inviteStateSelect(now), email: true },
+  });
+  const proved = target?.userId === userId && target.email === user?.email;
+  if (!user || (!proved && !isInvitePending(user))) return false;
+  await tx.verification.deleteMany({
+    where: {
+      value: userId,
+      identifier: { startsWith: RESET_PASSWORD_IDENTIFIER_PREFIX, not: identifier },
+    },
+  });
+  if (proved) {
+    await tx.verification.deleteMany({ where: { identifier: mailedIdentifier(token) } });
+    await tx.user.updateMany({
+      where: { id: userId, email: target.email },
+      data: { emailVerified: true },
+    });
+  }
+  return true;
 }
 
 /**
@@ -257,21 +260,6 @@ export function resetTokenOf(ctx: {
     (isRecord(ctx.body) ? ctx.body.token : undefined) ||
     (isRecord(ctx.query) ? ctx.query.token : undefined);
   return typeof token === "string" && token.length > 0 ? token : null;
-}
-
-/**
- * The reset token a finished Better-Auth request spent, or null. Only a
- * successful `POST /reset-password` (its result is `{ status: true }`, an
- * error is an `APIError`) qualifies.
- */
-export function spentResetToken(ctx: {
-  path?: string;
-  body?: unknown;
-  query?: unknown;
-  returned?: unknown;
-}): string | null {
-  if (!isRecord(ctx.returned) || ctx.returned.status !== true) return null;
-  return resetTokenOf(ctx);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

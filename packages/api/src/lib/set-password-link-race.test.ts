@@ -1,24 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// An admin's "Resend invite" racing the invitee finishing their own setup.
-// The real `createSetPasswordLink`, the real reset-side revocation
-// (`revokeCredentialsAfterPasswordReset`) and the real mailed-link
-// verification (`verifyEmailIfResetLinkWasMailed`, the `/reset-password`
-// after-hook) run against an in-memory database that models what the
-// guarantee rests on: blocking transaction-scoped advisory locks, released
-// when their transaction ends, and batch transactions running their
-// statements in order. Better-Auth's own part of the reset (spend the token,
-// write the password) has already committed when those run, so it is not
-// modelled beyond the spent token.
-//
-// Only a mailed link verifies the address (password-reset-links.ts). So a
-// reset alone leaves the invite pending, and a resend after it still mints;
-// what activates the account is the mailed link's verification, which
-// deletes every reset link under the same lock the mint takes.
+// Real minting, consume admission and reset revocation on an in-memory client
+// with blocking transaction-scoped advisory locks. Password/token/proof decisions
+// share the supplied transaction; actual pinned handler rollback is covered by
+// packages/auth/src/reset-spend.integration.test.ts. A resend that wins setup
+// invalidates the earlier token; one queued behind mailed activation refuses.
 
 type Verification = { identifier: string; value: string; expiresAt: Date };
 type Where = {
-  identifier?: string | { startsWith: string };
+  identifier?: string | { startsWith: string; not?: string };
   value?: string;
   expiresAt?: { gt: Date };
 };
@@ -31,6 +21,7 @@ const store = vi.hoisted(() => ({
     banExpires: null as Date | null,
   },
   verifications: [] as Verification[],
+  password: "initial",
   locks: new Map<string, Promise<void>>(),
   /** Awaited by the mailed-link verification right before it marks the email verified. */
   verifyPause: null as Promise<void> | null,
@@ -113,7 +104,8 @@ const db = vi.hoisted(() => {
     if (value !== undefined && v.value !== value) return false;
     if (expiresAt && !(v.expiresAt > expiresAt.gt)) return false;
     if (typeof identifier === "string") return v.identifier === identifier;
-    if (identifier) return v.identifier.startsWith(identifier.startsWith);
+    if (identifier)
+      return v.identifier.startsWith(identifier.startsWith) && v.identifier !== identifier.not;
     return true;
   };
   const deleteVerifications = (where: Where) => {
@@ -194,9 +186,11 @@ const { createSetPasswordLink, SetPasswordLinkRefusedError } = await import("./s
 const { revokeCredentialsAfterPasswordReset } = await import(
   "@cockpit-chess/auth/credential-revocation"
 );
-const { recordResetLinkMailed, verifyEmailIfResetLinkWasMailed } = await import(
+const { recordResetLinkMailed, admitResetSpend } = await import(
   "@cockpit-chess/auth/password-reset-links"
 );
+
+const { lockCliCredentials } = await import("@cockpit-chess/auth/device-redemption-lock");
 
 const USER = "invitee";
 const resetLinks = () =>
@@ -217,16 +211,21 @@ const mailedLink = async () => {
   expect(await recordResetLinkMailed({ token, userId: USER, email: store.user.email })).toBe(true);
   return token;
 };
-/** Better-Auth spent the token: its row is gone before the reset's callbacks run. */
-const spend = (token: string) => {
-  const at = store.verifications.findIndex((v) => v.identifier === `reset-password:${token}`);
-  expect(at).toBeGreaterThanOrEqual(0);
-  store.verifications.splice(at, 1);
-};
-/** What a successful reset with `token` runs: the revocation, then the after-hook. */
+/** Model the bound consume/password decision, then the post-commit sweep. */
 const finishReset = async (token: string) => {
-  await revokeCredentialsAfterPasswordReset(USER);
-  return verifyEmailIfResetLinkWasMailed(token);
+  const admitted = await db.$transaction(async (client) => {
+    const tx = client as Parameters<typeof admitResetSpend>[0];
+    await lockCliCredentials(USER, tx);
+    if (!(await admitResetSpend(tx, token))) return false;
+    const spent = await tx.verification.deleteMany({
+      where: { identifier: `reset-password:${token}` },
+    });
+    if (spent.count === 0) return false; // Better Auth refuses missing tokens.
+    store.password = "reset-password";
+    return true;
+  });
+  if (admitted) await revokeCredentialsAfterPasswordReset(USER);
+  return admitted;
 };
 
 beforeEach(() => {
@@ -238,6 +237,7 @@ beforeEach(() => {
     banExpires: null,
   };
   store.verifications.length = 0;
+  store.password = "initial";
   store.locks.clear();
   store.verifyPause = null;
   store.mintPause = null;
@@ -272,64 +272,56 @@ describe("invite resend vs a finishing password reset", () => {
     expect(store.locks.size).toBe(0);
   });
 
-  it("a resend that minted its link first loses it to the reset's revocation", async () => {
+  it("a resend that mints first invalidates the earlier reset before password or mailbox commit", async () => {
     const token = await mailedLink();
-    spend(token);
     const mintGate = gate();
     store.mintPause = mintGate.closed;
-    // The resend has read "still pending" and is about to write its link...
     const minting = createSetPasswordLink({ userId: USER, locale: "en-US" });
     await settle();
-    // ...when the invitee's reset finishes and runs its revocation.
-    let revoked = false;
-    const revoking = revokeCredentialsAfterPasswordReset(USER).then(() => {
-      revoked = true;
+    let finished = false;
+    const resetting = finishReset(token).then((result) => {
+      finished = true;
+      return result;
     });
     await settle();
-    expect(revoked).toBe(false); // waits for the resend's lock
+    expect(finished).toBe(false); // consume waits for the resend's setup lock
     mintGate.open();
-    await minting;
-    await revoking;
-    // The fresh 7-day link is gone with the rest.
-    expect(resetLinks()).toHaveLength(0);
-    // The mailed link's after-hook then activates the account.
-    expect(await verifyEmailIfResetLinkWasMailed(token)).toBe(true);
-    expect(store.user.emailVerified).toBe(true);
-    expect(resetLinks()).toHaveLength(0);
+    const replacement = await minting;
+    expect(await resetting).toBe(false);
+    expect(store.password).toBe("initial");
+    expect(store.user.emailVerified).toBe(false);
+    expect(resetLinks().map((row) => row.identifier)).toEqual([
+      `reset-password:${replacement.token}`,
+    ]);
   });
 
-  it("a resend that minted its link first loses it to the mailed link's verification", async () => {
+  it("successful mailed consume retires competing links before the post-commit sweep", async () => {
     const token = await mailedLink();
-    spend(token);
-    await revokeCredentialsAfterPasswordReset(USER);
-    const mintGate = gate();
-    store.mintPause = mintGate.closed;
-    // Still pending after the revocation alone, so the resend mints...
-    const minting = createSetPasswordLink({ userId: USER, locale: "en-US" });
-    await settle();
-    // ...while the after-hook verifies the mailed link's address.
-    let verified: boolean | undefined;
-    const verifying = verifyEmailIfResetLinkWasMailed(token).then((result) => {
-      verified = result;
+    store.verifications.push({
+      identifier: "reset-password:competing",
+      value: USER,
+      expiresAt: new Date(Date.now() + 60_000),
     });
+    const verifyGate = gate();
+    store.verifyPause = verifyGate.closed;
+    const resetting = finishReset(token);
     await settle();
-    expect(verified).toBeUndefined(); // waits for the resend's lock
-    mintGate.open();
-    await minting;
-    await verifying;
-    expect(verified).toBe(true);
+    // Paused at mailbox verification inside consume, before password and sweep.
+    expect(resetLinks().map((row) => row.identifier)).toEqual([`reset-password:${token}`]);
+    expect(store.password).toBe("initial");
+    expect(store.user.emailVerified).toBe(false);
+    verifyGate.open();
+    expect(await resetting).toBe(true);
+    expect(store.password).toBe("reset-password");
     expect(store.user.emailVerified).toBe(true);
-    // No reset credential is left for an account that is now active.
     expect(resetLinks()).toHaveLength(0);
   });
 
   it("a resend that arrives while the verification is committing waits, then refuses", async () => {
     const token = await mailedLink();
-    spend(token);
-    await revokeCredentialsAfterPasswordReset(USER);
     const verifyGate = gate();
     store.verifyPause = verifyGate.closed;
-    const verifying = verifyEmailIfResetLinkWasMailed(token);
+    const verifying = finishReset(token);
     await settle();
     let settled = false;
     const minting = createSetPasswordLink({ userId: USER, locale: "en-US" }).finally(() => {
@@ -347,7 +339,6 @@ describe("invite resend vs a finishing password reset", () => {
 
   it("a resend after a mailed reset committed is refused outright", async () => {
     const token = await mailedLink();
-    spend(token);
     expect(await finishReset(token)).toBe(true);
     await expect(createSetPasswordLink({ userId: USER, locale: "en-US" })).rejects.toThrow(
       new SetPasswordLinkRefusedError("not-pending"),
@@ -360,8 +351,7 @@ describe("invite resend vs a finishing password reset", () => {
   // still works.
   it("a resend after a revealed link's reset still mints, and the account stays unverified", async () => {
     const { token } = await createSetPasswordLink({ userId: USER, locale: "en-US" });
-    spend(token);
-    expect(await finishReset(token)).toBe(false);
+    expect(await finishReset(token)).toBe(true);
     expect(store.user.emailVerified).toBe(false);
     await createSetPasswordLink({ userId: USER, locale: "en-US" });
     expect(resetLinks()).toHaveLength(1);

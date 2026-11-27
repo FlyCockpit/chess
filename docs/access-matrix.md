@@ -62,3 +62,13 @@ use the resolved user and do not remove Better-Auth's 60-second cookie cache.
 The reviewed endpoint baseline in `scripts/access-matrix-pre-notes-baseline.json`
 additionally preserves the minimum access level of existing procedures. Change
 exact entries only in the same reviewed change that removes their endpoints.
+
+Password reset and activation retain the existing permission contract. A shown
+invite link is usable only for an unverified user with exactly one credential
+account and no live sessions; mailed proof verifies only the token's recorded
+mailbox. The consume decision, competing-link retirement, verification and
+password commit share one transaction. Verify-email and authorized IdP insertion
+serialize on the same per-user locks. Pending authorized IdP insertion clears
+prior password access and standing credentials before creating the new IdP
+session. Existing Better Auth implicit-link denial for unverified local users,
+SSO trust, signup flags and procedure access levels remain unchanged.

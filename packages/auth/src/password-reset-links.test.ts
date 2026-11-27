@@ -27,7 +27,8 @@ const db = vi.hoisted(() => {
     if (
       typeof where.identifier === "object" &&
       where.identifier !== null &&
-      !row.identifier.startsWith((where.identifier as { startsWith: string }).startsWith)
+      (!row.identifier.startsWith((where.identifier as { startsWith: string }).startsWith) ||
+        row.identifier === (where.identifier as { not?: string }).not)
     )
       return false;
     if (where.value !== undefined && row.value !== where.value) return false;
@@ -58,6 +59,7 @@ const db = vi.hoisted(() => {
         const user = state.users.find((u) => u.id === where.id);
         if (!user) return null;
         return {
+          email: user.email,
           emailVerified: user.emailVerified,
           accounts: user.accounts ?? [{ providerId: "credential" }],
           sessions: user.sessions ?? [],
@@ -109,9 +111,11 @@ const {
   isResetLinkRedeemable,
   recordResetLinkMailed,
   resetTokenOf,
-  spentResetToken,
-  verifyEmailIfResetLinkWasMailed,
+  admitResetSpend,
+  isInvitePending,
 } = await import("./password-reset-links");
+
+const { lockSetPasswordLinks } = await import("./set-password-link-lock");
 
 const now = new Date("2026-11-26T00:00:00Z");
 const expiresAt = new Date("2026-12-01T00:00:00Z");
@@ -302,61 +306,86 @@ describe("isResetLinkRedeemable", () => {
   });
 });
 
-describe("verifyEmailIfResetLinkWasMailed", () => {
-  it("verifies the email of a mailed link and deletes the user's other reset links, under the set-password-link lock", async () => {
+describe("admitResetSpend", () => {
+  const admit = (token: string) =>
+    admitResetSpend(db as unknown as Parameters<typeof admitResetSpend>[0], token, now);
+  it("commits mailed proof and other-link deletion on the supplied transaction", async () => {
+    state.users = [{ id: "u1", email: "u@example.test", emailVerified: false }];
     link("mailed");
-    await recordResetLinkMailed({ token: "mailed", userId: "u1", email: "ada@example.com" });
-    state.locks = [];
-    // Better-Auth consumed the spent token; another link (a resend) is still out.
-    state.verifications = state.verifications.filter(
-      (row) => row.identifier !== "reset-password:mailed",
-    );
     link("other");
-
-    expect(await verifyEmailIfResetLinkWasMailed("mailed")).toBe(true);
+    await recordResetLinkMailed({ token: "mailed", userId: "u1", email: "u@example.test" });
+    db.$transaction.mockClear();
+    expect(await admit("mailed")).toBe(true);
     expect(state.users[0]?.emailVerified).toBe(true);
-    expect(state.verifications).toEqual([]);
-    expect(state.locks).toEqual(["set-password-link:u1"]);
+    expect(state.verifications.map((v) => v.identifier)).toEqual(["reset-password:mailed"]);
+    expect(db.$transaction).not.toHaveBeenCalled();
   });
-
-  it("leaves the email unverified when the spent link was not mailed (shown to the admin)", async () => {
+  it("shown links never verify and are rejected after verification or IdP linking", async () => {
+    state.users = [{ id: "u1", email: "u@example.test", emailVerified: false }];
     link("shown");
-    link("other");
-    state.verifications = state.verifications.filter(
-      (row) => row.identifier !== "reset-password:shown",
-    );
-
-    expect(await verifyEmailIfResetLinkWasMailed("shown")).toBe(false);
+    expect(await admit("shown")).toBe(true);
     expect(state.users[0]?.emailVerified).toBe(false);
-    expect(db.user.updateMany).not.toHaveBeenCalled();
+    state.users[0]!.emailVerified = true;
+    expect(await admit("shown")).toBe(false);
+    state.users[0]!.emailVerified = false;
+    state.users[0]!.accounts = [{ providerId: "credential" }, { providerId: "sso" }];
+    expect(await admit("shown")).toBe(false);
   });
-
-  it("verifies only the address the link went to", async () => {
+  it("does not trust a mailed record for a different mailbox", async () => {
+    state.users = [{ id: "u1", email: "new@example.test", emailVerified: true }];
     link("mailed");
-    await recordResetLinkMailed({ token: "mailed", userId: "u1", email: "old@example.com" });
-    expect(await verifyEmailIfResetLinkWasMailed("mailed")).toBe(false);
-    expect(state.users[0]?.emailVerified).toBe(false);
+    await recordResetLinkMailed({ token: "mailed", userId: "u1", email: "old@example.test" });
+    expect(await admit("mailed")).toBe(false);
   });
-
-  it("counts a mailed link once", async () => {
-    link("mailed");
-    await recordResetLinkMailed({ token: "mailed", userId: "u1", email: "ada@example.com" });
-    expect(await verifyEmailIfResetLinkWasMailed("mailed")).toBe(true);
-    state.users[0] = { id: "u1", email: "ada@example.com", emailVerified: false };
-    expect(await verifyEmailIfResetLinkWasMailed("mailed")).toBe(false);
-    expect(state.users[0]?.emailVerified).toBe(false);
-  });
-
-  it("drops a malformed record without verifying anything", async () => {
-    const hash = createHash("sha256").update("bad").digest("base64url");
-    state.verifications.push({
-      identifier: `reset-password-mailed:${hash}`,
-      value: "u1",
-      expiresAt,
+  it.each(["wrong-user", "expired", "malformed"])(
+    "rejects %s mailed proof on an active user",
+    async (kind) => {
+      state.users[0]!.emailVerified = true;
+      link("proof");
+      state.verifications.push({
+        identifier: `reset-password-mailed:${createHash("sha256").update("proof").digest("base64url")}`,
+        value:
+          kind === "malformed"
+            ? "not-json"
+            : JSON.stringify({
+                userId: kind === "wrong-user" ? "peer" : "u1",
+                email: "ada@example.com",
+              }),
+        expiresAt: kind === "expired" ? new Date(now.getTime() - 1) : expiresAt,
+      });
+      expect(await admit("proof")).toBe(false);
+      expect(db.user.updateMany).not.toHaveBeenCalled();
+      expect(state.verifications).toHaveLength(2);
+    },
+  );
+  it("rechecks the live link and pending state after taking setup on this transaction", async () => {
+    link("racing");
+    expect(await isResetLinkRedeemable("racing", now)).toBe(true);
+    db.$executeRaw.mockImplementationOnce(async () => {
+      state.users[0]!.emailVerified = true;
+      return 1;
     });
-    expect(await verifyEmailIfResetLinkWasMailed("bad")).toBe(false);
-    expect(state.verifications).toEqual([]);
+    expect(await admit("racing")).toBe(false);
     expect(db.user.updateMany).not.toHaveBeenCalled();
+    state.users[0]!.emailVerified = false;
+    state.verifications[0]!.expiresAt = new Date(now.getTime() - 1);
+    expect(await admit("racing")).toBe(false);
+  });
+  it("consumes mailbox proof once; a still-present token cannot reverify an active user", async () => {
+    link("once");
+    await recordResetLinkMailed({ token: "once", userId: "u1", email: "ada@example.com" });
+    expect(await admit("once")).toBe(true);
+    expect(await admit("once")).toBe(false);
+    expect(db.user.updateMany).toHaveBeenCalledOnce();
+  });
+});
+
+describe("lockSetPasswordLinks", () => {
+  it("is a transaction-scoped advisory lock keyed by the user", async () => {
+    await lockSetPasswordLinks("u9", db as never);
+    const [strings, key] = db.$executeRaw.mock.calls[0] as [TemplateStringsArray, string];
+    expect(strings.join("?")).toBe("SELECT pg_advisory_xact_lock(hashtext(?))");
+    expect(key).toBe("set-password-link:u9");
   });
 });
 
@@ -370,11 +399,11 @@ describe("lock slots", () => {
     const user = state.users[0];
     if (user) user.emailVerified = true;
     await isResetLinkRedeemable("shown", now);
-    await verifyEmailIfResetLinkWasMailed("mailed");
-    expect(lockSlots.withLockSlot).toHaveBeenCalledTimes(3);
-    expect(db.$transaction).toHaveBeenCalledTimes(3);
+    await admitResetSpend(db as unknown as Parameters<typeof admitResetSpend>[0], "mailed", now);
+    expect(lockSlots.withLockSlot).toHaveBeenCalledTimes(2);
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
     // One slot held around each transaction, and released after it.
-    expect(state.transactionSlots).toEqual([1, 1, 1]);
+    expect(state.transactionSlots).toEqual([1, 1]);
     expect(state.slotsHeld).toBe(0);
     expect(state.locks).toEqual([
       "set-password-link:u1",
@@ -400,25 +429,12 @@ describe("resetTokenOf", () => {
   });
 });
 
-describe("spentResetToken", () => {
-  const ok = { status: true };
-  it("is the token of a successful /reset-password, from the body or the query", () => {
-    expect(spentResetToken({ path: "/reset-password", body: { token: "t" }, returned: ok })).toBe(
-      "t",
-    );
-    expect(
-      spentResetToken({ path: "/reset-password", body: {}, query: { token: "q" }, returned: ok }),
-    ).toBe("q");
-  });
-
-  it("is null for a failed reset, another endpoint, or no token", () => {
-    const error = { status: "BAD_REQUEST", body: { code: "INVALID_TOKEN" } };
-    expect(
-      spentResetToken({ path: "/reset-password", body: { token: "t" }, returned: error }),
-    ).toBe(null);
-    expect(spentResetToken({ path: "/change-password", body: { token: "t" }, returned: ok })).toBe(
-      null,
-    );
-    expect(spentResetToken({ path: "/reset-password", body: {}, returned: ok })).toBe(null);
+describe("strict pending invite admission", () => {
+  it.each([
+    { accounts: [] },
+    { accounts: [{ providerId: "credential" }, { providerId: "credential" }] },
+    { accounts: [{ providerId: "sso" }] },
+  ])("requires exactly one credential account (%j)", async ({ accounts }) => {
+    expect(isInvitePending({ emailVerified: false, accounts, sessions: [] })).toBe(false);
   });
 });

@@ -78,6 +78,7 @@ const POLL_MS = 50;
 
 type HeldLock = {
   userId: string;
+  path: string;
   held: boolean;
   expiresAt: number;
   /** Answers true only while the lock transaction is still open (and so still holds the lock). */
@@ -157,6 +158,7 @@ export async function withPasswordWriteLock(
     async () => {
       const lock: HeldLock = {
         userId: target.userId,
+        path,
         held: false,
         expiresAt: performance.now() + HELD_FOR_MS,
         probe: async () => false,
@@ -302,4 +304,9 @@ export async function confirmPasswordWriteLocked({
     message:
       "This password change could not be confirmed, so the account's password was disabled for safety. Use Forgot password to set a new one.",
   });
+}
+
+/** Only resetCredentialPassword's adapter transaction is made real. */
+export function isResetPasswordWrite(): boolean {
+  return heldFor.getStore()?.path === RESET_PASSWORD_PATH;
 }

@@ -54,8 +54,11 @@ function cliCredentialRevocationWrites(userId: string, revokeAllSessions = false
  * all related rows in one statement, inside the credential-lock transaction.
  * Completed challenges may leave orphan counters; they cannot authorize sign-in.
  */
-function passwordResetTwoFactorRevocationWrite(userId: string) {
-  return prisma.$executeRaw`
+function passwordResetTwoFactorRevocationWrite(
+  userId: string,
+  db: Pick<Prisma.TransactionClient, "$executeRaw"> = prisma,
+) {
+  return db.$executeRaw`
     WITH "resetChallenges" AS MATERIALIZED (
       SELECT "identifier" FROM "verification"
       WHERE "value" = ${userId} AND "identifier" LIKE '2fa-%'
@@ -165,8 +168,8 @@ export async function revokeCredentialsBeforePasswordReset(ctx: {
  * Post-commit defense in depth after the pre-sweep revoked all old sessions.
  * Invalidate every other reset/set-password link under upstream's credential-
  * setup lock, with independent retries even if revocation exhausts its retries.
- * Mailbox verification is decided per mailed token in the after-hook, including
- * a failed post-sweep.
+ * Mailbox verification and competing-link retirement already committed with
+ * the password; a failed post-sweep cannot undo that decision.
  * Final revocation failure is logged and propagated after link cleanup.
  */
 export async function revokeCredentialsAfterPasswordReset(
@@ -318,4 +321,12 @@ export function passwordChangeRevocationTarget(ctx: {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** Reuse the activation/reset transaction; its credential lock is already held. */
+export async function revokeCredentialsInTransaction(tx: Prisma.TransactionClient, userId: string) {
+  await tx.apiKey.deleteMany({ where: { referenceId: userId } });
+  await tx.deviceCode.deleteMany({ where: { userId } });
+  await tx.session.deleteMany({ where: { OR: [{ userId }, { impersonatedBy: userId }] } });
+  await passwordResetTwoFactorRevocationWrite(userId, tx);
 }

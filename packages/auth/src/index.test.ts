@@ -14,8 +14,14 @@ vi.mock("better-auth", async (importOriginal) => ({
   ...(await importOriginal<typeof import("better-auth")>()),
   betterAuth,
 }));
-const prismaAdapter = vi.hoisted(() => vi.fn((_prisma: unknown, _config: unknown) => ({})));
-vi.mock("better-auth/adapters/prisma", () => ({ prismaAdapter }));
+vi.mock("better-auth/adapters/prisma", async () => {
+  const { memoryAdapter } = await import("better-auth/adapters/memory");
+  return {
+    prismaAdapter:
+      (_db: unknown, _config: unknown) => (opts: Parameters<ReturnType<typeof memoryAdapter>>[0]) =>
+        memoryAdapter(prismaStub.memory.db ?? {})(opts),
+  };
+});
 // Identity: the captured hook is then the plain handler, re-wrapped below.
 vi.mock("better-auth/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("better-auth/api")>()),
@@ -33,11 +39,9 @@ vi.mock("./credential-revocation.js", async (importOriginal) => ({
   quarantineUntrustedPasswordWrite,
 }));
 const recordResetLinkMailed = vi.fn(async (_input: unknown) => true);
-const verifyEmailIfResetLinkWasMailed = vi.fn(async (_token: string) => true);
 vi.mock("./password-reset-links.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./password-reset-links")>()),
   recordResetLinkMailed,
-  verifyEmailIfResetLinkWasMailed,
 }));
 vi.mock("better-auth/plugins", async (importOriginal) => ({
   admin: () => ({ id: "admin" }),
@@ -61,7 +65,11 @@ const prismaStub = vi.hoisted(() => {
     Object.entries(where).every(([key, want]) => {
       const have = row[key];
       if (typeof want === "object" && want !== null && "startsWith" in want) {
-        return typeof have === "string" && have.startsWith(String(want.startsWith));
+        return (
+          typeof have === "string" &&
+          have.startsWith(String(want.startsWith)) &&
+          have !== (want as { not?: string }).not
+        );
       }
       if (typeof want === "object" && want !== null && "gt" in want) {
         return have instanceof Date && want.gt instanceof Date && have > want.gt;
@@ -111,6 +119,7 @@ const prismaStub = vi.hoisted(() => {
         if (!user) return null;
         const now = new Date();
         return {
+          email: user.email,
           emailVerified: user.emailVerified,
           accounts: table("account")
             .filter((row) => row.userId === user.id)
@@ -227,6 +236,7 @@ const { expectedIdentity } = await vi.importActual<{
 }>(new URL("../../../apps/server/src/expected-identity.ts", import.meta.url).pathname);
 
 type CapturedOptions = {
+  database?: ReturnType<typeof import("./credential-setup-adapter").createCredentialSetupAdapter>;
   emailAndPassword?: {
     revokeSessionsOnPasswordReset?: boolean;
     minPasswordLength?: number;
@@ -284,10 +294,6 @@ type CapturedOptions = {
 };
 
 const options = betterAuth.mock.calls[0]?.[0] as CapturedOptions;
-const prismaAdapterConfig = prismaAdapter.mock.calls[0]?.[1] as
-  | { provider?: string; transaction?: boolean }
-  | undefined;
-
 describe("Better-Auth config", () => {
   // A reset is what a user does when they suspect someone else has their
   // password; it must sign out every existing session, the attacker's included.
@@ -368,7 +374,7 @@ describe("Better-Auth config", () => {
   });
 
   // A spent link verifies the email only if it was mailed (password-reset-links.ts).
-  it("records a mailed forgot-password link, and checks every spent link after the reset", async () => {
+  it("records mailbox delivery before spending a forgot-password link", async () => {
     recordResetLinkMailed.mockClear();
     vi.mocked(sendEmail).mockClear();
     await options.emailAndPassword?.sendResetPassword?.({
@@ -385,22 +391,6 @@ describe("Better-Auth config", () => {
     expect(vi.mocked(sendEmail).mock.invocationCallOrder[0]).toBeLessThan(
       recordResetLinkMailed.mock.invocationCallOrder[0] ?? 0,
     );
-
-    verifyEmailIfResetLinkWasMailed.mockClear();
-    await options.hooks?.after?.({
-      path: "/reset-password",
-      body: { token: "tok", newPassword: "x" },
-      context: { returned: { status: true } },
-    });
-    expect(verifyEmailIfResetLinkWasMailed).toHaveBeenCalledWith("tok");
-
-    verifyEmailIfResetLinkWasMailed.mockClear();
-    await options.hooks?.after?.({
-      path: "/reset-password",
-      body: { token: "tok", newPassword: "x" },
-      context: { returned: { status: "BAD_REQUEST" } },
-    });
-    expect(verifyEmailIfResetLinkWasMailed).not.toHaveBeenCalled();
   });
 
   it("keeps a mailed reset link's request a success when recording it fails", async () => {
@@ -416,26 +406,6 @@ describe("Better-Auth config", () => {
       ).resolves.toBeUndefined();
       expect(errorLog).toHaveBeenCalledWith(
         "[auth] recording a mailed reset link failed:",
-        "Error: db down",
-      );
-    } finally {
-      errorLog.mockRestore();
-    }
-  });
-
-  it("keeps a finished reset a success when the verification step fails", async () => {
-    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
-    verifyEmailIfResetLinkWasMailed.mockRejectedValueOnce(new Error("db down"));
-    try {
-      await expect(
-        options.hooks?.after?.({
-          path: "/reset-password",
-          body: { token: "tok" },
-          context: { returned: { status: true } },
-        }),
-      ).resolves.toBeUndefined();
-      expect(errorLog).toHaveBeenCalledWith(
-        "[auth] verifying the email of a mailed reset link failed:",
         "Error: db down",
       );
     } finally {
@@ -886,111 +856,9 @@ describe("sign-up response is the same for free and registered addresses", {
   });
 });
 
-// The Prisma adapter runs without transactions (index.ts says why), so a
-// reset's steps commit one by one. Pin the config, and the failure direction
-// the comment promises: a failed password write leaves the token spent and the
-// sessions gone, the old password in place, and runs no onPasswordReset.
-describe("password reset without adapter transactions", { timeout: 20_000 }, () => {
-  it("creates the Prisma adapter with Better-Auth's default (no transactions)", () => {
-    expect(prismaAdapterConfig).toEqual({ provider: "postgresql" });
-  });
-
-  it("fails closed when the password write fails after the token was spent", async () => {
-    const { betterAuth: realBetterAuth } =
-      await vi.importActual<typeof import("better-auth")>("better-auth");
-    const { memoryAdapter } = await import("better-auth/adapters/memory");
-    const now = new Date();
-    const db: Record<string, Record<string, unknown>[]> = {
-      user: [
-        {
-          id: "u1",
-          email: "reset@example.test",
-          name: "Reset",
-          emailVerified: true,
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      account: [],
-      session: [
-        {
-          id: "s1",
-          userId: "u1",
-          token: "session-token",
-          expiresAt: new Date(now.getTime() + 3_600_000),
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      verification: [
-        {
-          id: "v1",
-          identifier: "reset-password:the-token",
-          value: "u1",
-          expiresAt: new Date(now.getTime() + 3_600_000),
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-    };
-    const memory = memoryAdapter(db);
-    // Like chess's Prisma adapter: `transaction` just runs the work, so every
-    // write commits as it happens. The account (password) write fails.
-    const nonTransactional = ((adapterOptions: Parameters<typeof memory>[0]) => {
-      const inner = memory(adapterOptions);
-      const adapter: typeof inner = new Proxy(inner, {
-        get(target, key, receiver) {
-          if (key === "transaction") return (work: (trx: typeof inner) => unknown) => work(adapter);
-          const value = Reflect.get(target, key, receiver);
-          if ((key === "update" || key === "updateMany") && typeof value === "function") {
-            return (args: { model: string }) => {
-              if (args.model === "account") throw new Error("password write failed");
-              return Reflect.apply(value, target, [args]);
-            };
-          }
-          return value;
-        },
-      });
-      return adapter;
-    }) as typeof memory;
-    revokeCredentialsAfterPasswordReset.mockClear();
-    const instance = realBetterAuth({
-      baseURL: "https://app.example.test",
-      secret: "disposable-unit-test-secret-with-no-external-use",
-      database: nonTransactional,
-      rateLimit: { enabled: false },
-      user: options.user,
-      emailAndPassword: { ...options.emailAndPassword, enabled: true },
-      logger: { disabled: true },
-    } as Parameters<typeof realBetterAuth>[0]);
-    const ctx = await instance.$context;
-    const oldHash = await ctx.password.hash("old-password-12345");
-    db.account?.push({
-      id: "a1",
-      userId: "u1",
-      accountId: "u1",
-      providerId: "credential",
-      password: oldHash,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    const res = await instance.handler(
-      new Request("https://app.example.test/api/auth/reset-password", {
-        method: "POST",
-        headers: { "content-type": "application/json", origin: "https://app.example.test" },
-        body: JSON.stringify({ token: "the-token", newPassword: "new-password-12345" }),
-      }),
-    );
-
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    expect(db.verification).toHaveLength(0); // the link is spent
-    expect(db.session).toHaveLength(0); // every session is gone
-    expect(db.account?.[0]?.password).toBe(oldHash); // the old password stays
-    expect(revokeCredentialsAfterPasswordReset).not.toHaveBeenCalled();
-  });
-});
-
+// Reset transaction rollback and same-link retry are exercised with the actual
+// production adapter/hooks in reset-spend.integration.test.ts. Signup stays
+// outside transactions there so locale reads/SMTP retain their visibility.
 // Only users.invite creates users through the admin plugin, nothing but an IdP
 // sign-in creates a verified one, and activation kills leftover reset links.
 describe("user creation and activation on the real handler", { timeout: 20_000 }, () => {
@@ -1164,14 +1032,12 @@ describe("user creation and activation on the real handler", { timeout: 20_000 }
       const userId = String(row.id);
       shownLink(db, userId, "shown-pending");
       const ownPassword = passwordOf(db, userId);
-      verifyEmailIfResetLinkWasMailed.mockClear();
 
       const res = await resetPassword(instance, "shown-pending");
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ status: true });
       expect(passwordOf(db, userId)).not.toBe(ownPassword);
       // The after-hook checked the spent token; shown, so it verified nothing.
-      expect(verifyEmailIfResetLinkWasMailed).toHaveBeenCalledWith("shown-pending");
       expect(row.emailVerified).toBe(false);
     });
 
@@ -1213,13 +1079,29 @@ describe("user creation and activation on the real handler", { timeout: 20_000 }
   });
 });
 
+const runPasswordReset = async (
+  instance: {
+    handler: (request: Request) => Promise<Response>;
+    api: {
+      getSession: (input: {
+        headers: Headers;
+      }) => Promise<{ user: { id: string }; session: { id: string } } | null>;
+    };
+  },
+  request: Request,
+) => {
+  const { withPasswordWriteLock } = await import("./password-write-lock");
+  return withPasswordWriteLock("/reset-password", request, () => instance.handler(request), {
+    getSession: (headers) => instance.api.getSession({ headers }),
+  });
+};
+
 describe("password reset ordering (real pinned endpoint, memory adapter)", () => {
   async function resetFixture(failLookup = false, withTwoFactor = false) {
     const { betterAuth: realBetterAuth } =
       await vi.importActual<typeof import("better-auth")>("better-auth");
     const { createAuthMiddleware } =
       await vi.importActual<typeof import("better-auth/api")>("better-auth/api");
-    const { memoryAdapter } = await import("better-auth/adapters/memory");
     const actual =
       await vi.importActual<typeof import("./credential-revocation")>("./credential-revocation");
     const keys = new Set(["old-key"]);
@@ -1257,10 +1139,8 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
     const before = options.hooks?.before;
     const after = options.hooks?.after;
     if (!before || !after) throw new Error("reset hooks missing");
-    verifyEmailIfResetLinkWasMailed.mockClear();
     const actualLinks =
       await vi.importActual<typeof import("./password-reset-links")>("./password-reset-links");
-    verifyEmailIfResetLinkWasMailed.mockImplementation(actualLinks.verifyEmailIfResetLinkWasMailed);
     // This reset came from a real mail, so it remains spendable with a live session.
     await actualLinks.recordResetLinkMailed({
       token: "retry-token",
@@ -1348,7 +1228,7 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
     const instance = realBetterAuth({
       baseURL: "https://app.example.test",
       secret: "disposable-reset-test-secret-with-no-external-use",
-      database: memoryAdapter(db),
+      database: options.database,
       logger: { disabled: true },
       rateLimit: { enabled: false },
       emailAndPassword: {
@@ -1378,7 +1258,8 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
       );
     }
     const reset = (token = "retry-token", query = false) =>
-      instance.handler(
+      runPasswordReset(
+        instance,
         new Request(
           `https://app.example.test/api/auth/reset-password${query ? `?token=${token}` : ""}`,
           {
@@ -1548,7 +1429,6 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
         ).toBe(200);
       } finally {
         revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
-        verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
         prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
       }
     },
@@ -1576,7 +1456,6 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
       expect(db.verification).toHaveLength(0);
     } finally {
       revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
-      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
       prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
     }
   });
@@ -1615,7 +1494,6 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
     } finally {
       log.mockRestore();
       revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
-      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
       prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
     }
   });
@@ -1639,7 +1517,6 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
       expect(keys.size).toBe(0);
     } finally {
       revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
-      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
       prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
     }
   });
@@ -1650,15 +1527,18 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
     try {
       hash.mockImplementation(async () => {
         expect(db.session).toHaveLength(0);
-        revocationDb.$transaction.mockRejectedValue(new Error("post-sweep unavailable"));
+        const transact = revocationDb.$transaction.getMockImplementation();
+        revocationDb.$transaction.mockImplementation((work: unknown) => {
+          if (Array.isArray(work)) throw new Error("post-sweep unavailable");
+          if (!transact) throw new Error("transaction mock missing");
+          return transact(work);
+        });
         return "new-hash";
       });
       expect((await reset()).status).toBe(500);
       expect(db.account?.[0]?.password).toBe("new-hash");
-      expect(db.verification?.map((row) => row.identifier)).toEqual([
-        expect.stringMatching(/^reset-password-mailed:/),
-      ]);
-      expect(db.user?.[0]?.emailVerified).toBe(false);
+      expect(db.verification).toEqual([]);
+      expect(db.user?.[0]?.emailVerified).toBe(true);
       expect(db.session).toHaveLength(0);
       expect(keys.size).toBe(0);
       // One pre-sweep, three post-sweep attempts, then three cleanup attempts.
@@ -1672,7 +1552,6 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
     } finally {
       log.mockRestore();
       revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
-      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
       prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
     }
   });
@@ -1723,7 +1602,6 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
         expect((await reset()).status).toBe(500);
         expect(db.account?.[0]?.password).toBe("new-hash");
         expect(db.user?.[0]?.emailVerified).toBe(delivery === "mailed");
-        expect(verifyEmailIfResetLinkWasMailed).toHaveBeenCalledExactlyOnceWith("retry-token");
         expect(db.verification?.map((row) => row.identifier)).toEqual([
           "reset-password:peer-token",
           "verify-email:unrelated",
@@ -1739,7 +1617,6 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
       } finally {
         log.mockRestore();
         revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
-        verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
         prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
       }
     },
@@ -1751,7 +1628,6 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
       hash.mockRejectedValue(new Error("hash unavailable"));
       expect((await reset()).status).toBe(500);
       expect(db.account?.[0]?.password).toBe("old-hash");
-      expect(verifyEmailIfResetLinkWasMailed).not.toHaveBeenCalled();
       expect(db.verification).toHaveLength(2);
       expect(db.session).toHaveLength(0);
       expect(keys.size).toBe(0);
@@ -1760,7 +1636,6 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
       ).toHaveLength(1);
     } finally {
       revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
-      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
       prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
     }
   });
@@ -1778,13 +1653,11 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
       expect(db.session).toHaveLength(1);
       expect(keys.has("old-key")).toBe(true);
       expect(hash).not.toHaveBeenCalled();
-      expect(verifyEmailIfResetLinkWasMailed).not.toHaveBeenCalled();
       expect(
         revocationDb.$transaction.mock.calls.filter(([work]) => Array.isArray(work)),
       ).toHaveLength(0);
     } finally {
       revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
-      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
       prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
     }
   });
@@ -1804,7 +1677,6 @@ describe("password reset ordering (real pinned endpoint, memory adapter)", () =>
       expect((await queryFixture.reset("retry-token", true)).status).toBe(200);
     } finally {
       revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
-      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
       prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
     }
   });

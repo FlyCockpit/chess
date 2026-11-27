@@ -16,7 +16,6 @@ import {
   sendEmail,
 } from "@cockpit-chess/mailer";
 import { BASE_ERROR_CODES, betterAuth } from "better-auth";
-import { prismaAdapter } from "better-auth/adapters/prisma";
 import { APIError, createAuthMiddleware, getSession } from "better-auth/api";
 import { deleteSessionCookie } from "better-auth/cookies";
 import { admin, genericOAuth, twoFactor } from "better-auth/plugins";
@@ -31,6 +30,7 @@ import {
   revokeCredentialsAfterPasswordReset,
   revokeCredentialsBeforePasswordReset,
 } from "./credential-revocation.js";
+import { createCredentialSetupAdapter } from "./credential-setup-adapter.js";
 import {
   assertDeviceRedemptionLocked,
   lockedDeviceAuthorization,
@@ -43,8 +43,6 @@ import {
   isResetLinkRedeemable,
   recordResetLinkMailed,
   resetTokenOf,
-  spentResetToken,
-  verifyEmailIfResetLinkWasMailed,
 } from "./password-reset-links.js";
 import {
   fencePasswordSessionAfter,
@@ -87,19 +85,11 @@ export const passwordPepper = createPasswordPepper({
   previousSecret: env.BETTER_AUTH_SECRET_PREVIOUS,
 });
 
-const committedResetFailures = new WeakSet<APIError>();
-
 export const auth = betterAuth({
-  // No adapter transactions (Better-Auth's default, `transaction: false`), on
-  // purpose. With them, sign-up would run its whole body — including
-  // `sendVerificationEmail`, which reads the new user's locale through the
-  // shared client and so cannot see the uncommitted row, and an SMTP send that
-  // can outlast Prisma's 5 s interactive-transaction timeout — inside one
-  // transaction. Each adapter write therefore commits on its own; see
-  // `revokeSessionsOnPasswordReset` below for what that means for a reset.
-  database: prismaAdapter(prisma, {
-    provider: "postgresql",
-  }),
+  // Global adapter transactions remain off for signup locale visibility and SMTP.
+  // Only reset consumption/password commit is transactional; activation writes
+  // use short transactions on the same password → CLI → setup lock order.
+  database: createCredentialSetupAdapter(),
 
   logger: {
     log(level, message, ...args) {
@@ -142,34 +132,16 @@ export const auth = betterAuth({
     // authenticate.
     minPasswordLength: 12,
     password: { hash: passwordPepper.hash, verify: passwordPepper.verify },
-    // A password reset is what a user does when they think someone else has
-    // their password, so it must sign out every existing session — including
-    // the attacker's. Better-Auth spends the token, deletes the user's session
-    // rows and writes the new password in that order. Without adapter
-    // transactions (above) each step commits on its own, so if the password
-    // write fails the token is already spent and the sessions are gone while
-    // the old password stays: the request fails, no session survives, and the
-    // user recovers with a fresh forgot-password link (a retry of the spent
-    // link gets the reset page's invalid-link card). (An already-issued cookie-cache entry can still answer for
-    // up to the cache max-age; after that the deleted row 401s. CLI
-    // credentials minted from such a cached session re-check the session row
-    // under a lock: see device-redemption-lock.ts.) A sign-in that was still
-    // verifying the old password when the reset landed is refused or removed
-    // by the credential fence (password-sign-in-fence.ts); the revocation
-    // below deletes every session again after the new hash is written. A
-    // password change still in flight cannot overwrite the reset: both hold
-    // the user's password-write lock (password-write-lock.ts).
+    // Token consumption, mailbox proof, competing-link deletion and password
+    // commit share the selective adapter transaction. A failed password write
+    // rolls those back, so the same link can be retried. Pre-sweep revocations
+    // may already have committed. Existing sign-in/2FA and password-write fences
+    // still refuse delayed old-password sessions and overlapping writes.
     revokeSessionsOnPasswordReset: true,
-    // Session revocation does not reach API keys: they authenticate from their
-    // own row. Revoke them (and any device-flow login still in flight) and the
-    // user's other reset links once the new password is committed — see
-    // credential-revocation.ts. (Whether the reset also verifies the email is
-    // decided in the `/reset-password` after-hook below, which knows the
-    // token.) Better-Auth calls this AFTER committing the
-    // password and consuming the token, so a throw cannot undo the reset; the
-    // revocation therefore retries (idempotently) and, if it still fails, logs a
-    // SECURITY error and makes the request report failure — the user then
-    // recovers with a fresh forgot-password link, which revokes again.
+    // Post-commit defense in depth revokes API keys, device codes, sessions and
+    // pending two-factor proofs again. Mailbox verification already committed
+    // with the password; a failed sweep cannot undo it. Exhausted retries log
+    // and fail the request; recovery uses a fresh forgot-password link.
     onPasswordReset: async ({ user }) => {
       try {
         await revokeCredentialsAfterPasswordReset(user.id);
@@ -177,7 +149,6 @@ export const auth = betterAuth({
         const error = new APIError("INTERNAL_SERVER_ERROR", {
           message: "We couldn't finish securing your account. Request a new password reset link.",
         });
-        committedResetFailures.add(error);
         throw error;
       }
     },
@@ -428,31 +399,6 @@ export const auth = betterAuth({
       // so it is no account-existence oracle (signup-response.ts).
       if (ctx.path === SIGN_UP_EMAIL_PATH) {
         return neutralizeSignUpResponse(ctx, { signupEnabled: SIGNUP_ENABLED });
-      }
-      // A spent reset link verifies the email only if it was mailed
-      // (password-reset-links.ts). The password is already set, so a failure
-      // here is logged, never surfaced: the user can verify through
-      // verify-email, which sign-in offers.
-      const resetToken = spentResetToken({
-        path: ctx.path,
-        body: ctx.body,
-        query: ctx.query,
-        returned:
-          ctx.context.returned instanceof APIError &&
-          committedResetFailures.has(ctx.context.returned)
-            ? { status: true }
-            : ctx.context.returned,
-      });
-      if (resetToken) {
-        try {
-          await verifyEmailIfResetLinkWasMailed(resetToken);
-        } catch (err) {
-          console.error(
-            "[auth] verifying the email of a mailed reset link failed:",
-            err instanceof Error ? `${err.name}: ${err.message}` : "unknown error",
-          );
-        }
-        return;
       }
       const target = passwordChangeRevocationTarget({
         path: ctx.path,

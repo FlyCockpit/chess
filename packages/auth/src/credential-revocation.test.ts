@@ -23,6 +23,7 @@ const {
   revokeCredentialsBeforePasswordReset,
   revokeCredentialsAfterPasswordChange,
   revokeCredentialsAfterPasswordReset,
+  revokeCredentialsInTransaction,
 } = await import("./credential-revocation");
 const { cliCredentialLockKey } = await import("./device-redemption-lock");
 
@@ -141,7 +142,7 @@ describe("revokeCredentialsAfterPasswordReset", () => {
       "twoFactor.deleteMany",
     ]);
     expect(db.$transaction).toHaveBeenNthCalledWith(2, ["setupLock", "verification.deleteMany"]);
-    // Only the token-aware upstream after-hook can assert mailbox proof.
+    // Only the token-aware consume transaction can assert mailbox proof.
     expect(db.user.updateMany).not.toHaveBeenCalled();
     expect(db.verification.deleteMany).toHaveBeenCalledExactlyOnceWith({
       where: { value: "u1", identifier: { startsWith: "reset-password:" } },
@@ -411,4 +412,35 @@ describe("impersonator credential revocation", () => {
       expect(db.$transaction.mock.calls[0]?.[0]).toContain("session.deleteMany");
     },
   );
+});
+
+describe("activation revocation on the bound client", () => {
+  it("uses only the existing transaction for all Chess standing credentials and 2FA", async () => {
+    const tx = {
+      apiKey: { deleteMany: vi.fn() },
+      deviceCode: { deleteMany: vi.fn() },
+      session: { deleteMany: vi.fn() },
+      $executeRaw: vi.fn(),
+    };
+    await revokeCredentialsInTransaction(
+      tx as unknown as Parameters<typeof revokeCredentialsInTransaction>[0],
+      "invitee",
+    );
+    expect(tx.apiKey.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: { referenceId: "invitee" },
+    });
+    expect(tx.deviceCode.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: { userId: "invitee" },
+    });
+    expect(tx.session.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: { OR: [{ userId: "invitee" }, { impersonatedBy: "invitee" }] },
+    });
+    expect(tx.$executeRaw).toHaveBeenCalledOnce();
+    expect(tx.$executeRaw.mock.calls[0]?.slice(1)).toEqual(["invitee", "invitee"]);
+    expect(db.$executeRaw).not.toHaveBeenCalled();
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(db.apiKey.deleteMany).not.toHaveBeenCalled();
+    expect(db.deviceCode.deleteMany).not.toHaveBeenCalled();
+    expect(db.session.deleteMany).not.toHaveBeenCalled();
+  });
 });

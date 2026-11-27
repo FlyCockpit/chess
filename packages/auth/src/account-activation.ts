@@ -4,33 +4,10 @@ import { CREDENTIAL_PROVIDER_ID } from "./password-reset-links.js";
 import { deleteResetLinks, lockSetPasswordLinks } from "./set-password-link-lock.js";
 
 /**
- * An invited account becomes active when its email is verified or an IdP
- * identity is linked to it. Reset links minted while it was a pending invite
- * (set-password links an admin was shown, or a resend's) must die at that
- * moment, by whatever route it happened: ordinary `/verify-email`, an SSO
- * sign-in that links the account and copies the IdP's verified claim, or a
- * mailed reset link (whose after-hook does the same itself,
- * password-reset-links.ts `verifyEmailIfResetLinkWasMailed`).
- *
- * This is tidy-up, not the guarantee. What stops the holder of a leftover
- * shown link from replacing the active account's password is the
- * `/reset-password` before-hook (password-reset-links.ts
- * `isResetLinkRedeemable`): a link that was not mailed is spendable only
- * while the account is a pending invite. So a failed cleanup is logged, never
- * surfaced: the activation is already committed, and failing the request
- * would only tell the user something went wrong with a verification that
- * worked (a retry returns early anyway, so it would not retry the cleanup).
- *
- * These run as Better-Auth database after-hooks, which fire once the write is
- * committed. Each takes the per-user set-password-link lock that minting takes
- * (packages/api/src/lib/set-password-link.ts) and deletes every reset link of
- * the user. A mint racing the activation therefore either re-reads the user
- * under the lock after the activation committed and refuses (the account is
- * no longer a pending invite), or committed its link before this took the
- * lock, and this deletes it.
- *
- * A forgot-password link the user has out also goes when an IdP identity is
- * linked to an already-verified account; they can request another.
+ * Defense-in-depth tidy-up after committed activation. The adapter now deletes
+ * links in the activation transaction and the reset spend rechecks eligibility
+ * in its own password transaction (credential-setup-adapter.ts). These hooks
+ * may retry cleanup, but never establish mailbox proof or undo passwords.
  */
 
 /** Endpoint contexts whose user update set `emailVerified: true`. */

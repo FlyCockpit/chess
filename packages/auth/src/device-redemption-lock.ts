@@ -33,8 +33,11 @@ export function cliCredentialLockKey(userId: string): string {
 }
 
 /** The revocation side: run first inside the revoking transaction. */
-export function lockCliCredentials(userId: string): Prisma.PrismaPromise<unknown> {
-  return prisma.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${cliCredentialLockKey(userId)}))`;
+export function lockCliCredentials(
+  userId: string,
+  db: Pick<Prisma.TransactionClient, "$executeRaw"> = prisma,
+): Prisma.PrismaPromise<unknown> {
+  return db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${cliCredentialLockKey(userId)}))`;
 }
 
 /** The lock a redemption holds; `held` turns false the moment it is released. */
