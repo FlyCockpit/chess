@@ -59,7 +59,7 @@ const { invalidateForceTwoFactorSettingsCache } = await import("../lib/two-facto
 
 const now = new Date("2026-10-20T00:00:00Z");
 
-function client(userId = "user-1") {
+function client(userId = "user-1", userOverrides: Partial<Session["user"]> = {}) {
   const context: Context = {
     session: {
       user: {
@@ -75,6 +75,7 @@ function client(userId = "user-1") {
         banExpires: null,
         createdAt: now,
         updatedAt: now,
+        ...userOverrides,
       },
       session: {
         id: "auth-session",
@@ -301,5 +302,29 @@ describe("cliAccess auth", () => {
     expect(db.apiKey.findMany).not.toHaveBeenCalled();
     expect(db.apiKey.deleteMany).not.toHaveBeenCalled();
     expect(createApiKey).not.toHaveBeenCalled();
+  });
+});
+
+describe("credential mint authority codes", () => {
+  it("retains UNAUTHORIZED for a banned session before entering the mint lock", async () => {
+    await expect(
+      client("user-1", { banned: true, banExpires: null }).apiKeys.create({
+        name: "key",
+        expiresInDays: 30,
+      }),
+    ).rejects.toSatisfy(isCode("UNAUTHORIZED"));
+    expect(createApiKey).not.toHaveBeenCalled();
+    expect(lock.calls).toHaveLength(0);
+  });
+  it("retains FORBIDDEN for an established admin missing required 2FA", async () => {
+    await expect(
+      client("user-1", {
+        role: "admin",
+        twoFactorEnabled: false,
+        createdAt: new Date("2020-01-01"),
+      }).apiKeys.create({ name: "key", expiresInDays: 30 }),
+    ).rejects.toSatisfy(isCode("FORBIDDEN"));
+    expect(createApiKey).not.toHaveBeenCalled();
+    expect(lock.calls).toHaveLength(0);
   });
 });

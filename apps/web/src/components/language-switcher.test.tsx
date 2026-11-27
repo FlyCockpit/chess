@@ -22,6 +22,7 @@ vi.mock("@tanstack/react-query", () => ({ useMutation: () => ({ mutate: vi.fn() 
 vi.mock("@/hooks/use-auth-session", () => ({
   useAuthSession: () => ({ state: { status: "anonymous" }, meta: {} }),
 }));
+vi.mock("@/hooks/use-document-admits", () => ({ useDocumentAdmits: () => false }));
 vi.mock("@/utils/orpc", () => ({
   orpc: { auth: { updateLocale: { mutationOptions: () => ({}) } } },
 }));

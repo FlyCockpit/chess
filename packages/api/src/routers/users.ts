@@ -12,8 +12,8 @@ import prisma, { type Prisma } from "@cockpit-chess/db";
 import { isEmailConfigured, renderInviteUser, sendEmail } from "@cockpit-chess/mailer";
 import { ORPCError } from "@orpc/server";
 import { z } from "zod";
-
 import { adminOr404Procedure } from "../index";
+import { withAdminRemovalGuard } from "../lib/admin-presence";
 import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagination";
 import { createProcedureBudget } from "../lib/procedure-budget";
 import {
@@ -401,18 +401,36 @@ export const usersRouter = {
       if (input.userId === context.session.user.id && input.role !== "admin") {
         throw new ORPCError("FORBIDDEN", {
           message: "You cannot remove your own admin role.",
+          data: { reason: "SELF_DEMOTION" },
         });
       }
-      const target = await prisma.user.findUnique({
-        where: { id: input.userId },
-        select: { id: true },
-      });
-      if (!target) throw new ORPCError("NOT_FOUND", { message: "User not found" });
+      const change = await withAdminRemovalGuard(
+        input.userId,
+        async (tx, target) => {
+          if (target.role === input.role) return null;
+          await tx.user.update({
+            where: { id: target.id },
+            data: { role: input.role },
+            select: { id: true },
+          });
+          return { oldRole: target.role, newRole: input.role };
+        },
+        input.role,
+      );
 
-      await prisma.user.update({
-        where: { id: input.userId },
-        data: { role: input.role },
-      });
+      if (change) {
+        // No audit table in this app: follow the structured audit convention
+        // used by setup.first_admin, once after commit.
+        console.info(
+          `[audit] ${JSON.stringify({
+            event: "users.role_changed",
+            actorId: context.session.user.id,
+            targetId: input.userId,
+            ...change,
+            timestamp: new Date().toISOString(),
+          })}`,
+        );
+      }
       return { success: true };
     }),
 
@@ -429,12 +447,6 @@ export const usersRouter = {
           message: "You cannot archive your own account.",
         });
       }
-      const target = await prisma.user.findUnique({
-        where: { id: input.userId },
-        select: { id: true },
-      });
-      if (!target) throw new ORPCError("NOT_FOUND", { message: "User not found" });
-
       // Set banned=true so better-auth treats the user as locked, and revoke
       // every active session so the next page-load signs them out. We mirror
       // what the admin plugin's banUser endpoint does internally — no expiry
@@ -444,17 +456,18 @@ export const usersRouter = {
       // (an API key, a personal access token), revoke it here too: deleting
       // sessions does not touch it, so it would outlive the ban everywhere a
       // per-surface ban re-check does not reach.
-      await prisma.$transaction([
-        prisma.user.update({
+      await withAdminRemovalGuard(input.userId, async (tx) => {
+        await tx.user.update({
           where: { id: input.userId },
           data: {
             banned: true,
             banReason: input.reason ?? null,
             banExpires: null,
           },
-        }),
-        prisma.session.deleteMany({ where: { userId: input.userId } }),
-      ]);
+          select: { id: true },
+        });
+        await tx.session.deleteMany({ where: { userId: input.userId } });
+      });
       return { success: true };
     }),
 
@@ -474,6 +487,7 @@ export const usersRouter = {
     await prisma.user.update({
       where: { id: input.userId },
       data: { banned: false, banReason: null, banExpires: null },
+      select: { id: true },
     });
     return { success: true };
   }),
@@ -484,19 +498,16 @@ export const usersRouter = {
         message: "You cannot delete your own account.",
       });
     }
-    const target = await prisma.user.findUnique({
-      where: { id: input.userId },
-      select: { id: true },
-    });
-    if (!target) throw new ORPCError("NOT_FOUND", { message: "User not found" });
-
     // Every relation to User cascades today (sessions, accounts, two-factors,
     // CLI credentials and chess matches, published ones included). The
     // constraint mapping below is defensive: a future `onDelete: Restrict`
     // relation would surface as a friendly "archive instead" message.
     try {
-      await prisma.user.delete({ where: { id: input.userId } });
+      await withAdminRemovalGuard(input.userId, async (tx) => {
+        await tx.user.delete({ where: { id: input.userId } });
+      });
     } catch (err) {
+      if (err instanceof ORPCError) throw err;
       const message = err instanceof Error ? err.message : "Failed to delete user";
       if (/foreign key|constraint|restrict/i.test(message)) {
         throw new ORPCError("CONFLICT", {

@@ -5,6 +5,7 @@ const fixture = vi.hoisted(() => ({
   search: {} as { tab?: string },
   started: undefined as boolean | undefined,
   unverified: false,
+  requested: false,
 }));
 vi.mock("@tanstack/react-router", () => ({
   useRouterState: ({
@@ -30,6 +31,8 @@ vi.mock("react", () => ({
   useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => boolean) => getSnapshot(),
 }));
 vi.mock("@/lib/document-identity", () => ({
+  isIdentityObservationRequested: () => fixture.requested,
+  subscribeDocumentIdentity: () => () => {},
   isDocumentIdentityUnverified: () => fixture.unverified,
   subscribeIdentityVerification: () => () => {},
 }));
@@ -41,11 +44,20 @@ beforeEach(() => {
   fixture.matches = [];
   fixture.search = {};
   fixture.unverified = false;
+  fixture.requested = false;
 });
 describe("hosted identity boundary lifecycle", () => {
   it.each(["arena", "lab", "leaderboard"])("keeps fresh public %s session-free", (tab) => {
     fixture.search = { tab };
     expect(useIdentityBoundaryEnabled()).toBe(false);
+  });
+  it("starts when a public account control requests observation and stays mounted", () => {
+    fixture.search = { tab: "arena" };
+    expect(useIdentityBoundaryEnabled()).toBe(false);
+    fixture.requested = true;
+    expect(useIdentityBoundaryEnabled()).toBe(true);
+    fixture.requested = false;
+    expect(useIdentityBoundaryEnabled()).toBe(true);
   });
   it("starts for lazy public Studio and remains mounted after leaving it", () => {
     fixture.search = { tab: "studio" };

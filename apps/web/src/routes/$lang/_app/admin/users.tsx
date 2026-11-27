@@ -36,6 +36,8 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 
+import { RoleChangeDialog, type RoleChangeTarget } from "@/components/admin/role-change-dialog";
+import { userChangeErrorKey } from "@/components/admin/user-change-error";
 import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { LoadMore } from "@/components/load-more";
@@ -111,6 +113,7 @@ function AdminUsers() {
   // refetch, filter change or search that drops the row must not blank the
   // confirm token (or retarget the delete) while the dialog is up.
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; email: string } | null>(null);
+  const [roleTarget, setRoleTarget] = useState<RoleChangeTarget | null>(null);
   const debouncedSearch = useDebounce(search.trim(), 300);
 
   const listQuery = useInfiniteQuery(
@@ -128,8 +131,10 @@ function AdminUsers() {
 
   const setRole = useEntityMutation(
     {
-      ...orpc.users.setRole.mutationOptions(),
-      meta: { errorFallbackKey: "admin:users.roleUpdateFailed" },
+      ...orpc.users.setRole.mutationOptions({
+        onSuccess: () => setRoleTarget(null),
+      }),
+      meta: { skipGlobalErrorToast: true },
     },
     { invalidateKey: orpc.users.key(), successMessage: t("admin:users.roleUpdated") },
   );
@@ -144,35 +149,40 @@ function AdminUsers() {
 
   // Archive acts at once (it is fully reversible); its toast offers Undo,
   // which is the row's Restore (users.unarchive).
-  const archive = useEntityMutation(
-    {
-      ...orpc.users.archive.mutationOptions({
-        onSuccess: (_data, variables) => {
-          announceArchivedWithUndo({
-            message: t("admin:users.userArchived"),
-            undoLabel: t("common:actions.undo"),
-            onUndo: () => {
-              unarchive.mutate({ userId: variables.userId });
-            },
-          });
-        },
-      }),
-      meta: { errorFallbackKey: "admin:users.archiveFailed" },
-    },
-    { invalidateKey: orpc.users.key() },
-  );
+  const archive = useMutation({
+    ...orpc.users.archive.mutationOptions({
+      onSuccess: (_data, variables) => {
+        announceArchivedWithUndo({
+          message: t("admin:users.userArchived"),
+          undoLabel: t("common:actions.undo"),
+          onUndo: () => {
+            unarchive.mutate({ userId: variables.userId });
+          },
+        });
+        void queryClient.invalidateQueries({ queryKey: orpc.users.key() });
+      },
+      onError: (error) => {
+        const key = userChangeErrorKey(error);
+        toast.error(key ? t(key) : friendly(error, t("admin:users.archiveFailed")));
+      },
+    }),
+    meta: { skipGlobalErrorToast: true },
+  });
 
-  const remove = useEntityMutation(
-    {
-      ...orpc.users.remove.mutationOptions({
-        onSuccess: () => {
-          setDeleteTarget(null);
-        },
-      }),
-      meta: { errorFallbackKey: "admin:users.deleteFailed" },
-    },
-    { invalidateKey: orpc.users.key(), successMessage: t("admin:users.userDeleted") },
-  );
+  const remove = useMutation({
+    ...orpc.users.remove.mutationOptions({
+      onSuccess: () => {
+        setDeleteTarget(null);
+        toast.success(t("admin:users.userDeleted"));
+        void queryClient.invalidateQueries({ queryKey: orpc.users.key() });
+      },
+      onError: (error) => {
+        const key = userChangeErrorKey(error);
+        toast.error(key ? t(key) : friendly(error, t("admin:users.deleteFailed")));
+      },
+    }),
+    meta: { skipGlobalErrorToast: true },
+  });
 
   const resendInvite = useMutation({
     ...orpc.users.resendInvite.mutationOptions({
@@ -209,6 +219,14 @@ function AdminUsers() {
   // mutation is in flight would act on what the list showed before it.
   const rowActionPending =
     setRole.isPending || archive.isPending || unarchive.isPending || resendInvite.isPending;
+  // Stable reasons carry expected refusals across locales. Never display the
+  // server's English message for a permission, missing target, or retry error.
+  const roleErrorKey = userChangeErrorKey(setRole.error);
+  const roleError = setRole.error
+    ? roleErrorKey
+      ? t(roleErrorKey)
+      : friendly(setRole.error, t("admin:users.roleUpdateFailed"))
+    : undefined;
 
   return (
     <PageShell width="wide">
@@ -330,7 +348,13 @@ function AdminUsers() {
                           isArchived={isArchived}
                           disabled={rowActionPending}
                           onSetRole={(role) => {
-                            setRole.mutate({ userId: user.id, role });
+                            setRole.reset();
+                            setRoleTarget({
+                              id: user.id,
+                              name: user.name,
+                              email: user.email,
+                              role,
+                            });
                           }}
                           onArchive={() => {
                             archive.mutate({ userId: user.id });
@@ -375,6 +399,17 @@ function AdminUsers() {
       />
 
       <RevealInviteDialog reveal={reveal} onClose={() => setReveal(null)} />
+
+      <RoleChangeDialog
+        target={roleTarget}
+        isPending={setRole.isPending}
+        error={roleError}
+        onClose={() => setRoleTarget(null)}
+        onConfirm={() => {
+          if (!roleTarget) return;
+          setRole.mutate({ userId: roleTarget.id, role: roleTarget.role });
+        }}
+      />
 
       <ConfirmDeleteDialog
         open={deleteTarget !== null}

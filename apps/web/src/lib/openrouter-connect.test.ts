@@ -51,7 +51,7 @@ describe("startOpenRouterConnect", () => {
     expect(fetch).toHaveBeenCalledWith("https://chess.example/api/openrouter/connect", {
       method: "POST",
       credentials: "include",
-      headers: { "content-type": "application/json", "x-csrf-token": "orpc" },
+      headers: new Headers({ "content-type": "application/json", "x-csrf-token": "orpc" }),
       body: JSON.stringify({ limitUsd: 10, expiration: "90-days", lang: "es-MX" }),
     });
   });
@@ -161,4 +161,37 @@ it.each([
   await expect(
     startOpenRouterConnect({ limitUsd: 10, expiration: "90-days", lang: "en-US" }, { fetch }),
   ).rejects.toMatchObject({ reason: "rateLimited", retryAfterSeconds: seconds });
+});
+
+describe("OpenRouter document identity", () => {
+  it("sends the baseline and parks a conflicting cookie write before any error UI", async () => {
+    const { observeDocumentIdentity, resetDocumentIdentityForTests } = await import(
+      "./document-identity"
+    );
+    const reload = vi.fn();
+    vi.stubGlobal("window", { location: { reload } });
+    vi.stubGlobal("document", { documentElement: { style: { setProperty: vi.fn() } } });
+    resetDocumentIdentityForTests(() => undefined);
+    observeDocumentIdentity("old-owner");
+    const transport = vi.fn<typeof fetch>(async () => json(409, { code: "IDENTITY_CHANGED" }));
+    const error = vi.fn();
+    const success = vi.fn();
+    try {
+      void startOpenRouterConnect(
+        { limitUsd: 10, expiration: "90-days", lang: "en-US" },
+        { fetch: transport },
+      ).then(success, error);
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(new Headers(transport.mock.calls[0]?.[1]?.headers).get("X-Expected-User")).toBe(
+        "old-owner",
+      );
+      expect(reload).toHaveBeenCalledTimes(1);
+      expect(error).not.toHaveBeenCalled();
+      expect(success).not.toHaveBeenCalled();
+    } finally {
+      resetDocumentIdentityForTests(() => undefined);
+      vi.unstubAllGlobals();
+    }
+  });
 });

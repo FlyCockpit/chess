@@ -29,7 +29,7 @@ export async function resolveRouteSession(): Promise<RouteSessionResolution> {
   // a failed probe (a transport error) also waits before it reaches the
   // router. Taken once: a re-probe below runs after the shell hydrated.
   const shellHydrated = appShellHydrated();
-  for (;;) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     const startedAt = documentIdentityEpoch();
     // Taken before the probe too: an identity change announced while it runs
     // is newer than its answer, so the answer can't lift the unverified mask.
@@ -47,6 +47,8 @@ export async function resolveRouteSession(): Promise<RouteSessionResolution> {
       continue;
     }
     await admitRouteIdentity(resolution, startedAt, since);
-    return resolution;
+    // Admission itself awaits; never expose an answer invalidated in that gap.
+    if (since === identityVerificationGeneration()) return resolution;
   }
+  return { status: "error" };
 }

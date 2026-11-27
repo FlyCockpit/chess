@@ -113,7 +113,7 @@ describe("resolveRouteSession", () => {
     );
     const guard = resolveRouteSession();
     await Promise.resolve();
-    channel.onmessage?.({} as MessageEvent);
+    channel.onmessage?.({ data: { kind: "session-changed" } } as MessageEvent);
     expect(isDocumentIdentityUnverified()).toBe(true);
     // The old answer (A) never reaches the route: only the fresh one does.
     answerStale(resolved("a"));
@@ -139,7 +139,7 @@ describe("resolveRouteSession", () => {
     await Promise.resolve();
     // Another tab switches to B: the watcher checks, and the probe in flight
     // (asked before the switch) is out of date.
-    channel.onmessage?.({} as MessageEvent);
+    channel.onmessage?.({ data: { kind: "session-changed" } } as MessageEvent);
     expect(check).toHaveBeenCalledTimes(1);
     answerStale(resolved("a"));
     expect(await guard).toEqual(resolved("b"));

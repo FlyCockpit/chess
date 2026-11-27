@@ -4,7 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // whose `$queryRaw` answers the try-lock. The real-Postgres race (lock held
 // across the Better-Auth handler vs. a concurrent revocation) is covered by
 // `pnpm runtime:test-operations`.
-const tx = vi.hoisted(() => ({ $queryRaw: vi.fn() }));
+const tx = vi.hoisted(() => ({
+  $queryRaw: vi.fn(),
+  $executeRaw: vi.fn(),
+  session: { findFirst: vi.fn() },
+}));
 const db = vi.hoisted(() => ({
   deviceCode: { findUnique: vi.fn() },
   session: { deleteMany: vi.fn() },
@@ -17,6 +21,7 @@ vi.mock("@cockpit-chess/env/shared", () => ({ env: { DATABASE_POOL_MAX: 3 } }));
 
 const {
   assertDeviceRedemptionLocked,
+  lockedDeviceAuthorization,
   cliCredentialLockKey,
   deviceRedemptionLockHeld,
   removeDeviceSessionIfUnlocked,
@@ -37,6 +42,8 @@ const ok = () => new Response("ok");
 beforeEach(() => {
   vi.clearAllMocks();
   tx.$queryRaw.mockResolvedValue([{ locked: true }]);
+  tx.$executeRaw.mockResolvedValue(1);
+  tx.session.findFirst.mockResolvedValue({ id: "live-session" });
   db.$transaction.mockImplementation(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx));
   db.session.deleteMany.mockResolvedValue({ count: 1 });
 });
@@ -228,5 +235,96 @@ describe("removeDeviceSessionIfUnlocked", () => {
       return ok();
     });
     expect(db.session.deleteMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("browser device approval", () => {
+  async function approvalFixture() {
+    const { betterAuth } = await import("better-auth");
+    const { memoryAdapter } = await import("better-auth/adapters/memory");
+    const data: Record<string, Record<string, unknown>[]> = {
+      user: [{ id: "u1", name: "Test", email: "test@example.test", emailVerified: true }],
+      account: [
+        { id: "a1", userId: "u1", accountId: "u1", providerId: "credential", password: "hash" },
+      ],
+      session: [],
+      deviceCode: [
+        {
+          id: "dc",
+          userCode: "ABCDEFGH",
+          deviceCode: "device-code",
+          clientId: "mycli",
+          userId: "u1",
+          status: "pending",
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      ],
+    };
+    const instance = betterAuth({
+      baseURL: "https://app.example.test",
+      secret: "disposable-device-test-secret-with-no-external-use",
+      database: memoryAdapter(data),
+      logger: { disabled: true },
+      rateLimit: { enabled: false },
+      emailAndPassword: {
+        enabled: true,
+        password: { hash: async () => "hash", verify: async () => true },
+      },
+      plugins: [lockedDeviceAuthorization({})],
+    });
+    const signed = await instance.api.signInEmail({
+      body: { email: "test@example.test", password: "test-password" },
+      returnHeaders: true,
+    });
+    const cookie = signed.headers.get("set-cookie")?.split(";")[0];
+    if (!cookie) throw new Error("session cookie missing");
+    const approve = () =>
+      instance.handler(
+        new Request("https://app.example.test/api/auth/device/approve", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            cookie,
+            origin: "https://app.example.test",
+          },
+          body: JSON.stringify({ userCode: "ABCDEFGH" }),
+        }),
+      );
+    return { approve, data };
+  }
+
+  it("keeps the real plugin approval inside the revocation lock", async () => {
+    const { approve, data } = await approvalFixture();
+    expect((await approve()).status).toBe(200);
+    expect(data.deviceCode?.[0]?.status).toBe("approved");
+    const [strings, key] = tx.$executeRaw.mock.calls[0] as [TemplateStringsArray, string];
+    expect(strings.join("?")).toContain("pg_advisory_xact_lock(hashtext(?))");
+    expect(key).toBe("cli-credentials:u1");
+    expect(tx.session.findFirst).toHaveBeenCalledWith({
+      where: { id: data.session?.[0]?.id, userId: "u1", expiresAt: { gt: expect.any(Date) } },
+      select: { id: true },
+    });
+    expect(tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.session.findFirst.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("refuses when the locked session lookup is missing, expired or owned by another user", async () => {
+    for (const row of [
+      null,
+      { userId: "u1", expiresAt: new Date(0) },
+      { userId: "other", expiresAt: new Date("2099-01-01") },
+    ]) {
+      const { approve, data } = await approvalFixture();
+      // Better-Auth itself can still see a session; the locked DB lookup wins.
+      tx.session.findFirst.mockImplementationOnce(
+        async ({ where }: { where: { userId: string; expiresAt: { gt: Date } } }) =>
+          row?.userId === where.userId && row.expiresAt > where.expiresAt.gt
+            ? { id: "live-session" }
+            : null,
+      );
+      expect((await approve()).status).toBe(401);
+      expect(data.deviceCode?.[0]?.status).toBe("pending");
+    }
   });
 });

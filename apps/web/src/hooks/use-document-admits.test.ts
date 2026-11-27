@@ -8,6 +8,7 @@ const store = vi.hoisted(() => ({
 // hydration, and keep the subscription it registers.
 vi.mock("react", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react")>()),
+  useLayoutEffect: (effect: () => void) => effect(),
   useSyncExternalStore: (subscribe: (listener: () => void) => () => void, get: () => boolean) => {
     store.subscribe = subscribe;
     return get();
@@ -16,6 +17,7 @@ vi.mock("react", async (importOriginal) => ({
 
 import {
   connectIdentityPeers,
+  isIdentityObservationRequested,
   observeDocumentIdentity,
   resetDocumentIdentityForTests,
 } from "@/lib/document-identity";
@@ -32,6 +34,12 @@ afterEach(() => {
 });
 
 describe("useDocumentAdmits", () => {
+  it("requests the lazy observer as soon as an unguarded control sees an account", () => {
+    expect(useDocumentAdmits(undefined)).toBe(false);
+    expect(isIdentityObservationRequested()).toBe(false);
+    expect(useDocumentAdmits("a")).toBe(false);
+    expect(isIdentityObservationRequested()).toBe(true);
+  });
   it("follows the recorded identity and tells its subscriber when it changes", () => {
     expect(useDocumentAdmits(undefined)).toBe(false);
     expect(useDocumentAdmits("a")).toBe(false);

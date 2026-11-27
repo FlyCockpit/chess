@@ -8,10 +8,11 @@ import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-ro
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import z from "zod";
-
 import { AuthConfigGate } from "@/components/auth/auth-config-gate";
 import { AuthCard } from "@/components/auth/auth-screen";
+import { InlineRetry } from "@/components/inline-retry";
 import { authClient } from "@/lib/auth-client";
+import { markAnonymousOnlyRoute } from "@/lib/document-identity";
 import { ensureRouteQuery } from "@/lib/route-query";
 import { resolveRouteSession } from "@/lib/route-session";
 import { decideAnonymousOnlyRouteAccess } from "@/lib/route-session-access";
@@ -55,6 +56,7 @@ export const Route = createFileRoute("/$lang/_app/reset-password")({
 });
 
 function ResetPasswordPage() {
+  markAnonymousOnlyRoute();
   const { lang } = Route.useParams();
   const { token, error, invite, setup } = Route.useSearch();
   const isSetup = setup === 1;
@@ -174,6 +176,7 @@ function ResetPasswordForm({
 }) {
   const navigate = useNavigate();
   const { t } = useTranslation(["auth", "validation"]);
+  const [retryable, setRetryable] = useState(false);
   // Errors are toasted below (a dead link also swaps in the invalid-link card),
   // so the global mutation toast would only repeat them.
   const claimSetupLink = useMutation(
@@ -201,6 +204,7 @@ function ResetPasswordForm({
   const form = useForm({
     defaultValues: { newPassword: "", confirmPassword: "" },
     onSubmit: async ({ value }) => {
+      setRetryable(false);
       if (isSetup) {
         if (!(await claimFirstAdmin(value.newPassword))) return;
         toast.success(t("auth:resetPassword.setup.success"));
@@ -212,6 +216,10 @@ function ResetPasswordForm({
         token,
       });
       if (result.error) {
+        if (result.error.status === 503) {
+          setRetryable(true);
+          return;
+        }
         if (isRateLimit(result.error)) {
           toast.error(friendly(result.error));
           return;
@@ -260,6 +268,13 @@ function ResetPasswordForm({
       }}
       className="space-y-4"
     >
+      {retryable && (
+        <InlineRetry
+          message={t("auth:resetPassword.retryable")}
+          onRetry={() => void form.handleSubmit()}
+          variant="destructive"
+        />
+      )}
       <form.Field name="newPassword">
         {(field) => (
           <TextField

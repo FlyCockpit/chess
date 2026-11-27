@@ -26,5 +26,9 @@ export const CORS_ALLOW_HEADERS = [
   "Content-Type",
   "Authorization",
   "x-csrf-token",
+  "X-Expected-User",
   APP_LOCALE_HEADER,
 ] as const;
+
+/** Response headers split-origin clients need to read (not CORS-safelisted). */
+export const CORS_EXPOSE_HEADERS = ["Retry-After"] as const;

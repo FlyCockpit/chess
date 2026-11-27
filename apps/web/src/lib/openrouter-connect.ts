@@ -1,4 +1,5 @@
 import { env } from "@cockpit-chess/env/web";
+import { guardIdentityResponse, withExpectedIdentity } from "./document-identity";
 
 /**
  * The web half of "Connect OpenRouter" (apps/server/src/openrouter-routes.ts): the
@@ -74,12 +75,13 @@ export async function startOpenRouterConnect(
     response = await request(`${origin}/api/openrouter/connect`, {
       method: "POST",
       credentials: "include",
-      headers: { "content-type": "application/json", "x-csrf-token": "orpc" },
+      headers: withExpectedIdentity({ "content-type": "application/json", "x-csrf-token": "orpc" }),
       body: JSON.stringify(input),
     });
   } catch {
     throw new ConnectError("failed");
   }
+  await guardIdentityResponse(response);
   if (!response.ok) {
     const code = await response
       .json()

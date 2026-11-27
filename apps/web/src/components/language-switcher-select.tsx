@@ -10,6 +10,7 @@ import { useRouter } from "@tanstack/react-router";
 import { Languages } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAuthSession } from "@/hooks/use-auth-session";
+import { useDocumentAdmits } from "@/hooks/use-document-admits";
 import {
   isSupportedLocale,
   type Locale,
@@ -17,6 +18,7 @@ import {
   SUPPORTED_LOCALES,
 } from "@/i18n/config";
 import { LOCALE_LABELS } from "@/i18n/labels";
+import { documentAdmits } from "@/lib/document-identity";
 import { orpc } from "@/utils/orpc";
 import { LABEL_HIDDEN_BELOW, type LabelHiddenBelow } from "./language-switcher-label";
 
@@ -38,6 +40,8 @@ export default function LanguageSwitcherSelect({
     authSession.state.status === "authenticated" && !authSession.meta.isDegraded
       ? authSession.state.session
       : null;
+
+  const admitted = useDocumentAdmits(session?.user.id);
 
   // Silent server-side sync of the signed-in user's preference. The router's
   // global error toast handles failures — the URL switch already succeeded by
@@ -89,7 +93,12 @@ export default function LanguageSwitcherSelect({
     // On PUBLIC pages this switcher may still run without a confirmed client
     // session; the localStorage write above is picked up and pushed to the
     // server by `useUserLocaleSync` on their next `_app` visit.
-    if (session?.user && session.user.locale !== value) {
+    if (
+      session?.user &&
+      admitted &&
+      documentAdmits(session.user.id) &&
+      session.user.locale !== value
+    ) {
       updateLocale.mutate({ locale: value });
     }
   };

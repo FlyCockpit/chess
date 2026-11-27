@@ -24,6 +24,8 @@ vi.mock("@cockpit-chess/db", () => {
   type Where = Record<string, unknown>;
   const matches = (row: Row, where: Where): boolean =>
     Object.entries(where).every(([field, condition]) => {
+      if (field === "OR" && Array.isArray(condition))
+        return condition.some((part) => matches(row, part));
       // The one relation filter the code uses: an account's user by email.
       if (field === "user") {
         const user = (tables.db.user ?? []).find((u) => u.id === row.userId);
@@ -82,7 +84,28 @@ vi.mock("@cockpit-chess/db", () => {
       apiKey: table("apikey"),
       deviceCode: table("deviceCode"),
       // The revocation's blocking CLI-credential lock: uncontended here.
-      $executeRaw: async () => 0,
+      $executeRaw: async (strings: TemplateStringsArray, userId: string) => {
+        if (!strings.join("").includes('WITH "resetChallenges"')) return 0;
+        const rows = tables.db.verification ?? [];
+        const challenges = rows.filter(
+          (row) => row.value === userId && String(row.identifier).startsWith("2fa-"),
+        );
+        const identifiers = new Set(
+          challenges.flatMap((row) => [
+            row.identifier,
+            `2fa-otp-${row.identifier}`,
+            `2fa-attempts-${row.identifier}`,
+          ]),
+        );
+        tables.db.verification = rows.filter(
+          (row) =>
+            !(
+              identifiers.has(row.identifier) ||
+              (row.value === userId && String(row.identifier).startsWith("trust-device-"))
+            ),
+        );
+        return rows.length - tables.db.verification.length;
+      },
       // A batch runs its statements; an interactive transaction gets a
       // client with the try-lock (password-write-lock.ts), released at its end.
       $transaction: async (

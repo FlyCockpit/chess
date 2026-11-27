@@ -1,6 +1,10 @@
-import { useSyncExternalStore } from "react";
+import { useLayoutEffect, useSyncExternalStore } from "react";
 
-import { documentAdmits, subscribeDocumentIdentity } from "@/lib/document-identity";
+import {
+  documentAdmits,
+  requestIdentityObservation,
+  subscribeDocumentIdentity,
+} from "@/lib/document-identity";
 
 /**
  * True once `identity` is confirmed as the one this document's private state
@@ -10,6 +14,9 @@ import { documentAdmits, subscribeDocumentIdentity } from "@/lib/document-identi
  * cache the previous account filled before anything was watching.
  */
 export function useDocumentAdmits(identity: string | undefined): boolean {
+  useLayoutEffect(() => {
+    if (identity !== undefined) requestIdentityObservation();
+  }, [identity]);
   return useSyncExternalStore(
     subscribeDocumentIdentity,
     () => identity !== undefined && documentAdmits(identity),

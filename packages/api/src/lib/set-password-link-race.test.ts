@@ -39,11 +39,11 @@ const store = vi.hoisted(() => ({
 }));
 
 const db = vi.hoisted(() => {
-  type TxContext = { releases: (() => void)[] };
+  type TxContext = { releases: (() => void)[]; keys: Set<string> };
   const lock = async (strings: TemplateStringsArray, values: unknown[], ctx: TxContext) => {
-    if (!strings.join("?").includes("pg_advisory_xact_lock(hashtext(?))")) {
-      throw new Error(`unexpected SQL ${strings.join("?")}`);
-    }
+    expect(strings.join("?")).toBe("SELECT pg_advisory_xact_lock(hashtext(?))");
+    expect(values).toHaveLength(1);
+    expect(values[0]).toMatch(/^(cli-credentials|set-password-link):.+$/);
     const key = String(values[0]);
     for (let held = store.locks.get(key); held; held = store.locks.get(key)) await held;
     let release: () => void = () => undefined;
@@ -56,8 +56,55 @@ const db = vi.hoisted(() => {
         };
       }),
     );
+    ctx.keys.add(key);
     ctx.releases.push(release);
     return 1;
+  };
+  const execute = async (strings: TemplateStringsArray, values: unknown[], ctx: TxContext) => {
+    const sql = strings.join("?");
+    if (sql === "SELECT pg_advisory_xact_lock(hashtext(?))") return lock(strings, values, ctx);
+    // Accept only the complete cleanup statement, including both user predicates
+    // and the materialized challenge snapshot used to find OTP/counter rows.
+    expect(sql.replace(/\s+/g, " ").trim()).toBe(
+      `WITH "resetChallenges" AS MATERIALIZED (
+        SELECT "identifier" FROM "verification"
+        WHERE "value" = ? AND "identifier" LIKE '2fa-%'
+      )
+      DELETE FROM "verification"
+      WHERE ("value" = ? AND "identifier" LIKE 'trust-device-%')
+         OR "identifier" IN (
+           SELECT "identifier" FROM "resetChallenges"
+           UNION ALL
+           SELECT '2fa-otp-' || "identifier" FROM "resetChallenges"
+           UNION ALL
+           SELECT '2fa-attempts-' || "identifier" FROM "resetChallenges"
+         )`
+        .replace(/\s+/g, " ")
+        .trim(),
+    );
+    expect(values).toHaveLength(2);
+    const [userId] = values;
+    expect(typeof userId).toBe("string");
+    expect(values[1]).toBe(userId);
+    expect(ctx.keys.has(`cli-credentials:${userId}`)).toBe(true);
+    const challenges = store.verifications.filter(
+      (v) => v.value === userId && v.identifier.startsWith("2fa-"),
+    );
+    const identifiers = new Set(
+      challenges.flatMap(({ identifier }) => [
+        identifier,
+        `2fa-otp-${identifier}`,
+        `2fa-attempts-${identifier}`,
+      ]),
+    );
+    const kept = store.verifications.filter(
+      (v) =>
+        !(v.value === userId && v.identifier.startsWith("trust-device-")) &&
+        !identifiers.has(v.identifier),
+    );
+    const count = store.verifications.length - kept.length;
+    store.verifications.splice(0, store.verifications.length, ...kept);
+    return count;
   };
   /** A lazy statement for a batch transaction. */
   const statement = (run: (ctx: TxContext) => Promise<unknown>) => ({ run });
@@ -78,7 +125,7 @@ const db = vi.hoisted(() => {
   const none = () => statement(async () => ({ count: 0 }));
   const interactive = (ctx: TxContext) => ({
     $executeRaw: (strings: TemplateStringsArray, ...values: unknown[]) =>
-      lock(strings, values, ctx),
+      execute(strings, values, ctx),
     user: {
       findUnique: async () => {
         const row = {
@@ -108,11 +155,11 @@ const db = vi.hoisted(() => {
   });
   return {
     $executeRaw: (strings: TemplateStringsArray, ...values: unknown[]) =>
-      statement((ctx) => lock(strings, values, ctx)),
+      statement((ctx) => execute(strings, values, ctx)),
     async $transaction(
       work: { run: (ctx: TxContext) => Promise<unknown> }[] | ((tx: unknown) => Promise<unknown>),
     ) {
-      const ctx: TxContext = { releases: [] };
+      const ctx: TxContext = { releases: [], keys: new Set() };
       try {
         if (typeof work === "function") return await work(interactive(ctx));
         const results = [];
@@ -197,6 +244,34 @@ beforeEach(() => {
 });
 
 describe("invite resend vs a finishing password reset", () => {
+  it("revokes reset-side 2FA rows while preserving other users and unrelated verifications", async () => {
+    const expiresAt = new Date(Date.now() + 60_000);
+    const revoked = [
+      { identifier: "2fa-challenge-a", value: USER },
+      { identifier: "2fa-otp-2fa-challenge-a", value: "123456" },
+      { identifier: "2fa-attempts-2fa-challenge-a", value: "2" },
+      { identifier: "2fa-challenge-b", value: USER },
+      { identifier: "2fa-otp-2fa-challenge-b", value: "654321" },
+      { identifier: "2fa-attempts-2fa-challenge-b", value: "1" },
+      { identifier: "trust-device-invitee", value: USER },
+    ].map((row) => ({ ...row, expiresAt }));
+    const retained = [
+      { identifier: "2fa-other", value: "other-user" },
+      { identifier: "2fa-otp-2fa-other", value: "123456" },
+      { identifier: "2fa-attempts-2fa-other", value: "2" },
+      { identifier: "trust-device-other", value: "other-user" },
+      { identifier: "2fa-attempts-orphan", value: "3" },
+      { identifier: "email-verification", value: USER },
+      { identifier: "unrelated", value: "2fa-challenge-a" },
+    ].map((row) => ({ ...row, expiresAt }));
+    store.verifications.push(...revoked, ...retained);
+
+    await revokeCredentialsAfterPasswordReset(USER);
+
+    expect(store.verifications).toEqual(retained);
+    expect(store.locks.size).toBe(0);
+  });
+
   it("a resend that minted its link first loses it to the reset's revocation", async () => {
     const token = await mailedLink();
     spend(token);

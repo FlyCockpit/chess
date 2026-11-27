@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import prisma, { type Prisma } from "@cockpit-chess/db";
+import { APIError, createAuthEndpoint, getAuthoritativeSessionFromCtx } from "better-auth/api";
+import { deviceAuthorization } from "better-auth/plugins";
 import { releaseSlots, tryAcquireSlots, withLockSlot } from "./lock-slots.js";
 import { readBodyFields } from "./request-body-field.js";
 
@@ -106,15 +108,22 @@ export async function mintCliCredentialForSession<T>(
     return prisma.$transaction(
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${cliCredentialLockKey(session.userId)}))`;
-        const live = await tx.session.findFirst({
-          where: { id: session.sessionId, userId: session.userId, expiresAt: { gt: new Date() } },
-          select: { id: true },
-        });
-        if (!live) throw new CliCredentialSessionRevokedError();
+        const liveSession = () =>
+          tx.session.findFirst({
+            where: { id: session.sessionId, userId: session.userId, expiresAt: { gt: new Date() } },
+            select: { id: true },
+          });
+        if (!(await liveSession())) throw new CliCredentialSessionRevokedError();
         if (performance.now() >= expiresAt) throw lockLapsed();
         const minted = await mint();
         if (performance.now() >= expiresAt) {
           await discard(minted);
+          throw lockLapsed();
+        }
+        const liveAfter = await liveSession();
+        if (!liveAfter || performance.now() >= expiresAt) {
+          await discard(minted);
+          if (!liveAfter) throw new CliCredentialSessionRevokedError();
           throw lockLapsed();
         }
         return minted;
@@ -124,8 +133,12 @@ export async function mintCliCredentialForSession<T>(
   });
 }
 
+class CliCredentialLockLapsedError extends Error {}
+
 function lockLapsed(): Error {
-  return new Error("The CLI credential lock lapsed before the credential was committed.");
+  return new CliCredentialLockLapsedError(
+    "The CLI credential lock lapsed before the credential was committed.",
+  );
 }
 
 /** RFC 8628 answer while another redemption for the same user holds the lock. */
@@ -242,4 +255,42 @@ export async function removeDeviceSessionIfUnlocked(session: {
     "[auth] SECURITY: a device-flow session was created after its CLI credential lock lapsed; it was removed.",
     { userId: session.userId },
   );
+}
+
+/** Fence browser approval as well as redemption; preserve the pinned endpoint's validation. */
+export function lockedDeviceAuthorization(
+  options: Parameters<typeof deviceAuthorization<undefined>>[0],
+): ReturnType<typeof deviceAuthorization<undefined>> {
+  const plugin = deviceAuthorization(options);
+  const approve = plugin.endpoints.deviceApprove;
+  return {
+    ...plugin,
+    endpoints: {
+      ...plugin.endpoints,
+      deviceApprove: createAuthEndpoint(approve.path, approve.options, async (ctx) => {
+        const session = await getAuthoritativeSessionFromCtx(ctx);
+        if (!session) throw new APIError("UNAUTHORIZED");
+        try {
+          // Approval authorizes a future credential: reuse this app's existing
+          // mint fence instead of adding a second implementation of the lock.
+          return await mintCliCredentialForSession(
+            { userId: session.user.id, sessionId: session.session.id },
+            {
+              mint: () => approve(ctx),
+              // Approval only updates an existing code. If the lock lapses,
+              // revocation deletes it; a late update cannot resurrect it.
+              discard: async () => {},
+            },
+          );
+        } catch (error) {
+          if (
+            error instanceof CliCredentialSessionRevokedError ||
+            error instanceof CliCredentialLockLapsedError
+          )
+            throw new APIError("UNAUTHORIZED");
+          throw error;
+        }
+      }),
+    },
+  };
 }

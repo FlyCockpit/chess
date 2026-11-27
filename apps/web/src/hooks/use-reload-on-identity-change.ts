@@ -13,12 +13,15 @@ import {
   identityVerificationGeneration,
   isCurrentSessionCheck,
   isDocumentIdentityUnverified,
+  isDocumentReplaced,
   markDocumentIdentityUnverified,
   observeDocumentIdentity,
   recheckDocumentIdentity,
   replaceDocument,
   type SessionIdentity,
 } from "@/lib/document-identity";
+
+import { runSessionCheck } from "@/lib/session-retry";
 
 /**
  * `undefined` (session pending or errored) is never acted on: a flaky session
@@ -56,16 +59,22 @@ function startIdentityChecks(refetch: () => unknown): { stop: () => void } {
   let outstanding = 0;
   const current = () => connected && isCurrentSessionCheck(sessionCheck);
   const check = (superseded = 0): Promise<void> => {
-    if (!current()) return Promise.resolve();
+    if (!current() || isDocumentReplaced()) return Promise.resolve();
     const since = identityVerificationGeneration();
     outstanding++;
     // A rejected refetch is an answer-less check, like a failed one: the atom
     // says what is known.
-    return Promise.resolve(refetch())
+    return runSessionCheck(refetch, { automatic: true })
       .catch(() => {})
-      .then(() => {
+      .then((ran) => {
         outstanding--;
-        if (!connected) return;
+        if (!ran || !connected || isDocumentReplaced()) return;
+        if (since !== identityVerificationGeneration()) {
+          // Keep the rejection check pending through its fresh follow-up,
+          // so hints arriving between answers cannot start a second probe.
+          if (superseded < 3) return check(superseded + 1);
+          return;
+        }
         const checked = readSessionIdentity();
         if (!isCurrentSessionCheck(sessionCheck)) {
           // A newer watcher took over while this one was asking. A change
@@ -98,11 +107,12 @@ function startIdentityChecks(refetch: () => unknown): { stop: () => void } {
         // where the chrome may then show the account just confirmed.
         if (observeDocumentIdentity(checked)) replaceDocument();
         confirmDocumentIdentityFresh(since);
+        announceDocumentIdentity(checked);
       });
   };
   const sessionCheck = () => check();
   const retry = () => {
-    if (isDocumentIdentityUnverified() && document.visibilityState !== "hidden") void check();
+    if (document.visibilityState !== "hidden" && navigator.onLine !== false) void check();
   };
   const disconnectPeers = connectIdentityPeers(sessionCheck);
   window.addEventListener("focus", retry);
@@ -150,6 +160,8 @@ export function useReloadOnIdentityChange(): void {
   // while the chrome is held neutral.
   const authSession = useAuthSession({ unmasked: true });
   const identity = sessionIdentity(authSession.state);
+  const since = identityVerificationGeneration();
+  const { isDegraded, isRefetching } = authSession.meta;
   const { refetch } = authSession.actions;
 
   // Connected first (effects run in order), so the first identity below is
@@ -162,11 +174,22 @@ export function useReloadOnIdentityChange(): void {
   // Layout effect: replace the document before the browser paints a frame
   // that pairs the new identity's chrome with the old identity's cached data.
   useLayoutEffect(() => {
-    if (identity === undefined) return;
+    // Retained presentation data is not a new confirmation. In particular a
+    // remount after a peer invalidation must wait for its own current probe.
+    if (
+      identity === undefined ||
+      isDegraded ||
+      isRefetching ||
+      isDocumentIdentityUnverified() ||
+      since !== identityVerificationGeneration()
+    )
+      return;
     if (observeDocumentIdentity(identity)) {
       replaceDocument();
       return;
     }
-    announceDocumentIdentity(identity);
-  }, [identity]);
+    // Only the settled, successful atom answer can be broadcast. The
+    // presentation adapter may retain an identity through a failed check.
+    if (readSessionIdentity() === identity) announceDocumentIdentity(identity);
+  }, [identity, isDegraded, isRefetching, since]);
 }

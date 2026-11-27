@@ -1,3 +1,4 @@
+import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
 import enNav from "@cockpit-chess/locales/src/en-US/nav.json";
 import { createInstance } from "i18next";
 import type { ReactNode } from "react";
@@ -14,6 +15,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  * pinned through the breakpoint classes; real widths are checked in a browser.
  */
 const fixture = vi.hoisted(() => ({
+  offline: false,
+  degraded: false,
   config: undefined as Record<string, unknown> | undefined,
   session: "anonymous" as "anonymous" | "authenticated" | "pending" | "error",
 }));
@@ -43,8 +46,14 @@ vi.mock("@/utils/orpc", () => ({ orpc: { appConfig: { queryOptions: () => ({}) }
 vi.mock("@/hooks/use-auth-session", () => ({
   useAuthSession: () =>
     fixture.session !== "authenticated"
-      ? { state: { status: fixture.session } }
+      ? {
+          state: { status: fixture.session },
+          actions: { retry: vi.fn() },
+          meta: { isOffline: fixture.offline, isDegraded: fixture.degraded },
+        }
       : {
+          meta: { isOffline: fixture.offline, isDegraded: fixture.degraded },
+          actions: { retry: vi.fn() },
           state: {
             status: "authenticated",
             session: { user: { id: "u1", name: "Ada" } },
@@ -58,7 +67,7 @@ const i18n = createInstance();
 beforeAll(async () => {
   await i18n.init({
     lng: "en-US",
-    resources: { "en-US": { nav: enNav } },
+    resources: { "en-US": { nav: enNav, common: enCommon } },
     interpolation: { escapeValue: false },
     react: { useSuspense: false },
   });
@@ -66,6 +75,7 @@ beforeAll(async () => {
 beforeEach(() => {
   fixture.config = { signupEnabled: true };
   fixture.session = "anonymous";
+  fixture.offline = fixture.degraded = false;
 });
 
 const render = () =>
@@ -135,5 +145,34 @@ describe("signed in", () => {
       fixture.session = session;
       expect(links(render())).toEqual([]);
     }
+  });
+});
+
+describe("session availability", () => {
+  it("shows Account unavailable with Retry and Sign out instead of a skeleton", () => {
+    fixture.session = "error";
+    const html = render();
+    expect(html).toContain(enNav.userMenu.accountUnavailable);
+    expect(html).toContain(enNav.userMenu.signOut);
+    expect(html).not.toContain('data-slot="skeleton"');
+  });
+});
+
+describe("offline and retained anonymous availability", () => {
+  it("offers Retry and Sign out when offline before the first session answer", () => {
+    fixture.session = "pending";
+    fixture.offline = true;
+    const html = render();
+    expect(html).toContain(enNav.userMenu.accountUnavailable);
+    expect(html).toContain('title="Retry"');
+    expect(html).toContain(enNav.userMenu.signOut);
+    expect(html).not.toContain('data-slot="skeleton"');
+  });
+  it("keeps availability controls for an anonymous session whose refetch failed", () => {
+    fixture.session = "anonymous";
+    fixture.degraded = true;
+    const html = render();
+    expect(html).toContain(enNav.userMenu.accountUnavailable);
+    expect(links(html)).toEqual([]);
   });
 });

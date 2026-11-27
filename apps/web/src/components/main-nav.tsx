@@ -13,7 +13,7 @@ export function MainNav() {
   const authSession = useAuthSession();
   const { t } = useTranslation("nav");
 
-  if (authSession.state.status === "pending" || authSession.state.status === "error") {
+  if (authSession.state.status === "pending" && !authSession.meta.isOffline) {
     return (
       <nav
         aria-label={t("mainNav.ariaLabel")}

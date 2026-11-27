@@ -34,7 +34,7 @@ import { betterAuthAdminGate } from "./better-auth-admin-gate.js";
 import { readBuildCommit } from "./build-commit.js";
 import { mountCliRoutes } from "./cli-routes.js";
 import { resolveClientIp } from "./client-ip.js";
-import { CORS_ALLOW_HEADERS } from "./cors-headers.js";
+import { CORS_ALLOW_HEADERS, CORS_EXPOSE_HEADERS } from "./cors-headers.js";
 import {
   EMAIL_RECIPIENT_PATHS,
   emailRecipientLimit,
@@ -43,6 +43,7 @@ import {
   SIGNUP_RECIPIENT_PATH,
   signinSentMail,
 } from "./email-recipient-limit.js";
+import { expectedIdentity } from "./expected-identity.js";
 import { createServerLifecycle, withTimeout } from "./lifecycle.js";
 import {
   LOCALE_MODULEPRELOAD_HEADER,
@@ -195,7 +196,7 @@ if (env.CORS_ORIGIN) {
       // failure mode invisible in local dev. See cors-headers.ts.
       allowHeaders: [...CORS_ALLOW_HEADERS],
       // Lets the web app say when a rate-limited action may be retried.
-      exposeHeaders: ["Retry-After"],
+      exposeHeaders: [...CORS_EXPOSE_HEADERS],
       credentials: true,
     }),
   );
@@ -393,6 +394,9 @@ app.use(
 // `signinFailureLimiter` in rate-limit.ts and signin-failure-limit.ts.
 app.use(SIGNIN_FAILURE_PATH, signinFailureLimit());
 
+// Better Auth compares document identity in its before hook, sharing the
+// handler's session resolution after all auth rate limits.
+
 // Admin gate for Better-Auth's admin plugin endpoints. The plugin role-checks
 // by default, but these routes can set roles, reset passwords, impersonate
 // users, and remove users, so they must also honor this app's verified-admin
@@ -455,7 +459,9 @@ app.use("/rpc/*", sessionMiddleware);
 // Rate limit RPC endpoint — general API traffic.
 // Uses Redis-backed limiter with in-memory insurance fallback (fail-open).
 app.use("/rpc/*", createRateLimiterMiddleware(rpcLimiter));
+app.use("/rpc/*", expectedIdentity);
 app.use("/api-reference/*", createRateLimiterMiddleware(rpcLimiter));
+app.use("/api-reference/*", expectedIdentity);
 
 // In production the OpenAPI reference is admin-only: it documents every
 // procedure and shouldn't be a public surface. Non-admins get a 404 (not
@@ -475,6 +481,7 @@ mountCliRoutes(app, { onOrpcError: logOrpcError });
 // session, its own fail-closed bucket keyed on the user. See openrouter-routes.ts.
 app.use("/api/openrouter/*", sessionMiddleware);
 app.use("/api/openrouter/*", createRateLimiterMiddleware(openrouterLimiter, { failClosed: true }));
+app.use("/api/openrouter/*", expectedIdentity);
 mountOpenRouterRoutes(app, {
   store: redisConnection,
   publicOrigin: env.BETTER_AUTH_URL,

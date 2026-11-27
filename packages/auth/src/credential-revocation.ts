@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { DEVICE_FLOW_SESSION_ORIGIN } from "@cockpit-chess/config/cli";
 import prisma, { type Prisma } from "@cockpit-chess/db";
+import { APIError } from "better-auth/api";
 import { hashPassword } from "better-auth/crypto";
 import { lockCliCredentials, withCliCredentialLockSlot } from "./device-redemption-lock.js";
 import { deleteResetLinks, lockSetPasswordLinks } from "./set-password-link-lock.js";
@@ -30,17 +31,45 @@ import { deleteResetLinks, lockSetPasswordLinks } from "./set-password-link-lock
  * Returned unexecuted so each caller can batch it with its own writes in one
  * `prisma.$transaction`; it must stay first in that batch.
  */
-function cliCredentialRevocationWrites(userId: string) {
+function cliCredentialRevocationWrites(userId: string, revokeAllSessions = false) {
   return [
     lockCliCredentials(userId),
     prisma.apiKey.deleteMany({ where: { referenceId: userId } }),
-    prisma.session.deleteMany({ where: { userId, origin: DEVICE_FLOW_SESSION_ORIGIN } }),
+    prisma.session.deleteMany({
+      where: {
+        OR: [
+          revokeAllSessions ? { userId } : { userId, origin: DEVICE_FLOW_SESSION_ORIGIN },
+          { impersonatedBy: userId },
+        ],
+      },
+    }),
     prisma.deviceCode.deleteMany({ where: { userId } }),
   ] as const;
 }
 
-/** Better-Auth's two-factor sign-in challenge identifiers (`2fa-<random>`). */
-const TWO_FACTOR_CHALLENGE_PREFIX = "2fa-";
+/**
+ * Better Auth 1.7.18 two-factor rows: challenges and trusted devices carry
+ * userId in value, but pending OTPs and attempt counters carry a code/count
+ * and key off the challenge identifier. Snapshot those identifiers and delete
+ * all related rows in one statement, inside the credential-lock transaction.
+ * Completed challenges may leave orphan counters; they cannot authorize sign-in.
+ */
+function passwordResetTwoFactorRevocationWrite(userId: string) {
+  return prisma.$executeRaw`
+    WITH "resetChallenges" AS MATERIALIZED (
+      SELECT "identifier" FROM "verification"
+      WHERE "value" = ${userId} AND "identifier" LIKE '2fa-%'
+    )
+    DELETE FROM "verification"
+    WHERE ("value" = ${userId} AND "identifier" LIKE 'trust-device-%')
+       OR "identifier" IN (
+         SELECT "identifier" FROM "resetChallenges"
+         UNION ALL
+         SELECT '2fa-otp-' || "identifier" FROM "resetChallenges"
+         UNION ALL
+         SELECT '2fa-attempts-' || "identifier" FROM "resetChallenges"
+       )`;
+}
 
 /** Attempts per revocation, and the pause before each retry (ms). */
 export const REVOCATION_ATTEMPTS = 3;
@@ -64,6 +93,7 @@ async function runRevocation(
   userId: string,
   writes: () => Prisma.PrismaPromise<unknown>[],
   sleep: (ms: number) => Promise<void>,
+  failureWarning = "the user’s API keys and CLI logins may still be live. Revoke them by hand.",
 ): Promise<void> {
   let lastError: unknown;
   for (let attempt = 0; attempt < REVOCATION_ATTEMPTS; attempt += 1) {
@@ -78,78 +108,100 @@ async function runRevocation(
     }
   }
   console.error(
-    `[auth] SECURITY: ${label} credential revocation failed after ${REVOCATION_ATTEMPTS} attempts; the user's API keys and CLI logins may still be live. Revoke them by hand.`,
+    `[auth] SECURITY: ${label} credential revocation failed after ${REVOCATION_ATTEMPTS} attempts; ${failureWarning}`,
     {
       userId,
-      error:
-        lastError instanceof Error ? `${lastError.name}: ${lastError.message}` : "unknown error",
+      error: lastError instanceof Error ? lastError.constructor.name : "UnknownError",
     },
   );
   throw lastError;
 }
 
 /**
- * Runs after a password reset (`emailAndPassword.onPasswordReset`). Someone
- * who resets their password suspects it leaked, so every credential that could
- * still act as them goes, in one transaction.
- *
- * Every session and every pending two-factor sign-in challenge goes too, once
- * more after the new hash is committed: with the credential fence of a
- * password sign-in (password-sign-in-fence.ts) that means no session proved
- * by the old password survives, however its sign-in interleaved with the
- * reset. Every other outstanding reset link for the user is deleted as well,
- * under the set-password-link lock an invite resend holds while it mints one.
- *
- * Spending the link verifies the email only when that link was mailed, and
- * that happens in the `/reset-password` after-hook, which knows the token
- * (password-reset-links.ts `verifyEmailIfResetLinkWasMailed`): this callback
- * is told only the user. A link revealed to the admin (the invite mail was not
- * sent) proves nothing about the mailbox.
- *
- * Better-Auth calls this AFTER it has committed the new password and consumed
- * the reset token, so a throw here does not undo the reset: the password is
- * already changed, and the same link now answers INVALID_TOKEN. That is why
- * the transaction is retried (it is idempotent) before giving up. If it still
- * fails, the error is logged loudly and rethrown so the request reports a
- * failure rather than a clean success; the user's recovery is a fresh
- * forgot-password link, whose completion runs this revocation again.
+ * Pre-commit sweep: fail closed before Better-Auth can consume the reset token
+ * or change the password. Mirror 1.7.18's body-or-query token and strict expiry
+ * comparison; invalid tokens are left to the endpoint to reject.
+ */
+export async function revokeCredentialsBeforePasswordReset(ctx: {
+  path?: string;
+  body?: unknown;
+  query?: unknown;
+  context: {
+    internalAdapter: {
+      findVerificationValue: (id: string) => Promise<{ value: string; expiresAt: Date } | null>;
+    };
+  };
+}): Promise<void> {
+  if (ctx.path !== "/reset-password") return;
+  const token = (isRecord(ctx.body) && ctx.body.token) || (isRecord(ctx.query) && ctx.query.token);
+  if (typeof token !== "string" || !token) return;
+  try {
+    const verification = await ctx.context.internalAdapter.findVerificationValue(
+      `reset-password:${token}`,
+    );
+    if (!verification || verification.expiresAt < new Date()) return;
+    // Reset only: delete ALL sessions in the same transaction under the
+    // credential lock, so none can authorize a mint in the gap before
+    // Better-Auth deletes sessions. Over-revocation if the reset later fails
+    // is safe: signing in again beats leaving an attacker's credential alive.
+    await runRevocation(
+      "password-reset pre-commit",
+      verification.value,
+      () => [
+        ...cliCredentialRevocationWrites(verification.value, true),
+        passwordResetTwoFactorRevocationWrite(verification.value),
+      ],
+      defaultSleep,
+    );
+  } catch {
+    throw new APIError("SERVICE_UNAVAILABLE", {
+      message:
+        "We couldn't finish securing your account. Your password is unchanged — try the link again. Existing sign-ins and API keys may already have been revoked.",
+    });
+  }
+}
+
+/**
+ * Post-commit defense in depth after the pre-sweep revoked all old sessions.
+ * Invalidate every other reset/set-password link under upstream's credential-
+ * setup lock, with independent retries even if revocation exhausts its retries.
+ * Mailbox verification is decided per mailed token in the after-hook, including
+ * a failed post-sweep.
+ * Final revocation failure is logged and propagated after link cleanup.
  */
 export async function revokeCredentialsAfterPasswordReset(
   userId: string,
   { sleep = defaultSleep }: { sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<void> {
-  await runRevocation(
-    "password-reset",
-    userId,
-    () => [
-      ...cliCredentialRevocationWrites(userId),
-      // EVERY session, not only device-flow ones. Better-Auth deleted them
-      // before it wrote the new hash, but a password sign-in still verifying
-      // the old hash can insert its session in between; deleting again now,
-      // after the write, is what makes the sign-in credential fence
-      // (password-sign-in-fence.ts) complete.
-      prisma.session.deleteMany({ where: { userId } }),
-      // Every pending two-factor sign-in challenge (`2fa-…`, value = user id)
-      // and its credential fence row: a password step passed with the old
-      // password must not be finished with a code after the reset.
-      prisma.verification.deleteMany({
-        where: { value: userId, identifier: { startsWith: TWO_FACTOR_CHALLENGE_PREFIX } },
-      }),
-      // Serialized with an admin's invite resend (set-password-link-lock.ts):
-      // a link minted while this reset was finishing is deleted here. A resend
-      // after it mints again only while the account is still a pending invite
-      // (a revealed link verifies nothing); a mailed link's verification, in
-      // the /reset-password after-hook, deletes the user's links once more
-      // under the same lock (password-reset-links.ts).
-      // Taken after the CLI-credential lock, which nothing that holds this one
-      // ever waits for, so the order cannot deadlock.
-      lockSetPasswordLinks(userId),
-      // The reset is spent; any other reset link for the user (an older
-      // forgot-password mail, an invite link) dies with it.
-      deleteResetLinks(userId),
-    ],
-    sleep,
-  );
+  let revocationFailure: { error: unknown } | undefined;
+  try {
+    await runRevocation(
+      "password-reset",
+      userId,
+      () => [
+        ...cliCredentialRevocationWrites(userId, true),
+        passwordResetTwoFactorRevocationWrite(userId),
+      ],
+      sleep,
+    );
+  } catch (error) {
+    revocationFailure = { error };
+  }
+  // Keep cleanup and its retry budget independent of the post-sweep. Rebuild
+  // both the lock and deletion promises on every attempt.
+  try {
+    await runRevocation(
+      "password-reset link cleanup",
+      userId,
+      () => [lockSetPasswordLinks(userId), deleteResetLinks(userId)],
+      sleep,
+      "other password-reset links may still be live. Invalidate them by hand.",
+    );
+  } catch (error) {
+    // Cleanup logs its own exhaustion; never replace the original failure.
+    if (!revocationFailure) throw error;
+  }
+  if (revocationFailure) throw revocationFailure.error;
 }
 
 /**
@@ -225,9 +277,7 @@ export async function quarantineUntrustedPasswordWrite(
     () => [
       ...cliCredentialRevocationWrites(userId),
       prisma.session.deleteMany({ where: { userId } }),
-      prisma.verification.deleteMany({
-        where: { value: userId, identifier: { startsWith: TWO_FACTOR_CHALLENGE_PREFIX } },
-      }),
+      passwordResetTwoFactorRevocationWrite(userId),
     ],
     sleep,
   );

@@ -77,7 +77,11 @@ const db = vi.hoisted(() => {
   };
   return {
     $executeRaw: (strings: TemplateStringsArray, ...values: unknown[]) =>
-      statement(async (ctx) => blockingLock(strings, values, ctx)),
+      statement(async (ctx) =>
+        strings.join("").includes('WITH "resetChallenges"')
+          ? 0
+          : blockingLock(strings, values, ctx),
+      ),
     async $transaction(
       work: { run: (ctx: TxContext) => Promise<unknown> }[] | ((tx: unknown) => Promise<unknown>),
     ) {
@@ -126,12 +130,28 @@ const db = vi.hoisted(() => {
         statement(async () => deleteWhere(store.deviceCodes, (row) => row.userId !== where.userId)),
     },
     session: {
-      deleteMany: ({ where }: { where: { id?: string; userId?: string; origin?: string } }) =>
+      deleteMany: ({
+        where,
+      }: {
+        where: {
+          id?: string;
+          userId?: string;
+          origin?: string;
+          OR?: { userId?: string; origin?: string; impersonatedBy?: string }[];
+        };
+      }) =>
         statement(async () =>
           deleteWhere(
             store.sessions,
             (row) =>
               !(
+                (where.OR
+                  ? where.OR.some((part) =>
+                      Object.entries(part).every(
+                        ([key, value]) => row[key as keyof typeof row] === value,
+                      ),
+                    )
+                  : true) &&
                 (where.id === undefined || row.id === where.id) &&
                 (where.userId === undefined || row.userId === where.userId) &&
                 (where.origin === undefined || row.origin === where.origin)
@@ -381,7 +401,9 @@ describe("API-key mint vs password-reset revocation", () => {
     await settle();
     expect(revoked).toBe(false); // waiting on the mint's lock
     release();
-    await minting;
+    // Core session revocation may precede the credential-lock wait. The
+    // post-insert session check refuses the key in that case.
+    await expect(minting).rejects.toBeInstanceOf(CliCredentialSessionRevokedError);
     await resetting;
     expect(store.apiKeys).toHaveLength(0);
   });

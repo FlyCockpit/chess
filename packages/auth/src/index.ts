@@ -17,8 +17,9 @@ import {
 } from "@cockpit-chess/mailer";
 import { BASE_ERROR_CODES, betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
-import { APIError, createAuthMiddleware } from "better-auth/api";
-import { admin, deviceAuthorization, genericOAuth, twoFactor } from "better-auth/plugins";
+import { APIError, createAuthMiddleware, getSession } from "better-auth/api";
+import { deleteSessionCookie } from "better-auth/cookies";
+import { admin, genericOAuth, twoFactor } from "better-auth/plugins";
 import {
   afterAccountCreate,
   afterUserUpdate,
@@ -28,9 +29,11 @@ import {
   passwordChangeRevocationTarget,
   revokeCredentialsAfterPasswordChange,
   revokeCredentialsAfterPasswordReset,
+  revokeCredentialsBeforePasswordReset,
 } from "./credential-revocation.js";
 import {
   assertDeviceRedemptionLocked,
+  lockedDeviceAuthorization,
   removeDeviceSessionIfUnlocked,
 } from "./device-redemption-lock.js";
 import { deviceFlowSessionData } from "./device-session-origin.js";
@@ -83,6 +86,8 @@ export const passwordPepper = createPasswordPepper({
   secret: env.BETTER_AUTH_SECRET,
   previousSecret: env.BETTER_AUTH_SECRET_PREVIOUS,
 });
+
+const committedResetFailures = new WeakSet<APIError>();
 
 export const auth = betterAuth({
   // No adapter transactions (Better-Auth's default, `transaction: false`), on
@@ -166,7 +171,15 @@ export const auth = betterAuth({
     // SECURITY error and makes the request report failure — the user then
     // recovers with a fresh forgot-password link, which revokes again.
     onPasswordReset: async ({ user }) => {
-      await revokeCredentialsAfterPasswordReset(user.id);
+      try {
+        await revokeCredentialsAfterPasswordReset(user.id);
+      } catch {
+        const error = new APIError("INTERNAL_SERVER_ERROR", {
+          message: "We couldn't finish securing your account. Request a new password reset link.",
+        });
+        committedResetFailures.add(error);
+        throw error;
+      }
     },
     // Reset links (forgot-password) keep Better-Auth's 1-hour default. Admin
     // invites mint their own, longer-lived set-password token through the same
@@ -308,10 +321,100 @@ export const auth = betterAuth({
     // an expired token, which the reset page already handles
     // (password-reset-links.ts `isResetLinkRedeemable`).
     before: createAuthMiddleware(async (ctx) => {
-      const token = resetTokenOf({ path: ctx.path, body: ctx.body, query: ctx.query });
-      if (token && !(await isResetLinkRedeemable(token))) {
-        throw APIError.from("BAD_REQUEST", BASE_ERROR_CODES.INVALID_TOKEN);
+      const path = ctx.path;
+      const expected =
+        path === "/get-session" || path === "/sign-out"
+          ? null
+          : ctx.headers?.get("X-Expected-User");
+      const method = ctx.method ?? ctx.request?.method;
+      // Anonymous credential/recovery endpoints must work with stale cookies.
+      // Optional-session endpoints still validate a cookie before a write can
+      // renew it. Keep this authoritative check ahead of identity comparison.
+      const validateWrite =
+        method &&
+        method !== "GET" &&
+        !(
+          path?.startsWith("/sign-in/") ||
+          path?.startsWith("/sign-up/") ||
+          path?.startsWith("/callback/") ||
+          path === "/sign-out" ||
+          path === "/reset-password" ||
+          path === "/request-password-reset" ||
+          path === "/device/code" ||
+          path === "/device/token"
+        );
+      if (validateWrite) {
+        // Better Auth 1.7.18 /update-user can renew a cached session. Verify
+        // its signed token's database row to prevent a revoked-cache chain.
+        const token = await ctx.getSignedCookie(
+          ctx.context.authCookies.sessionToken.name,
+          ctx.context.secret,
+        );
+        if (token) {
+          const session = await ctx.context.internalAdapter.findSession(token).catch(() => {
+            throw new APIError("SERVICE_UNAVAILABLE", {
+              code: "SESSION_UNAVAILABLE",
+              message: "Session verification unavailable",
+            });
+          });
+          if (!session || session.session.expiresAt <= new Date()) {
+            deleteSessionCookie(ctx);
+            // Before-hook dispatch does not merge accumulated error headers.
+            throw new APIError(
+              "UNAUTHORIZED",
+              { code: "UNAUTHORIZED", message: "Unauthorized" },
+              ctx.responseHeaders,
+            );
+          }
+          ctx.context.session = session;
+        }
       }
+      if (expected) {
+        // getSessionFromCtx reuses ctx.context.session, so the endpoint and
+        // this comparison share the authoritative write lookup above. For
+        // other endpoints use its underlying resolver directly: unlike
+        // getSessionFromCtx it propagates lookup errors instead of swallowing
+        // them as anonymity, and still caches the answer on ctx.context.
+        const session =
+          ctx.context.session ??
+          (await getSession()({
+            ...ctx,
+            headers: ctx.headers ?? ctx.request?.headers ?? new Headers(),
+            method: "GET",
+            asResponse: false,
+            returnHeaders: false,
+            returnStatus: false,
+            query: {},
+          }).catch(() => {
+            throw new APIError("SERVICE_UNAVAILABLE", {
+              code: "SESSION_UNAVAILABLE",
+              message: "Session verification unavailable",
+            });
+          }));
+        if (session?.user.id && session.user.id !== expected) {
+          throw new APIError("CONFLICT", {
+            code: "IDENTITY_CHANGED",
+            message: "Document identity changed",
+          });
+        }
+      }
+      // Check upstream's link policy before revoking sessions: deleting them
+      // first could make an active unverified account look like a pending invite.
+      const token = resetTokenOf({ path: ctx.path, body: ctx.body, query: ctx.query });
+      if (token) {
+        let redeemable: boolean;
+        try {
+          redeemable = await isResetLinkRedeemable(token);
+        } catch {
+          throw new APIError("SERVICE_UNAVAILABLE", {
+            code: "RESET_UNAVAILABLE",
+            message: "Password reset verification unavailable; try this link again.",
+          });
+        }
+        if (!redeemable) throw APIError.from("BAD_REQUEST", BASE_ERROR_CODES.INVALID_TOKEN);
+      }
+      // Identity must match before the reset pre-sweep revokes anything.
+      await revokeCredentialsBeforePasswordReset(ctx);
     }),
     // A password change that signs out other devices (the web settings form
     // always asks for that) means "my old password may have leaked": revoke
@@ -334,7 +437,11 @@ export const auth = betterAuth({
         path: ctx.path,
         body: ctx.body,
         query: ctx.query,
-        returned: ctx.context.returned,
+        returned:
+          ctx.context.returned instanceof APIError &&
+          committedResetFailures.has(ctx.context.returned)
+            ? { status: true }
+            : ctx.context.returned,
       });
       if (resetToken) {
         try {
@@ -421,7 +528,7 @@ export const auth = betterAuth({
     // it at /$lang/device in a signed-in browser (which already passed 2FA),
     // and the CLI receives an ordinary session token. Only our CLI's
     // client_id is accepted.
-    deviceAuthorization({
+    lockedDeviceAuthorization({
       expiresIn: "10m",
       interval: "5s",
       verificationUri: `${webOrigin}/device`,

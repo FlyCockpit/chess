@@ -1,8 +1,15 @@
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 
 // Capture the options object handed to `betterAuth` without constructing a
 // real instance (which would need a database adapter and a validated env).
-const betterAuth = vi.fn((options: unknown) => ({ options }));
+const cookieSurfaceGetSession = vi.hoisted(() => vi.fn());
+const betterAuth = vi.fn((options: unknown) => ({
+  options,
+  api: { getSession: cookieSurfaceGetSession },
+}));
 vi.mock("better-auth", async (importOriginal) => ({
   ...(await importOriginal<typeof import("better-auth")>()),
   betterAuth,
@@ -32,9 +39,10 @@ vi.mock("./password-reset-links.js", async (importOriginal) => ({
   recordResetLinkMailed,
   verifyEmailIfResetLinkWasMailed,
 }));
-vi.mock("better-auth/plugins", () => ({
+vi.mock("better-auth/plugins", async (importOriginal) => ({
   admin: () => ({ id: "admin" }),
-  deviceAuthorization: () => ({ id: "device-authorization" }),
+  deviceAuthorization: (await importOriginal<typeof import("better-auth/plugins")>())
+    .deviceAuthorization,
   genericOAuth: () => ({ id: "generic-oauth" }),
   twoFactor: () => ({ id: "two-factor" }),
 }));
@@ -87,6 +95,17 @@ const prismaStub = vi.hoisted(() => {
       },
     },
     user: {
+      updateMany: async ({
+        where,
+        data,
+      }: {
+        where: Record<string, unknown>;
+        data: Record<string, unknown>;
+      }) => {
+        const rows = table("user").filter((row) => matches(row, where));
+        for (const row of rows) Object.assign(row, data);
+        return { count: rows.length };
+      },
       findUnique: async ({ where }: { where: { id: string } }) => {
         const user = table("user").find((row) => row.id === where.id);
         if (!user) return null;
@@ -114,13 +133,31 @@ const prismaStub = vi.hoisted(() => {
     memory,
     tx,
     runTransaction,
+    apiKey: { deleteMany: vi.fn(() => "keys") },
+    deviceCode: { deleteMany: vi.fn(() => "codes") },
+    session: {
+      deleteMany: vi.fn(
+        (input: {
+          where: { OR: { userId?: string; origin?: string; impersonatedBy?: string }[] };
+        }) => ({
+          kind: "sessions" as const,
+          where: input.where,
+        }),
+      ),
+    },
+
     user: { findUnique: async () => ({ locale: "en-US" }) },
     verification: {
       // The password-write lock's reset-token lookup (password-write-lock.ts).
       findFirst: findVerification,
-      deleteMany: (args: unknown) => ({ op: "deleteResetLinks", args }),
+      deleteMany: vi.fn((args: unknown) => ({ op: "deleteResetLinks" as const, args })),
     },
-    $executeRaw: (..._sql: unknown[]) => ({ op: "lockSetPasswordLinks" }),
+    $executeRaw: vi.fn((strings: TemplateStringsArray, ...values: string[]) =>
+      strings.join("").includes('WITH "resetChallenges"')
+        ? { kind: "verification-sql" as const, sql: strings.join("?"), values }
+        : "lock",
+    ),
+
     $transaction: vi.fn(runTransaction),
   };
 });
@@ -148,6 +185,7 @@ vi.mock("@cockpit-chess/mailer", () => ({
   sendEmail: vi.fn(),
 }));
 
+const revocationDb = prismaStub;
 const { passwordPepper } = await import("./index");
 const { sendEmail } = await import("@cockpit-chess/mailer");
 const { withPasswordWriteLock } = await import("./password-write-lock");
@@ -156,7 +194,7 @@ const { withPasswordWriteLock } = await import("./password-write-lock");
 const cleanupBatches = () =>
   prismaStub.$transaction.mock.calls.map(([arg]) => arg).filter((arg) => Array.isArray(arg));
 const cleanupBatchFor = (userId: string) => [
-  { op: "lockSetPasswordLinks" },
+  "lock",
   {
     op: "deleteResetLinks",
     args: { where: { value: userId, identifier: { startsWith: "reset-password:" } } },
@@ -173,6 +211,21 @@ const inPasswordWriteLock = (
   run: () => Promise<Response>,
 ): Promise<Response> => withPasswordWriteLock(path, request, run, { getSession: async () => null });
 
+// Load the server middleware as an integration boundary without adding its
+// source files to this composite package's TypeScript project.
+type IdentityContext = {
+  req: { raw: Request; path: string; header: (name: string) => string | null };
+  get: (key: string) => unknown;
+  set: (key: string, value: unknown) => unknown;
+  json: (body: unknown, status: number) => Response;
+};
+const { expectedIdentity } = await vi.importActual<{
+  expectedIdentity: (
+    context: IdentityContext,
+    next: () => Promise<void>,
+  ) => Promise<Response | undefined>;
+}>(new URL("../../../apps/server/src/expected-identity.ts", import.meta.url).pathname);
+
 type CapturedOptions = {
   emailAndPassword?: {
     revokeSessionsOnPasswordReset?: boolean;
@@ -186,13 +239,16 @@ type CapturedOptions = {
     }) => Promise<void>;
   };
   user?: Record<string, unknown>;
+  session?: { cookieCache?: { enabled?: boolean; maxAge?: number } };
   hooks?: {
-    before?: (ctx: { path: string; body: unknown; query?: unknown }) => Promise<void>;
+    before?: (
+      ctx: Parameters<typeof import("better-auth/api").getSessionFromCtx>[0],
+    ) => Promise<void>;
     after?: (ctx: {
       path: string;
       body: unknown;
       query?: unknown;
-      context: { returned: unknown };
+      context: { returned?: unknown };
     }) => Promise<void>;
   };
   databaseHooks?: {
@@ -390,7 +446,19 @@ describe("Better-Auth config", () => {
   // A link the admin was shown is spendable only while the invite is pending
   // (password-reset-links.ts `isResetLinkRedeemable`).
   it("refuses a shown reset link for an active account before Better-Auth spends it", async () => {
-    const before = options.hooks?.before;
+    const rawBefore = options.hooks?.before;
+    const before =
+      rawBefore &&
+      ((ctx: { path: string; body: unknown; query?: unknown }) =>
+        rawBefore({
+          ...ctx,
+          context: {
+            internalAdapter: {
+              findVerificationValue: async (id: string) =>
+                prismaStub.memory.db?.verification?.find((row) => row.identifier === id) ?? null,
+            },
+          },
+        } as unknown as Parameters<typeof rawBefore>[0]));
     if (!before) throw new Error("before hook missing");
     const at = new Date();
     const expiresAt = new Date(at.getTime() + 3_600_000);
@@ -1142,5 +1210,889 @@ describe("user creation and activation on the real handler", { timeout: 20_000 }
       expect(res.status).toBe(200);
       expect(passwordOf(db, userId)).not.toBe(ownPassword);
     });
+  });
+});
+
+describe("password reset ordering (real pinned endpoint, memory adapter)", () => {
+  async function resetFixture(failLookup = false, withTwoFactor = false) {
+    const { betterAuth: realBetterAuth } =
+      await vi.importActual<typeof import("better-auth")>("better-auth");
+    const { createAuthMiddleware } =
+      await vi.importActual<typeof import("better-auth/api")>("better-auth/api");
+    const { memoryAdapter } = await import("better-auth/adapters/memory");
+    const actual =
+      await vi.importActual<typeof import("./credential-revocation")>("./credential-revocation");
+    const keys = new Set(["old-key"]);
+    const db: Record<string, Record<string, unknown>[]> = {
+      user: [
+        { id: "reset-user", email: "reset@example.test", emailVerified: false, name: "Reset" },
+      ],
+      account: [
+        {
+          id: "account",
+          userId: "reset-user",
+          providerId: "credential",
+          accountId: "reset-user",
+          password: "old-hash",
+        },
+      ],
+      session: [
+        {
+          id: "session",
+          userId: "reset-user",
+          token: "session-token",
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      ],
+      verification: [
+        {
+          id: "verification",
+          identifier: "reset-password:retry-token",
+          value: "reset-user",
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      ],
+    };
+    prismaStub.memory.db = db;
+    const before = options.hooks?.before;
+    const after = options.hooks?.after;
+    if (!before || !after) throw new Error("reset hooks missing");
+    verifyEmailIfResetLinkWasMailed.mockClear();
+    const actualLinks =
+      await vi.importActual<typeof import("./password-reset-links")>("./password-reset-links");
+    verifyEmailIfResetLinkWasMailed.mockImplementation(actualLinks.verifyEmailIfResetLinkWasMailed);
+    // This reset came from a real mail, so it remains spendable with a live session.
+    await actualLinks.recordResetLinkMailed({
+      token: "retry-token",
+      userId: "reset-user",
+      email: "reset@example.test",
+    });
+    // Execute the production deletion SQL in memory, with no Postgres or I/O.
+    // The statement uses SQL supported by both SQLite and PostgreSQL.
+    const deleteVerifications = (write: { sql: string; values: string[] }) => {
+      const sql = new DatabaseSync(":memory:");
+      try {
+        sql.exec('CREATE TABLE "verification" ("id" TEXT, "identifier" TEXT, "value" TEXT)');
+        const insert = sql.prepare('INSERT INTO "verification" VALUES (?, ?, ?)');
+        for (const row of db.verification ?? []) {
+          insert.run(String(row.id), String(row.identifier), String(row.value));
+        }
+        sql.prepare(write.sql).run(...write.values);
+        const remaining = new Set(
+          sql
+            .prepare('SELECT "id" FROM "verification"')
+            .all()
+            .map((row) => row.id),
+        );
+        db.verification = db.verification?.filter((row) => remaining.has(String(row.id))) ?? [];
+      } finally {
+        sql.close();
+      }
+    };
+    type RevocationWrite =
+      | string
+      | ReturnType<typeof revocationDb.$executeRaw>
+      | ReturnType<typeof revocationDb.session.deleteMany>
+      | ReturnType<typeof revocationDb.verification.deleteMany>;
+    revocationDb.$transaction.mockReset();
+    revocationDb.$transaction.mockImplementation(async (work: unknown) => {
+      if (!Array.isArray(work)) return prismaStub.runTransaction(work);
+      const writes: RevocationWrite[] = work;
+      if (writes.some((write) => typeof write === "object" && "op" in write)) {
+        db.verification =
+          db.verification?.filter(
+            (row) =>
+              row.value !== "reset-user" || !String(row.identifier).startsWith("reset-password:"),
+          ) ?? [];
+        return;
+      }
+      expect(writes.slice(0, 4)).toEqual([
+        "lock",
+        "keys",
+        expect.objectContaining({ kind: "sessions" }),
+        "codes",
+      ]);
+      for (const write of writes) {
+        if (typeof write !== "string" && "kind" in write && write.kind === "verification-sql") {
+          deleteVerifications(write);
+        }
+      }
+      keys.clear();
+      const sessionWrite = writes[2];
+      if (
+        typeof sessionWrite !== "object" ||
+        !("kind" in sessionWrite) ||
+        sessionWrite.kind !== "sessions"
+      ) {
+        throw new Error("Session revocation statement missing");
+      }
+      db.session =
+        db.session?.filter(
+          (session) =>
+            !sessionWrite.where.OR.some((where) =>
+              Object.entries(where).every(([key, value]) => session[key] === value),
+            ),
+        ) ?? [];
+    });
+    revokeCredentialsAfterPasswordReset.mockImplementation(
+      actual.revokeCredentialsAfterPasswordReset,
+    );
+    const hash = vi.fn(async (password: string) => `hash:${password}`);
+    const { twoFactor } =
+      await vi.importActual<typeof import("better-auth/plugins")>("better-auth/plugins");
+    const otps = new Map<string, string>();
+    if (withTwoFactor) {
+      Object.assign(db.user?.[0] ?? {}, { emailVerified: true, twoFactorEnabled: true });
+      db.twoFactor = [];
+    }
+    const instance = realBetterAuth({
+      baseURL: "https://app.example.test",
+      secret: "disposable-reset-test-secret-with-no-external-use",
+      database: memoryAdapter(db),
+      logger: { disabled: true },
+      rateLimit: { enabled: false },
+      emailAndPassword: {
+        ...options.emailAndPassword,
+        enabled: true,
+        password: { hash, verify: async () => true },
+      },
+      hooks: { before: createAuthMiddleware(before), after: createAuthMiddleware(after) },
+      plugins: withTwoFactor
+        ? [
+            twoFactor({
+              allowPasswordless: true,
+              otpOptions: {
+                storeOTP: "hashed",
+                sendOTP: async ({ user, otp }) => {
+                  otps.set(user.id, otp);
+                },
+              },
+            }),
+          ]
+        : [],
+    });
+    if (failLookup) {
+      const context = await instance.$context;
+      vi.spyOn(context.internalAdapter, "findVerificationValue").mockRejectedValueOnce(
+        new Error("private lookup details"),
+      );
+    }
+    const reset = (token = "retry-token", query = false) =>
+      instance.handler(
+        new Request(
+          `https://app.example.test/api/auth/reset-password${query ? `?token=${token}` : ""}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              newPassword: "new-password-12345",
+              ...(query ? {} : { token }),
+            }),
+          },
+        ),
+      );
+    const call = (path: string, cookies = "", body: Record<string, unknown> = {}) =>
+      instance.handler(
+        new Request(`https://app.example.test/api/auth${path}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "https://app.example.test",
+            cookie: cookies,
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+    return { db, keys, hash, reset, call, otps };
+  }
+
+  it.each(["pre-sweep", "post-sweep"])(
+    "%s kills pending 2FA sign-ins and trusted devices, preserving other users",
+    async (phase) => {
+      const { db, hash, reset, call, otps } = await resetFixture(false, true);
+      const cookies = (response: Response) =>
+        response.headers
+          .getSetCookie()
+          .map((cookie) => cookie.split(";")[0])
+          .join("; ");
+      const signIn = async (email: string, cookie = "") => {
+        const response = await call("/sign-in/email", cookie, {
+          email,
+          password: "old-password-12345",
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ twoFactorRedirect: true });
+        return cookies(response);
+      };
+      const pending = async (email: string, userId: string) => {
+        const cookie = await signIn(email);
+        expect((await call("/two-factor/send-otp", cookie)).status).toBe(200);
+        const code = otps.get(userId);
+        if (!code) throw new Error("OTP not delivered");
+        return { cookie, code };
+      };
+      db.user?.push({
+        id: "peer",
+        email: "peer@example.test",
+        emailVerified: true,
+        twoFactorEnabled: true,
+        name: "Peer",
+      });
+      db.account?.push({
+        id: "peer-account",
+        userId: "peer",
+        accountId: "peer",
+        providerId: "credential",
+        password: "peer-hash",
+      });
+      const peerTrusted = await pending("peer@example.test", "peer");
+      expect(
+        (
+          await call("/two-factor/verify-otp", peerTrusted.cookie, {
+            code: peerTrusted.code,
+            trustDevice: true,
+          })
+        ).status,
+      ).toBe(200);
+      const peer = await pending("peer@example.test", "peer");
+      const peerRows = db.verification
+        ?.filter((row) => !String(row.identifier).startsWith("reset-password"))
+        .map((row) => ({ ...row }));
+      // An unrelated verification for the resetting user must also survive.
+      db.verification?.push({
+        id: "unrelated",
+        identifier: "verify-email:unrelated",
+        value: "reset-user",
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      let oldPending: { cookie: string; code: string }[] = [];
+      let trustedCookie = "";
+      let completedAttemptRows: Record<string, unknown>[] = [];
+      const prepare = async () => {
+        const trusted = await pending("reset@example.test", "reset-user");
+        const trustedResponse = await call("/two-factor/verify-otp", trusted.cookie, {
+          code: trusted.code,
+          trustDevice: true,
+        });
+        expect(trustedResponse.status).toBe(200);
+        trustedCookie = cookies(trustedResponse)
+          .split("; ")
+          .filter((cookie) => cookie.includes("trust_device="))
+          .join("; ");
+        expect(trustedCookie).not.toBe("");
+        // Core leaves the consumed sign-in's attempt counter behind. It no
+        // longer has a user binding and cannot authorize a pending sign-in.
+        completedAttemptRows =
+          db.verification?.filter(
+            (row) =>
+              String(row.identifier).startsWith("2fa-attempts-") &&
+              !peerRows?.some((peerRow) => peerRow.id === row.id),
+          ) ?? [];
+        oldPending = [
+          await pending("reset@example.test", "reset-user"),
+          await pending("reset@example.test", "reset-user"),
+        ];
+        const rows = db.verification ?? [];
+        const challenges = rows.filter(
+          (row) => row.value === "reset-user" && /^2fa-/.test(String(row.identifier)),
+        );
+        expect(challenges).toHaveLength(2);
+        for (const challenge of challenges) {
+          expect(rows).toContainEqual(
+            expect.objectContaining({
+              identifier: `2fa-attempts-${challenge.identifier}`,
+              value: "0",
+            }),
+          );
+          expect(rows).toContainEqual(
+            expect.objectContaining({
+              identifier: `2fa-otp-${challenge.identifier}`,
+              value: expect.stringMatching(/:0$/),
+            }),
+          );
+        }
+        expect(rows).toContainEqual(
+          expect.objectContaining({
+            identifier: expect.stringMatching(/^trust-device-/),
+            value: "reset-user",
+          }),
+        );
+      };
+      try {
+        if (phase === "pre-sweep") {
+          await prepare();
+          hash.mockRejectedValue(new Error("stop before password commit"));
+        } else {
+          // A challenge created after the pre-sweep must be caught independently.
+          hash.mockImplementation(async () => {
+            await prepare();
+            return "new-hash";
+          });
+        }
+        expect((await reset()).status).toBe(phase === "pre-sweep" ? 500 : 200);
+        expect(db.verification).toEqual(expect.arrayContaining(peerRows ?? []));
+        expect(db.verification).toContainEqual(expect.objectContaining({ id: "unrelated" }));
+        expect(
+          db.verification?.filter((row) => /^(2fa-|trust-device-)/.test(String(row.identifier))),
+        ).toEqual([...(peerRows ?? []), ...completedAttemptRows]);
+        for (const challenge of oldPending) {
+          const response = await call("/two-factor/verify-otp", challenge.cookie, {
+            code: challenge.code,
+          });
+          expect(response.status).toBe(401);
+          expect(await response.json()).toMatchObject({ code: "INVALID_TWO_FACTOR_COOKIE" });
+        }
+        await signIn("reset@example.test", trustedCookie);
+        expect(
+          (await call("/two-factor/verify-otp", peer.cookie, { code: peer.code })).status,
+        ).toBe(200);
+      } finally {
+        revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
+        verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
+        prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
+      }
+    },
+  );
+
+  it("returns the retryable 503 on verification lookup failure before consuming the token", async () => {
+    const { db, keys, hash, reset } = await resetFixture(true);
+    try {
+      const failed = await reset();
+      expect(failed.status).toBe(503);
+      expect(await failed.json()).toMatchObject({
+        message:
+          "We couldn't finish securing your account. Your password is unchanged — try the link again. Existing sign-ins and API keys may already have been revoked.",
+      });
+      expect(hash).not.toHaveBeenCalled();
+      expect(
+        revocationDb.$transaction.mock.calls.filter(([work]) => Array.isArray(work)),
+      ).toHaveLength(0);
+      expect(db.account?.[0]?.password).toBe("old-hash");
+      expect(db.verification).toHaveLength(2);
+      expect(db.session).toHaveLength(1);
+      expect(keys.has("old-key")).toBe(true);
+      expect((await reset()).status).toBe(200);
+      expect(db.account?.[0]?.password).toBe("hash:new-password-12345");
+      expect(db.verification).toHaveLength(0);
+    } finally {
+      revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
+      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
+      prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
+    }
+  });
+
+  it("refuses before commit on exhausted revocation retries; the very same link then works", async () => {
+    const { db, keys, hash, reset } = await resetFixture();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const transact = revocationDb.$transaction.getMockImplementation();
+    if (!transact) throw new Error("transaction mock missing");
+    try {
+      revocationDb.$transaction.mockImplementation((work: unknown) => {
+        if (Array.isArray(work)) return Promise.reject(new TypeError("private query details"));
+        return transact(work);
+      });
+      const failed = await reset();
+      expect(failed.status).toBe(503);
+      expect(await failed.json()).toMatchObject({
+        message:
+          "We couldn't finish securing your account. Your password is unchanged — try the link again. Existing sign-ins and API keys may already have been revoked.",
+      });
+      expect(
+        revocationDb.$transaction.mock.calls.filter(([work]) => Array.isArray(work)),
+      ).toHaveLength(3);
+      expect(hash).not.toHaveBeenCalled();
+      expect(db.account?.[0]?.password).toBe("old-hash");
+      expect(db.verification).toHaveLength(2);
+      expect(db.session).toHaveLength(1);
+      expect(keys.has("old-key")).toBe(true);
+      expect(log.mock.calls[0]?.[1]).toEqual({ userId: "reset-user", error: "TypeError" });
+      revocationDb.$transaction.mockImplementation(transact);
+      expect((await reset()).status).toBe(200);
+      expect(db.account?.[0]?.password).toBe("hash:new-password-12345");
+      expect(db.verification).toHaveLength(0);
+      expect(db.session).toHaveLength(0);
+      expect(keys.size).toBe(0);
+    } finally {
+      log.mockRestore();
+      revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
+      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
+      prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
+    }
+  });
+
+  it("keeps the post-sweep after revoking all old sessions before password hashing", async () => {
+    const { keys, hash, reset, db } = await resetFixture();
+    try {
+      hash.mockImplementation(async () => {
+        expect(keys.size).toBe(0);
+        expect(db.session).toHaveLength(0);
+        // Simulate an independent fresh login, rather than an old session
+        // (which the pre-sweep already prevents from authorizing a mint).
+        keys.add("minted-in-gap");
+        return "new-hash";
+      });
+      expect((await reset()).status).toBe(200);
+      expect(hash).toHaveBeenCalledOnce();
+      expect(
+        revocationDb.$transaction.mock.calls.filter(([work]) => Array.isArray(work)),
+      ).toHaveLength(3);
+      expect(keys.size).toBe(0);
+    } finally {
+      revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
+      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
+      prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
+    }
+  });
+
+  it("keeps old sessions revoked when the password commits but all post-sweep retries fail", async () => {
+    const { keys, hash, reset, db } = await resetFixture();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      hash.mockImplementation(async () => {
+        expect(db.session).toHaveLength(0);
+        revocationDb.$transaction.mockRejectedValue(new Error("post-sweep unavailable"));
+        return "new-hash";
+      });
+      expect((await reset()).status).toBe(500);
+      expect(db.account?.[0]?.password).toBe("new-hash");
+      expect(db.verification?.map((row) => row.identifier)).toEqual([
+        expect.stringMatching(/^reset-password-mailed:/),
+      ]);
+      expect(db.user?.[0]?.emailVerified).toBe(false);
+      expect(db.session).toHaveLength(0);
+      expect(keys.size).toBe(0);
+      // One pre-sweep, three post-sweep attempts, then three cleanup attempts.
+      expect(
+        revocationDb.$transaction.mock.calls.filter(([work]) => Array.isArray(work)),
+      ).toHaveLength(7);
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining("SECURITY: password-reset credential revocation failed"),
+        { userId: "reset-user", error: "Error" },
+      );
+    } finally {
+      log.mockRestore();
+      revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
+      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
+      prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
+    }
+  });
+
+  it.each(["mailed", "shown"])(
+    "finalizes a %s link after post-sweep failure, verifying only mailbox proof",
+    async (delivery) => {
+      const { hash, reset, db } = await resetFixture();
+      if (delivery === "shown") {
+        db.session = [];
+        db.verification =
+          db.verification?.filter(
+            (row) => !String(row.identifier).startsWith("reset-password-mailed:"),
+          ) ?? [];
+      }
+      db.verification?.push(
+        {
+          id: "other",
+          identifier: "reset-password:other-token",
+          value: "reset-user",
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+        {
+          id: "peer",
+          identifier: "reset-password:peer-token",
+          value: "peer",
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+        {
+          id: "unrelated",
+          identifier: "verify-email:unrelated",
+          value: "reset-user",
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      );
+      const transact = revocationDb.$transaction.getMockImplementation();
+      if (!transact) throw new Error("transaction mock missing");
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        hash.mockImplementation(async () => {
+          revocationDb.$transaction.mockImplementation(async (writes: unknown) => {
+            if (Array.isArray(writes) && writes.includes("keys"))
+              throw new Error("post-sweep unavailable");
+            return transact(writes);
+          });
+          return "new-hash";
+        });
+        expect((await reset()).status).toBe(500);
+        expect(db.account?.[0]?.password).toBe("new-hash");
+        expect(db.user?.[0]?.emailVerified).toBe(delivery === "mailed");
+        expect(verifyEmailIfResetLinkWasMailed).toHaveBeenCalledExactlyOnceWith("retry-token");
+        expect(db.verification?.map((row) => row.identifier)).toEqual([
+          "reset-password:peer-token",
+          "verify-email:unrelated",
+        ]);
+        expect(revocationDb.verification.deleteMany).toHaveBeenCalledWith({
+          where: { value: "reset-user", identifier: { startsWith: "reset-password:" } },
+        });
+        expect((await reset("other-token")).status).toBe(400);
+        expect(log).toHaveBeenCalledWith(
+          expect.stringContaining("SECURITY: password-reset credential revocation failed"),
+          { userId: "reset-user", error: "Error" },
+        );
+      } finally {
+        log.mockRestore();
+        revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
+        verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
+        prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
+      }
+    },
+  );
+
+  it("keeps the pre-sweep's revocation even if the reset later fails before commit", async () => {
+    const { keys, hash, reset, db } = await resetFixture();
+    try {
+      hash.mockRejectedValue(new Error("hash unavailable"));
+      expect((await reset()).status).toBe(500);
+      expect(db.account?.[0]?.password).toBe("old-hash");
+      expect(verifyEmailIfResetLinkWasMailed).not.toHaveBeenCalled();
+      expect(db.verification).toHaveLength(2);
+      expect(db.session).toHaveLength(0);
+      expect(keys.size).toBe(0);
+      expect(
+        revocationDb.$transaction.mock.calls.filter(([work]) => Array.isArray(work)),
+      ).toHaveLength(1);
+    } finally {
+      revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
+      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
+      prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
+    }
+  });
+
+  it("refuses a shown link for an active unverified account before the pre-sweep can erase its live session", async () => {
+    const { db, keys, hash, reset } = await resetFixture();
+    db.verification =
+      db.verification?.filter(
+        (row) => !String(row.identifier).startsWith("reset-password-mailed:"),
+      ) ?? [];
+    try {
+      const response = await reset();
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ code: "INVALID_TOKEN" });
+      expect(db.session).toHaveLength(1);
+      expect(keys.has("old-key")).toBe(true);
+      expect(hash).not.toHaveBeenCalled();
+      expect(verifyEmailIfResetLinkWasMailed).not.toHaveBeenCalled();
+      expect(
+        revocationDb.$transaction.mock.calls.filter(([work]) => Array.isArray(work)),
+      ).toHaveLength(0);
+    } finally {
+      revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
+      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
+      prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
+    }
+  });
+
+  it("leaves invalid/expired tokens to the endpoint and handles its query-token form", async () => {
+    const { db, reset } = await resetFixture();
+    try {
+      expect((await reset("unknown")).status).toBe(400);
+      const verification = db.verification?.[0];
+      if (!verification) throw new Error("verification missing");
+      verification.expiresAt = new Date(0);
+      expect((await reset()).status).toBe(400);
+      expect(
+        revocationDb.$transaction.mock.calls.filter(([work]) => Array.isArray(work)),
+      ).toHaveLength(0);
+      const queryFixture = await resetFixture();
+      expect((await queryFixture.reset("retry-token", true)).status).toBe(200);
+    } finally {
+      revokeCredentialsAfterPasswordReset.mockImplementation(async () => {});
+      verifyEmailIfResetLinkWasMailed.mockImplementation(async () => true);
+      prismaStub.$transaction.mockImplementation(prismaStub.runTransaction);
+    }
+  });
+});
+
+describe("cookie cache renewal on Better Auth writes (real pinned handler)", () => {
+  async function fixture(withGuard = true) {
+    const { betterAuth: realBetterAuth } =
+      await vi.importActual<typeof import("better-auth")>("better-auth");
+    const { createAuthMiddleware } =
+      await vi.importActual<typeof import("better-auth/api")>("better-auth/api");
+    const { memoryAdapter } = await import("better-auth/adapters/memory");
+    const before = options.hooks?.before;
+    if (!before) throw new Error("before hook missing");
+    const db: Record<string, Record<string, unknown>[]> = {
+      user: [],
+      account: [],
+      session: [],
+      verification: [],
+    };
+    const instance = realBetterAuth({
+      baseURL: "https://app.example.test",
+      secret: "disposable-cache-test-secret-with-no-external-use",
+      database: memoryAdapter(db),
+      logger: { disabled: true },
+      rateLimit: { enabled: false },
+      session: options.session,
+      emailAndPassword: {
+        enabled: true,
+        password: { hash: async (p) => p, verify: async () => true },
+      },
+      hooks: withGuard ? { before: createAuthMiddleware(before) } : undefined,
+    });
+    // Run any production Hono identity mount before the real Better Auth
+    // handler. Its getSession boundary delegates to this same real instance,
+    // so an accidentally restored Hono precheck adds a measurable DB lookup.
+    const middleware: (typeof expectedIdentity)[] = [];
+    const serverSource = readFileSync(
+      new URL("../../../apps/server/src/index.ts", import.meta.url),
+      "utf8",
+    );
+    for (const mount of serverSource.matchAll(
+      /^app\.use\("\/api\/auth\/\*", expectedIdentity\);$/gm,
+    )) {
+      runInNewContext(mount[0], {
+        app: { use: (_path: string, handler: typeof expectedIdentity) => middleware.push(handler) },
+        expectedIdentity,
+      });
+    }
+    cookieSurfaceGetSession.mockImplementation(instance.api.getSession);
+    const call = async (
+      path: string,
+      method = "POST",
+      cookie = "",
+      body: unknown = {},
+      expectedUser?: string,
+    ) => {
+      const request = new Request(`https://app.example.test/api/auth${path}`, {
+        method,
+        headers: {
+          "content-type": "application/json",
+          origin: "https://app.example.test",
+          cookie,
+          ...(expectedUser ? { "X-Expected-User": expectedUser } : {}),
+        },
+        ...(method === "GET" ? {} : { body: JSON.stringify(body) }),
+      });
+      const stash = new Map<string, unknown>();
+      const context = {
+        req: {
+          raw: request,
+          path: new URL(request.url).pathname,
+          header: (name: string) => request.headers.get(name),
+        },
+        get: (key: string) => stash.get(key),
+        set: (key: string, value: unknown) => stash.set(key, value),
+        json: (body: unknown, status: number) => Response.json(body, { status }),
+      } satisfies IdentityContext;
+      let response: Response | undefined;
+      const next = async (index: number): Promise<void> => {
+        const handler = middleware[index];
+        if (!handler) {
+          response = await instance.handler(request);
+          return;
+        }
+        const result = await handler(context, () => next(index + 1));
+        if (result instanceof Response) response = result;
+      };
+      await next(0);
+      if (!response) throw new Error("Auth handler did not respond");
+      return response;
+    };
+    const response = await call("/sign-up/email", "POST", "", {
+      email: "cache@example.test",
+      name: "Before",
+      password: "test-password-12345",
+    });
+    expect(response.status).toBe(200);
+    const cookies = response.headers
+      .getSetCookie()
+      .map((entry) => entry.split(";")[0])
+      .join("; ");
+    expect(cookies).toContain("session_data=");
+    return { db, call, cookies, instance };
+  }
+
+  it("keeps origin's cache configuration", () => {
+    expect(options.session?.cookieCache).toEqual({ enabled: true, maxAge: 60 });
+  });
+
+  it("demonstrates the upstream renewal chain with the guard removed", async () => {
+    const { db, call, cookies } = await fixture(false);
+    db.session = [];
+    const response = await call("/update-user", "POST", cookies, { name: "Renewed" });
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toEqual(
+      expect.arrayContaining([expect.stringMatching(/session_data=.+;.*Max-Age=60/i)]),
+    );
+  });
+
+  it.each(["revoked", "expired"])(
+    "rejects a %s session before it can renew its cache",
+    async (state) => {
+      const { db, call, cookies } = await fixture();
+      if (state === "revoked") db.session = [];
+      else if (db.session?.[0]) db.session[0].expiresAt = new Date(0);
+      // The same signed cache still answers reads; only authenticated writes are fenced.
+      const cached = await call("/get-session", "GET", cookies);
+      expect(cached.status).toBe(200);
+      expect(await cached.json()).toMatchObject({ user: { name: "Before" } });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await call("/update-user", "POST", cookies, { name: "Renewed" });
+        expect(response.status).toBe(401);
+        const setCookies = response.headers.getSetCookie();
+        expect(setCookies).toEqual(
+          expect.arrayContaining([
+            expect.stringMatching(/session_token=;.*Max-Age=0/i),
+            expect.stringMatching(/session_data=;.*Max-Age=0/i),
+          ]),
+        );
+        expect(
+          setCookies
+            .filter((entry) => /session_(token|data)=/.test(entry))
+            .every((entry) => /Max-Age=0/i.test(entry)),
+        ).toBe(true);
+      }
+      expect(db.user?.[0]?.name).toBe("Before");
+    },
+  );
+
+  it.each(["present", "absent", "expired"])(
+    "matches the expected owner and writes with one session lookup (%s cache)",
+    async (cache) => {
+      const { db, call, cookies, instance } = await fixture();
+      const context = await instance.$context;
+      const lookup = vi.spyOn(context.internalAdapter, "findSession");
+      let cookie = cookies;
+      if (cache === "absent")
+        cookie = cookies
+          .split("; ")
+          .filter((c) => !c.includes("session_data="))
+          .join("; ");
+      if (cache === "expired") {
+        vi.useFakeTimers();
+        vi.setSystemTime(Date.now() + 61_000);
+      }
+      try {
+        const response = await call(
+          "/update-user",
+          "POST",
+          cookie,
+          { name: "After" },
+          String(db.user?.[0]?.id),
+        );
+        expect(response.status).toBe(200);
+        expect(db.user?.[0]?.name).toBe("After");
+        expect(lookup).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["/update-user", "/send-verification-email"])(
+    "rejects a different expected owner before %s runs",
+    async (path) => {
+      const { db, call, cookies, instance } = await fixture();
+      const context = await instance.$context;
+      const lookup = vi.spyOn(context.internalAdapter, "findSession");
+      const response = await call(
+        path,
+        "POST",
+        cookies,
+        { name: "Wrong", email: "cache@example.test" },
+        "another-user",
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: "IDENTITY_CHANGED" });
+      expect(db.user?.[0]?.name).toBe("Before");
+      expect(lookup).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("compares identity before the reset pre-sweep can revoke credentials", async () => {
+    const { call, cookies, instance } = await fixture();
+    const context = await instance.$context;
+    const verification = vi.spyOn(context.internalAdapter, "findVerificationValue");
+    const response = await call(
+      "/reset-password",
+      "POST",
+      cookies,
+      { token: "unused", newPassword: "test-password-54321" },
+      "another-user",
+    );
+    expect(response.status).toBe(409);
+    expect(verification).not.toHaveBeenCalled();
+  });
+
+  it.each(["/get-session", "/sign-out"])(
+    "exempts %s from expected identity comparison",
+    async (path) => {
+      const { call, cookies } = await fixture();
+      const response = await call(
+        path,
+        path === "/get-session" ? "GET" : "POST",
+        cookies,
+        {},
+        "another-user",
+      );
+      expect(response.status).toBe(200);
+    },
+  );
+
+  it.each(["/update-user", "/request-password-reset"])(
+    "fails closed on a lookup outage before %s can run",
+    async (path) => {
+      const { db, call, cookies, instance } = await fixture();
+      const context = await instance.$context;
+      const lookup = vi
+        .spyOn(context.internalAdapter, "findSession")
+        .mockRejectedValue(new Error("private db details"));
+      const tokenOnly = cookies
+        .split("; ")
+        .filter((c) => !c.includes("session_data="))
+        .join("; ");
+      const response = await call(
+        path,
+        "POST",
+        tokenOnly,
+        { name: "Wrong", email: "cache@example.test" },
+        String(db.user?.[0]?.id),
+      );
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ code: "SESSION_UNAVAILABLE" });
+      expect(response.headers.getSetCookie()).toEqual([]);
+      expect(db.user?.[0]?.name).toBe("Before");
+      expect(lookup).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("allows a live session to update and renew normally", async () => {
+    const { call, cookies } = await fixture();
+    expect((await call("/update-user", "POST", cookies, { name: "After" })).status).toBe(200);
+  });
+
+  it("allows anonymous sign-in and sign-out with stale session cookies", async () => {
+    const { db, call, cookies } = await fixture();
+    db.session = [];
+    expect(
+      (
+        await call("/sign-in/email", "POST", cookies, {
+          email: "cache@example.test",
+          password: "test-password-12345",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await call("/sign-out", "POST", cookies)).status).toBe(200);
+  });
+
+  it("fails closed if the authoritative lookup fails, without renewing cookies", async () => {
+    const { call, cookies, instance } = await fixture();
+    const context = await instance.$context;
+    vi.spyOn(context.internalAdapter, "findSession").mockRejectedValue(
+      new Error("private db details"),
+    );
+    const response = await call("/update-user", "POST", cookies, { name: "After" });
+    expect(response.status).toBe(503);
+    expect(response.headers.getSetCookie()).toEqual([]);
+    expect(await response.text()).not.toContain("private db details");
   });
 });

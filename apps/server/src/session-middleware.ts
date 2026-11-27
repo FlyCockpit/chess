@@ -27,11 +27,13 @@ export async function sessionMiddleware(c: Context, next: Next) {
     const cookieOnly = new Headers(c.req.raw.headers);
     cookieOnly.delete("authorization");
     session = (await auth.api.getSession({ headers: cookieOnly })) as Session | null;
+    c.set("sessionCookieOwner", session?.user.id ?? null);
     // getSession does not re-check bans. A session minted concurrently with
     // archival can survive session deletion; never expose it to consumers.
     if (session?.user && isUserBanned(session.user)) session = null;
   } catch (err) {
     console.warn("[session-middleware] getSession failed, treating as anonymous:", err);
+    c.set("sessionLookupFailed", true);
     session = null;
   }
   c.set("session", session ?? null);

@@ -58,13 +58,15 @@ function isUnauthorizedError(error: unknown): boolean {
 export function getAuthSessionState<TSession>(
   input: AuthSessionStateInput<TSession>,
 ): AuthSessionState<TSession> {
-  const hasConfirmedIdentity = input.data !== null;
+  const hasConfirmedIdentity = input.data !== null || input.confirmedAnonymous;
   const isOffline = !input.isOnline;
   const actions = { refetch: input.refetch, retry: input.refetch };
   const meta = {
     isRefetching: input.isRefetching,
     isOffline,
-    isDegraded: hasConfirmedIdentity && (input.error !== null || isOffline),
+    isDegraded:
+      hasConfirmedIdentity &&
+      ((input.error !== null && !isUnauthorizedError(input.error)) || isOffline),
   };
 
   if (input.data !== null) {

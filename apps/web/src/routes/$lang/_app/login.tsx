@@ -17,6 +17,7 @@ import { useAuthSession } from "@/hooks/use-auth-session";
 import { usePeerSessionChange } from "@/hooks/use-peer-session-change";
 import { APP_HOME, appHomeHref } from "@/lib/app-home";
 import { authClient } from "@/lib/auth-client";
+import { markAnonymousOnlyRoute } from "@/lib/document-identity";
 import { resolveRouteSession } from "@/lib/route-session";
 import { decideAnonymousOnlyRouteAccess } from "@/lib/route-session-access";
 import { setSessionHint } from "@/lib/session-hint";
@@ -62,6 +63,7 @@ const initialTwoFactorState = {
 };
 
 function LoginPage() {
+  markAnonymousOnlyRoute();
   const { lang } = Route.useParams();
   const { redirectTo } = Route.useSearch();
   const [twoFactor, setTwoFactor] = useState(initialTwoFactorState);

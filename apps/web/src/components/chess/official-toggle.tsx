@@ -2,7 +2,9 @@ import { hasRole } from "@cockpit-chess/auth/roles";
 import { Switch } from "@cockpit-chess/ui/components/switch";
 import { useTranslation } from "react-i18next";
 import { useAuthSession } from "@/hooks/use-auth-session";
+import { useDocumentAdmits } from "@/hooks/use-document-admits";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
+import { documentAdmits } from "@/lib/document-identity";
 import { orpc } from "@/utils/orpc";
 
 /**
@@ -13,7 +15,10 @@ import { orpc } from "@/utils/orpc";
 export function OfficialToggle({ slug, official }: { slug: string; official: boolean }) {
   const { t } = useTranslation("chess");
   const { state } = useAuthSession();
-  const admin = state.status === "authenticated" && hasRole(state.session.user.role ?? "", "admin");
+  const identity = state.status === "authenticated" ? state.session.user.id : undefined;
+  const admitted = useDocumentAdmits(identity);
+  const admin =
+    state.status === "authenticated" && admitted && hasRole(state.session.user.role ?? "", "admin");
   const mutation = useEntityMutation(orpc.chess.setOfficial.mutationOptions(), {
     invalidateKey: orpc.chess.key(),
   });
@@ -25,7 +30,11 @@ export function OfficialToggle({ slug, official }: { slug: string; official: boo
         <Switch
           checked={checked}
           disabled={mutation.isPending}
-          onCheckedChange={(next) => mutation.mutate({ slug, official: next })}
+          onCheckedChange={(next) => {
+            if (identity !== undefined && documentAdmits(identity)) {
+              mutation.mutate({ slug, official: next });
+            }
+          }}
         />
         <span>{t("studio.officialLabel")}</span>
       </label>
