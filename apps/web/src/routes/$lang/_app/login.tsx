@@ -21,6 +21,7 @@ import { markAnonymousOnlyRoute } from "@/lib/document-identity";
 import { resolveRouteSession } from "@/lib/route-session";
 import { decideAnonymousOnlyRouteAccess } from "@/lib/route-session-access";
 import { setSessionHint } from "@/lib/session-hint";
+import { verificationCallback } from "@/lib/verify-email-search";
 import {
   codeFailureMessage,
   friendly,
@@ -315,6 +316,15 @@ function SignInForm({
         result = await authClient.signIn.email({
           email: value.email,
           password: value.password,
+          callbackURL: verificationCallback(lang, redirectTo),
+          fetchOptions: {
+            // Better Auth uses callbackURL for verification mail AND successful
+            // sign-in. Keep our existing identity-boundary navigation below;
+            // this hook runs before its automatic redirect plugin.
+            onSuccess: ({ data }) => {
+              data.redirect = false;
+            },
+          },
         });
       } catch (err) {
         // The request itself failed (offline, server unreachable): say so,
@@ -344,7 +354,7 @@ function SignInForm({
                   params: { lang },
                   // No `ok`: this is a self-navigation, not a verification hop,
                   // so the page must show its neutral resend state.
-                  search: { error: undefined, ok: undefined },
+                  search: { error: undefined, ok: undefined, redirectTo },
                 }),
             },
           });

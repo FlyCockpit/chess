@@ -8,9 +8,9 @@ import { useTranslation } from "react-i18next";
 import { AuthCard } from "@/components/auth/auth-screen";
 import { ResendVerification } from "@/components/auth/resend-verification";
 import { useAuthSession } from "@/hooks/use-auth-session";
-import { APP_HOME } from "@/lib/app-home";
 import { parseVerifyEmailSearch } from "@/lib/verify-email-search";
 import { orpc } from "@/utils/orpc";
+import { safeRedirectTo } from "@/utils/safe-redirect";
 
 /**
  * Landing page for the link in the account-verification email.
@@ -54,7 +54,7 @@ export const Route = createFileRoute("/$lang/_app/verify-email")({
 
 function VerifyEmailPage() {
   const { lang } = Route.useParams();
-  const { error, ok } = Route.useSearch();
+  const { error, ok, redirectTo } = Route.useSearch();
   const authSession = useAuthSession();
   const {
     data: configData,
@@ -105,7 +105,7 @@ function VerifyEmailPage() {
             </Button>
           </div>
         ) : canResend ? (
-          <ResendVerification />
+          <ResendVerification redirectTo={redirectTo} />
         ) : (
           <p className="text-center text-sm text-muted-foreground">
             {t("auth:verifyEmail.emailUnavailable")}
@@ -115,7 +115,7 @@ function VerifyEmailPage() {
           <Link
             to="/$lang/login"
             params={{ lang }}
-            search={{ redirectTo: undefined }}
+            search={{ redirectTo }}
             className={cn(buttonVariants({ variant: "link" }), "min-h-[44px]")}
           >
             {t("auth:verifyEmail.backToLogin")}
@@ -136,8 +136,7 @@ function VerifyEmailPage() {
     >
       {isAuthenticated ? (
         <Link
-          to={APP_HOME}
-          params={{ lang }}
+          to={safeRedirectTo(redirectTo, lang)}
           className={cn(buttonVariants(), "min-h-[44px] w-full")}
         >
           {t("auth:verifyEmail.continue")}
@@ -146,7 +145,7 @@ function VerifyEmailPage() {
         <Link
           to="/$lang/login"
           params={{ lang }}
-          search={{ redirectTo: undefined }}
+          search={{ redirectTo }}
           className={cn(buttonVariants(), "min-h-[44px] w-full")}
         >
           {t("auth:verifyEmail.signIn")}

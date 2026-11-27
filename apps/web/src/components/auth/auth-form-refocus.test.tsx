@@ -40,6 +40,7 @@ const fixture = vi.hoisted(() => ({
   } as Snapshot,
   config: { signupEnabled: true, adminBootstrapSignupEnabled: false, emailEnabled: true },
   online: true,
+  search: {} as Record<string, unknown>,
   /** The appConfig query's outcome flags, as TanStack Query reports them. */
   configState: "success" as "success" | "refetch-error" | "load-error",
 }));
@@ -62,7 +63,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   createFileRoute: () => (options: Record<string, unknown>) => ({
     options,
     useParams: () => ({ lang: "en-US" }),
-    useSearch: () => ({}),
+    useSearch: () => fixture.search,
   }),
   redirect: (options: unknown) => ({ redirect: options }),
   useNavigate: () => vi.fn(),
@@ -94,10 +95,12 @@ vi.mock("@/utils/orpc", () => ({
   },
 }));
 const signUpEmail = vi.hoisted(() => vi.fn());
+const signInEmail = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/auth-client", () => ({
   authClient: {
     useSession: () => ({ ...fixture.snapshot, refetch: vi.fn() }),
     signUp: { email: signUpEmail },
+    signIn: { email: signInEmail },
   },
 }));
 const toastError = vi.hoisted(() => vi.fn());
@@ -140,6 +143,7 @@ beforeEach(() => {
   vi.stubGlobal("window", {});
   resetAuthSessionMemoryForTests();
   fixture.online = true;
+  fixture.search = {};
   fixture.configState = "success";
 });
 afterEach(() => {
@@ -562,5 +566,71 @@ describe("sign-up page mounted in React DOM when the request cannot be sent", ()
     expect(findInput(container, "email")?.value).toBe("ada@example.com");
     expect(findInput(container, "password")?.value).toBe("correct horse battery");
     expect(formApis.size).toBe(1);
+  });
+
+  it("carries the intended Studio page in the signup verification email", async () => {
+    fixture.snapshot = ANONYMOUS;
+    fixture.search = { redirectTo: "/en-US/?tab=studio" };
+    signUpEmail.mockResolvedValue({ data: {}, error: null });
+    await act(async () => {
+      root.render(
+        <I18nextProvider i18n={i18n}>
+          <SignupPage />
+        </I18nextProvider>,
+      );
+    });
+    const [form] = [...formApis] as FormApi[];
+    await act(async () => {
+      form?.setFieldValue("name", "Ada");
+      form?.setFieldValue("email", "ada@example.com");
+      form?.setFieldValue("password", "correct horse battery");
+    });
+    await act(async () => {
+      await form?.handleSubmit();
+    });
+    expect(signUpEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callbackURL: "/en-US/verify-email?ok=1&redirectTo=%2Fen-US%2F%3Ftab%3Dstudio",
+      }),
+    );
+  });
+
+  it("keeps sign-in verification mail on Studio without the library redirecting a successful sign-in there", async () => {
+    fixture.snapshot = ANONYMOUS;
+    fixture.search = { redirectTo: "/en-US/?tab=studio" };
+    const assign = vi.fn();
+    Object.assign(window, { location: { assign } });
+    const answer = { redirect: true, url: "/en-US/verify-email?ok=1" };
+    signInEmail.mockImplementation(
+      async (options: {
+        fetchOptions: { onSuccess: (context: { data: typeof answer }) => void };
+      }) => {
+        options.fetchOptions.onSuccess({ data: answer });
+        return { data: answer, error: null };
+      },
+    );
+    const LoginPage = page(LoginRoute).component;
+    await act(async () => {
+      root.render(
+        <I18nextProvider i18n={i18n}>
+          <LoginPage />
+        </I18nextProvider>,
+      );
+    });
+    const [form] = [...formApis] as FormApi[];
+    await act(async () => {
+      form?.setFieldValue("email", "ada@example.com");
+      form?.setFieldValue("password", "correct horse battery");
+    });
+    await act(async () => {
+      await form?.handleSubmit();
+    });
+    expect(signInEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callbackURL: "/en-US/verify-email?ok=1&redirectTo=%2Fen-US%2F%3Ftab%3Dstudio",
+      }),
+    );
+    expect(answer.redirect).toBe(false);
+    expect(assign).toHaveBeenCalledWith("/en-US/?tab=studio");
   });
 });

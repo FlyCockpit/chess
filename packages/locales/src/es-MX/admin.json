@@ -194,7 +194,7 @@
     "revealDescription": "No se pudo enviar el correo de invitación, así que hazle llegar este enlace tú mismo por un canal de confianza. Con él podrá elegir su contraseña. Confirmará su correo al iniciar sesión por primera vez: en ese momento le enviaremos un enlace.",
     "setPasswordLinkLabel": "Enlace de un solo uso para crear la contraseña",
     "copySetPasswordLinkAriaLabel": "Copiar enlace para crear la contraseña",
-    "setPasswordLinkHint": "Solo se muestra una vez. Funciona una sola vez y vence el {{date}}. Cualquiera con el enlace puede tomar esta cuenta, así que no lo publiques en ningún lugar público. Si se pierde o vence, usa Reenviar invitación.",
+    "setPasswordLinkHint": "Solo se muestra una vez. Funciona una sola vez y vence el {{date}}; cualquiera con el enlace puede tomar esta cuenta, así que no lo publiques en ningún lugar público. Si se pierde o vence, usa Reenviar invitación.",
     "linkCopied": "Enlace copiado",
     "savedLink": "Listo",
     "deleteTitle": "¿Eliminar este usuario?",

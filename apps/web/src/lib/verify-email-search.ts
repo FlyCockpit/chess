@@ -7,8 +7,8 @@
  * export anything.
  * See AGENTS.md § Performance — Bundle Splitting and Dynamic Imports
  *
- * The landing page has three states, and they are driven entirely by these two
- * params:
+ * The landing page has three states, driven by these two markers. An optional
+ * redirectTo carries the intended page through confirmation and sign-in:
  *
  *   ?ok=1              → verified (Better-Auth redirected here on success)
  *   ?error=<CODE>      → the token was bad, expired, or already used
@@ -17,13 +17,26 @@
  * `error` wins over `ok`: a failed hop arrives as `?ok=1&error=<CODE>`, because
  * Better-Auth appends its code to the callbackURL we already built.
  */
+import { safeRedirectTo } from "@/utils/safe-redirect";
+
 export type VerifyEmailSearch = {
   error: string | undefined;
   ok: true | undefined;
+  redirectTo: string | undefined;
 };
+
+/** Keep the intended page in the emailed link, including on a resend. */
+export function verificationCallback(lang: string, redirectTo?: string): string {
+  // The server accepts a deliberately narrow callback alphabet. Form encoding
+  // escapes punctuation that encodeURIComponent leaves literal; escape its
+  // remaining '*' too so the server preserves even a punctuated nested URL.
+  const search = new URLSearchParams({ ok: "1", redirectTo: safeRedirectTo(redirectTo, lang) });
+  return `/${lang}/verify-email?${search.toString().replace(/\*/g, "%2A")}`;
+}
 
 export function parseVerifyEmailSearch(search: Record<string, unknown>): VerifyEmailSearch {
   return {
+    redirectTo: typeof search.redirectTo === "string" ? search.redirectTo : undefined,
     error: typeof search.error === "string" ? search.error : undefined,
     // Accept every spelling of the success marker. The router parses search
     // values with `JSON.parse`, so the `?ok=1` that `buildCallback`

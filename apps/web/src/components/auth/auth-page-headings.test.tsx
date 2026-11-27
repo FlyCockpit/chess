@@ -17,6 +17,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 const fixture = vi.hoisted(() => ({
   config: undefined as Record<string, unknown> | undefined,
   search: {} as Record<string, unknown>,
+  authenticated: false,
 }));
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -33,8 +34,20 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useRouter: () => ({ invalidate: vi.fn() }),
   useParams: () => ({ lang: "en-US" }),
   Outlet: () => null,
-  Link: ({ className, children }: { className?: string; children: ReactNode }) => (
-    <a className={className ?? ""}>{children}</a>
+  Link: ({
+    to,
+    search,
+    className,
+    children,
+  }: {
+    to: string;
+    search?: { redirectTo?: string };
+    className?: string;
+    children: ReactNode;
+  }) => (
+    <a data-to={to} data-redirect={search?.redirectTo} className={className ?? ""}>
+      {children}
+    </a>
   ),
 }));
 vi.mock("@tanstack/react-query", () => ({
@@ -51,7 +64,12 @@ vi.mock("@/utils/orpc", () => ({
   },
 }));
 vi.mock("@/hooks/use-auth-session", () => ({
-  useAuthSession: () => ({ state: { status: "anonymous" }, actions: { retry: vi.fn() } }),
+  useAuthSession: () => ({
+    state: fixture.authenticated
+      ? { status: "authenticated", session: { user: { id: "u1" } } }
+      : { status: "anonymous" },
+    actions: { retry: vi.fn() },
+  }),
 }));
 vi.mock("@/hooks/use-peer-session-change", () => ({ usePeerSessionChange: () => {} }));
 vi.mock("@/utils/two-factor-policy", () => ({
@@ -93,6 +111,7 @@ beforeAll(async () => {
 beforeEach(() => {
   fixture.config = undefined;
   fixture.search = {};
+  fixture.authenticated = false;
 });
 
 function render(node: ReactNode): string {
@@ -143,5 +162,28 @@ describe("one h1 per auth page: the card's title", () => {
       </AuthConfigGate>,
     );
     expect(h1s(html)).toEqual([enAuth.login.unableToConnect]);
+  });
+});
+
+describe("verification page destination links", () => {
+  it.each([{}, { ok: true }, { ok: true, error: "TOKEN_EXPIRED" }])(
+    "keeps the destination on sign-in links for %j",
+    (search) => {
+      fixture.config = OPEN;
+      fixture.search = { ...search, redirectTo: "/en-US/?tab=studio" };
+      const Page = component(routes.verify);
+      expect(render(<Page />)).toContain('data-redirect="/en-US/?tab=studio"');
+    },
+  );
+
+  it.each([
+    ["/en-US/?tab=studio", "/en-US/?tab=studio"],
+    ["https://evil.example/", "/en-US"],
+  ])("uses a safe continuation for an already signed-in visitor: %s", (redirectTo, expected) => {
+    fixture.authenticated = true;
+    fixture.config = OPEN;
+    fixture.search = { ok: true, redirectTo };
+    const Page = component(routes.verify);
+    expect(render(<Page />)).toContain(`data-to="${expected}"`);
   });
 });

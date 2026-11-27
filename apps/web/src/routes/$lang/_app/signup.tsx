@@ -18,6 +18,7 @@ import { markAnonymousOnlyRoute } from "@/lib/document-identity";
 import { ensureRouteQuery } from "@/lib/route-query";
 import { resolveRouteSession } from "@/lib/route-session";
 import { decideAnonymousOnlyRouteAccess } from "@/lib/route-session-access";
+import { verificationCallback } from "@/lib/verify-email-search";
 import { friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 import { safeRedirectTo } from "@/utils/safe-redirect";
@@ -110,7 +111,7 @@ function SignupPage() {
           {t("auth:verifyEmail.signIn")}
         </Link>
         {canResend ? (
-          <ResendVerification email={pendingEmail} />
+          <ResendVerification email={pendingEmail} redirectTo={redirectTo} />
         ) : (
           <p className="text-center text-sm text-muted-foreground">
             {t("auth:verifyEmail.emailUnavailable")}
@@ -124,7 +125,7 @@ function SignupPage() {
         title={t("auth:login.createAccount")}
         description={t("auth:login.createDescription")}
       >
-        <SignUpForm onSignedUp={setPendingEmail} />
+        <SignUpForm lang={lang} redirectTo={redirectTo} onSignedUp={setPendingEmail} />
         <div className="text-center">
           <Link
             to="/$lang/login"
@@ -150,7 +151,15 @@ function SignupPage() {
   );
 }
 
-function SignUpForm({ onSignedUp }: { onSignedUp: (email: string) => void }) {
+function SignUpForm({
+  lang,
+  redirectTo,
+  onSignedUp,
+}: {
+  lang: string;
+  redirectTo?: string;
+  onSignedUp: (email: string) => void;
+}) {
   const { t } = useTranslation(["auth"]);
 
   const form = useForm({
@@ -162,6 +171,7 @@ function SignUpForm({ onSignedUp }: { onSignedUp: (email: string) => void }) {
           email: value.email,
           password: value.password,
           name: value.name,
+          callbackURL: verificationCallback(lang, redirectTo),
         });
       } catch (err) {
         // The request itself failed (offline, server unreachable): say so,

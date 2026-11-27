@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import z from "zod";
 
 import { authClient } from "@/lib/auth-client";
+import { verificationCallback } from "@/lib/verify-email-search";
 import { friendly, isRateLimit } from "@/utils/friendly-error";
 
 /**
@@ -23,13 +24,13 @@ import { friendly, isRateLimit } from "@/utils/friendly-error";
  * of that: only rate limiting is surfaced, every other failure falls through to
  * the same neutral confirmation so the UI never distinguishes the two cases.
  *
- * The link's destination is not set here — `packages/auth` rewrites every
- * verification email's `callbackURL` to the locale-prefixed `/verify-email`
- * page, so there is no per-caller redirect to keep in sync (or to tamper with).
+ * The shared callback keeps the intended page through the verification hop;
+ * `packages/auth` also checks its origin before putting it in the email.
  */
-export function ResendVerification({ email }: { email?: string }) {
-  const { t } = useTranslation(["auth"]);
+export function ResendVerification({ email, redirectTo }: { email?: string; redirectTo?: string }) {
+  const { t, i18n } = useTranslation(["auth"]);
   const [sent, setSent] = useState(false);
+  const callbackURL = verificationCallback(i18n.language, redirectTo);
 
   // Terminal state: one link per visit. Re-requesting is a page refresh away,
   // which keeps a bored user from using this button as an email cannon.
@@ -47,9 +48,9 @@ export function ResendVerification({ email }: { email?: string }) {
   }
 
   return email ? (
-    <ResendButton email={email} onSent={() => setSent(true)} />
+    <ResendButton email={email} callbackURL={callbackURL} onSent={() => setSent(true)} />
   ) : (
-    <ResendForm onSent={() => setSent(true)} />
+    <ResendForm callbackURL={callbackURL} onSent={() => setSent(true)} />
   );
 }
 
@@ -57,8 +58,8 @@ export function ResendVerification({ email }: { email?: string }) {
  * Fire the resend and report whether the caller should flip to the sent state.
  * Returns false only for rate limiting, the one failure a user can act on.
  */
-async function resend(email: string): Promise<boolean> {
-  const result = await authClient.sendVerificationEmail({ email });
+async function resend(email: string, callbackURL: string): Promise<boolean> {
+  const result = await authClient.sendVerificationEmail({ email, callbackURL });
   if (result.error) {
     if (isRateLimit(result.error)) {
       toast.error(friendly(result.error));
@@ -69,14 +70,22 @@ async function resend(email: string): Promise<boolean> {
   return true;
 }
 
-function ResendButton({ email, onSent }: { email: string; onSent: () => void }) {
+function ResendButton({
+  email,
+  callbackURL,
+  onSent,
+}: {
+  email: string;
+  callbackURL: string;
+  onSent: () => void;
+}) {
   const { t } = useTranslation(["auth"]);
   const [sending, setSending] = useState(false);
 
   const handleClick = async () => {
     setSending(true);
     try {
-      if (await resend(email)) onSent();
+      if (await resend(email, callbackURL)) onSent();
     } finally {
       setSending(false);
     }
@@ -95,13 +104,13 @@ function ResendButton({ email, onSent }: { email: string; onSent: () => void }) 
   );
 }
 
-function ResendForm({ onSent }: { onSent: () => void }) {
+function ResendForm({ callbackURL, onSent }: { callbackURL: string; onSent: () => void }) {
   const { t } = useTranslation(["auth"]);
 
   const form = useForm({
     defaultValues: { email: "" },
     onSubmit: async ({ value }) => {
-      if (await resend(value.email)) onSent();
+      if (await resend(value.email, callbackURL)) onSent();
     },
     validators: {
       // Validation messages come from the locale-aware Zod error map installed
