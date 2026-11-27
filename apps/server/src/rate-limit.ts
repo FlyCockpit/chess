@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import {
   authRateFamily,
   emailRateFamily,
@@ -6,6 +6,7 @@ import {
   type ScaledMember,
 } from "@cockpit-chess/api/lib/rate-limit-families";
 import type { Session } from "@cockpit-chess/auth";
+import { env } from "@cockpit-chess/env/server";
 import { redisConnection } from "@cockpit-chess/queue";
 import type { Context, Next } from "hono";
 import { RateLimiterMemory, RateLimiterRedis, RateLimiterRes } from "rate-limiter-flexible";
@@ -199,7 +200,7 @@ export const signinFailureLimiter = new RateLimiterRedis({
  * Rate-limit key for `signinFailureLimiter`: SHA-256 of the normalized
  * (lowercased + trimmed) address, base64url-encoded.
  *
- * Normalization uses `emailRateLimitKey`, so case and stray whitespace cannot
+ * Normalization matches `emailRateLimitKey`, so case and stray whitespace cannot
  * mint fresh buckets — `A@x.com` and ` a@X.com ` attack the same account and
  * must share its failure budget. Hashing keeps the address itself out of Redis
  * keys and any log line that echoes them. Deliberately NOT doing
@@ -208,7 +209,7 @@ export const signinFailureLimiter = new RateLimiterRedis({
  * reasoning as `emailRateLimitKey`.
  */
 export function signinFailureKey(email: string): string {
-  return `em:${createHash("sha256").update(emailRateLimitKey(email)).digest("base64url")}`;
+  return `em:${createHash("sha256").update(email.trim().toLowerCase()).digest("base64url")}`;
 }
 
 /**
@@ -310,8 +311,9 @@ export const setupLimiter = new RateLimiterRedis({
  * inbox. The victim cannot opt out, and the mail genuinely comes from you, so
  * the cost is sender reputation as much as nuisance.
  *
- * Keyed on the normalized recipient (lowercased + trimmed) so case and stray
- * whitespace can't mint fresh buckets. `RATE_LIMIT_EMAIL_POINTS=0` disables
+ * Keyed on a purpose-separated HMAC of the normalized recipient (lowercased +
+ * trimmed), never the address itself. Case and stray whitespace cannot mint
+ * fresh buckets. `RATE_LIMIT_EMAIL_POINTS=0` disables
  * the whole recipient family (all three buckets below).
  *
  * `blockDuration` is **0**, unlike the IP-keyed limiters. Keying on an
@@ -452,15 +454,24 @@ export const twoFactorOtpLimiter = new RateLimiterRedis({
 });
 
 /**
- * Normalize a recipient into a rate-limit key.
+ * A stable, opaque mail-recipient key shared by replicas using the same auth
+ * secret. The server-owned limiter namespace is the purpose, so the three
+ * mail surfaces cannot correlate a recipient by comparing digest suffixes.
+ * Never fall back to plaintext or an unkeyed hash. A secret rotation starts
+ * fresh counters; old keys expire on their existing configured TTL.
  *
  * Lowercase + trim only. Deliberately NOT doing provider-specific
  * canonicalization (stripping Gmail dots or `+tag` suffixes): those rules
  * differ per provider, and collapsing `a+work@x.com` into `a@x.com` would let
  * one abusive address consume a different user's budget.
  */
-export function emailRateLimitKey(email: string): string {
-  return email.trim().toLowerCase();
+export function emailRateLimitKey(email: string, purpose: string): string {
+  return `em:${createHmac("sha256", env.BETTER_AUTH_SECRET)
+    .update("cockpit-chess:mail-rate-limit:v1\0")
+    .update(purpose)
+    .update("\0")
+    .update(email.trim().toLowerCase())
+    .digest("base64url")}`;
 }
 
 /**

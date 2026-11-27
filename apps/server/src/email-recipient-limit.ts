@@ -155,6 +155,8 @@ export async function signinSentMail(c: Context): Promise<boolean> {
  */
 type RecipientLimiter = {
   readonly points: number;
+  /** Server-owned namespace also separates the recipient digest's purpose. */
+  readonly keyPrefix: string;
   consume(key: string): Promise<unknown>;
   /** Only needed by the deferred mode below; refunds its provisional point. */
   reward?(key: string, points?: number): Promise<unknown>;
@@ -282,7 +284,7 @@ export function emailRecipientLimit(
     // budget without ever mailing anyone.
     if (!parsed.email) return next();
     const email = parsed.email;
-    const key = emailRateLimitKey(email);
+    const key = emailRateLimitKey(email, limiter.keyPrefix);
 
     const tooMany = () =>
       c.json({ error: "Too many emails requested for this address. Please try again later." }, 429);

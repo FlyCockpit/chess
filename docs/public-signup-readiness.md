@@ -62,6 +62,12 @@ hide an unexplained 429.
 
 The recipient middleware charges requests independently of account existence;
 invalid/rejected requests that name a usable email can consume that budget too.
+All three mail-counter namespaces use a purpose-separated HMAC digest rather
+than an email address in the store key. Replicas must share the existing
+`BETTER_AUTH_SECRET`; changing it starts fresh mail counters. The digest rollout
+also starts fresh counters once; old plaintext keys expire on their existing
+configured TTL without migration, dual-writing or a cleanup scan. Quotas,
+windows and fail behavior stay the same.
 A recipient-only Valkey error deliberately permits delivery while the primary
 IP guard still bounds it. A complete outage hits that primary guard first and
 blocks signup. Do not describe every mail limiter as fail closed. Test these

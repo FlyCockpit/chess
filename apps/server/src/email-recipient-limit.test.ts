@@ -8,10 +8,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Mock it so the suite never opens a socket (see scripts/test-io-guard.ts).
 const { limiter, signupLimiter } = vi.hoisted(() => ({
   limiter: {
+    keyPrefix: "rl:email-to",
     points: 3,
     consume: vi.fn<(key: string) => Promise<unknown>>(),
   },
   signupLimiter: {
+    keyPrefix: "rl:signup-to",
     points: 6,
     consume: vi.fn<(key: string) => Promise<unknown>>(),
   },
@@ -456,6 +458,7 @@ describe("emailRecipientLimit — deferred mode (consumeWhen)", () => {
    */
   function buildSigninApp(realLimiter: RateLimiterMemory, status: () => 200 | 401 | 403) {
     const deferred = {
+      keyPrefix: "rl:signin-to",
       points: realLimiter.points,
       consume: (key: string) => realLimiter.consume(key),
       reward: (key: string) => realLimiter.reward(key),
@@ -538,6 +541,7 @@ describe("emailRecipientLimit — deferred mode (consumeWhen)", () => {
   it("fails open on a limiter error rather than blocking sign-in", async () => {
     const real = new RateLimiterMemory({ points: 2, duration: 3600 });
     const deferred = {
+      keyPrefix: "rl:signin-to",
       points: 2,
       consume: (key: string) => real.consume(key),
       reward: (key: string) => real.reward(key),
@@ -559,6 +563,7 @@ describe("emailRecipientLimit — deferred mode (consumeWhen)", () => {
       SIGNIN,
       emailRecipientLimit(
         {
+          keyPrefix: "rl:signin-to",
           points: 2,
           consume: () => Promise.reject(new Error("redis down")),
           reward,
@@ -581,6 +586,7 @@ describe("emailRecipientLimit — deferred mode (consumeWhen)", () => {
     });
     let started = 0;
     const deferred = {
+      keyPrefix: "rl:signin-to",
       points: real.points,
       consume: (key: string) => real.consume(key),
       reward: (key: string) => real.reward(key),
@@ -617,6 +623,7 @@ describe("signinSentMail — the real predicate", () => {
    */
   function buildApp(realLimiter: RateLimiterMemory, respond: (c: Context) => Response) {
     const deferred = {
+      keyPrefix: "rl:signin-to",
       points: realLimiter.points,
       consume: (key: string) => realLimiter.consume(key),
       reward: (key: string) => realLimiter.reward(key),

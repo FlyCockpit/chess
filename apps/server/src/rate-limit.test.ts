@@ -18,7 +18,8 @@ vi.mock("@cockpit-chess/auth", () => ({
 // family-scaling tests below can mutate a budget and re-import the module
 // under test — a spread would snapshot the defaults at first factory run and
 // silently ignore every later mutation.
-const envMock: Record<string, number | undefined> = {
+const envMock: Record<string, string | number | undefined> = {
+  BETTER_AUTH_SECRET: "disposable-unit-mail-counter-secret",
   RATE_LIMIT_AUTH_POINTS: 30,
   RATE_LIMIT_AUTH_WINDOW_SECONDS: 60,
   RATE_LIMIT_RPC_POINTS: 100,
@@ -63,6 +64,114 @@ vi.mock("rate-limiter-flexible", async (importOriginal) => {
 });
 
 const { createRateLimiterMiddleware } = await import("./rate-limit.js");
+
+describe("mail recipient key privacy", () => {
+  const vectors = [
+    ["emailRecipientLimiter", "rl:email-to", 3, "em:zSdF73qncG9XOatmvrV14tSUaoYZ8cj1sWrzPLhhkw8"],
+    ["signupRecipientLimiter", "rl:signup-to", 6, "em:byvSj0ipOD-pRjw-RcR6ITZ7nWFppPAW0YIquUtGGXA"],
+    [
+      "signinRecipientLimiter",
+      "rl:signin-to",
+      10,
+      "em:NgVWfJD4a8dBTWyQoIZ1qfeIoGBU9IZzj_Tze6sBLCg",
+    ],
+  ] as const;
+
+  it("matches independently generated HMAC-SHA256 vectors with a distinct purpose per mail namespace", async () => {
+    const { emailRateLimitKey } = await import("./rate-limit.js");
+    const keys = vectors.map(([, purpose, , expected]) => {
+      const key = emailRateLimitKey("  Victim@Example.COM  ", purpose);
+      expect(key).toBe(expected);
+      expect(key).toMatch(/^em:[A-Za-z0-9_-]{43}$/);
+      expect(key).not.toContain("victim");
+      expect(key).not.toContain("@");
+      return key;
+    });
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  it("is stable across replica module loads, changes with the secret and preserves distinct mailboxes/tags", async () => {
+    const { emailRateLimitKey } = await import("./rate-limit.js");
+    const secret = envMock.BETTER_AUTH_SECRET;
+    const original = emailRateLimitKey("victim@example.com", "rl:email-to");
+    try {
+      vi.resetModules();
+      const replica = await import("./rate-limit.js");
+      expect(replica.emailRateLimitKey("VICTIM@example.com", "rl:email-to")).toBe(original);
+      for (const email of ["other@example.com", "victim+tag@example.com", "vic.tim@example.com"]) {
+        expect(replica.emailRateLimitKey(email, "rl:email-to")).not.toBe(original);
+      }
+      envMock.BETTER_AUTH_SECRET = "another-disposable-unit-mail-secret";
+      expect(replica.emailRateLimitKey("victim@example.com", "rl:email-to")).not.toBe(original);
+    } finally {
+      envMock.BETTER_AUTH_SECRET = secret;
+      vi.resetModules();
+    }
+  });
+
+  it.each(vectors)(
+    "%s passes only its opaque digest to the counter and keeps its budget/window",
+    async (name, purpose, points, expected) => {
+      const l = await import("./rate-limit.js");
+      const { emailRecipientLimit } = await import("./email-recipient-limit.js");
+      const limiter = l[name];
+      expect(limiter.keyPrefix).toBe(purpose);
+      expect(limiter.points).toBe(points);
+      expect(limiter).toHaveProperty("duration", 3600);
+      expect(limiter).toHaveProperty("blockDuration", 0);
+      const consume = vi.spyOn(limiter, "consume");
+      const app = new Hono();
+      app.use("/mail", emailRecipientLimit(limiter));
+      app.post("/mail", (c) => c.json({ status: true }));
+      try {
+        expect(
+          (
+            await app.request("/mail", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ email: "Victim@Example.com" }),
+            })
+          ).status,
+        ).toBe(200);
+        expect(consume).toHaveBeenCalledExactlyOnceWith(expected);
+      } finally {
+        consume.mockRestore();
+      }
+    },
+  );
+
+  it("refunds deferred sign-in on the same opaque key it reserved", async () => {
+    const { signinRecipientLimiter } = await import("./rate-limit.js");
+    const { emailRecipientLimit, FORM_OR_JSON_MEDIA_TYPES } = await import(
+      "./email-recipient-limit.js"
+    );
+    const consume = vi.spyOn(signinRecipientLimiter, "consume");
+    const reward = vi.spyOn(signinRecipientLimiter, "reward");
+    const app = new Hono();
+    app.use(
+      "/mail",
+      emailRecipientLimit(signinRecipientLimiter, FORM_OR_JSON_MEDIA_TYPES, () => false),
+    );
+    app.post("/mail", (c) => c.json({ status: true }));
+    try {
+      expect(
+        (
+          await app.request("/mail", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ email: "victim@example.com" }),
+          })
+        ).status,
+      ).toBe(200);
+      const key = vectors[2][3];
+      expect(consume).toHaveBeenCalledExactlyOnceWith(key);
+      expect(reward).toHaveBeenCalledExactlyOnceWith(key);
+    } finally {
+      consume.mockRestore();
+      reward.mockRestore();
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Test: rate limiter middleware returns 429 with correct headers
