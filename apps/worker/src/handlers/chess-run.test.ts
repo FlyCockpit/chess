@@ -5,7 +5,6 @@ import {
   finishAbortedMatch,
   MATCH_INTERRUPTED,
 } from "@cockpit-chess/chess/runner";
-import { asCockpitV1 } from "@cockpit-chess/chess/testing";
 import type prismaInstance from "@cockpit-chess/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type DeepMockProxy, mockReset } from "vitest-mock-extended";
@@ -92,10 +91,14 @@ const { applyChessKeyRevocation, resetChessKeyRevocations } = await import(
 const { fakeValkey } = await import("@cockpit-chess/queue/chess-key-revocation/test-support");
 const { chessKeyLeasesBlocking } = await import("@cockpit-chess/queue/chess-key-revocation");
 const player = { name: "Baseline", model: "random", protocol: "random" as const };
-/** A cockpit-v1 match with a 2-ply cap: hosted v1 matches still running at deploy resume. */
+/** A fresh match two reversible plies from the fifty-move draw. */
 const archive = () =>
-  asCockpitV1(createMatch({ white: player, black: player, rules: {} }, "hosted"), { maxPlies: 2 });
+  createMatch(
+    { white: player, black: player, rules: {}, initialFen: "7k/8/8/8/8/8/8/R6K w - - 98 80" },
+    "hosted",
+  );
 function row() {
+  const match = archive();
   return {
     id: "match-id",
     slug: "test-game",
@@ -110,12 +113,14 @@ function row() {
     official: true,
     source: "hosted",
     rulesKey: "rules",
-    rulesVersion: "cockpit-v3",
+    rulesVersion: "cockpit-v1",
+    promptVersion: match.config.prompt.version,
+    promptHash: match.config.prompt.hash,
     contextMode: "fresh",
     identityMode: "hidden",
     runToken: "token",
     heartbeatAt: new Date(),
-    archive: archive(),
+    archive: match,
     result: null,
     whiteModel: null,
     whiteProtocol: null,
@@ -176,7 +181,7 @@ describe("durable chess worker", () => {
   });
   it("plays and persists a genuine legal baseline game, including terminal result", async () => {
     const result = await handleChessRunJob({ data: { matchId: "match-id" } });
-    expect(result).toMatchObject({ result: "1/2-1/2", termination: "ply-limit" });
+    expect(result).toMatchObject({ result: "1/2-1/2", termination: "draw" });
     const terminal = db.chessMatch.updateMany.mock.calls.find(
       ([input]) => input.data.status === "completed",
     )?.[0];
@@ -191,25 +196,25 @@ describe("durable chess worker", () => {
       record.events.filter((event) => event.type === "attempt" && event.accepted),
     ).toHaveLength(2);
   });
-  it("plays a cockpit-v3 baseline to the rules engine's own ending, with no move cap", async () => {
+  it("plays a cockpit-v1 baseline to the rules engine's own ending, with no move cap", async () => {
     // Twenty plies short of the fifty-move rule: the engine's own ending comes quickly.
-    const v2 = createMatch(
+    const baseline = createMatch(
       { white: player, black: player, rules: {}, initialFen: "7k/8/8/8/8/8/8/R6K w - - 80 80" },
       "hosted",
     );
-    db.chessMatch.findUnique.mockResolvedValue({ ...row(), archive: v2 });
+    db.chessMatch.findUnique.mockResolvedValue({ ...row(), archive: baseline });
     const result = await handleChessRunJob({ data: { matchId: "match-id" } });
     expect(["checkmate", "draw"]).toContain(result?.termination);
     const terminal = db.chessMatch.updateMany.mock.calls.find(
       ([input]) => input.data.status === "completed",
     )?.[0];
     const record = validateArchive(terminal?.data.archive);
-    expect(record.config.rules.version).toBe("cockpit-v3");
+    expect(record.config.rules.version).toBe("cockpit-v1");
     expect(record.termination).toBe(result?.termination);
   });
   it("evaluates every committed position for spectators, outside the archive", async () => {
     const result = await handleChessRunJob({ data: { matchId: "match-id" } });
-    expect(result).toMatchObject({ termination: "ply-limit" });
+    expect(result).toMatchObject({ termination: "draw" });
     const terminal = db.chessMatch.updateMany.mock.calls.find(
       ([input]) => input.data.status === "completed",
     )?.[0];
@@ -229,7 +234,7 @@ describe("durable chess worker", () => {
   it("finishes the game normally when spectator evaluation fails", async () => {
     evaluatePosition.mockRejectedValue(new Error("Engine could not start"));
     const result = await handleChessRunJob({ data: { matchId: "match-id" } });
-    expect(result).toMatchObject({ result: "1/2-1/2", termination: "ply-limit" });
+    expect(result).toMatchObject({ result: "1/2-1/2", termination: "draw" });
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: "completed" }) }),
     );
@@ -248,7 +253,7 @@ describe("durable chess worker", () => {
     // A rejected write: the game and its terminal write go on; the gap is handed off.
     db.$transaction.mockRejectedValue(new Error("deadlock"));
     let result = await handleChessRunJob({ data: { matchId: "match-id" } });
-    expect(result).toMatchObject({ termination: "ply-limit" });
+    expect(result).toMatchObject({ termination: "draw" });
     expect(ensureJob).toHaveBeenCalledTimes(1);
     // A write that never returns: moves, heartbeats and the terminal write still land,
     // and the run lets go after its bounded wait.
@@ -263,7 +268,7 @@ describe("durable chess worker", () => {
     const running = handleChessRunJob({ data: { matchId: "match-id" } });
     for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(1000);
     result = await running;
-    expect(result).toMatchObject({ result: "1/2-1/2", termination: "ply-limit" });
+    expect(result).toMatchObject({ result: "1/2-1/2", termination: "draw" });
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: "completed" }) }),
     );
@@ -297,7 +302,7 @@ describe("durable chess worker", () => {
     for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(1000);
     const result = await running;
     expect(heartbeatsDuringGame).toBeGreaterThanOrEqual(3);
-    expect(result).toMatchObject({ result: "1/2-1/2", termination: "ply-limit" });
+    expect(result).toMatchObject({ result: "1/2-1/2", termination: "draw" });
     expect(db.$transaction).toHaveBeenCalledTimes(1);
   });
   it("routes a spectator backfill job to the backfill", async () => {
@@ -345,7 +350,7 @@ describe("durable chess worker", () => {
     const result = await handleChessRunJob({ data: { matchId: "match-id" } });
     const ownershipLost = outcomes.includes("lost");
     if (ownershipLost) expect(result).toBeUndefined();
-    else expect(result?.termination).toBe(aborted.at(-1) ? "interrupted" : "ply-limit");
+    else expect(result?.termination).toBe(aborted.at(-1) ? "interrupted" : "draw");
     const terminal = db.chessMatch.updateMany.mock.calls.find(
       ([input]) => input.data.status === "error",
     )?.[0];
@@ -575,7 +580,7 @@ describe("durable chess worker", () => {
       if (source === "runner") db.chessMatch.updateMany.mockResolvedValueOnce({ count: 1 }); // first ply
       db.chessMatch.updateMany.mockRejectedValueOnce(new Error("Terminal DB blip"));
       const result = await handleChessRunJob({ data: { matchId: "match-id" } });
-      expect(result).toMatchObject({ result: "1/2-1/2", termination: "ply-limit" });
+      expect(result).toMatchObject({ result: "1/2-1/2", termination: "draw" });
       const writes = db.chessMatch.updateMany.mock.calls
         .map(([input]) => input)
         .filter((input) => "archive" in input.data && input.data.status !== undefined);
@@ -589,7 +594,7 @@ describe("durable chess worker", () => {
         });
         expect(validateArchive(write.data.archive)).toMatchObject({
           status: "completed",
-          termination: "ply-limit",
+          termination: "draw",
           result: "1/2-1/2",
         });
       }
@@ -610,7 +615,7 @@ describe("durable chess worker", () => {
       expect(write.data.status).toBe("completed");
       expect(validateArchive(write.data.archive)).toMatchObject({
         status: "completed",
-        termination: "ply-limit",
+        termination: "draw",
         result: "1/2-1/2",
       });
     }

@@ -62,6 +62,12 @@ export function buildLoopCycleGuardMessage(
   );
 }
 
+/** Callers with versioned instructions may pin the guard's message text too. */
+export interface LoopGuardMessages {
+  repeated: (toolName: string, otherToolNames: string[]) => string;
+  cycle: (toolName: string, otherToolNames: string[], period: number) => string;
+}
+
 /**
  * Per-loop tracker for repeated no-progress tool calls.
  *
@@ -93,7 +99,13 @@ export class LoopGuard {
   private readonly historyLimit: number;
   private readonly cachedCycleMessages = new Map<string, string>();
 
-  constructor(threshold: number = DEFAULT_LOOP_GUARD_THRESHOLD) {
+  constructor(
+    threshold: number = DEFAULT_LOOP_GUARD_THRESHOLD,
+    private readonly messages: LoopGuardMessages = {
+      repeated: buildLoopGuardMessage,
+      cycle: buildLoopCycleGuardMessage,
+    },
+  ) {
     // Clamp misconfiguration: at least 1 real execution before guarding.
     this.threshold = Number.isFinite(threshold)
       ? Math.max(1, Math.trunc(threshold))
@@ -124,7 +136,7 @@ export class LoopGuard {
     if (this.consecutive > this.threshold) {
       if (this.cachedMessage === null) {
         const others = allToolNames.filter((name) => name !== toolName);
-        this.cachedMessage = buildLoopGuardMessage(toolName, others);
+        this.cachedMessage = this.messages.repeated(toolName, others);
       }
       return this.cachedMessage;
     }
@@ -135,7 +147,7 @@ export class LoopGuard {
       const cached = this.cachedCycleMessages.get(key);
       if (cached !== undefined) return cached;
       const others = allToolNames.filter((name) => name !== toolName);
-      const message = buildLoopCycleGuardMessage(toolName, others, cyclePeriod);
+      const message = this.messages.cycle(toolName, others, cyclePeriod);
       this.cachedCycleMessages.set(key, message);
       return message;
     }

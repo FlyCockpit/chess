@@ -9,17 +9,28 @@ export type ArchiveCheck =
   | { kind: "ok"; game: MatchArchive; json: string }
   | { kind: "too-large" }
   | { kind: "invalid" }
+  | { kind: "unsupported" }
   | { kind: "running"; game: MatchArchive };
 
 export async function checkArchiveFile(file: Pick<File, "size" | "text">): Promise<ArchiveCheck> {
   if (file.size > MAX_ARCHIVE_BYTES) return { kind: "too-large" };
   let json: string;
   let game: MatchArchive;
+  let parsed: unknown;
   try {
     // A file that cannot be read (moved or deleted since it was chosen) is not importable either.
     json = await file.text();
-    game = validateArchive(JSON.parse(json));
-  } catch {
+    parsed = JSON.parse(json);
+    game = validateArchive(parsed);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("Unsupported ") &&
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "format" in parsed
+    )
+      return { kind: "unsupported" };
     return { kind: "invalid" };
   }
   return game.status === "running" ? { kind: "running", game } : { kind: "ok", game, json };

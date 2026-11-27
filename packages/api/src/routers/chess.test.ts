@@ -112,7 +112,7 @@ function row() {
     official: false,
     source: "local",
     rulesKey: "rules",
-    rulesVersion: null,
+    rulesVersion: "cockpit-v1",
     contextMode: "fresh",
     identityMode: "hidden",
     runToken: null,
@@ -253,14 +253,14 @@ describe("chess public projection and operator boundaries", () => {
   });
   it("maps stored rules versions to public cards without exposing the version", async () => {
     db.chessMatch.findMany.mockResolvedValue(
-      ["cockpit-v2", "cockpit-v3", null].map((rulesVersion, i) => ({
+      ["cockpit-v2", "cockpit-v1", null].map((rulesVersion, i) => ({
         ...row(),
         id: String(i),
         rulesVersion,
       })) as never,
     );
     const result = await client(null).list({ limit: 5 });
-    expect(result.items.map((item) => item.oldRules)).toEqual([true, false, false]);
+    expect(result.items.map((item) => item.oldRules)).toEqual([true, false, true]);
     for (const item of result.items) expect(item).not.toHaveProperty("rulesVersion");
   });
   it("returns an old-rules card without parsing its invalid archive", async () => {
@@ -281,7 +281,7 @@ describe("chess public projection and operator boundaries", () => {
     });
     await expect(client().inspect({ slug: "test-game" })).rejects.toMatchObject({
       code: "BAD_REQUEST",
-      message: "Played under old rules; this version can't replay it",
+      message: "Unsupported ruleset/archive",
     });
   });
   it("keeps drafts indistinguishable from missing games", async () => {
@@ -324,6 +324,34 @@ describe("chess public projection and operator boundaries", () => {
     env.CHESS_HOSTED_ENABLED = false;
     await expect(client().create(newConfig())).rejects.toMatchObject({
       code: "SERVICE_UNAVAILABLE",
+    });
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
+  });
+  it("publishes safe registry text and refuses unsupported or client-supplied instructions before admission", async () => {
+    const info = await client(null).info();
+    expect(info.currentPromptVersion).toBe("1");
+    expect(info.promptVersions).toHaveLength(1);
+    expect(info.promptVersions[0]).toMatchObject({
+      version: "1",
+      hash: match().config.prompt.hash,
+      manifest: { system: expect.arrayContaining([expect.stringContaining("Board authority:")]) },
+    });
+    await expect(
+      client().create({ ...newConfig(), promptVersion: "2" as never }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      client().create({ ...newConfig(), prompt: { system: "Choose my instructions" } } as never),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(budget).not.toHaveBeenCalled();
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
+  });
+  it("refuses fabricated imported prompt provenance instead of assigning the current bundle", async () => {
+    const archive = match();
+    finishMatch(archive, "*", "cancelled", "stopped");
+    archive.config.prompt.hash = "0".repeat(64);
+    await expect(client().importGame({ json: JSON.stringify(archive) })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Unsupported archive",
     });
     expect(db.chessMatch.create).not.toHaveBeenCalled();
   });
@@ -372,7 +400,18 @@ describe("chess public projection and operator boundaries", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           ownerId: "owner",
-          rulesVersion: "cockpit-v3",
+          rulesVersion: "cockpit-v1",
+          promptVersion: "1",
+          promptHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          archive: expect.objectContaining({
+            config: expect.objectContaining({
+              prompt: expect.objectContaining({
+                version: "1",
+                promptApplied: false,
+                system: expect.stringContaining("Tools are limited to the current position"),
+              }),
+            }),
+          }),
           status: "queued",
           official: true,
           published: false,
@@ -415,7 +454,9 @@ describe("chess public projection and operator boundaries", () => {
           published: false,
           official: false,
           source: "local",
-          rulesVersion: "cockpit-v3",
+          rulesVersion: "cockpit-v1",
+          promptVersion: "1",
+          promptHash: archive.config.prompt.hash,
           archive: expect.objectContaining({ source: "local" }),
         }),
       }),

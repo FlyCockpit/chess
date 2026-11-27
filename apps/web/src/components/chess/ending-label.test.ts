@@ -16,7 +16,6 @@ import {
   matchEnding,
   timeControlText,
 } from "@cockpit-chess/chess/ending";
-import { asCockpitV1 } from "@cockpit-chess/chess/testing";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import esChess from "@cockpit-chess/locales/src/es-MX/chess.json";
 import { createInstance, type TFunction } from "i18next";
@@ -119,13 +118,11 @@ const fixtures = (): Array<[string, MatchArchive]> => [
     "pawn that changed file",
     play(game(), "f2f4", "e7e5", "f4e5", "g8f6", "e5e6", "f6g8", "e5e6", "e5e6", "e5e6"),
   ],
-  ["v1 timeout", ended(asCockpitV1(play(game(), "e2e4")), "timeout", "1-0")],
   [
     "missing promotion piece",
     play(game({ maxAttempts: 2 }, "4k3/P7/8/8/8/8/4P3/4K3 w - - 0 1"), "a7a8", "e2e5"),
   ],
   ["resignation", ended(play(game(), "e2e4"), "resignation", "1-0")],
-  ["ply limit", play(asCockpitV1(game(), { maxPlies: 2 }), "e2e4", "e7e5")],
   ["cancelled", ended(game(), "cancelled", "*", "stopped")],
   ["interrupted", ended(game(), "interrupted", "*", "error")],
   ["provider error", ended(play(game(), "e2e4"), "provider-error", "*", "error")],
@@ -220,7 +217,7 @@ describe("ending labels", () => {
       "Negro perdió por 1 jugada ilegal",
     );
   });
-  it("labels capped and uncapped replies in both languages, including v1", () => {
+  it("labels capped and uncapped replies in both languages", () => {
     const es = i18n.getFixedT("es-MX", "chess") as TFunction<"chess">;
     expect(replyCapLabel(t, game().config.rules)).toBe("No reply cap");
     expect(replyCapLabel(es, game().config.rules)).toBe("Sin límite de respuesta");
@@ -230,7 +227,6 @@ describe("ending labels", () => {
     expect(replyCapLabel(es, game({ maxOutputTokens: 64 }).config.rules)).toBe(
       "Límite de respuesta de 64 tokens",
     );
-    expect(replyCapLabel(t, asCockpitV1(game()).config.rules)).toBe("Reply cap 512 tokens");
   });
   it("labels the time control and the remark tone", () => {
     for (const rules of [

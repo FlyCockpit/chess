@@ -1,5 +1,6 @@
 import { Chess, DEFAULT_POSITION, type Square } from "chess.js";
 import { z } from "zod";
+import { assertPinnedPrompt, pinnedPromptSchema, pinPrompt, promptVersionSchema } from "./prompts";
 
 export type { Color, PieceSymbol, Square } from "chess.js";
 export { Chess, DEFAULT_POSITION } from "chess.js";
@@ -90,47 +91,17 @@ const sharedRules = {
   tokenBudget: z.number().int().min(256).max(MAX_TOKEN_BUDGET).default(1000000),
   costBudgetMicros: z.number().int().min(100).max(MAX_COST_BUDGET_MICROS).default(1000000),
 };
-/**
- * The first ruleset, kept so archives recorded under it still read, validate and
- * replay exactly as they were played: a ply cap, one shared per-player time allowance
- * and an on/off remark switch (shown as "Commentary"). New matches use cockpit-v3.
- */
-export const rulesV1Schema = z
-  .object({
-    // Keys in the order cockpit-v1 serialized them: the rules key hashes
-    // JSON.stringify(rules), so a re-parsed v1 archive must keep the same order.
-    version: z.literal("cockpit-v1"),
-    context: sharedRules.context,
-    opponentIdentity: sharedRules.opponentIdentity,
-    representation: sharedRules.representation,
-    legalMoves: sharedRules.legalMoves,
-    trashTalk: z.boolean().default(false),
-    moveFormat: sharedRules.moveFormat,
-    tokenAccounting: sharedRules.tokenAccounting,
-    engineEvaluation: sharedRules.engineEvaluation,
-    engineNodes: sharedRules.engineNodes,
-    engineCallsPerTurn: sharedRules.engineCallsPerTurn,
-    maxAttempts: sharedRules.maxAttempts,
-    maxPlies: z.number().int().min(2).max(600).default(200),
-    turnTimeoutMs: sharedRules.turnTimeoutMs,
-    maxDispatches: sharedRules.maxDispatches,
-    maxOutputTokens: z.number().int().min(64).max(4096).default(512),
-    tokenBudget: sharedRules.tokenBudget,
-    timeBudgetMs: z.number().int().min(1000).max(3600000).default(600000),
-    costBudgetMicros: sharedRules.costBudgetMicros,
-  })
-  .strict();
 /** Bounds of one side's clock (also the form's limits): 30 s to 60 min. */
 export const CLOCK_MIN_MS = 30_000;
 export const CLOCK_MAX_MS = 3_600_000;
 const clockMs = z.number().int().min(CLOCK_MIN_MS).max(CLOCK_MAX_MS);
 export const remarkTones = ["off", "commentary", "trash-talk"] as const;
 export type RemarkTone = (typeof remarkTones)[number];
-/** Bounds of the optional reply cap (`maxOutputTokens`) a cockpit-v3 ruleset may set. */
+/** Bounds of the optional reply cap (`maxOutputTokens`) a cockpit-v1 ruleset may set. */
 export const REPLY_CAP_MIN = 64;
 export const REPLY_CAP_MAX = 131_072;
 /**
- * cockpit-v3: no move cap (the rules engine's own draws, the archive limit and the
+ * cockpit-v1: no move cap (the rules engine's own draws, the archive limit and the
  * spend budgets end every game), a remark tone, an optional per-side clock
  * (null = untimed: only the per-move safety limit applies) and no fixed reply cap:
  * each request may use the model's own maximum output, limited by what the side's
@@ -138,17 +109,17 @@ export const REPLY_CAP_MAX = 131_072;
  * A reply cut off at that limit is rejected as `truncated`.
  * See README.md § Rules and endings
  */
-export const rulesV3Schema = z
+export const RULES_VERSION = "cockpit-v1";
+export const rulesSchema = z
   .object({
-    version: z.literal("cockpit-v3").default("cockpit-v3"),
+    version: z.literal(RULES_VERSION).default(RULES_VERSION),
     ...sharedRules,
     /** Optional reply cap in tokens, for experiments; absent = no rules cap. */
     maxOutputTokens: z.number().int().min(REPLY_CAP_MIN).max(REPLY_CAP_MAX).optional(),
     remarks: z.enum(remarkTones).default("off"),
     clock: z.object({ w: clockMs, b: clockMs }).strict().nullable().default(null),
     /**
-     * Absent means "forfeit", so rules recorded before this option keep their exact JSON
-     * (the rules key hashes it); `createMatch` writes only "retry".
+     * Absent means "forfeit"; `createMatch` records only "retry" so the default has one rules key.
      */
     illegalPolicy: z.enum(illegalPolicies).optional(),
   })
@@ -160,34 +131,17 @@ export const rulesV3Schema = z
       path: ["turnTimeoutMs"],
     },
   );
-/** Every ruleset an archive may carry. New matches are created only with cockpit-v3. */
-export const rulesSchema = z.union([rulesV3Schema, rulesV1Schema]);
-export type RulesV1 = z.infer<typeof rulesV1Schema>;
-export type RulesV3 = z.infer<typeof rulesV3Schema>;
-/** The ruleset versions this build reads; an archive under any other one can't be replayed. */
-export const RULES_VERSIONS = [
-  "cockpit-v3",
-  "cockpit-v1",
-] as const satisfies readonly Rules["version"][];
-/**
- * Whether a stored row's ruleset version is one this build no longer reads (cockpit-v2,
- * dropped without a reader in f6d8550). Null (no version recorded) is never old.
- */
+/** Whether a stored row cannot be replayed by this build. */
 export function isOldRulesVersion(version: string | null | undefined): boolean {
-  return typeof version === "string" && !(RULES_VERSIONS as readonly string[]).includes(version);
+  return version !== RULES_VERSION;
 }
-/** The reply cap a ruleset sets in tokens, or null when it sets none (cockpit-v3 default). */
+/** The reply cap a ruleset sets in tokens, or null when it sets none (the default). */
 export function replyCap(rules: Rules): number | null {
   return rules.maxOutputTokens ?? null;
 }
-/** The remark tone a ruleset asks for (v1's switch was neutral "Commentary"). */
-export function remarkTone(rules: Rules): RemarkTone {
-  if (rules.version === "cockpit-v1") return rules.trashTalk ? "commentary" : "off";
-  return rules.remarks;
-}
-/** What repeated illegal moves do under a ruleset (cockpit-v1 always forfeits). */
+/** What repeated illegal moves do under a ruleset. */
 export function illegalPolicy(rules: Rules): IllegalPolicy {
-  return rules.version === "cockpit-v3" ? (rules.illegalPolicy ?? "forfeit") : "forfeit";
+  return rules.illegalPolicy ?? "forfeit";
 }
 /** Whether this many rejected attempts on one turn forfeit the game. */
 export function forfeitsAfter(rules: Rules, rejectedThisTurn: number) {
@@ -195,12 +149,7 @@ export function forfeitsAfter(rules: Rules, rejectedThisTurn: number) {
 }
 /** One side's whole-game clock in ms, or null when the game is untimed. */
 export function sideClockMs(rules: Rules, side: Side): number | null {
-  if (rules.version === "cockpit-v1") return rules.timeBudgetMs;
   return rules.clock?.[side] ?? null;
-}
-/** The move cap of a cockpit-v1 archive; cockpit-v3 has none. */
-export function plyLimit(rules: Rules): number | null {
-  return rules.version === "cockpit-v1" ? rules.maxPlies : null;
 }
 const configFields = {
   title: z.string().min(1).max(140).default("Agent showdown"),
@@ -213,9 +162,24 @@ const configFields = {
     .default(DEFAULT_POSITION),
 };
 /** A new match's configuration (current ruleset only). */
-export const matchConfigSchema = z.object({ ...configFields, rules: rulesV3Schema }).strict();
-/** A recorded match's configuration, under any ruleset version. */
-export const archivedConfigSchema = z.object({ ...configFields, rules: rulesSchema }).strict();
+export const matchConfigSchema = z
+  .object({ ...configFields, rules: rulesSchema, promptVersion: promptVersionSchema.optional() })
+  .strict();
+/** A recorded match's configuration under the current ruleset. */
+export const archivedConfigSchema = z
+  .object({ ...configFields, rules: rulesSchema, prompt: pinnedPromptSchema })
+  .strict()
+  .superRefine((config, context) => {
+    try {
+      assertPinnedPrompt(config);
+    } catch {
+      context.addIssue({
+        code: "custom",
+        message: "Unsupported prompt bundle/archive",
+        path: ["prompt"],
+      });
+    }
+  });
 export type Player = z.infer<typeof playerSchema>;
 export type MatchConfig = z.infer<typeof matchConfigSchema>;
 export type ArchivedConfig = z.infer<typeof archivedConfigSchema>;
@@ -278,6 +242,16 @@ export function boundReply(text: string): string {
   return `…${chars.slice(start).join("")}`;
 }
 export const eventSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      ...eventBase,
+      type: z.literal("reply"),
+      dispatch: z.number().int().nonnegative(),
+      /** Only response-reported identity; null means unknown, including absent token usage. */
+      resolvedModel: z.string().min(1).max(160).nullable(),
+      resolvedProvider: z.string().min(1).max(160).nullable(),
+    })
+    .strict(),
   z
     .object({
       ...eventBase,
@@ -352,9 +326,11 @@ export const eventSchema = z.discriminatedUnion("type", [
       dispatch: z.number().int().nonnegative(),
       inputTokens: z.number().int().nonnegative(),
       outputTokens: z.number().int().nonnegative(),
-      /** Absent on legacy archives or when the provider did not report cache usage. */
+      /** Absent when the provider did not report cache usage. */
       cachedInputTokens: z.number().int().nonnegative().optional(),
       cacheCreationInputTokens: z.number().int().nonnegative().optional(),
+      resolvedModel: z.string().min(1).max(160).nullable(),
+      resolvedProvider: z.string().min(1).max(160).nullable(),
       costMicros: z.number().int().nonnegative().nullable(),
     })
     .strict(),
@@ -389,7 +365,6 @@ export const archiveSchema = z
       "move-timeout",
       "token-budget",
       "cost-budget",
-      "ply-limit",
       "cancelled",
       "interrupted",
       "provider-error",
@@ -438,9 +413,13 @@ export function createMatch(
   input: z.input<typeof matchConfigSchema>,
   source: MatchArchive["source"] = "local",
 ): MatchArchive {
-  const config = matchConfigSchema.parse(input);
-  // The default is recorded by omission, so a default ruleset keeps one rules key.
-  if (config.rules.illegalPolicy === "forfeit") delete config.rules.illegalPolicy;
+  const { promptVersion, ...parsed } = matchConfigSchema.parse(input);
+  // Omit the default so a default ruleset keeps one rules key.
+  if (parsed.rules.illegalPolicy === "forfeit") delete parsed.rules.illegalPolicy;
+  const config = {
+    ...parsed,
+    prompt: pinPrompt(parsed.rules, [parsed.white, parsed.black], promptVersion),
+  };
   config.initialFen = new Chess(config.initialFen).fen();
   const match: MatchArchive = {
     format: "cockpit-chess/v1",
@@ -483,14 +462,6 @@ export function finishMatch(
 export function settleBoard(match: MatchArchive, chess: Chess) {
   if (chess.isCheckmate()) finishMatch(match, chess.turn() === "w" ? "0-1" : "1-0", "checkmate");
   else if (chess.isDraw()) finishMatch(match, "1/2-1/2", "draw");
-  else {
-    const limit = plyLimit(match.config.rules);
-    if (
-      limit !== null &&
-      match.events.filter((event) => event.type === "attempt" && event.accepted).length >= limit
-    )
-      finishMatch(match, "1/2-1/2", "ply-limit");
-  }
 }
 /** Whether an attempt with this move and reply ending is rejected, and why. */
 export function attemptReason(
@@ -539,7 +510,7 @@ export function submitMove(
     fen: chess.fen(),
     san,
     reason,
-    comment: remarkTone(match.config.rules) === "off" ? "" : comment.slice(0, 500),
+    comment: match.config.rules.remarks === "off" ? "" : comment.slice(0, 500),
     ...(normalizedFrom !== undefined && match.config.rules.moveFormat === "lenient"
       ? { normalizedFrom: normalizedFrom.slice(0, 256) }
       : {}),
@@ -666,7 +637,7 @@ export function matchStats(match: MatchArchive, side?: Side) {
     /**
      * Reported reads / reported input: a lower bound when cache usage is omitted.
      * The installed adapters omit explicit zero cache counts too. All-unknown
-     * legacy/provider usage stays null, rather than being labeled a cache miss.
+     * unreported provider usage stays null, rather than being labeled a cache miss.
      */
     cacheReadShare:
       usage.some(
@@ -704,14 +675,21 @@ export function positionText(chess: Chess, representation: Rules["representation
     .join(" ")}\nFEN: ${chess.fen()}`;
 }
 
+/** Shape-only stored-reader path; malformed prerelease formats never receive an upgrade. */
+export function parseArchive(input: unknown): MatchArchive {
+  const supported = z.object({ config: z.object({ rules: rulesSchema }) }).safeParse(input);
+  if (!supported.success) throw new Error("Unsupported ruleset/archive");
+  const parsed = archiveSchema.safeParse(input);
+  if (!parsed.success) throw new Error("Unsupported archive");
+  return parsed.data;
+}
 /** Reconstruct every attempt; uploaded snapshots never authorize a board position. */
 export function validateArchive(input: unknown): MatchArchive {
-  const match = archiveSchema.parse(input);
+  const match = parseArchive(input);
   const chess = new Chess(match.config.initialFen);
   let ply = 0;
   let illegalThisTurn = 0;
   let terminal = chess.isGameOver();
-  const limit = plyLimit(match.config.rules) ?? Number.POSITIVE_INFINITY;
   const dispatches = new Map<number, { side: Side; ply: number }>();
   for (const [index, event] of match.events.entries()) {
     if (event.seq !== index || event.ply !== ply || event.side !== chess.turn())
@@ -740,10 +718,12 @@ export function validateArchive(input: unknown): MatchArchive {
       if (event.dispatch !== dispatches.size) throw new Error("Invalid dispatch order");
       dispatches.set(event.dispatch, { side: event.side, ply: event.ply });
     }
-    if (event.type === "usage") {
+    if (event.type === "usage" || event.type === "reply") {
       const reservation = dispatches.get(event.dispatch);
       if (reservation?.side !== event.side || reservation.ply !== event.ply)
-        throw new Error("Usage without reservation");
+        throw new Error("Reply/usage without reservation");
+    }
+    if (event.type === "usage") {
       // Gemini can report a write and a read of the same prefix in one request.
       if (
         (event.cachedInputTokens ?? 0) > event.inputTokens ||
@@ -766,7 +746,7 @@ export function validateArchive(input: unknown): MatchArchive {
       throw new Error("Attempt reason mismatch");
     if (san !== null && (event.reply !== undefined || event.stopReason !== undefined))
       throw new Error("Reply record on an accepted move");
-    if (remarkTone(match.config.rules) === "off" && event.comment)
+    if (match.config.rules.remarks === "off" && event.comment)
       throw new Error("Commentary violates ruleset");
     if (event.normalizedFrom !== undefined && match.config.rules.moveFormat !== "lenient")
       throw new Error("Move normalization violates ruleset");
@@ -774,8 +754,7 @@ export function validateArchive(input: unknown): MatchArchive {
       ply += 1;
       illegalThisTurn = 0;
     } else illegalThisTurn += 1;
-    terminal =
-      chess.isGameOver() || ply >= limit || forfeitsAfter(match.config.rules, illegalThisTurn);
+    terminal = chess.isGameOver() || forfeitsAfter(match.config.rules, illegalThisTurn);
   }
   if (match.status === "running" && terminal) throw new Error("Running game is terminal");
   if (
@@ -785,8 +764,6 @@ export function validateArchive(input: unknown): MatchArchive {
     throw new Error("Invalid checkmate result");
   if (match.termination === "draw" && (!chess.isDraw() || match.result !== "1/2-1/2"))
     throw new Error("Invalid draw result");
-  if (match.termination === "ply-limit" && (ply < limit || match.result !== "1/2-1/2"))
-    throw new Error("Invalid ply limit");
   if (
     match.termination === "illegal-forfeit" &&
     (!forfeitsAfter(match.config.rules, illegalThisTurn) ||
@@ -837,9 +814,7 @@ export function validateArchive(input: unknown): MatchArchive {
       ? "checkmate"
       : chess.isDraw()
         ? "draw"
-        : ply >= limit
-          ? "ply-limit"
-          : "illegal-forfeit";
+        : "illegal-forfeit";
     if (match.termination !== expected) throw new Error("Terminal board result mismatch");
   }
   return match;

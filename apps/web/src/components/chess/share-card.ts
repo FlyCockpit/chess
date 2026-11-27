@@ -1,4 +1,4 @@
-import { boardAt, type MatchArchive, matchStats, remarkTone, replyCap } from "@cockpit-chess/chess";
+import { boardAt, type MatchArchive, matchStats, replyCap } from "@cockpit-chess/chess";
 import { endingSummary, matchEnding } from "@cockpit-chess/chess/ending";
 import type { SpectatorEvaluations } from "@cockpit-chess/chess/spectator";
 import type { TFunction } from "i18next";
@@ -139,7 +139,7 @@ export function drawShareCard(
     620,
   );
   ctx.fillText(
-    `${t(`accounting.${match.config.rules.tokenAccounting}`)} · ${t(`engineModes.${match.config.rules.engineEvaluation}`)} · ${remarkToneLabel(t, remarkTone(match.config.rules))}`,
+    `${t(`accounting.${match.config.rules.tokenAccounting}`)} · ${t(`engineModes.${match.config.rules.engineEvaluation}`)} · ${remarkToneLabel(t, match.config.rules.remarks)}`,
     56,
     600,
     620,

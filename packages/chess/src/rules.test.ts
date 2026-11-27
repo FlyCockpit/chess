@@ -1,18 +1,14 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  archiveSchema,
   boardAt,
   createMatch,
   finishMatch,
   illegalPolicy,
   type MatchArchive,
   matchConfigSchema,
-  plyLimit,
   REPLY_CAP_MAX,
   REPLY_CAP_MIN,
-  type RulesV1,
-  remarkTone,
   replyCap,
   rulesSchema,
   serializeArchive,
@@ -20,18 +16,11 @@ import {
   submitMove,
   validateArchive,
 } from "./index";
-import { asCockpitV1 } from "./testing";
 
 const player = { name: "Baseline", model: "random", protocol: "random" as const };
-/** A cockpit-v1 archive exactly as the previous release wrote it. */
-const v1Archive = (rules: Partial<RulesV1> = {}): MatchArchive =>
-  JSON.parse(
-    serializeArchive(asCockpitV1(createMatch({ white: player, black: player, rules: {} }), rules)),
-  );
-
 describe("versioned rules", () => {
   // 201 archived plies take a few seconds: each move re-checks the game's draw rules.
-  it("keeps a cockpit-v3 game running past the old 200-ply cap", { timeout: 30_000 }, () => {
+  it("keeps a cockpit-v1 game running past the old 200-ply cap", { timeout: 30_000 }, () => {
     // Fixed pseudo-random legal play; the first seed whose game is still going at 201.
     for (let seed = 1; ; seed++) {
       let state = seed;
@@ -52,28 +41,16 @@ describe("versioned rules", () => {
       break;
     }
   });
-  it("re-parses a cockpit-v1 ruleset in the key order the previous release wrote", () => {
-    // Exactly as cockpit-v1 serialized its defaults: the rules key hashes this text.
-    const written =
-      '{"version":"cockpit-v1","context":"fresh","opponentIdentity":"hidden",' +
-      '"representation":"ascii","legalMoves":"tool","trashTalk":false,"moveFormat":"strict",' +
-      '"tokenAccounting":"provider","engineEvaluation":"off","engineNodes":10000,' +
-      '"engineCallsPerTurn":2,"maxAttempts":3,"maxPlies":200,"turnTimeoutMs":60000,' +
-      '"maxDispatches":6,"maxOutputTokens":512,"tokenBudget":1000000,"timeBudgetMs":600000,' +
-      '"costBudgetMicros":1000000}';
-    expect(JSON.stringify(rulesSchema.parse(JSON.parse(written)))).toBe(written);
-  });
-  it("creates new matches under cockpit-v3 with no move cap, untimed, remarks off", () => {
+  it("creates new matches under cockpit-v1 with no move cap, untimed, remarks off", () => {
     const match = createMatch({ white: player, black: player, rules: {} });
     expect(match.config.rules).toMatchObject({
-      version: "cockpit-v3",
+      version: "cockpit-v1",
       remarks: "off",
       clock: null,
     });
     expect(match.config.rules).not.toHaveProperty("maxPlies");
-    expect(plyLimit(match.config.rules)).toBeNull();
     expect(sideClockMs(match.config.rules, "w")).toBeNull();
-    expect(remarkTone(match.config.rules)).toBe("off");
+    expect(match.config.rules.remarks).toBe("off");
   });
   it("round-trips the remark tone and an uneven clock through the archive", () => {
     for (const remarks of ["off", "commentary", "trash-talk"] as const) {
@@ -84,15 +61,17 @@ describe("versioned rules", () => {
       });
       const read = validateArchive(JSON.parse(serializeArchive(match)));
       expect(read.config.rules).toEqual(match.config.rules);
-      expect(remarkTone(read.config.rules)).toBe(remarks);
+      expect(read.config.rules.remarks).toBe(remarks);
       expect(sideClockMs(read.config.rules, "w")).toBe(900000);
       expect(sideClockMs(read.config.rules, "b")).toBe(300000);
     }
   });
-  it("refuses a cockpit-v1 ruleset, a move cap or an unknown tone for a new match", () => {
+  it("accepts only the launch ruleset and refuses obsolete settings", () => {
     const parse = (rules: unknown) =>
       matchConfigSchema.safeParse({ white: player, black: player, rules }).success;
-    expect(parse({ version: "cockpit-v1" })).toBe(false);
+    expect(parse({ version: "cockpit-v1" })).toBe(true);
+    expect(parse({ version: "cockpit-v2" })).toBe(false);
+    expect(parse({ version: "cockpit-v3" })).toBe(false);
     expect(parse({ maxPlies: 20 })).toBe(false);
     expect(parse({ trashTalk: true })).toBe(false);
     expect(parse({ timeBudgetMs: 600000 })).toBe(false);
@@ -107,31 +86,39 @@ describe("versioned rules", () => {
     expect(parse({ clock: { w: 300_000, b: 30_000 }, turnTimeoutMs: 30_001 })).toBe(false);
     expect(parse({ clock: { w: 300_000 } })).toBe(false);
   });
-  it("still reads, validates and replays cockpit-v1 archives as they were played", () => {
-    const legacy = v1Archive({ trashTalk: true, maxPlies: 2, timeBudgetMs: 120000 });
-    expect(archiveSchema.parse(legacy).config.rules.version).toBe("cockpit-v1");
-    expect(remarkTone(legacy.config.rules)).toBe("commentary");
-    expect(sideClockMs(legacy.config.rules, "b")).toBe(120000);
-    expect(plyLimit(legacy.config.rules)).toBe(2);
-    const chess = boardAt(legacy);
-    submitMove(legacy, chess, "e2e4", "Opening up.");
-    submitMove(legacy, chess, "e7e5");
-    expect(legacy).toMatchObject({ status: "completed", termination: "ply-limit" });
-    expect(validateArchive(JSON.parse(serializeArchive(legacy)))).toEqual(legacy);
-    expect(v1Archive().config.rules).toMatchObject({ trashTalk: false, maxPlies: 200 });
-    expect(remarkTone(v1Archive().config.rules)).toBe("off");
+  it("fails old prerelease rulesets with a clear unsupported-ruleset message", () => {
+    const match = createMatch({ white: player, black: player, rules: {} });
+    for (const version of ["cockpit-v2", "cockpit-v3", "future-rules"]) {
+      const archive = {
+        ...match,
+        config: { ...match.config, rules: { ...match.config.rules, version } },
+      };
+      expect(() => validateArchive(archive)).toThrow("Unsupported ruleset");
+    }
+    const legacy = {
+      ...match,
+      config: {
+        ...match.config,
+        rules: { version: "cockpit-v1", trashTalk: true, maxPlies: 200, timeBudgetMs: 600000 },
+      },
+    };
+    expect(() => validateArchive(legacy)).toThrow("Unsupported ruleset");
   });
-  it("rejects a ply-limit ending and a clock forfeit where the ruleset has neither", () => {
+  it("rejects a clock forfeit in an untimed game", () => {
     const match = createMatch({ white: player, black: player, rules: {} });
     const chess = boardAt(match);
     submitMove(match, chess, "e2e4");
     submitMove(match, chess, "e7e5");
-    finishMatch(match, "1/2-1/2", "ply-limit");
-    expect(() => validateArchive(match)).toThrow("Invalid ply limit");
     finishMatch(match, "0-1", "timeout");
     expect(() => validateArchive(match)).toThrow("Clock forfeit in an untimed game");
-    match.config.rules = rulesSchema.parse({ clock: { w: 60000, b: 60000 } });
-    expect(validateArchive(match).termination).toBe("timeout");
+    const timed = createMatch({
+      white: player,
+      black: player,
+      rules: { clock: { w: 60000, b: 60000 } },
+    });
+    timed.events = structuredClone(match.events);
+    finishMatch(timed, "0-1", "timeout");
+    expect(validateArchive(timed).termination).toBe("timeout");
   });
   it("keeps remarks only when the tone allows them", () => {
     const quiet = createMatch({ white: player, black: player, rules: {} });
@@ -140,7 +127,10 @@ describe("versioned rules", () => {
     submitMove(loud, boardAt(loud), "e2e4", "Your move, if you can find one.");
     const forged = structuredClone(loud);
     forged.config.rules = rulesSchema.parse({});
-    expect(() => validateArchive(forged)).toThrow("Commentary violates ruleset");
+    expect(() => validateArchive(forged)).toThrow("Unsupported");
+    const quietWithComment = createMatch({ white: player, black: player, rules: {} });
+    quietWithComment.events = structuredClone(loud.events);
+    expect(() => validateArchive(quietWithComment)).toThrow("Commentary violates ruleset");
   });
 });
 
@@ -152,16 +142,16 @@ describe("what repeated illegal moves do", () => {
     return chess;
   };
   it("writes default rules by omission under one stable rules key", () => {
-    // Default cockpit-v3 rules: no reply cap and no illegalPolicy key. The server's rules
+    // Default cockpit-v1 rules: no reply cap and no illegalPolicy key. The server's rules
     // key (first 16 hex of the SHA-256) is pinned so a change to the defaults is deliberate.
     const written =
-      '{"version":"cockpit-v3","context":"fresh","opponentIdentity":"hidden",' +
+      '{"version":"cockpit-v1","context":"fresh","opponentIdentity":"hidden",' +
       '"representation":"ascii","legalMoves":"tool","moveFormat":"strict",' +
       '"tokenAccounting":"provider","engineEvaluation":"off","engineNodes":10000,' +
       '"engineCallsPerTurn":2,"maxAttempts":3,"turnTimeoutMs":60000,"maxDispatches":6,' +
       '"tokenBudget":1000000,"costBudgetMicros":1000000,"remarks":"off","clock":null}';
     const key = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-    expect(key(written)).toBe("addb86a522d338d9");
+    expect(key(written)).toBe("8bddcc60e9886ef5");
     expect(JSON.stringify(rulesSchema.parse(JSON.parse(written)))).toBe(written);
     expect(illegalPolicy(rulesSchema.parse(JSON.parse(written)))).toBe("forfeit");
     expect(replyCap(rulesSchema.parse(JSON.parse(written)))).toBeNull();
@@ -178,10 +168,6 @@ describe("what repeated illegal moves do", () => {
       expect(() =>
         createMatch({ white: player, black: player, rules: { maxOutputTokens } }),
       ).toThrow();
-    // A cockpit-v1 archive always had its fixed cap.
-    expect(
-      replyCap(asCockpitV1(createMatch({ white: player, black: player, rules: {} })).config.rules),
-    ).toBe(512);
   });
   it("records the default by omission and keeps only retry", () => {
     const forfeit = createMatch({
@@ -195,11 +181,6 @@ describe("what repeated illegal moves do", () => {
     expect(() =>
       matchConfigSchema.parse({ white: player, black: player, rules: { illegalPolicy: "never" } }),
     ).toThrow();
-  });
-  it("is not part of cockpit-v1, which always forfeits", () => {
-    const v1 = v1Archive();
-    expect(illegalPolicy(v1.config.rules)).toBe("forfeit");
-    expect(() => rulesSchema.parse({ ...v1.config.rules, illegalPolicy: "retry" })).toThrow();
   });
   it("forfeits after maxAttempts by default and replays that archive", () => {
     const match = createMatch({ white: player, black: player, rules: { maxAttempts: 2 } });

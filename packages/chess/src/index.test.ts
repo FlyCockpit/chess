@@ -40,6 +40,8 @@ describe("authoritative chess and portable archives", () => {
         ...base,
         seq: match.events.length,
         type: "usage",
+        resolvedModel: null,
+        resolvedProvider: null,
         dispatch,
         inputTokens,
         cachedInputTokens,
@@ -212,6 +214,8 @@ describe("authoritative chess and portable archives", () => {
     push({ type: "reservation", dispatch: 0, tokens: 1000, costMicros: 50 });
     push({
       type: "usage",
+      resolvedModel: null,
+      resolvedProvider: null,
       dispatch: 0,
       inputTokens: 100,
       outputTokens: 20,
@@ -232,6 +236,8 @@ describe("authoritative chess and portable archives", () => {
     expect(validateArchive(match)).toEqual(match);
     push({
       type: "usage",
+      resolvedModel: null,
+      resolvedProvider: null,
       dispatch: 1,
       inputTokens: 10,
       outputTokens: 5,

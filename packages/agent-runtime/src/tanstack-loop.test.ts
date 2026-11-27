@@ -128,6 +128,63 @@ beforeEach(() => {
   });
 });
 
+describe("executeTanstackLoop pinned loop guard messages", () => {
+  it("uses pinned repeated-call text while preventing the original tool execution", async () => {
+    scriptedChunks = [{ type: "RUN_FINISHED", finishReason: "tool_calls" }];
+    toolCallDuringDispatch = { index: 0, input: {} };
+    const execute = vi.fn(() => "current board");
+    const repeated = vi.fn(() => "pinned repeated-call instruction");
+    const cycle = vi.fn(() => "pinned cycle instruction");
+    await executeTanstackLoop(
+      baseOptions({
+        maxIterations: 4,
+        loopGuardMessages: { repeated, cycle },
+        tools: [
+          {
+            name: "board",
+            description: "Read board",
+            inputSchema: z.object({}),
+            maxResultChars: 100,
+            execute,
+          },
+        ],
+      }),
+      new AbortController(),
+    );
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(repeated).toHaveBeenCalledExactlyOnceWith("board", []);
+    expect(cycle).not.toHaveBeenCalled();
+  });
+
+  it("forwards the pinned cycle text and preserves the default cycle threshold", async () => {
+    scriptedChunks = [{ type: "RUN_FINISHED", finishReason: "tool_calls" }];
+    toolCallDuringDispatch = { index: 0, input: {} };
+    onProcessStart = () => {
+      toolCallDuringDispatch = { index: (dispatchIndex + 1) % 2, input: {} };
+    };
+    const execute = vi.fn(() => "current position");
+    const repeated = vi.fn(() => "pinned repeated-call instruction");
+    const cycle = vi.fn(() => "pinned cycle instruction");
+    await executeTanstackLoop(
+      baseOptions({
+        maxIterations: 6,
+        loopGuardMessages: { repeated, cycle },
+        tools: ["board", "legal_moves"].map((name) => ({
+          name,
+          description: name,
+          inputSchema: z.object({}),
+          maxResultChars: 100,
+          execute,
+        })),
+      }),
+      new AbortController(),
+    );
+    expect(execute).toHaveBeenCalledTimes(5);
+    expect(cycle).toHaveBeenCalledExactlyOnceWith("legal_moves", ["board"], 2);
+    expect(repeated).not.toHaveBeenCalled();
+  });
+});
+
 describe("executeTanstackLoop cache wiring", () => {
   it("forwards the adapter's modelOptions to chat() and passes the cache flags through", async () => {
     await executeTanstackLoop(
@@ -137,6 +194,7 @@ describe("executeTanstackLoop cache wiring", () => {
     expect(createModelAdapter).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "openai-responses" }),
       { enabled: true, cacheKey: "run-1:person" },
+      expect.any(Function),
     );
     expect(chatCalls[0]?.modelOptions).toEqual({
       prompt_cache_key: "run-1:person",

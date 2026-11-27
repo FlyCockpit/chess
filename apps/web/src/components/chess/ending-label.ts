@@ -172,8 +172,6 @@ export function endingDetailLabel(t: ChessT, locale: string, ending: MatchEnding
           budget: usdLabel(locale, ending.budgetMicros),
         }),
       });
-    case "ply-limit":
-      return t("endingDetail.plies", { plies: ending.plies });
     case "cancelled":
     case "interrupted":
     case "provider-error":

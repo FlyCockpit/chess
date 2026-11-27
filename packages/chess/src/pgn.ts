@@ -6,7 +6,6 @@ import {
   type MatchArchive,
   type Player,
   type Rules,
-  remarkTone,
   sideClockMs,
 } from "./index";
 
@@ -59,7 +58,6 @@ export function pgnTermination(termination: MatchArchive["termination"]) {
       return "rules infraction";
     case "token-budget":
     case "cost-budget":
-    case "ply-limit":
       return "adjudication";
     case "cancelled":
       return "abandoned";
@@ -134,12 +132,15 @@ export function exportPgn(match: MatchArchive, options: PgnOptions = {}): string
     ["BlackType", playerType(config.black)],
     ["TimeControl", timeControlTag(match)],
     ["Termination", pgnTermination(match.termination)],
+    ["CockpitPromptVersion", config.prompt.version],
+    ["CockpitPromptHash", config.prompt.hash],
+    ["CockpitPromptApplied", String(config.prompt.promptApplied)],
   ];
   const start = new Chess(config.initialFen);
   if (start.fen() !== new Chess(DEFAULT_POSITION).fen())
     tags.push(["SetUp", "1"], ["FEN", start.fen()]);
   tags.push(...rulesTags(config.rules));
-  const tone = remarkTone(config.rules);
+  const tone = config.rules.remarks;
   const tokens: string[] = [];
   let pending: AttemptEvent[] = [];
   /** A Black move needs its number again after a comment (standard 8.2.2.2). */

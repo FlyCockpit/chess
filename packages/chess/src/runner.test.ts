@@ -43,7 +43,6 @@ import {
   trimConversation,
   turnPrompt,
 } from "./runner";
-import { asCockpitV1 } from "./testing";
 import { countSharedTokens, sharedOutputTokens } from "./tokenizer";
 
 const { runAgentLoop, evaluatePosition } = vi.hoisted(() => ({
@@ -80,14 +79,51 @@ beforeEach(() => {
 });
 describe("bounded local and worker match runner", () => {
   it("runs unattended baseline games and validates their archive", async () => {
-    const match = asCockpitV1(createMatch({ white: random, black: random, rules: {} }), {
-      maxPlies: 8,
+    const match = createMatch({
+      white: random,
+      black: random,
+      rules: {},
+      initialFen: "7k/8/8/8/8/8/8/R6K w - - 98 80",
     });
     await runMatch(match, { random: () => 0 });
-    expect(match).toMatchObject({ status: "completed", termination: "ply-limit" });
-    expect(matchStats(match).moves).toBe(8);
+    expect(match).toMatchObject({ status: "completed", termination: "draw" });
+    expect(matchStats(match).moves).toBe(2);
     expect(validateArchive(match)).toEqual(match);
   });
+  it.each([true, false])(
+    "records response identity independently of token usage (reported=%s)",
+    async (reported) => {
+      runAgentLoop.mockImplementation(async (options: AgentLoopOptions) => {
+        await options.onBeforeDispatch?.({
+          messages: options.messages,
+          iteration: 0,
+          lastDispatchAt: null,
+        });
+        await options.onReply?.(
+          reported ? { reportedModel: "vendor/actual", reportedProvider: "Serving Provider" } : {},
+        );
+        return {
+          messages: [...options.messages, reply('{"move":"e2e4"}')],
+          stopReason: "completed",
+        };
+      });
+      const match = createMatch({ white: model, black: random, rules: {} });
+      await advanceMatch(match, { credentials });
+      expect(match.events.find((event) => event.type === "reply")).toMatchObject({
+        dispatch: 0,
+        resolvedModel: reported ? "vendor/actual" : null,
+        resolvedProvider: reported ? "Serving Provider" : null,
+      });
+      expect(match.events.some((event) => event.type === "usage")).toBe(false);
+      expect(matchStats(match, "w").costMicros).toBeNull();
+      expect(validateArchive(match)).toEqual(match);
+      const forged = structuredClone(match);
+      const event = forged.events.find((event) => event.type === "reply");
+      if (event?.type !== "reply") throw new Error("Reply missing");
+      event.dispatch = 1;
+      expect(() => validateArchive(forged)).toThrow("Reply/usage without reservation");
+    },
+  );
   it("hides identities and history in fresh context, with complete position state", () => {
     const match = createMatch({ white: random, black: model, rules: { context: "fresh" } });
     const prompt = turnPrompt(match, "w");
@@ -128,6 +164,37 @@ describe("bounded local and worker match runner", () => {
       cache: true,
       cacheKey: `chess-${fresh.id}-w`,
     });
+  });
+  it("dispatches the pinned bundle on retry and rejects tampered provenance before dispatch", async () => {
+    const match = createMatch({ white: model, black: random, rules: {} });
+    const pin = structuredClone(match.config.prompt);
+    const respond = (move: string) => async (options: AgentLoopOptions) => ({
+      messages: [
+        ...options.messages,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant" as const,
+          parts: [{ type: "text" as const, content: JSON.stringify({ move }) }],
+        },
+      ],
+      stopReason: "completed" as const,
+    });
+    runAgentLoop.mockImplementationOnce(respond("e2e5")).mockImplementationOnce(respond("e2e4"));
+    await advanceMatch(match, { credentials });
+    expect(runAgentLoop).toHaveBeenCalledTimes(2);
+    for (const [call] of runAgentLoop.mock.calls) expect(call.systemPrompt).toBe(pin.system);
+    expect(match.config.prompt).toEqual(pin);
+    expect(match.config.prompt.version).toBe("1");
+    expect(matchStats(match).moves).toBe(1);
+    for (const field of ["hash", "system"] as const) {
+      runAgentLoop.mockClear();
+      const tampered = createMatch({ white: model, black: random, rules: {} });
+      tampered.config.prompt[field] = field === "hash" ? "0".repeat(64) : `${pin.system}\nForged`;
+      await expect(advanceMatch(tampered, { credentials })).rejects.toThrow(
+        "Unsupported prompt bundle/archive",
+      );
+      expect(runAgentLoop).not.toHaveBeenCalled();
+    }
   });
   it.each(
     MODEL_PROTOCOLS.flatMap((protocol) =>
@@ -810,10 +877,12 @@ describe("shared tokens, anonymous commentary and engine assistance", () => {
     expect(validateArchive(match)).toEqual(match);
   });
   it("records post-move evaluations even after the final accepted move", async () => {
-    const match = asCockpitV1(
-      createMatch({ white: random, black: random, rules: { engineEvaluation: "after-move" } }),
-      { maxPlies: 2 },
-    );
+    const match = createMatch({
+      white: random,
+      black: random,
+      rules: { engineEvaluation: "after-move" },
+      initialFen: "7k/8/8/8/8/8/8/R6K w - - 98 80",
+    });
     await runMatch(match, { random: () => 0 });
     expect(match.events.filter((event) => event.type === "evaluation")).toHaveLength(2);
     expect(match.status).toBe("completed");
@@ -962,23 +1031,6 @@ describe("inference clock independent of provider usage", () => {
       expect(validateArchive(JSON.parse(JSON.stringify(match)))).toEqual(match);
     }
   });
-  it("keeps cockpit-v1's single timeout termination for a resumed v1 match", async () => {
-    runAgentLoop.mockImplementation(async (options: AgentLoopOptions) => {
-      await vi.advanceTimersByTimeAsync(options.timeoutMs ?? 0);
-      return { messages: options.messages, stopReason: "timeout" };
-    });
-    const match = asCockpitV1(
-      createMatch({
-        white: model,
-        black: random,
-        rules: { turnTimeoutMs: 5000, legalMoves: "provided" },
-      }),
-    );
-    await runMatch(match, { credentials, random: () => 0 });
-    expect(match).toMatchObject({ termination: "timeout", result: "0-1" });
-    expect(runAgentLoop.mock.calls.map(([options]) => options.timeoutMs)).toEqual([5000]);
-    expect(validateArchive(JSON.parse(JSON.stringify(match)))).toEqual(match);
-  });
   it("gives each side its own clock in uneven time controls", () => {
     const match = createMatch({
       white: random,
@@ -1073,12 +1125,14 @@ describe("settlement, persistence, replay reuse and archive limits", () => {
         nodes: 1000,
       }))
       .mockRejectedValueOnce(new Error("engine down"));
-    const match = asCockpitV1(
-      createMatch({ white: random, black: random, rules: { engineEvaluation: "after-move" } }),
-      { maxPlies: 2 },
-    );
+    const match = createMatch({
+      white: random,
+      black: random,
+      rules: { engineEvaluation: "after-move" },
+      initialFen: "7k/8/8/8/8/8/8/R6K w - - 98 80",
+    });
     await runMatch(match, { random: () => 0 });
-    expect(match).toMatchObject({ status: "completed", termination: "ply-limit" });
+    expect(match).toMatchObject({ status: "completed", termination: "draw" });
     expect(validateArchive(match)).toEqual(match);
     evaluatePosition.mockRejectedValueOnce(new Error("engine down"));
     const running = createMatch({
@@ -1099,11 +1153,11 @@ describe("settlement, persistence, replay reuse and archive limits", () => {
       legalMoves: "provided" as const,
       tokenBudget: Math.floor(reserve.tokens * 1.5),
     };
-    const settled = asCockpitV1(createMatch({ white: model, black: random, rules }), {
-      maxPlies: 8,
-    });
-    await runMatch(settled, { credentials, random: () => 0 });
-    expect(settled).toMatchObject({ status: "completed", termination: "ply-limit" });
+    const settled = createMatch({ white: model, black: random, rules });
+    for (let ply = 0; ply < 8 && settled.status === "running"; ply += 1)
+      await advanceMatch(settled, { credentials, random: () => 0 });
+    finishMatch(settled, "*", "cancelled", "stopped");
+    expect(settled).toMatchObject({ status: "stopped", termination: "cancelled" });
     const stats = matchStats(settled, "w");
     expect(stats.reservedTokens).toBeGreaterThan(rules.tokenBudget);
     expect(stats.committedTokens).toBe(4 * 50);
@@ -1167,17 +1221,16 @@ describe("settlement, persistence, replay reuse and archive limits", () => {
         return seed / 2147483647;
       };
       runAgentLoop.mockImplementation(legalPlayer());
-      const match = asCockpitV1(
-        createMatch({
-          white: model,
-          black: { name: "Baseline", model: "random", protocol: "random" },
-          rules: { legalMoves: "provided", engineEvaluation: "after-move" },
-        }),
-        { maxPlies: 30 },
-      );
+      const match = createMatch({
+        white: model,
+        black: { name: "Baseline", model: "random", protocol: "random" },
+        rules: { legalMoves: "provided", engineEvaluation: "after-move" },
+      });
       const options = { credentials, random };
-      if (reuse) await runMatch(match, options);
-      else while (match.status === "running") await advanceMatch(match, options);
+      const board = reuse ? boardAt(match) : undefined;
+      for (let ply = 0; ply < 30 && match.status === "running"; ply += 1)
+        await advanceMatch(match, options, board);
+      if (match.status === "running") finishMatch(match, "*", "cancelled", "stopped");
       return match;
     };
     const reused = await play(true);
@@ -1321,6 +1374,8 @@ describe("settlement, persistence, replay reuse and archive limits", () => {
       {
         ...base,
         type: "usage",
+        resolvedModel: null,
+        resolvedProvider: null,
         dispatch: big,
         inputTokens: big,
         outputTokens: big,
@@ -1329,6 +1384,8 @@ describe("settlement, persistence, replay reuse and archive limits", () => {
       {
         ...base,
         type: "usage",
+        resolvedModel: null,
+        resolvedProvider: null,
         dispatch: big,
         inputTokens: big,
         outputTokens: big,

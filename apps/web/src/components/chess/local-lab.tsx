@@ -119,7 +119,11 @@ export function LocalLab() {
                         } else {
                           setError(
                             t(
-                              check.kind === "too-large" ? "lab.importTooLarge" : "lab.importError",
+                              check.kind === "too-large"
+                                ? "lab.importTooLarge"
+                                : check.kind === "unsupported"
+                                  ? "arena.oldRulesDescription"
+                                  : "lab.importError",
                             ),
                           );
                         }

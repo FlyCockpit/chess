@@ -14,9 +14,11 @@ model ChessMatch {
   official             Boolean   @default(false)
   source               String    @default("hosted")
   rulesKey             String
-  /// The archive's ruleset version (`config.rules.version`). Rows under a version this
-  /// build no longer reads list as "old rules" and are never parsed for replay.
+  /// Current archives use cockpit-v1. Unsupported versions have no replay.
   rulesVersion         String?
+  /// Code-shipped bundle pin; immutable once accepted. No inferred provenance for prelaunch rows.
+  promptVersion        String?
+  promptHash           String?
   contextMode          String
   identityMode         String
   runToken             String?
@@ -55,6 +57,7 @@ model ChessMatch {
 
   @@index([published, createdAt(sort: Desc), id(sort: Desc)])
   @@index([ownerId, createdAt(sort: Desc)])
+  @@index([promptVersion, createdAt(sort: Desc), id(sort: Desc)])
   @@index([status, heartbeatAt])
   @@index([status, createdAt])
   @@map("chess_match")

@@ -62,6 +62,21 @@ describe("checkArchiveFile", () => {
     expect((await checkArchiveFile(file("not json"))).kind).toBe("invalid");
     expect((await checkArchiveFile(file('{"id":"x"}'))).kind).toBe("invalid");
   });
+  it.each(["cockpit-v2", "cockpit-v3", "legacy-v1"])(
+    "identifies unsupported prerelease rules %s for a clear replay error",
+    async (version) => {
+      const game = finished();
+      const rules =
+        version === "legacy-v1"
+          ? { version: "cockpit-v1", trashTalk: false, maxPlies: 200, timeBudgetMs: 600000 }
+          : { ...game.config.rules, version };
+      expect(
+        await checkArchiveFile(
+          file(JSON.stringify({ ...game, config: { ...game.config, rules } })),
+        ),
+      ).toEqual({ kind: "unsupported" });
+    },
+  );
   it("names a still-running game so the dialog can say to stop it first", async () => {
     const running = createMatch({ white: player, black: player, rules: {} });
     expect(running.status).toBe("running");

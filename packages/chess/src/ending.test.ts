@@ -19,7 +19,6 @@ import {
   submitMove,
   validateArchive,
 } from "./index";
-import { asCockpitV1 } from "./testing";
 
 const player = { name: "Baseline", model: "random", protocol: "random" as const };
 const game = (rules: Record<string, unknown> = {}, initialFen?: string) =>
@@ -166,6 +165,8 @@ describe("how a match ended, in plain words", () => {
     spent.events.push({
       ...turn(),
       type: "usage",
+      resolvedModel: null,
+      resolvedProvider: null,
       dispatch: 0,
       inputTokens: 500,
       outputTokens: 100,
@@ -198,14 +199,6 @@ describe("how a match ended, in plain words", () => {
     expect(describeMatch(pending)).toMatchObject({
       ending: { spentMicros: 0, settled: false },
       text: "Black ran out of budget (spent at least $0.00 of $1.00; not enough left for another request)",
-    });
-  });
-  it("names no clock for a cockpit-v1 timeout, which also covered the per-move limit", () => {
-    const legacy = asCockpitV1(play(game(), "e2e4"));
-    finishMatch(legacy, "1-0", "timeout");
-    expect(describeMatch(legacy)).toEqual({
-      ending: { kind: "timeout", loser: "b", clockMs: null },
-      text: "Black ran out of time",
     });
   });
   it("explains a missing promotion piece instead of calling the move impossible", () => {
@@ -251,10 +244,7 @@ describe("how a match ended, in plain words", () => {
     expect(endingSummary(ending)).toEqual({ kind: "provider-error" });
     expect(text).toBe("A model provider failed (unscored)");
   });
-  it("covers the cockpit-v1 ply limit and every unscored ending", () => {
-    const legacy = asCockpitV1(game(), { maxPlies: 2 });
-    play(legacy, "e2e4", "e7e5");
-    expect(describeMatch(legacy).text).toBe("Draw: move limit reached (2 plies)");
+  it("covers every unscored ending", () => {
     const unscored: Array<[MatchArchive["termination"], MatchArchive["status"], string]> = [
       ["cancelled", "stopped", "Stopped by the operator (unscored)"],
       ["interrupted", "error", "Interrupted by the server (unscored)"],

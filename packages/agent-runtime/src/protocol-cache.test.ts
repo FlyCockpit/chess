@@ -13,8 +13,18 @@ const sse = (events: Record<string, unknown>[]) =>
     { headers: { "content-type": "text/event-stream" } },
   );
 
-const chatResponse = (usage?: Record<string, unknown>) => {
-  const shared = { id: "chat-1", object: "chat.completion.chunk", created: 0, model: "gpt-4o" };
+const chatResponse = (
+  usage?: Record<string, unknown>,
+  model: string | null = "gpt-4o",
+  provider?: string,
+) => {
+  const shared = {
+    id: "chat-1",
+    object: "chat.completion.chunk",
+    created: 0,
+    ...(model === null ? {} : { model }),
+    ...(provider === undefined ? {} : { provider }),
+  };
   return sse([
     {
       ...shared,
@@ -25,7 +35,11 @@ const chatResponse = (usage?: Record<string, unknown>) => {
   ]);
 };
 
-const responsesResponse = (usage?: Record<string, unknown>) => {
+const responsesResponse = (
+  usage?: Record<string, unknown>,
+  model: string | null = "gpt-4o",
+  provider?: string,
+) => {
   const item = {
     type: "message",
     id: "msg-1",
@@ -36,7 +50,8 @@ const responsesResponse = (usage?: Record<string, unknown>) => {
   const response = {
     id: "resp-1",
     object: "response",
-    model: "gpt-4o",
+    ...(model === null ? {} : { model }),
+    ...(provider === undefined ? {} : { provider }),
     status: "completed",
     output: [item],
     ...(usage ? { usage } : {}),
@@ -56,7 +71,12 @@ const responsesResponse = (usage?: Record<string, unknown>) => {
   ]);
 };
 
-const anthropicResponse = (cacheUsage: Record<string, unknown> = {}) =>
+const anthropicResponse = (
+  cacheUsage: Record<string, unknown> = {},
+  model: string | null = "claude-haiku-4-5",
+  provider?: string,
+  withUsage = true,
+) =>
   sse([
     {
       type: "message_start",
@@ -64,11 +84,12 @@ const anthropicResponse = (cacheUsage: Record<string, unknown> = {}) =>
         id: "msg-1",
         type: "message",
         role: "assistant",
-        model: "claude-haiku-4-5",
+        ...(model === null ? {} : { model }),
+        ...(provider === undefined ? {} : { provider }),
         content: [],
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: 5, output_tokens: 0, ...cacheUsage },
+        ...(withUsage ? { usage: { input_tokens: 5, output_tokens: 0, ...cacheUsage } } : {}),
       },
     },
     { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
@@ -77,7 +98,7 @@ const anthropicResponse = (cacheUsage: Record<string, unknown> = {}) =>
     {
       type: "message_delta",
       delta: { stop_reason: "end_turn", stop_sequence: null },
-      usage: { output_tokens: 7 },
+      ...(withUsage ? { usage: { output_tokens: 7 } } : {}),
     },
     { type: "message_stop" },
   ]);
@@ -165,6 +186,35 @@ const cacheMarkers = (value: unknown): number => {
 };
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("reply identity lifecycle", () => {
+  it("does not announce a failed dispatch as a reply", async () => {
+    captureHttp(
+      () =>
+        new Response('{"error":{"message":"Fixture rejection"}}', {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const onReply = vi.fn();
+    await expect(runAgentLoop({ ...options("openai-chat"), onReply })).rejects.toThrow();
+    expect(onReply).not.toHaveBeenCalled();
+  });
+
+  it("does not announce identity from an aborted dispatch", async () => {
+    captureHttp(() => chatResponse(chatUsage, "reported-before-abort"));
+    const controller = new AbortController();
+    const onReply = vi.fn();
+    const result = await runAgentLoop({
+      ...options("openai-chat"),
+      abortSignal: controller.signal,
+      onReply,
+      onChunk: () => controller.abort(),
+    });
+    expect(result.stopReason).toBe("aborted");
+    expect(onReply).not.toHaveBeenCalled();
+  });
+});
 
 describe.each<AgentModel["provider"]>(["anthropic", "openai-chat", "openai-responses"])(
   "%s native cache routing on the wire",
@@ -309,7 +359,10 @@ describe.each<AgentModel["provider"]>([
       model: base.model.model,
     };
     expect(result.stopReason).toBe("completed");
-    expect(onUsage).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith({
+      ...expected,
+      reportedModel: protocol === "anthropic" ? "claude-haiku-4-5" : "gpt-4o",
+    });
     // Anthropic input_tokens=5 is uncached: 5 + 80 read + 15 write = 100.
     // OpenAI/OpenRouter prompt/input tokens already include those cache parts.
     expect(result.usage).toEqual(expected);
@@ -342,7 +395,88 @@ describe.each<AgentModel["provider"]>([
       outputTokens: 7,
       model: base.model.model,
     };
-    expect(onUsage).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith({
+      ...expected,
+      reportedModel: protocol === "anthropic" ? "claude-haiku-4-5" : "gpt-4o",
+    });
     expect(result.usage).toEqual(expected);
   });
+
+  it("records response-reported model and provider rather than configured identities", async () => {
+    const model = "vendor/resolved-model";
+    captureHttp(() =>
+      protocol === "anthropic"
+        ? anthropicResponse({}, model, "Serving Provider")
+        : protocol === "openai-responses"
+          ? responsesResponse(chatUsage, model, "Serving Provider")
+          : chatResponse(chatUsage, model, "Serving Provider"),
+    );
+    const onUsage = vi.fn();
+    const result = await runAgentLoop({ ...options(protocol), onUsage });
+    expect(result.stopReason).toBe("completed");
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ reportedModel: model, reportedProvider: "Serving Provider" }),
+    );
+    // Aggregate usage has no single response identity across multiple dispatches.
+    expect(result.usage).not.toHaveProperty("reportedModel");
+  });
+
+  it("awaits response identity even when the provider reports no token counts", async () => {
+    const model = "vendor/no-usage-model";
+    captureHttp(() =>
+      protocol === "anthropic"
+        ? anthropicResponse({}, model, "Serving Provider", false)
+        : protocol === "openai-responses"
+          ? responsesResponse(undefined, model, "Serving Provider")
+          : chatResponse(undefined, model, "Serving Provider"),
+    );
+    let recorded = false;
+    const onReply = vi.fn(async () => {
+      await Promise.resolve();
+      recorded = true;
+    });
+    const onUsage = vi.fn();
+    const result = await runAgentLoop({ ...options(protocol), onReply, onUsage });
+    expect(result.stopReason).toBe("completed");
+    expect(result.usage.usageIncomplete).toBe(true);
+    expect(onUsage).not.toHaveBeenCalled();
+    expect(onReply).toHaveBeenCalledExactlyOnceWith({
+      reportedModel: model,
+      reportedProvider: "Serving Provider",
+    });
+    expect(recorded).toBe(true);
+  });
+
+  it("reports an unknown reply identity when no response identity is supplied", async () => {
+    captureHttp(() =>
+      protocol === "anthropic"
+        ? anthropicResponse({}, null, undefined, false)
+        : protocol === "openai-responses"
+          ? responsesResponse(undefined, null)
+          : chatResponse(undefined, null),
+    );
+    const onReply = vi.fn();
+    const result = await runAgentLoop({ ...options(protocol), onReply });
+    expect(result.stopReason).toBe("completed");
+    expect(onReply).toHaveBeenCalledExactlyOnceWith({});
+  });
+
+  it.each([null, "", "x".repeat(161), "unsafe\nmodel"])(
+    "does not invent reported identity for missing or invalid model %j",
+    async (model) => {
+      captureHttp(() =>
+        protocol === "anthropic"
+          ? anthropicResponse({}, model)
+          : protocol === "openai-responses"
+            ? responsesResponse(chatUsage, model)
+            : chatResponse(chatUsage, model),
+      );
+      const onUsage = vi.fn();
+      const result = await runAgentLoop({ ...options(protocol), onUsage });
+      expect(result.stopReason).toBe("completed");
+      expect(onUsage).toHaveBeenCalledOnce();
+      expect(onUsage.mock.calls[0]?.[0]).not.toHaveProperty("reportedModel");
+      expect(onUsage.mock.calls[0]?.[0]).not.toHaveProperty("reportedProvider");
+    },
+  );
 });

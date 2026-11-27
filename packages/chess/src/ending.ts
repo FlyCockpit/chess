@@ -6,7 +6,6 @@ import {
   type Chess,
   type MatchArchive,
   matchStats,
-  plyLimit,
   type Rules,
   type Side,
   sideClockMs,
@@ -72,7 +71,6 @@ export type MatchEnding =
       settled: boolean;
     }
   | { kind: "resignation"; loser: Side }
-  | { kind: "ply-limit"; plies: number }
   | { kind: "cancelled" }
   | { kind: "interrupted" }
   /**
@@ -173,12 +171,10 @@ export function matchEnding(match: MatchArchive): MatchEnding {
       return { kind: "illegal-forfeit", loser: toMove, attempts };
     }
     case "timeout":
-      // cockpit-v1 recorded "timeout" for its per-move limit too, so which limit ran
-      // out is unknown there: no clock is named.
       return {
         kind: "timeout",
         loser: toMove,
-        clockMs: rules.version === "cockpit-v1" ? null : sideClockMs(rules, toMove),
+        clockMs: sideClockMs(rules, toMove),
       };
     case "move-timeout":
       return { kind: "move-timeout", loser: toMove, limitMs: rules.turnTimeoutMs };
@@ -198,8 +194,6 @@ export function matchEnding(match: MatchArchive): MatchEnding {
       };
     case "resignation":
       return { kind: "resignation", loser: toMove };
-    case "ply-limit":
-      return { kind: "ply-limit", plies: plyLimit(rules) ?? 0 };
     case "provider-error":
     case "cancelled":
     case "interrupted":
@@ -352,8 +346,6 @@ export function endingHeadline(summary: EndingSummary): string {
       return side ? `${side} ran out of budget` : "Out of budget";
     case "resignation":
       return side ? `${side} resigned` : "Resignation";
-    case "ply-limit":
-      return "Draw: move limit reached";
     case "cancelled":
       return "Stopped by the operator";
     case "interrupted":
@@ -404,8 +396,6 @@ export function endingDetail(ending: MatchEnding): string | null {
     }
     case "cost-budget":
       return `spent ${ending.settled ? "" : "at least "}${formatUsd(ending.spentMicros)} of ${formatUsd(ending.budgetMicros)}; ${NO_ROOM_TEXT}`;
-    case "ply-limit":
-      return `${ending.plies} plies`;
     case "cancelled":
     case "interrupted":
     case "provider-error":

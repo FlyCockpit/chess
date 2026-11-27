@@ -1,5 +1,7 @@
 import type { z } from "zod";
 
+import type { LoopGuardMessages } from "./loop-guard";
+
 export type AgentMessagePart =
   | { type: "text"; content: string; metadata?: unknown }
   | {
@@ -37,8 +39,15 @@ export interface AgentUsage {
   cachedInputTokens?: number;
   /** Input tokens written to a new cache entry, when the provider reports it separately. */
   cacheCreationInputTokens?: number;
-  /** Model id that actually served this successful dispatch (may be a fallback). */
+  /** Configured model targeted by this successful dispatch (may be a fallback). */
   model?: string;
+  /**
+   * Response-reported model identity. Per-dispatch `onUsage` only; absent means
+   * unknown, even when `model` names the configured request or fallback.
+   */
+  reportedModel?: string;
+  /** Response-reported serving provider, when exposed; never the wire adapter name. */
+  reportedProvider?: string;
   /**
    * Set when at least one dispatch ended without the provider reporting token counts
    * (or was cut off by an abort/deadline before it could). The counts above are then a
@@ -201,6 +210,8 @@ export interface AgentLoopOptions {
    * tool. Default 2 (the third back-to-back identical call is blocked).
    */
   loopGuardThreshold?: number;
+  /** Pinned error-message builders; guard detection and execution limits stay unchanged. */
+  loopGuardMessages?: LoopGuardMessages;
   /**
    * Invoked before each harness iteration, including the first. Transport
    * retries within an iteration do not re-enter this hook: budget reservations
@@ -261,6 +272,14 @@ export interface AgentLoopOptions {
   }) => void | Promise<void>;
   onChunk?: (chunk: unknown) => void | Promise<void>;
   onUsage?: (usage: AgentUsage) => void | Promise<void>;
+  /**
+   * Awaited after each successfully received dispatch, including replies without
+   * token usage. Only response-reported identities are supplied; absent is unknown.
+   * Failed or aborted dispatches do not invoke it.
+   */
+  onReply?: (
+    identity: Pick<AgentUsage, "reportedModel" | "reportedProvider">,
+  ) => void | Promise<void>;
 }
 
 /**

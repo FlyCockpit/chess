@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   MAX_ARCHIVE_BYTES,
   type MatchArchive,
+  parseArchive,
   serializeArchive,
   validateArchive,
 } from "@cockpit-chess/chess";
@@ -13,7 +14,13 @@ export async function readGame(file: string) {
   if ((await stat(file)).size > MAX_ARCHIVE_BYTES) throw new Error(t("cli.message33"));
   const raw = await readFile(file, "utf8");
   if (Buffer.byteLength(raw) > MAX_ARCHIVE_BYTES) throw new Error(t("cli.message33"));
-  return validateArchive(JSON.parse(raw));
+  try {
+    return validateArchive(JSON.parse(raw));
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Unsupported "))
+      throw new Error(t("arena.oldRulesDescription"));
+    throw error;
+  }
 }
 async function writeAtomically(target: string, content: string) {
   await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
@@ -36,6 +43,7 @@ async function writeAtomically(target: string, content: string) {
 }
 export async function writeGame(file: string, match: MatchArchive) {
   const target = path.resolve(file);
+  parseArchive(match);
   const content = serializeArchive(match);
   const previous = writers.get(target) ?? Promise.resolve();
   const write = previous.catch(() => {}).then(() => writeAtomically(target, content));

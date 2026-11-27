@@ -5,6 +5,7 @@ import { createOpenaiChat, createOpenaiChatCompletions } from "@tanstack/ai-open
 import { createOpenRouterText } from "@tanstack/ai-openrouter";
 
 import { createAnthropicCacheHttpClient, injectGeminiCacheBreakpoint } from "./openrouter-cache";
+import { type ResponseIdentity, responseIdentityFetch } from "./response-identity";
 import type { AgentModel } from "./types";
 
 type OpenAIModel = Parameters<typeof createOpenaiChat>[0];
@@ -118,6 +119,7 @@ const guardedFetch =
 export const createModelAdapter = (
   model: AgentModel,
   cache?: AdapterCacheOptions,
+  onResponseIdentity?: (value: ResponseIdentity) => void,
 ): ModelAdapter => {
   if (model.provider === "openrouter") {
     // Prompt caching for Anthropic-via-OpenRouter needs `cache_control: { type: "ephemeral" }`
@@ -136,10 +138,13 @@ export const createModelAdapter = (
     const cachesAnthropic = cachingEnabled && isAnthropicModel(model.model);
     const cachesGemini = cachingEnabled && isGeminiModel(model.model);
     const caches = cachesAnthropic || cachesGemini;
-    if (caches || model.headers || model.beforeDispatch) {
+    if (caches || model.headers || model.beforeDispatch || onResponseIdentity) {
+      const fetcher = onResponseIdentity
+        ? responseIdentityFetch(model.provider, onResponseIdentity)
+        : undefined;
       const httpClient = caches
-        ? createAnthropicCacheHttpClient(HTTPClient, cachesGemini ? "gemini" : "anthropic")
-        : new HTTPClient();
+        ? createAnthropicCacheHttpClient(HTTPClient, cachesGemini ? "gemini" : "anthropic", fetcher)
+        : new HTTPClient(fetcher ? { fetcher } : undefined);
       const guard = model.beforeDispatch;
       if (guard)
         httpClient.addHook("beforeRequest", (request: Request) => {
@@ -177,10 +182,13 @@ export const createModelAdapter = (
       // Anthropic SDK appends /v1/messages; accept a shared /v1 API prefix.
       ...(model.baseUrl ? { baseURL: model.baseUrl.replace(/\/v1\/?$/, "") } : {}),
       ...(() => {
-        const base =
+        const gatewayBase =
           model.baseUrl && new URL(model.baseUrl).hostname === "openrouter.ai"
             ? anthropicGatewayFetch
             : undefined;
+        const base = onResponseIdentity
+          ? responseIdentityFetch(model.provider, onResponseIdentity, gatewayBase)
+          : gatewayBase;
         if (model.beforeDispatch) return { fetch: guardedFetch(model.beforeDispatch, base) };
         return base ? { fetch: base } : {};
       })(),
@@ -200,13 +208,16 @@ export const createModelAdapter = (
     new URL(model.baseUrl).hostname === "openrouter.ai"
       ? geminiGatewayFetch
       : undefined;
+  const baseFetch = onResponseIdentity
+    ? responseIdentityFetch(model.provider, onResponseIdentity, gatewayFetch)
+    : gatewayFetch;
   // `maxRetries: 0` — one retry layer: the runtime's retry/failover adapter owns retries.
   const adapter = factory(model.model as OpenAIModel, model.apiKey, {
     maxRetries: 0,
     ...(model.beforeDispatch
-      ? { fetch: guardedFetch(model.beforeDispatch, gatewayFetch) }
-      : gatewayFetch
-        ? { fetch: gatewayFetch }
+      ? { fetch: guardedFetch(model.beforeDispatch, baseFetch) }
+      : baseFetch
+        ? { fetch: baseFetch }
         : {}),
     ...(model.baseUrl ? { baseURL: model.baseUrl } : {}),
     ...(headers ? { defaultHeaders: headers } : {}),

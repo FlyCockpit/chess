@@ -149,6 +149,8 @@ describe("overlay lifetime", () => {
         ...base,
         seq: 2,
         type: "usage",
+        resolvedModel: null,
+        resolvedProvider: null,
         dispatch: 0,
         inputTokens: 1,
         outputTokens: 1,

@@ -311,9 +311,12 @@ Rules include fresh/persistent memory, hidden/disclosed identities, FEN/ASCII/pi
 representations, hidden/tool/provided legal moves, a remark tone in either
 identity mode, attempt limits, a time control, tokens and costs.
 
-Rules are versioned (`rules.version`). New matches use `cockpit-v3`; archives
-recorded under `cockpit-v1` (a move cap, one shared time allowance and an on/off
-remark switch) still replay, validate and display as they were played.
+Rules use the launch ruleset `cockpit-v1` (`rules.version`), with one current
+archive shape. Unsupported prerelease rulesets and archives are rejected with a
+clear error rather than upgraded.
+
+Prompt IDs, whole-bundle hashes, strict archive provenance and PGN metadata are
+documented in [Chess prompt provenance](docs/chess-prompts.md).
 
 - **No move cap.** A game ends on checkmate, on the rules engine's own draws
   (stalemate, threefold repetition, the fifty-move rule, insufficient material),

@@ -45,10 +45,9 @@ data-collection default or pin a provider outside the operator's routing policy.
 
 Usage events preserve optional `cachedInputTokens` and
 `cacheCreationInputTokens`. The common archive validator, CLI, worker, API and
-web readers all use this schema. Old archives remain readable, with absent cache
-usage kept unknown. Upgrade these readers together before emitting new usage
-fields; an older strict reader will reject them. The first build containing
-these fields is the minimum reader for archives that contain cache counts.
+web readers all use the current strict archive schema. Missing cache counts stay
+unknown. Unsupported prerelease archives are refused, as described in
+[chess prompt provenance](./chess-prompts.md).
 
 `matchStats` sums reported reads and writes; read share is the sum of reported
 reads divided by the sum of reported input, rather than an average of turn
@@ -67,15 +66,16 @@ use the quoted input/output rates, so archive cost is not the provider's actual
 cache-discount bill. Live measurements use the provider's response `usage.cost`
 for billed cost; they never subtract guessed discounts from budget enforcement.
 
-## Regression contract for B1
+## Immutable bundle regression contract
 
-Version the complete fixed system text, static turn/tool instructions and tool
-schemas together. Pin a version for the whole match, including retry and resume.
+The code-shipped [prompt bundle](./chess-prompts.md) pins the complete fixed system
+text, static turn/tool instructions and tool schemas together for the whole match,
+including retry and resume.
 Do not interpolate timestamps, remaining budgets, clocks, move numbers, current
-positions, remarks or random IDs into the cached system prefix. The initial B1
-version must preserve the post-cp-cache prefix rather than restoring the former
-short paragraph. Keep the runner's consecutive-turn prefix tests for every
-protocol and both context modes, and the real-adapter HTTP usage fixtures.
+positions, remarks or random IDs into the cached system prefix. The launch bundle preserves the post-cache
+protocol reference and optional-remark text. The runner's consecutive-turn prefix
+tests cover every protocol and both context modes; real-adapter HTTP fixtures
+cover usage and response-reported identities without changing the stream bytes.
 
 The fixed protocol reference plus rules clears the 1,024-token threshold in the
 tests; it is useful game instruction, not repeated padding. Minimums depend on

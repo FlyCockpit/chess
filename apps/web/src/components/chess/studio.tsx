@@ -419,7 +419,9 @@ function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
           ? "lab.importTooLarge"
           : state.problem === "running"
             ? "studio.importRunning"
-            : "lab.importError",
+            : state.problem === "unsupported"
+              ? "arena.oldRulesDescription"
+              : "lab.importError",
       )
     : "";
   const chosen = state.chosen;

@@ -71,7 +71,10 @@ describe("PGN export", () => {
     });
     expect(headers).toMatchObject(Object.fromEntries(rulesTags(match.config.rules)));
     expect(headers).toMatchObject({
-      CockpitVersion: "cockpit-v3",
+      CockpitVersion: "cockpit-v1",
+      CockpitPromptVersion: match.config.prompt.version,
+      CockpitPromptHash: match.config.prompt.hash,
+      CockpitPromptApplied: "true",
       CockpitRemarks: "trash-talk",
       CockpitClock: "w:600000,b:600000",
       CockpitMaxAttempts: "3",
@@ -102,6 +105,16 @@ describe("PGN export", () => {
     );
     expect(pgn.trimEnd().endsWith("0-1")).toBe(true);
     for (const line of pgn.split("\n")) expect(line.startsWith("%")).toBe(false);
+  });
+  it("records the configured bundle as unapplied when neither player is a model", () => {
+    const random = { name: "Baseline", model: "random", protocol: "random" as const };
+    const match = createMatch({ white: random, black: random, rules: {} });
+    expect(parse(exportPgn(match)).headers).toMatchObject({
+      CockpitVersion: "cockpit-v1",
+      CockpitPromptVersion: match.config.prompt.version,
+      CockpitPromptHash: match.config.prompt.hash,
+      CockpitPromptApplied: "false",
+    });
   });
   it("defaults Site, marks humans and untimed or uneven clocks, records a custom start", () => {
     const fen = "4k3/8/8/8/8/8/4P3/4K3 b - - 0 12";
@@ -232,7 +245,6 @@ describe("PGN export", () => {
       "move-timeout",
       "token-budget",
       "cost-budget",
-      "ply-limit",
       "cancelled",
       "interrupted",
       "provider-error",

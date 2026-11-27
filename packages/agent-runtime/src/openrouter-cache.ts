@@ -127,8 +127,9 @@ export const createAnthropicCacheBeforeRequestHook =
 export const createAnthropicCacheHttpClient = (
   HttpClientCtor: typeof HTTPClient,
   mode: "anthropic" | "gemini" = "anthropic",
+  fetcher?: typeof fetch,
 ): HTTPClient => {
-  const httpClient = new HttpClientCtor();
+  const httpClient = new HttpClientCtor(fetcher ? { fetcher } : undefined);
   httpClient.addHook("beforeRequest", createAnthropicCacheBeforeRequestHook(mode));
   return httpClient;
 };

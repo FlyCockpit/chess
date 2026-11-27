@@ -8,7 +8,6 @@ import {
   MODEL_PROTOCOLS,
   matchStats,
   type Player,
-  remarkTone,
 } from "@cockpit-chess/chess";
 import { endingSummary, type MatchEnding, matchEnding } from "@cockpit-chess/chess/ending";
 import { exportPgn } from "@cockpit-chess/chess/pgn";
@@ -379,7 +378,7 @@ export function MatchReplay({
   const [flipped, setFlipped] = useState(false);
   // With remarks on, the chat log is what most viewers come for; the move list is one tab away.
   const [tab, setTab] = useState<"moves" | "chat">(
-    remarkTone(match.config.rules) === "off" ? "moves" : "chat",
+    match.config.rules.remarks === "off" ? "moves" : "chat",
   );
   const lastIndex = match.events.length - 1;
   const index = cursor === null ? lastIndex : Math.min(cursor, lastIndex);
@@ -437,6 +436,11 @@ export function MatchReplay({
           white: match.config.white.protocol,
           black: match.config.black.protocol,
           ...match.config.rules,
+          prompt: {
+            version: match.config.prompt.version,
+            hash: match.config.prompt.hash,
+            promptApplied: match.config.prompt.promptApplied,
+          },
         },
         null,
         2,
@@ -477,7 +481,7 @@ export function MatchReplay({
   const evalPoint = pointForPosition(series, boardIndex, boardFrame.fen);
   const graphPoint = graphCursor(graph, evalPoint, boardIndex);
   const showEval = series.length > 0;
-  const tone = remarkTone(match.config.rules);
+  const tone = match.config.rules.remarks;
   const commentary = tone !== "off";
   const movesHidden = commentary && tab !== "moves";
   const describeEnding = useCallback(
@@ -502,7 +506,7 @@ export function MatchReplay({
   const finished = match.termination !== "playing" && index === lastIndex;
   const summary = endingSummary(structuredEnding);
   const outcome =
-    structuredEnding.kind === "draw" || structuredEnding.kind === "ply-limit"
+    structuredEnding.kind === "draw"
       ? "draw"
       : match.result === "1-0"
         ? "w"

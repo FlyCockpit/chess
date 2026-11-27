@@ -64,11 +64,9 @@ INSERT INTO "chess_match" ("id", "slug", "ownerId", "title", "whiteName", "black
   ('fx_ending_error', 'fixture-ending-error', 'fx_user_admin', 'Errored', 'White', 'Black', 'error', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"status":"running","termination":"playing","result":"*"}', NULL, '{"kind":"interrupted"}'),
   ('fx_ending_forfeit', 'fixture-ending-forfeit', 'fx_user_admin', 'Simple Test', 'White', 'Black', 'completed', true, true, 'hosted', 'standard', 'fresh', 'hidden', '{"status":"completed","termination":"illegal-forfeit","result":"0-1","config":{"rules":{"maxAttempts":3}}}', '0-1', '{"kind":"illegal-forfeit","side":"w","illegal":3}');
 
--- Stored ruleset versions survive later migrations; unknown versions stay NULL.
+-- The launch ruleset uses cockpit-v1; these migration fixtures exercise stored metadata only.
 INSERT INTO "chess_match" ("id", "slug", "ownerId", "title", "whiteName", "blackName", "status", "published", "official", "source", "rulesKey", "contextMode", "identityMode", "archive", "result", "rulesVersion") VALUES
-  ('fx_rules_v1', 'fixture-rules-v1', 'fx_user_admin', 'Rules v1', 'White', 'Black', 'draft', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"config":{"rules":{"version":"cockpit-v1"}}}', NULL, 'cockpit-v1'),
-  ('fx_rules_v2', 'fixture-rules-v2', 'fx_user_admin', 'Rules v2', 'White', 'Black', 'draft', true, false, 'hosted', 'standard', 'fresh', 'hidden', '{"config":{"rules":{"version":"cockpit-v2"}}}', NULL, 'cockpit-v2'),
-  ('fx_rules_v3', 'fixture-rules-v3', 'fx_user_admin', 'Rules v3', 'White', 'Black', 'draft', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"config":{"rules":{"version":"cockpit-v3"}}}', NULL, 'cockpit-v3');
+  ('fx_rules_v1', 'fixture-rules-v1', 'fx_user_admin', 'Rules v1', 'White', 'Black', 'draft', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"config":{"rules":{"version":"cockpit-v1"}}}', NULL, 'cockpit-v1');
 
 -- Exact expiry boundary: equal timestamps survive predicates using strict <.
 INSERT INTO "verification" ("id", "createdAt", "updatedAt", "identifier", "value", "expiresAt") VALUES

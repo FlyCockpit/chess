@@ -1,5 +1,6 @@
 import {
   boardAt,
+  createMatch,
   finishMatch,
   legalMoves,
   type MatchArchive,
@@ -53,6 +54,35 @@ const scored = (match: MatchArchive, cp: number): SpectatorEvaluations =>
   );
 
 describe("MatchReplay", () => {
+  it("labels reply provenance events in both supported locales", async () => {
+    const player = { name: "Model", model: "vendor/test", protocol: "openai-chat" as const };
+    const match = createMatch({ white: player, black: player, rules: {} });
+    const base = { at: match.createdAt, side: "w" as const, ply: 0, dispatch: 0 };
+    match.events.push(
+      { ...base, seq: 0, type: "reservation", tokens: 100, costMicros: 1 },
+      { ...base, seq: 1, type: "reply", resolvedModel: null, resolvedProvider: null },
+    );
+    for (const [language, label] of [
+      ["en-US", "Model reply recorded"],
+      ["es-MX", "Respuesta del modelo registrada"],
+    ]) {
+      await i18n.changeLanguage(language);
+      const html = render(match);
+      expect(html).toContain(label);
+      expect(html).not.toContain("events.reply");
+    }
+    await i18n.changeLanguage("en-US");
+  });
+  it("includes pinned prompt provenance in the copyable experiment settings", () => {
+    const match = fixtureGame();
+    const html = render(match);
+    expect(html).toContain("Exact experiment settings");
+    expect(html).toContain("&quot;prompt&quot;");
+    expect(html).toContain(`&quot;version&quot;: &quot;${match.config.prompt.version}&quot;`);
+    expect(html).toContain(match.config.prompt.hash);
+    expect(html).toContain(`&quot;promptApplied&quot;: ${match.config.prompt.promptApplied}`);
+    expect(html).toContain('aria-label="Copy experiment settings"');
+  });
   it("shows reported cache reads and their input share beside match cost", async () => {
     await i18n.changeLanguage("en-US");
     const match = fixtureGame();
@@ -61,6 +91,8 @@ describe("MatchReplay", () => {
       ...base,
       seq: match.events.length,
       type: "usage",
+      resolvedModel: null,
+      resolvedProvider: null,
       dispatch: 0,
       inputTokens: 4000,
       outputTokens: 20,
@@ -205,6 +237,8 @@ describe("MatchReplay", () => {
       ...base(),
       ply,
       type: "usage",
+      resolvedModel: null,
+      resolvedProvider: null,
       dispatch: 0,
       inputTokens: 1000,
       outputTokens: 200,
@@ -366,6 +400,8 @@ describe("MatchReplay", () => {
         {
           ...base,
           type: "usage",
+          resolvedModel: null,
+          resolvedProvider: null,
           seq: match.events.length + 1,
           dispatch: 0,
           inputTokens: 1,

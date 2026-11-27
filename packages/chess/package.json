@@ -11,7 +11,7 @@
     "./ending": "./src/ending.ts",
     "./pgn": "./src/pgn.ts",
     "./spectator": "./src/spectator.ts",
-    "./testing": "./src/testing.ts",
+    "./prompts": "./src/prompts.ts",
     "./local-contract": "./src/local-contract.ts"
   },
   "scripts": {

@@ -24,6 +24,19 @@ describe("canonicalizeArgs / callIdentity", () => {
 });
 
 describe("LoopGuard", () => {
+  it("uses and caches a supplied repeated-call template without changing detection", () => {
+    const repeated = vi.fn((tool: string, others: string[]) => `${tool}|${others.join(",")}`);
+    const cycle = vi.fn(() => "unused cycle");
+    const guard = new LoopGuard(2, { repeated, cycle });
+    const names = ["board", "legal_moves"];
+    expect(guard.check("board", {}, names)).toBeNull();
+    expect(guard.check("board", {}, names)).toBeNull();
+    expect(guard.check("board", {}, names)).toBe("board|legal_moves");
+    expect(guard.check("board", {}, names)).toBe("board|legal_moves");
+    expect(repeated).toHaveBeenCalledExactlyOnceWith("board", ["legal_moves"]);
+    expect(cycle).not.toHaveBeenCalled();
+  });
+
   it("allows threshold executions then blocks with a synthesized message", () => {
     const guard = new LoopGuard(2);
     const names = ["fetch_page", "web_search", "write_row"];
@@ -96,6 +109,19 @@ describe("LoopGuard", () => {
 
 describe("LoopGuard — repeating cycles", () => {
   const names = ["web_search", "fetch_page", "write_row"];
+
+  it("uses a supplied cycle template with the unchanged cycle period and other tools", () => {
+    const repeated = vi.fn(() => "unused repetition");
+    const cycle = vi.fn(
+      (tool: string, others: string[], period: number) => `${tool}|${others.join(",")}|${period}`,
+    );
+    const guard = new LoopGuard(2, { repeated, cycle });
+    const calls = ["web_search", "fetch_page", "web_search", "fetch_page", "web_search"];
+    for (const tool of calls) expect(guard.check(tool, {}, names)).toBeNull();
+    expect(guard.check("fetch_page", {}, names)).toBe("fetch_page|web_search,write_row|2");
+    expect(cycle).toHaveBeenCalledExactlyOnceWith("fetch_page", ["web_search", "write_row"], 2);
+    expect(repeated).not.toHaveBeenCalled();
+  });
 
   it("blocks a two-call alternating cycle after threshold + 1 full repetitions", () => {
     const guard = new LoopGuard(2);

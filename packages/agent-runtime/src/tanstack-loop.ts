@@ -19,6 +19,7 @@ import {
   runErrorTruncationReason,
 } from "./finish-reason";
 import { LoopGuard } from "./loop-guard";
+import type { ResponseIdentity } from "./response-identity";
 import { MAX_FAILOVER_CANDIDATES, toModelRuntimeError } from "./retry";
 import { createRetryFailoverAdapter } from "./retry-adapter";
 import { executeToolWithAbort } from "./tool-execution";
@@ -223,7 +224,7 @@ export const executeTanstackLoop = async (
     }
   };
 
-  const loopGuard = new LoopGuard(options.loopGuardThreshold);
+  const loopGuard = new LoopGuard(options.loopGuardThreshold, options.loopGuardMessages);
   const allToolNames = runtimeTools.map((tool) => tool.name);
 
   const tools = runtimeTools.map((tool) =>
@@ -279,8 +280,11 @@ export const executeTanstackLoop = async (
     0,
     MAX_FAILOVER_CANDIDATES,
   );
+  let responseIdentity: ResponseIdentity = {};
   const candidates = modelCandidates.map((model) => {
-    const bundle = createModelAdapter(model, cacheOpts);
+    const bundle = createModelAdapter(model, cacheOpts, (identity) => {
+      responseIdentity = identity;
+    });
     const ceiling = outputTokenOptions(model, maxOutputTokens);
     return {
       ...bundle,
@@ -393,6 +397,7 @@ export const executeTanstackLoop = async (
       finalFinishReason = null;
       outputTruncated = false;
       let sawTerminal = false;
+      let sawFinished = false;
       let sawUsage = false;
       const uiMessages = currentMessages.map(toUIMessage);
       const processor = new StreamProcessor({
@@ -461,6 +466,7 @@ export const executeTanstackLoop = async (
           }
           if (chunk.type === "RUN_FINISHED") {
             sawTerminal = true;
+            sawFinished = true;
             runCount += 1;
             finalFinishReason =
               chunk.finishReason ?? chunk.metadata?.tanstack?.finishReason ?? null;
@@ -481,6 +487,7 @@ export const executeTanstackLoop = async (
                 inputTokens: tokenUsage.promptTokens,
                 outputTokens: tokenUsage.completionTokens,
                 model: getServingModelId(),
+                ...responseIdentity,
               };
               const rawUsage = tokenUsage as unknown as Record<string, unknown>;
               const cachedInputTokens =
@@ -536,6 +543,9 @@ export const executeTanstackLoop = async (
           retryable: true,
         });
       }
+
+      if (sawFinished && !abortController.signal.aborted)
+        await options.onReply?.({ ...responseIdentity });
 
       currentMessages = fromUIMessages(processor.getMessages());
 

@@ -84,6 +84,27 @@ describe("chess storage", () => {
     expect((await readGame(file)).id).toBe(match.id);
     expect(await readdir(dir)).toEqual(["game.json"]);
   });
+  it.each(["cockpit-v2", "cockpit-v3", "legacy-v1"])(
+    "rejects unsupported prerelease rules %s with a clear message",
+    async (version) => {
+      const match = createMatch({ white: player, black: player, rules: {} });
+      const rules =
+        version === "legacy-v1"
+          ? { version: "cockpit-v1", trashTalk: false, maxPlies: 200, timeBudgetMs: 600000 }
+          : { ...match.config.rules, version };
+      const file = path.join(dir, "unsupported.json");
+      await writeFile(file, JSON.stringify({ ...match, config: { ...match.config, rules } }));
+      await expect(readGame(file)).rejects.toThrow(/unsupported ruleset or archive/i);
+    },
+  );
+  it("refuses a changed prompt pin before writing a file", async () => {
+    const match = createMatch({ white: model, black: player, rules: {} });
+    match.config.prompt.hash = "f".repeat(64);
+    await expect(writeGame(path.join(dir, "changed.json"), match)).rejects.toThrow(
+      "Unsupported archive",
+    );
+    expect(await readdir(dir)).toEqual([]);
+  });
   it("removes the temporary file when the rename fails", async () => {
     fsMocks.failRename = true;
     const match = createMatch({ white: player, black: player, rules: {} });

@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import {
-  archiveSchema,
   createMatch,
   isOldRulesVersion,
   MAX_ARCHIVE_BYTES,
   type MatchArchive,
   matchConfigSchema,
+  parseArchive,
   utf8ByteLength,
   validateArchive,
 } from "@cockpit-chess/chess";
 import { endingSummarySchema } from "@cockpit-chess/chess/ending";
+import { CURRENT_PROMPT_VERSION, PROMPT_BUNDLES } from "@cockpit-chess/chess/prompts";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { env as serverEnv } from "@cockpit-chess/env/server";
 import { env } from "@cockpit-chess/env/shared";
@@ -49,6 +50,8 @@ const summary = {
   source: true,
   rulesKey: true,
   rulesVersion: true,
+  promptVersion: true,
+  promptHash: true,
   contextMode: true,
   identityMode: true,
   ending: true,
@@ -92,6 +95,8 @@ const metadata = (match: MatchArchive) => ({
   source: match.source,
   rulesKey: rulesKey(match),
   rulesVersion: match.config.rules.version,
+  promptVersion: match.config.prompt.version,
+  promptHash: match.config.prompt.hash,
   contextMode: match.config.rules.context,
   identityMode: match.config.rules.opponentIdentity,
 });
@@ -112,7 +117,7 @@ function checkedArchive(
   ending?: Prisma.JsonValue,
 ) {
   try {
-    const archive = replay ? validateArchive(input) : archiveSchema.parse(input);
+    const archive = replay ? validateArchive(input) : parseArchive(input);
     if (status === "stopped") {
       archive.status = "stopped";
       archive.result = "*";
@@ -130,8 +135,13 @@ function checkedArchive(
       archive.termination = "interrupted";
     }
     return archive;
-  } catch {
-    throw new ORPCError("BAD_REQUEST", { message: "Invalid chess archive" });
+  } catch (error) {
+    throw new ORPCError("BAD_REQUEST", {
+      message:
+        error instanceof Error && error.message.startsWith("Unsupported ")
+          ? error.message
+          : "Invalid chess archive",
+    });
   }
 }
 const ownDraftSelect = {
@@ -150,7 +160,7 @@ const ownInspectSelect = {
   createdAt: true,
   credentialSource: true,
 } satisfies Prisma.ChessMatchSelect;
-const OLD_RULES_MESSAGE = "Played under old rules; this version can't replay it";
+const OLD_RULES_MESSAGE = "Unsupported ruleset/archive";
 const ownIdSelect = { id: true } satisfies Prisma.ChessMatchSelect;
 async function ownDraft<
   S extends typeof ownDraftSelect | typeof ownInspectSelect | typeof ownIdSelect,
@@ -278,6 +288,8 @@ export const chessRouter = {
     /** Hosted matches one user may start per rolling 24 hours (one active at a time). */
     dailyLimit: env.CHESS_USER_DAILY_MATCHES,
     format: "cockpit-chess/v1",
+    currentPromptVersion: CURRENT_PROMPT_VERSION,
+    promptVersions: PROMPT_BUNDLES,
     /** Per-side operator limits, so the create form's maxima follow the server. */
     limits: hostedLimits(),
     /** The running code's public source (AGPL-3.0 section 13). */
