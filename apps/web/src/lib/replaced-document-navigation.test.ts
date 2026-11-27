@@ -97,11 +97,21 @@ function homeRouter(win: ReturnType<typeof fakeWindow>["win"]) {
   return router;
 }
 
-const root = { style: { visibility: "" } };
+/** The root element's inline style, as `hidePage` writes it. */
+const root = {
+  style: {
+    display: "",
+    priority: "",
+    setProperty(name: string, value: string, priority: string) {
+      if (name === "display") Object.assign(this, { display: value, priority });
+    },
+  },
+};
+const hidden = () => root.style.display === "none" && root.style.priority === "important";
 
 beforeEach(() => {
   resetDocumentIdentityForTests(() => undefined);
-  root.style.visibility = "";
+  Object.assign(root.style, { display: "", priority: "" });
   vi.stubGlobal("document", { documentElement: root });
   // The client router registers itself on `self`.
   vi.stubGlobal("self", {});
@@ -134,7 +144,7 @@ describe("a replaced document kept on an account-free page", () => {
     void router.navigate({ to: "/$lang", params: { lang: "en-US" }, search: { tab: "studio" } });
 
     expect(reloadedAt).toEqual(["/en-US?tab=studio"]);
-    expect(root.style.visibility).toBe("hidden");
+    expect(hidden()).toBe(true);
   });
 
   it("keeps the archive on a navigation to another account-free tab", async () => {
@@ -143,7 +153,7 @@ describe("a replaced document kept on an account-free page", () => {
     await router.navigate({ to: "/$lang", params: { lang: "en-US" }, search: { tab: "arena" } });
 
     expect(reloadedAt).toEqual([]);
-    expect(root.style.visibility).toBe("");
+    expect(hidden()).toBe(false);
     expect(router.state.location.search).toEqual({ tab: "arena" });
   });
 

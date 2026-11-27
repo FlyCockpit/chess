@@ -4,6 +4,7 @@ const fixture = vi.hoisted(() => ({
   matches: [] as { routeId: string }[],
   search: {} as { tab?: string },
   started: undefined as boolean | undefined,
+  unverified: false,
 }));
 vi.mock("@tanstack/react-router", () => ({
   useRouterState: ({
@@ -26,6 +27,11 @@ vi.mock("react", () => ({
     ];
   },
   useEffect: (effect: () => void) => effect(),
+  useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => boolean) => getSnapshot(),
+}));
+vi.mock("@/lib/document-identity", () => ({
+  isDocumentIdentityUnverified: () => fixture.unverified,
+  subscribeIdentityVerification: () => () => {},
 }));
 
 import { useIdentityBoundaryEnabled } from "./use-identity-boundary-enabled";
@@ -34,6 +40,7 @@ beforeEach(() => {
   fixture.started = undefined;
   fixture.matches = [];
   fixture.search = {};
+  fixture.unverified = false;
 });
 describe("hosted identity boundary lifecycle", () => {
   it.each(["arena", "lab", "leaderboard"])("keeps fresh public %s session-free", (tab) => {
@@ -52,6 +59,16 @@ describe("hosted identity boundary lifecycle", () => {
     fixture.matches = [{ routeId: "/$lang/_public/" }];
     expect(useIdentityBoundaryEnabled()).toBe(true);
     fixture.search = { tab: "studio" };
+    expect(useIdentityBoundaryEnabled()).toBe(true);
+  });
+  it("starts on a public page once the identity is unverified, so the mask is lifted", () => {
+    fixture.search = { tab: "leaderboard" };
+    expect(useIdentityBoundaryEnabled()).toBe(false);
+    // Another tab announced a change; no watcher is connected to check it.
+    fixture.unverified = true;
+    expect(useIdentityBoundaryEnabled()).toBe(true);
+    // Checked and settled: the watcher stays mounted.
+    fixture.unverified = false;
     expect(useIdentityBoundaryEnabled()).toBe(true);
   });
 });

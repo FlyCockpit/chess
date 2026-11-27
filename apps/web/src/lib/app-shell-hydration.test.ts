@@ -124,6 +124,7 @@ describe("resolveRouteSession", () => {
     vi.doMock("@/lib/document-identity", () => ({
       admitRouteIdentity: admit,
       documentIdentityEpoch: () => 0,
+      identityVerificationGeneration: () => 0,
     }));
     const hydration = await import("./app-shell-hydration");
     const { resolveRouteSession } = await import("./route-session");
@@ -152,6 +153,7 @@ describe("resolveRouteSession", () => {
     vi.doMock("@/lib/document-identity", () => ({
       admitRouteIdentity: admit,
       documentIdentityEpoch: () => 0,
+      identityVerificationGeneration: () => 0,
     }));
     const hydration = await import("./app-shell-hydration");
     const { resolveRouteSession } = await import("./route-session");
@@ -184,6 +186,7 @@ describe("resolveRouteSession", () => {
     vi.doMock("@/lib/document-identity", () => ({
       admitRouteIdentity: admit,
       documentIdentityEpoch: () => epoch.value,
+      identityVerificationGeneration: () => 0,
     }));
     const hydration = await import("./app-shell-hydration");
     const { resolveRouteSession } = await import("./route-session");
@@ -197,7 +200,7 @@ describe("resolveRouteSession", () => {
     await expect(resolution).resolves.toEqual({ status: "resolved", session: null });
     expect(probe).toHaveBeenCalledTimes(2);
     expect(admit).toHaveBeenCalledOnce();
-    expect(admit).toHaveBeenCalledWith({ status: "resolved", session: null }, 1);
+    expect(admit).toHaveBeenCalledWith({ status: "resolved", session: null }, 1, 0);
     vi.doUnmock("@/server/auth-session");
     vi.doUnmock("@/lib/document-identity");
   });

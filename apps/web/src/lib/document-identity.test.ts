@@ -5,10 +5,14 @@ import {
   admitRouteIdentity,
   announceDocumentIdentity,
   announceSessionChange,
+  confirmDocumentIdentityFresh,
   connectIdentityPeers,
   discardAccountQueries,
   documentAdmits,
   documentIdentityEpoch,
+  identityVerificationGeneration,
+  isCurrentSessionCheck,
+  isDocumentIdentityUnverified,
   isDocumentReplaced,
   leaveDocument,
   markExplicitSignOut,
@@ -26,6 +30,7 @@ import {
   shouldReloadForIdentity,
   skipErrorToastForIdentity,
   subscribeDocumentIdentity,
+  subscribeIdentityVerification,
   watchDocumentRestore,
 } from "./document-identity";
 
@@ -33,13 +38,23 @@ const reload = vi.fn();
 let pageshow: ((event: { persisted: boolean }) => void) | undefined;
 let pagehide: ((event: { persisted: boolean }) => void) | undefined;
 const assign = vi.fn();
-const root = { style: { visibility: "" } };
+/** The root element's inline style, as `hidePage` writes it. */
+const root = {
+  style: {
+    display: "",
+    priority: "",
+    setProperty(name: string, value: string, priority: string) {
+      if (name === "display") Object.assign(this, { display: value, priority });
+    },
+  },
+};
+const hidden = () => root.style.display === "none" && root.style.priority === "important";
 
 beforeEach(() => {
   resetDocumentIdentityForTests(() => undefined);
   reload.mockReset();
   assign.mockReset();
-  root.style.visibility = "";
+  Object.assign(root.style, { display: "", priority: "" });
   pageshow = undefined;
   pagehide = undefined;
   vi.stubGlobal("window", {
@@ -170,7 +185,7 @@ describe("documentAdmits (private UI outside a guard)", () => {
     // No guard or watcher recorded anything yet (a fresh verify-email page).
     noteSignedInSession();
     pagehide?.({ persisted: true });
-    expect(root.style.visibility).toBe("hidden");
+    expect(hidden()).toBe(true);
     pageshow?.({ persisted: true });
     expect(reload).toHaveBeenCalledTimes(1);
   });
@@ -214,7 +229,7 @@ describe("explicit sign-out", () => {
     // The signed-out session is seen first: hidden and sealed, no reload.
     expect(observeDocumentIdentity(null)).toBe(true);
     replaceDocument();
-    expect(root.style.visibility).toBe("hidden");
+    expect(hidden()).toBe(true);
     expect(seal).toHaveBeenCalledTimes(1);
     expect(reload).not.toHaveBeenCalled();
     leaveDocument("/en-US/login");
@@ -228,7 +243,7 @@ describe("explicit sign-out", () => {
     observeDocumentIdentity("a");
     markExplicitSignOut();
     leaveDocument("/en-US/login");
-    expect(root.style.visibility).toBe("hidden");
+    expect(hidden()).toBe(true);
     expect(seal).toHaveBeenCalledTimes(1);
     expect(assign).toHaveBeenCalledTimes(1);
   });
@@ -240,9 +255,9 @@ describe("explicit sign-out", () => {
     observeDocumentIdentity("a");
     // A normal unload (not cached) leaves the page alone.
     pagehide?.({ persisted: false });
-    expect(root.style.visibility).toBe("");
+    expect(hidden()).toBe(false);
     pagehide?.({ persisted: true });
-    expect(root.style.visibility).toBe("hidden");
+    expect(hidden()).toBe(true);
     // Another account signs in meanwhile; Back restores this frozen copy.
     pageshow?.({ persisted: true });
     expect(seal).toHaveBeenCalledTimes(1);
@@ -254,7 +269,7 @@ describe("explicit sign-out", () => {
     observeDocumentIdentity(null);
     pagehide?.({ persisted: true });
     pageshow?.({ persisted: true });
-    expect(root.style.visibility).toBe("");
+    expect(hidden()).toBe(false);
     expect(reload).not.toHaveBeenCalled();
   });
 
@@ -391,7 +406,7 @@ describe("global error toasts", () => {
     expect(observeDocumentIdentity("b")).toBe(true);
     replaceDocument();
     expect(reload).toHaveBeenCalledTimes(1);
-    expect(root.style.visibility).toBe("hidden");
+    expect(hidden()).toBe(true);
     expect(client.getQueryData(["documents"])).toBeUndefined();
     respond({ name: "A's settings" });
     fail(new Error("late"));
@@ -427,7 +442,7 @@ describe("pages that hold no account data", () => {
     expect(observeDocumentIdentity(null)).toBe(true);
     replaceDocument();
     expect(reload).not.toHaveBeenCalled();
-    expect(root.style.visibility).toBe("");
+    expect(hidden()).toBe(false);
     expect(client.getQueryData(["studio"])).toBeUndefined();
     // What is on screen (public) stays, and is asked again.
     expect(client.getQueryCache().find({ queryKey: ["hint"] })).toBeDefined();
@@ -444,7 +459,7 @@ describe("pages that hold no account data", () => {
     accountFree = false;
     replaceDocument();
     expect(reload).toHaveBeenCalledTimes(1);
-    expect(root.style.visibility).toBe("hidden");
+    expect(hidden()).toBe(true);
     unsubscribe();
   });
 
@@ -454,7 +469,7 @@ describe("pages that hold no account data", () => {
     markExplicitSignOut();
     expect(observeDocumentIdentity(null)).toBe(true);
     replaceDocument();
-    expect(root.style.visibility).toBe("hidden");
+    expect(hidden()).toBe(true);
     expect(reload).not.toHaveBeenCalled();
   });
 });
@@ -514,16 +529,101 @@ describe("other tabs", () => {
     channel.onmessage?.({} as MessageEvent);
     expect(check).toHaveBeenCalledTimes(1);
     // Without a watcher, a peer's announcement or a 401 checks nothing yet,
-    // but is not lost: the watcher checks once when it connects.
+    // but is not lost: the identity is left unverified, for the next watcher
+    // to check when it connects (useReloadOnIdentityChange).
     disconnect();
     channel.onmessage?.({} as MessageEvent);
     reportSessionRejected();
     expect(check).toHaveBeenCalledTimes(1);
-    const later = vi.fn();
-    connectIdentityPeers(later);
+    expect(isDocumentIdentityUnverified()).toBe(true);
     await new Promise((r) => setTimeout(r, 0));
-    expect(later).toHaveBeenCalledTimes(1);
     expect(check).toHaveBeenCalledTimes(1);
+  });
+
+  it("a peer's announcement or a 401 with no watcher connected leaves the identity unverified", async () => {
+    const channel = fakeChannel();
+    resetDocumentIdentityForTests(() => channel);
+    const changed = vi.fn();
+    subscribeIdentityVerification(changed);
+    observeDocumentIdentity("a");
+    announceDocumentIdentity("a");
+    channel.onmessage?.({} as MessageEvent);
+    expect(isDocumentIdentityUnverified()).toBe(true);
+    expect(changed).toHaveBeenCalledTimes(1);
+    // A guard's server answer for the same account confirms it.
+    await admitRouteIdentity(resolved("a"));
+    expect(isDocumentIdentityUnverified()).toBe(false);
+    reportSessionRejected();
+    expect(isDocumentIdentityUnverified()).toBe(true);
+  });
+
+  it("an unverified identity admits no private UI until it is confirmed", async () => {
+    const channel = fakeChannel();
+    resetDocumentIdentityForTests(() => channel);
+    const disconnect = connectIdentityPeers(vi.fn());
+    await admitRouteIdentity(resolved("a"));
+    expect(documentAdmits("a")).toBe(true);
+    disconnect();
+    channel.onmessage?.({} as MessageEvent);
+    const admits = vi.fn();
+    subscribeDocumentIdentity(admits);
+    connectIdentityPeers(vi.fn());
+    expect(documentAdmits("a")).toBe(false);
+    confirmDocumentIdentityFresh(identityVerificationGeneration());
+    expect(admits).toHaveBeenCalled();
+    expect(documentAdmits("a")).toBe(true);
+  });
+
+  it("an unverified identity is checked by the newest watcher only, and handed over when it disconnects", () => {
+    const channel = fakeChannel();
+    resetDocumentIdentityForTests(() => channel);
+    announceDocumentIdentity(null);
+    channel.onmessage?.({} as MessageEvent);
+    expect(isDocumentIdentityUnverified()).toBe(true);
+    // The root's watcher connects (checks at once), then the shell's (now
+    // the one that checks).
+    const root = vi.fn();
+    const shell = vi.fn();
+    connectIdentityPeers(root);
+    expect(root).toHaveBeenCalledTimes(1);
+    const disconnectShell = connectIdentityPeers(shell);
+    expect(shell).toHaveBeenCalledTimes(1);
+    expect(isCurrentSessionCheck(shell)).toBe(true);
+    expect(isCurrentSessionCheck(root)).toBe(false);
+    // The shell unmounts with its check unanswered: the root checks again.
+    disconnectShell();
+    expect(root).toHaveBeenCalledTimes(2);
+    expect(isCurrentSessionCheck(root)).toBe(true);
+  });
+
+  it("a peer's announcement with a watcher connected still outdates earlier answers", () => {
+    const channel = fakeChannel();
+    resetDocumentIdentityForTests(() => channel);
+    const check = vi.fn();
+    connectIdentityPeers(check);
+    const before = identityVerificationGeneration();
+    channel.onmessage?.({} as MessageEvent);
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(identityVerificationGeneration()).not.toBe(before);
+    // Not unverified: a connected watcher is checking it.
+    expect(isDocumentIdentityUnverified()).toBe(false);
+  });
+
+  it("an answer that predates a newer invalidation settles nothing", async () => {
+    const channel = fakeChannel();
+    resetDocumentIdentityForTests(() => channel);
+    observeDocumentIdentity("a");
+    announceDocumentIdentity("a");
+    channel.onmessage?.({} as MessageEvent);
+    // A guard's probe starts, then another tab announces again mid-probe.
+    const since = identityVerificationGeneration();
+    channel.onmessage?.({} as MessageEvent);
+    await admitRouteIdentity(resolved("a"), documentIdentityEpoch(), since);
+    expect(isDocumentIdentityUnverified()).toBe(true);
+    confirmDocumentIdentityFresh(since);
+    expect(isDocumentIdentityUnverified()).toBe(true);
+    confirmDocumentIdentityFresh(identityVerificationGeneration());
+    expect(isDocumentIdentityUnverified()).toBe(false);
   });
 
   it("an identity announced across a remount of the watcher is not announced twice", () => {

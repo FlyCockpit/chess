@@ -21,11 +21,12 @@ import {
 } from "@tanstack/react-router";
 import type { i18n as I18nInstance } from "i18next";
 import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
-import { lazy, type ReactNode, Suspense } from "react";
+import type { ReactNode } from "react";
 import { I18nextProvider } from "react-i18next";
 import { ConsentBanner } from "@/components/consent/consent-banner";
 import ErrorState from "@/components/error-state";
 import { FileDropGuard } from "@/components/file-drop-guard";
+import { IdentityBoundaryLoader } from "@/components/identity-boundary-loader";
 import { ThemeColorSync } from "@/components/theme-color-sync";
 import { ThemeProvider } from "@/components/theme-provider";
 import { UiLabelsBridge } from "@/components/ui-labels-bridge";
@@ -65,7 +66,7 @@ const APP_NAME = env.VITE_APP_NAME;
 // Session machinery stays out of a fresh public landing. Once needed, this
 // watcher survives layout/tab changes so account switches cannot inherit private
 // cache; the `_app` shell also runs one eagerly (both share lib/document-identity.ts).
-const IdentityBoundary = lazy(() => import("@/components/identity-boundary"));
+// Loaded lazily, contained and retried (components/identity-boundary-loader.tsx).
 
 export const Route = createRootRouteWithContext<RouterAppContext>()({
   // Root must stay SSR-capable so public descendants can opt into full SSR.
@@ -210,11 +211,7 @@ function RootComponent() {
               request's render would persist in the process and leak into every
               later user's SSR HTML. Never server-render the viewport. */}
             <ClientOnly>
-              {identityBoundaryEnabled && (
-                <Suspense fallback={null}>
-                  <IdentityBoundary />
-                </Suspense>
-              )}
+              {identityBoundaryEnabled && <IdentityBoundaryLoader />}
               <Toaster />
               {/* Document-level drop swallow: dragging a file onto the SPA must
                 never navigate the tab. Lives beside the Toaster because its

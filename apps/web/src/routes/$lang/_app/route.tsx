@@ -20,6 +20,7 @@ import { useSessionHintSync } from "@/hooks/use-session-hint-sync";
 import { useUserLocaleSync } from "@/hooks/use-user-locale-sync";
 import { markAppShellHydrated } from "@/lib/app-shell-hydration";
 import { MAIN_SCROLLER_ID } from "@/lib/main-scroller";
+import { SessionUnconfirmed } from "@/lib/session-unconfirmed";
 
 /** The frame's last element: the first paint waits until it is parsed. */
 const APP_SHELL_END_ID = "app-shell-end";
@@ -80,10 +81,15 @@ function AppShellLayout() {
 
 /** The shell around the loading page: same frame, content skeleton only. */
 function AppShellPending() {
+  // It paints before any session guard has admitted anyone: the chrome shows
+  // no account until one has (lib/session-unconfirmed.ts). The frame's
+  // identity watcher reads the session unmasked.
   return (
-    <AppShellFrame>
-      <RouteContentSkeleton />
-    </AppShellFrame>
+    <SessionUnconfirmed>
+      <AppShellFrame>
+        <RouteContentSkeleton />
+      </AppShellFrame>
+    </SessionUnconfirmed>
   );
 }
 

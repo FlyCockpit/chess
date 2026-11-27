@@ -25,7 +25,7 @@ import { useDocumentAdmits } from "./use-document-admits";
 beforeEach(() => {
   resetDocumentIdentityForTests(() => undefined);
   vi.stubGlobal("window", { location: { reload: vi.fn() } });
-  vi.stubGlobal("document", { documentElement: { style: { visibility: "" } } });
+  vi.stubGlobal("document", { documentElement: { style: { setProperty: () => {} } } });
 });
 afterEach(() => {
   vi.unstubAllGlobals();

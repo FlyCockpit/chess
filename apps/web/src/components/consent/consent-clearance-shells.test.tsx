@@ -39,7 +39,13 @@ vi.mock("@tanstack/react-router-devtools", () => ({ TanStackRouterDevtools: () =
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/components/admin-setup-banner", () => ({ AdminSetupBanner: () => null }));
 vi.mock("@/components/bottom-nav", () => ({ default: () => null }));
-vi.mock("@/components/header", () => ({ default: () => null }));
+// The header shows whether it may show an account (lib/session-unconfirmed.ts).
+vi.mock("@/components/header", async () => {
+  const { useSessionUnconfirmed } = await import("@/lib/session-unconfirmed");
+  return {
+    default: () => <span data-session-unconfirmed={String(useSessionUnconfirmed())} />,
+  };
+});
 vi.mock("@/components/setup-key-banner", () => ({ SetupKeyBanner: () => null }));
 vi.mock("@/components/route-content-skeleton", () => ({ RouteContentSkeleton: () => null }));
 vi.mock("@/components/pull-to-refresh", () => ({
@@ -116,6 +122,15 @@ describe("the shell frames span the viewport; only <main> reserves the banner", 
       frameClasses(shell);
       expect(identityWatcher).toHaveBeenCalled();
     }
+  });
+
+  it("the pending shell shows no account: it paints before any guard admitted anyone", () => {
+    // Its chrome renders under SessionUnconfirmed (useAuthSession: pending);
+    // the loaded shell, under an admitting guard, shows the session.
+    expect(renderToStaticMarkup(<AppShellPendingFrame />)).toContain(
+      'data-session-unconfirmed="true"',
+    );
+    expect(renderToStaticMarkup(<AppShell />)).toContain('data-session-unconfirmed="false"');
   });
 
   it("app shell, no keyboard: the frame reserves the BottomNav only, and tells <main> so", () => {

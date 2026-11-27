@@ -139,7 +139,10 @@ export function subscribeDocumentIdentity(listener: () => void): () => void {
  */
 export function documentAdmits(identity: string): boolean {
   return (
-    !documentIdentity.replaced && documentIdentity.baseline === identity && sessionChecks.length > 0
+    !documentIdentity.replaced &&
+    !identityUnverified &&
+    documentIdentity.baseline === identity &&
+    sessionChecks.length > 0
   );
 }
 
@@ -209,8 +212,13 @@ export function sealQueryClient(queryClient: QueryClient): void {
 }
 
 function hidePage(): void {
-  // CSSOM, not a style attribute: allowed under the strict style-src CSP.
-  if (typeof document !== "undefined") document.documentElement.style.visibility = "hidden";
+  // `display: none` on the root, important: no descendant can opt back in
+  // (`visibility: hidden` can be undone by any element that sets itself
+  // `visible`). CSSOM, not a style attribute: allowed under the strict
+  // style-src CSP.
+  if (typeof document !== "undefined") {
+    document.documentElement.style.setProperty("display", "none", "important");
+  }
 }
 
 /**
@@ -296,12 +304,16 @@ type RouteIdentityResolution =
 export async function admitRouteIdentity(
   resolution: RouteIdentityResolution,
   startedAt: number = documentIdentity.epoch,
+  /** `identityVerificationGeneration()` taken before the probe started. */
+  since: number = verificationGeneration,
 ): Promise<void> {
   if (resolution.status !== "resolved") return;
   // A newer identity was recorded while this probe was in flight.
   if (startedAt !== documentIdentity.epoch) return;
   const identity = resolution.session?.user.id ?? null;
   if (!observeDocumentIdentity(identity)) {
+    // The server just confirmed this document's own identity.
+    confirmDocumentIdentityFresh(since);
     announceDocumentIdentity(identity);
     return;
   }
@@ -406,27 +418,86 @@ export function reportAuthErrorStatus(status: number): void {
 }
 
 /**
+ * Another tab announced an identity change (or a request was refused for
+ * having no session) while no watcher could check it: Better Auth's atom may
+ * still hold the previous account. Until a fresh check (a guard's server
+ * probe, or a refetch a watcher starts when it connects: the `_app` shell's,
+ * or the root's lazily loaded one, which `useIdentityBoundaryEnabled` loads
+ * for exactly this) confirms this document's identity, `useAuthSession()`
+ * reports `pending`, so no chrome shows that stale account, even on a page a
+ * guard didn't admit (a guard error, an unguarded page, a public page).
+ */
+let identityUnverified = false;
+/** Bumped by every invalidation, so an answer that predates one can't settle it. */
+let verificationGeneration = 0;
+const verificationListeners = new Set<() => void>();
+
+function setIdentityUnverified(next: boolean): void {
+  // Module state is process-wide on the server: never written there.
+  if (typeof window === "undefined" || identityUnverified === next) return;
+  identityUnverified = next;
+  for (const listener of verificationListeners) listener();
+  // `documentAdmits` depends on it too.
+  notifyIdentityListeners();
+}
+
+/**
+ * Leave the identity unverified (the chrome shows no account) until a fresh
+ * check settles it. Also for the watcher, when its check of a peer's change
+ * or a 401 got no fresh answer (a failed fetch that may still retain the
+ * previous account).
+ */
+export function markDocumentIdentityUnverified(): void {
+  if (typeof window === "undefined") return;
+  verificationGeneration++;
+  setIdentityUnverified(true);
+}
+
+/** Taken before a check starts; pass it to `confirmDocumentIdentityFresh`. */
+export function identityVerificationGeneration(): number {
+  return verificationGeneration;
+}
+
+/**
+ * A fresh check confirmed this document's identity: the chrome may show it
+ * again, unless the identity was invalidated again after that check started
+ * (`since`, from `identityVerificationGeneration()`): its answer may predate
+ * the newer change.
+ */
+export function confirmDocumentIdentityFresh(since: number): void {
+  if (since !== verificationGeneration) return;
+  setIdentityUnverified(false);
+}
+
+export function isDocumentIdentityUnverified(): boolean {
+  return identityUnverified;
+}
+
+export function subscribeIdentityVerification(listener: () => void): () => void {
+  verificationListeners.add(listener);
+  return () => verificationListeners.delete(listener);
+}
+
+/**
  * The connected watchers' session checks, newest last (the `_app` shell's and
  * the root's may both be mounted for a moment); the newest one runs.
  */
 const sessionChecks: { check: () => unknown }[] = [];
 const currentSessionCheck = (): (() => unknown) | undefined => sessionChecks.at(-1)?.check;
 let sessionCheckPending = false;
-/** A peer's announcement or a 401 arrived while no watcher was connected. */
-let missedSessionCheck = false;
 
 /**
  * A request was rejected for having no session: ask Better Auth to check the
  * session once (however many queries failed together), so a session lost
  * elsewhere replaces the document instead of leaving one error toast per
- * query. With no watcher connected yet (it loads lazily), the check waits
- * for it to connect.
+ * query. With no watcher connected yet (the root's loads lazily), the
+ * identity is marked unverified instead: the chrome shows no account, and the
+ * next watcher to connect checks it.
  */
 export function reportSessionRejected(): void {
   const check = currentSessionCheck();
   if (!check) {
-    // The lazily loaded watcher is not connected yet: check once it is.
-    missedSessionCheck = true;
+    markDocumentIdentityUnverified();
     return;
   }
   if (sessionCheckPending) return;
@@ -472,9 +543,15 @@ function peerChannel(): IdentityChannel | undefined {
     if (peers) {
       peers.onmessage = () => {
         const check = currentSessionCheck();
-        if (check) void check();
-        // The lazily loaded watcher is not connected yet: check once it is.
-        else missedSessionCheck = true;
+        if (check) {
+          // A newer change: no answer asked for before it (a guard's probe,
+          // an earlier check) may settle anything.
+          verificationGeneration++;
+          runSessionCheck(check);
+        }
+        // No watcher connected (the root's loads lazily): unverified until
+        // one connects and checks.
+        else markDocumentIdentityUnverified();
         for (const listener of peerSessionListeners) listener();
       };
     }
@@ -496,26 +573,55 @@ export function onPeerSessionChange(listener: () => void): () => void {
   return () => peerSessionListeners.delete(listener);
 }
 
+function runSessionCheck(check: () => unknown): void {
+  try {
+    void Promise.resolve(check()).catch(() => {});
+  } catch {
+    // A check that throws decides nothing; the next event checks again.
+  }
+}
+
 /**
- * Connect the root watcher's session check: run for a peer tab's
- * announcement and for a 401 (`reportSessionRejected`). Returns the
- * disconnect.
+ * Run the current watcher's session check now, if one is connected: after a
+ * watcher marked the identity unverified for a check it can no longer finish
+ * itself (it is unmounting, or a newer watcher took over meanwhile).
+ */
+export function recheckDocumentIdentity(): void {
+  const check = currentSessionCheck();
+  if (check) runSessionCheck(check);
+}
+
+/**
+ * Whether `checkSession` is the connected watcher whose checks run now (the
+ * newest). Only it checks an unverified identity, so two mounted watchers
+ * never cancel each other's session fetches.
+ */
+export function isCurrentSessionCheck(checkSession: () => unknown): boolean {
+  return currentSessionCheck() === checkSession;
+}
+
+/**
+ * Connect a watcher's session check: run for a peer tab's announcement and
+ * for a 401 (`reportSessionRejected`), and at once while the identity is
+ * unverified (whatever arrived before any watcher was connected). The newest
+ * connected watcher runs the checks; when it disconnects while the identity
+ * is still unverified, the one below takes over and checks again, so a check
+ * dropped with its watcher is never the last one. Returns the disconnect.
  */
 export function connectIdentityPeers(checkSession: () => unknown): () => void {
   const connection = { check: checkSession };
   sessionChecks.push(connection);
   peerChannel();
   notifyIdentityListeners();
-  // Whatever arrived before the watcher loaded is checked now, not lost.
-  if (missedSessionCheck) {
-    missedSessionCheck = false;
-    reportSessionRejected();
-  }
+  if (identityUnverified) runSessionCheck(checkSession);
   return () => {
     const index = sessionChecks.indexOf(connection);
     if (index === -1) return;
+    const wasCurrent = index === sessionChecks.length - 1;
     sessionChecks.splice(index, 1);
     notifyIdentityListeners();
+    const next = currentSessionCheck();
+    if (wasCurrent && next && identityUnverified) runSessionCheck(next);
   };
 }
 
@@ -564,7 +670,9 @@ export function resetDocumentIdentityForTests(
   identityListeners.clear();
   sessionChecks.length = 0;
   sessionCheckPending = false;
-  missedSessionCheck = false;
+  identityUnverified = false;
+  verificationGeneration = 0;
+  verificationListeners.clear();
   openChannel = open;
   peers = undefined;
   peersOpened = false;
