@@ -145,6 +145,7 @@ const prismaStub = vi.hoisted(() => {
     apiKey: { deleteMany: vi.fn(() => "keys") },
     deviceCode: { deleteMany: vi.fn(() => "codes") },
     session: {
+      findFirst: tx.session.findFirst,
       deleteMany: vi.fn(
         (input: {
           where: { OR: { userId?: string; origin?: string; impersonatedBy?: string }[] };
@@ -250,6 +251,7 @@ type CapturedOptions = {
     }) => Promise<void>;
   };
   user?: Record<string, unknown>;
+  advanced?: { ipAddress?: { disableIpTracking?: boolean } };
   session?: { cookieCache?: { enabled?: boolean; maxAge?: number } };
   hooks?: {
     before?: (
@@ -314,7 +316,9 @@ describe("Better-Auth config", () => {
     await expect(before(session, { path: "/sign-in/email" })).rejects.toThrow(
       /credential fence is missing/,
     );
-    await expect(before(session, { path: "/sign-in/social" })).resolves.toBeUndefined();
+    await expect(before(session, { path: "/sign-in/social" })).resolves.toEqual({
+      data: { ...session, ipAddress: "" },
+    });
     const { withDeviceRedemptionLock } = await import("./device-redemption-lock");
     // The lock helper's DB calls are not under test here: with no device code
     // in the body, it runs the callback directly, so the hook still refuses.
@@ -711,6 +715,7 @@ async function realAuth({ verificationDeliveryFails = false, withTwoFactor = fal
     secret: "disposable-unit-test-secret-with-no-external-use",
     database: countingAdapter,
     rateLimit: { enabled: false },
+    advanced: options.advanced,
     user: options.user,
     emailAndPassword: { ...options.emailAndPassword, enabled: true },
     emailVerification: { sendOnSignUp: true, sendOnSignIn: true, sendVerificationEmail },
@@ -769,6 +774,118 @@ async function realAuth({ verificationDeliveryFails = false, withTwoFactor = fal
   };
   return { db, signUp, countAdapterCalls, instance, sendVerificationEmail, signedInAdmin };
 }
+
+describe("session IP minimization", () => {
+  it.each(["198.51.100.7", "203.0.113.200, 198.51.100.7, 192.0.2.10", "2001:db8::7"])(
+    "does not persist forwarded IP %s while cookie sessions still work",
+    async (xff) => {
+      envState.signupEnabled = true;
+      const { db, signUp, instance } = await realAuth();
+      await signUp("session-ip@example.test");
+      const user = db.user?.find((row) => row.email === "session-ip@example.test");
+      if (!user) throw new Error("seed user missing");
+      user.emailVerified = true;
+      const headers = {
+        "content-type": "application/json",
+        origin: "https://app.example.test",
+        "x-forwarded-for": xff,
+        "cf-connecting-ip": "203.0.113.201",
+        "x-real-ip": "203.0.113.202",
+        "user-agent": "session-ip-unit-test",
+      };
+      const signedIn = await instance.handler(
+        new Request("https://app.example.test/api/auth/sign-in/email", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            email: "session-ip@example.test",
+            password: "same-password-12345",
+          }),
+        }),
+      );
+      expect(signedIn.status).toBe(200);
+      expect(db.session).toHaveLength(1);
+      expect(db.session?.[0]).toMatchObject({
+        ipAddress: "",
+        userAgent: "session-ip-unit-test",
+        userId: user.id,
+      });
+      const cookie = signedIn.headers
+        .getSetCookie()
+        .map((value) => value.split(";")[0])
+        .join("; ");
+      expect(cookie).toBeTruthy();
+      const current = await instance.handler(
+        new Request("https://app.example.test/api/auth/get-session", {
+          headers: { ...headers, cookie, "x-forwarded-for": "203.0.113.203" },
+        }),
+      );
+      expect(current.status).toBe(200);
+      expect(await current.json()).toMatchObject({ user: { id: user.id } });
+      const signedOut = await instance.handler(
+        new Request("https://app.example.test/api/auth/sign-out", {
+          method: "POST",
+          headers: { ...headers, cookie },
+          body: "{}",
+        }),
+      );
+      expect(signedOut.status).toBe(200);
+      expect(db.session).toHaveLength(0);
+    },
+  );
+
+  it("clears a legacy IP when the real two-factor plugin rotates a session", async () => {
+    const { db, instance, signedInAdmin } = await realAuth();
+    const { cookie } = await signedInAdmin();
+    const legacy = db.session?.[0];
+    const user = db.user?.[0];
+    if (!legacy || !user) throw new Error("legacy session seed missing");
+    legacy.ipAddress = "203.0.113.70";
+    user.twoFactorEnabled = true;
+    db.twoFactor = [];
+    const { betterAuth: realBetterAuth } =
+      await vi.importActual<typeof import("better-auth")>("better-auth");
+    const { twoFactor } =
+      await vi.importActual<typeof import("better-auth/plugins")>("better-auth/plugins");
+    const base = (await instance.$context).options;
+    const rotating = realBetterAuth({
+      ...base,
+      databaseHooks: { ...base.databaseHooks, session: options.databaseHooks?.session },
+      plugins: [...(base.plugins ?? []), twoFactor()],
+    } as Parameters<typeof realBetterAuth>[0]);
+    const response = await rotating.handler(
+      new Request("https://app.example.test/api/auth/two-factor/disable", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://app.example.test",
+          cookie,
+        },
+        body: JSON.stringify({ password: "same-password-12345" }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(db.user?.[0]?.twoFactorEnabled).toBe(false);
+    expect(db.session).toHaveLength(1);
+    expect(db.session?.[0]?.id).not.toBe(legacy.id);
+    expect(db.session?.[0]).toMatchObject({ userId: user.id, ipAddress: "" });
+    const rotatedCookie = response.headers
+      .getSetCookie()
+      .map((value) => value.split(";")[0])
+      .join("; ");
+    expect(rotatedCookie).toBeTruthy();
+    const session = await rotating.handler(
+      new Request("https://app.example.test/api/auth/get-session", {
+        headers: { cookie: rotatedCookie },
+      }),
+    );
+    expect(await session.json()).toMatchObject({ user: { id: user.id } });
+    const oldSession = await rotating.handler(
+      new Request("https://app.example.test/api/auth/get-session", { headers: { cookie } }),
+    );
+    expect(await oldSession.json()).toBeNull();
+  });
+});
 
 // `/sign-up/email` must not tell a free address from a registered one.
 describe("sign-up response is the same for free and registered addresses", {

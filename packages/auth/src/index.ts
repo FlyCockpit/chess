@@ -256,6 +256,11 @@ export const auth = betterAuth({
     },
   },
   advanced: {
+    // No product or security decision consumes stored session IPs. Better Auth
+    // otherwise resolves forwarded headers independently of TRUST_PROXY_HOPS.
+    // Minimize collection; app IP budgets still use the canonical server
+    // resolver. Existing rows are not erased here (see docs/public-hosting.md).
+    ipAddress: { disableIpTracking: true },
     defaultCookieAttributes: isCrossOrigin
       ? { sameSite: "none", secure: true, httpOnly: true }
       : { httpOnly: true, secure: env.NODE_ENV === "production" },
@@ -281,8 +286,8 @@ export const auth = betterAuth({
   // are tunable via RATE_LIMIT_* env vars. Running both would double-count
   // and make 429s impossible to attribute.
   //
-  // If you re-enable this, configure `advanced.ipAddress.trustedProxies` AND
-  // a `secondaryStorage` first — the defaults are not safe behind a proxy.
+  // Re-enabling it requires a reviewed canonical-IP handoff and shared
+  // secondaryStorage; do not restore an independent forwarded-header resolver.
   rateLimit: { enabled: false },
   hooks: {
     // A reset link the admin was shown (not mailed) is spendable only while
@@ -553,7 +558,9 @@ export const auth = betterAuth({
           const tagged = deviceFlowSessionData(session, context);
           if (tagged) assertDeviceRedemptionLocked(session.userId);
           await fencePasswordSessionBefore(session, context);
-          return tagged;
+          // Two-factor rotations pass the parent row as an override after
+          // Better Auth's IP default; never copy a legacy IP into a new row.
+          return { data: { ...(tagged?.data ?? session), ipAddress: "" } };
         },
         after: async (session, context) => {
           if (deviceFlowSessionData(session, context)) await removeDeviceSessionIfUnlocked(session);

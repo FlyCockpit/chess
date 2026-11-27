@@ -1,16 +1,42 @@
 import type { Context } from "hono";
+import { Hono } from "hono";
+import { RateLimiterMemory } from "rate-limiter-flexible";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import publicProxyFixtures from "./client-ip.public-proxy.fixture.json";
 
 // Mutable env so each test can set TRUST_PROXY_HOPS independently.
-const mockEnv: { TRUST_PROXY_HOPS: number | undefined } = { TRUST_PROXY_HOPS: 0 };
+const mockEnv: Record<string, number | undefined> = {
+  TRUST_PROXY_HOPS: 0,
+  RATE_LIMIT_AUTH_POINTS: 30,
+  RATE_LIMIT_AUTH_WINDOW_SECONDS: 60,
+  RATE_LIMIT_RPC_POINTS: 100,
+  RATE_LIMIT_RPC_WINDOW_SECONDS: 60,
+  RATE_LIMIT_EMAIL_POINTS: 3,
+  RATE_LIMIT_EMAIL_WINDOW_SECONDS: 3600,
+};
 vi.mock("@cockpit-chess/env/server", () => ({ env: mockEnv }));
 
 const mockGetConnInfo = vi.fn(() => ({ remote: { address: "10.0.0.1" } }));
 vi.mock("@hono/node-server/conninfo", () => ({ getConnInfo: mockGetConnInfo }));
 
-const { resolveClientIp } = await import("./client-ip.js");
+// Exercise the real anonymous middleware key selection without import-time IO.
+vi.mock("@cockpit-chess/auth", () => ({
+  auth: { api: { getSession: vi.fn().mockResolvedValue(null) } },
+}));
+vi.mock("@cockpit-chess/queue", () => ({ redisConnection: {} }));
+vi.mock("rate-limiter-flexible", async (importOriginal) => {
+  const original = await importOriginal<typeof import("rate-limiter-flexible")>();
+  return { ...original, RateLimiterRedis: original.RateLimiterMemory };
+});
 
-function ctx(opts: { socket?: string; xff?: string; headers?: Record<string, string> }): Context {
+const { resolveClientIp } = await import("./client-ip.js");
+const { createRateLimiterMiddleware } = await import("./rate-limit.js");
+
+function ctx(opts: {
+  socket?: string;
+  xff?: string;
+  headers?: Record<string, string | undefined>;
+}): Context {
   mockGetConnInfo.mockReturnValue({ remote: { address: opts.socket ?? "" } });
   const headers: Record<string, string | undefined> = { ...opts.headers };
   if (opts.xff !== undefined) headers["x-forwarded-for"] = opts.xff;
@@ -218,5 +244,60 @@ describe("resolveClientIp behind a Cloudflare Tunnel", () => {
       "127.0.0.1",
     );
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Synthetic app-boundary fixtures, not captures or a simulation of Traefik.
+// The owner must verify the real ingress produces this chain before rollout:
+// docs/public-hosting.md. Documentation addresses stand in for the edge/clients.
+describe("public Cloudflare proxy topology contract", () => {
+  it.each(publicProxyFixtures)("$id", (fixture) => {
+    mockEnv.TRUST_PROXY_HOPS = fixture.hops;
+    expect(resolveClientIp(ctx(fixture))).toBe(fixture.expectedClientIp);
+  });
+
+  it("keeps two visitors in separate anonymous buckets and cannot rotate a bucket with forged headers", async () => {
+    mockEnv.TRUST_PROXY_HOPS = 2;
+    mockGetConnInfo.mockReturnValue({ remote: { address: "10.0.0.2" } });
+    const limiter = new RateLimiterMemory({
+      keyPrefix: "public-proxy-contract",
+      points: 1,
+      duration: 60,
+    });
+    const consume = vi.spyOn(limiter, "consume");
+    const app = new Hono();
+    app.use("/*", createRateLimiterMiddleware(limiter, { failClosed: true }));
+    app.get("/ping", (c) => c.text("pong"));
+
+    for (const visitor of ["198.51.100.7", "2001:db8::7"]) {
+      const request = (forged: string) =>
+        app.request("/ping", {
+          headers: {
+            "x-forwarded-for": `${forged}, ${visitor}, 192.0.2.10`,
+            "cf-connecting-ip": forged,
+            "x-real-ip": forged,
+            forwarded: `for=${forged}`,
+          },
+        });
+      expect((await request("203.0.113.200")).status).toBe(200);
+      const blocked = await request("203.0.113.201");
+      expect(blocked.status).toBe(429);
+      expect(blocked.headers.get("Retry-After")).toBeTruthy();
+    }
+    expect(consume.mock.calls.map(([key]) => key)).toEqual([
+      "198.51.100.7",
+      "198.51.100.7",
+      "2001:db8::7",
+      "2001:db8::7",
+    ]);
+  });
+
+  it("does not authenticate a direct origin caller just because its forged chain has enough entries", () => {
+    // This is why origin isolation and zone authentication are mandatory.
+    // The resolver counts hops; it cannot enforce a firewall or authenticate TLS.
+    mockEnv.TRUST_PROXY_HOPS = 2;
+    expect(resolveClientIp(ctx({ socket: "203.0.113.50", xff: "198.51.100.7, 192.0.2.10" }))).toBe(
+      "198.51.100.7",
+    );
   });
 });

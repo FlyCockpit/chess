@@ -1,0 +1,117 @@
+[
+  {
+    "id": "edge-traefik-ipv4",
+    "hops": 2,
+    "socket": "10.0.0.2",
+    "xff": "198.51.100.7, 192.0.2.10",
+    "expectedClientIp": "198.51.100.7"
+  },
+  {
+    "id": "edge-traefik-ipv6",
+    "hops": 2,
+    "socket": "fd00::2",
+    "xff": "2001:db8::7, 2001:db8:1::10",
+    "expectedClientIp": "2001:db8::7"
+  },
+  {
+    "id": "edge-traefik-forged-prefix-and-alternate-headers",
+    "hops": 2,
+    "socket": "10.0.0.2",
+    "xff": "203.0.113.200, 203.0.113.201, 198.51.100.7, 192.0.2.10",
+    "headers": {
+      "cf-connecting-ip": "203.0.113.200",
+      "true-client-ip": "203.0.113.200",
+      "x-real-ip": "203.0.113.200",
+      "forwarded": "for=203.0.113.200"
+    },
+    "expectedClientIp": "198.51.100.7"
+  },
+  {
+    "id": "edge-traefik-ipv4-port",
+    "hops": 2,
+    "socket": "10.0.0.2",
+    "xff": "203.0.113.200, 198.51.100.7:54321, 192.0.2.10",
+    "expectedClientIp": "198.51.100.7"
+  },
+  {
+    "id": "edge-traefik-ipv6-port",
+    "hops": 2,
+    "socket": "fd00::2",
+    "xff": "[2001:db8::7]:54321, 2001:db8:1::10",
+    "expectedClientIp": "2001:db8::7"
+  },
+  {
+    "id": "edge-traefik-ipv6-bare-final-group-is-not-port",
+    "hops": 2,
+    "socket": "fd00::2",
+    "xff": "2001:db8::443, 2001:db8:1::10",
+    "expectedClientIp": "2001:db8::443"
+  },
+  {
+    "id": "edge-traefik-short-chain",
+    "hops": 2,
+    "socket": "10.0.0.2",
+    "xff": "192.0.2.10",
+    "headers": { "cf-connecting-ip": "198.51.100.7" },
+    "expectedClientIp": "10.0.0.2"
+  },
+  {
+    "id": "edge-traefik-invalid-selected-entry",
+    "hops": 2,
+    "socket": "10.0.0.2",
+    "xff": "203.0.113.200, not-an-ip, 192.0.2.10",
+    "headers": { "cf-connecting-ip": "198.51.100.7" },
+    "expectedClientIp": "10.0.0.2"
+  },
+  {
+    "id": "edge-traefik-invalid-selected-port",
+    "hops": 2,
+    "socket": "10.0.0.2",
+    "xff": "[2001:db8::7]:65536, 192.0.2.10",
+    "expectedClientIp": "10.0.0.2"
+  },
+  {
+    "id": "edge-traefik-missing-xff-never-uses-cf-header",
+    "hops": 2,
+    "socket": "10.0.0.2",
+    "headers": { "cf-connecting-ip": "198.51.100.7" },
+    "expectedClientIp": "10.0.0.2"
+  },
+  {
+    "id": "normalized-ingress-exactly-one-visitor-ipv4",
+    "hops": 1,
+    "socket": "10.0.0.2",
+    "xff": "198.51.100.7",
+    "headers": { "cf-connecting-ip": "203.0.113.200" },
+    "expectedClientIp": "198.51.100.7"
+  },
+  {
+    "id": "normalized-ingress-exactly-one-visitor-ipv6",
+    "hops": 1,
+    "socket": "fd00::2",
+    "xff": "2001:db8::7",
+    "expectedClientIp": "2001:db8::7"
+  },
+  {
+    "id": "wrong-hop-count-one-selects-edge-instead-of-visitor",
+    "hops": 1,
+    "socket": "10.0.0.2",
+    "xff": "198.51.100.7, 192.0.2.10",
+    "expectedClientIp": "192.0.2.10"
+  },
+  {
+    "id": "wrong-hop-count-two-on-normalized-chain-shares-socket",
+    "hops": 2,
+    "socket": "10.0.0.2",
+    "xff": "198.51.100.7",
+    "expectedClientIp": "10.0.0.2"
+  },
+  {
+    "id": "socket-only-direct-caller-forging-both-headers",
+    "hops": 0,
+    "socket": "203.0.113.50",
+    "xff": "198.51.100.7, 192.0.2.10",
+    "headers": { "cf-connecting-ip": "198.51.100.7" },
+    "expectedClientIp": "203.0.113.50"
+  }
+]
