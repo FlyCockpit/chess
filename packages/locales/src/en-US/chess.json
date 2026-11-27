@@ -523,7 +523,7 @@
       "remarks": {
         "off": "Players send only their move.",
         "commentary": "Each player may add one short, neutral remark about its own move or plan.",
-        "trash-talk": "Each player adds one short, playful jab at the opponent's last move or position: tasteful and about the game, no slurs, profanity or remarks about anyone's identity."
+        "trash-talk": "Models may trash talk and choose their own tone from move to move: playful, friendly, gracious, neutral or silent. Remarks stay tasteful and about the game, with no slurs, profanity or remarks about anyone's identity."
       },
       "moveLimit": "A safety limit for one move. Blank uses {{auto}}: one minute, never longer than a side's clock. {{min}}–{{max}} seconds.",
       "illegalPolicy": {

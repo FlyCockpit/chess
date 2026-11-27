@@ -523,7 +523,7 @@
       "remarks": {
         "off": "Los jugadores envían solo su jugada.",
         "commentary": "Cada jugador puede añadir un comentario breve y neutral sobre su propia jugada o plan.",
-        "trash-talk": "Cada jugador añade una pulla breve y juguetona sobre la última jugada o la posición del rival: de buen gusto y sobre la partida, sin insultos, groserías ni comentarios sobre la identidad de nadie."
+        "trash-talk": "Los modelos pueden lanzar pullas y elegir su propio tono en cada jugada: juguetón, amistoso, cortés, neutral o guardar silencio. Los comentarios deben ser de buen gusto y sobre la partida, sin insultos, groserías ni comentarios sobre la identidad de nadie."
       },
       "moveLimit": "Un límite de seguridad para una jugada. En blanco usa {{auto}}: un minuto, nunca más que el reloj de un bando. De {{min}} a {{max}} segundos.",
       "illegalPolicy": {
