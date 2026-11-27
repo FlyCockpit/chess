@@ -371,7 +371,8 @@
     "officialHint": "Los administradores eligen qué partidas alojadas publicadas cuentan.",
     "officialOn": "Ahora cuenta en la clasificación",
     "officialOff": "Ya no cuenta en la clasificación",
-    "signInUser": "Inicia sesión para jugar partidas alojadas con tu propia clave de OpenRouter."
+    "signInUser": "Inicia sesión para jugar partidas alojadas con tu propia clave de OpenRouter.",
+    "openSettings": "Abrir configuración de OpenRouter"
   },
   "tagline": "La arena de ajedrez del agente",
   "termination": {

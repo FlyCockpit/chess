@@ -30,12 +30,13 @@ import { useDocumentAdmits } from "@/hooks/use-document-admits";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
 import { fileDropTargetRef } from "@/lib/file-drop-registry";
 import { networkFailureKind } from "@/lib/network-failure";
+import { openRouterMoney } from "@/lib/openrouter-connect";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 import { CreateMatchDialog } from "./create-match-dialog";
 import { keyExhausted } from "./create-match-form";
-import { endingHeadlineLabel, usdLabel } from "./ending-label";
+import { endingHeadlineLabel } from "./ending-label";
 import { replayRefetch } from "./evaluation";
 import {
   checkArchiveFile,
@@ -184,12 +185,14 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
       <p className="cc-muted mb-2">
         {ownRemaining === null
           ? t("studio.billedToUnlimited")
-          : t("studio.billedTo", { remaining: usdLabel(i18n.language, ownRemaining) })}
+          : t("studio.billedTo", { remaining: openRouterMoney(i18n.language, ownRemaining) })}
       </p>
       <p className="cc-muted mb-4">{t("studio.rules", { count: info?.dailyLimit ?? 1 })}</p>
       {keyExhausted(ownRemaining) && (
         <p className="cc-error mb-4" role="alert">
-          {t("create.keyExhausted", { remaining: usdLabel(i18n.language, ownRemaining ?? 0) })}
+          {t("create.keyExhausted", {
+            remaining: openRouterMoney(i18n.language, ownRemaining ?? 0),
+          })}
         </p>
       )}
       <div className="cc-hero-actions">
@@ -251,7 +254,11 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                 <p className="cc-error mb-4" role="status">
                   {t(`endingHelp.${detail.archive.termination}`)}{" "}
                   <Link to="/$lang/settings/openrouter" params={{ lang: i18n.language }}>
-                    {t("studio.connectAction")}
+                    {t(
+                      detail.archive.termination === "account-limit"
+                        ? "studio.openSettings"
+                        : "studio.connectAction",
+                    )}
                   </Link>
                 </p>
               )}
@@ -284,7 +291,11 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                       aria-current={game.slug === selected ? "true" : undefined}
                     >
                       <span className="cc-pill">
-                        {game.published ? t(`arena.status.${game.status}`) : t("arena.unpublished")}
+                        {game.published
+                          ? t(`arena.status.${game.status}`)
+                          : game.status === "queued"
+                            ? `${t("arena.status.queued")} · ${t("arena.unpublished")}`
+                            : t("arena.unpublished")}
                       </span>
                       <h3>{game.title}</h3>
                       <p>
@@ -300,15 +311,17 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                             {t("studio.preview")}
                           </button>
                         )}
-                        <button
-                          type="button"
-                          disabled={publish.isPending}
-                          onClick={() =>
-                            publish.mutate({ slug: game.slug, published: !game.published })
-                          }
-                        >
-                          {t(game.published ? "studio.unpublish" : "studio.publish")}
-                        </button>
+                        {(game.published || game.status !== "queued") && (
+                          <button
+                            type="button"
+                            disabled={publish.isPending}
+                            onClick={() =>
+                              publish.mutate({ slug: game.slug, published: !game.published })
+                            }
+                          >
+                            {t(game.published ? "studio.unpublish" : "studio.publish")}
+                          </button>
+                        )}
                         {["running", "queued"].includes(game.status) && (
                           <button
                             type="button"

@@ -7,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@cockpit-chess/ui/components/card";
+import { toast } from "@cockpit-chess/ui/components/sileo";
 import { Skeleton } from "@cockpit-chess/ui/components/skeleton";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -29,6 +30,7 @@ import {
   LIMIT_CHOICES,
   type LimitChoice,
   manageKeyUrl,
+  openRouterMoney,
   startOpenRouterConnect,
 } from "@/lib/openrouter-connect";
 import { orpc } from "@/utils/orpc";
@@ -36,14 +38,6 @@ import { orpc } from "@/utils/orpc";
 /** `openrouter.status`, exactly as the server projects it (never key material). */
 type OpenRouterStatus = Awaited<ReturnType<AppRouterClient["openrouter"]["status"]>>;
 type Connected = Extract<OpenRouterStatus, { connected: true }>;
-
-const microsUsd = (locale: string, micros: number) =>
-  new Intl.NumberFormat(locale, {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: micros > 0 && micros < 10_000 ? 4 : 2,
-  }).format(micros / 1_000_000);
 
 /**
  * Settings → OpenRouter. Every state says what happens next: unavailable here,
@@ -141,7 +135,7 @@ function ConnectCard({
   lang: string;
   mode?: "connect" | "reconnect" | "replace";
 }) {
-  const { t } = useTranslation(["settings"]);
+  const { t, i18n } = useTranslation(["settings"]);
   const [limit, setLimit] = useState<LimitChoice>(DEFAULT_LIMIT);
   const [expiry, setExpiry] = useState<ExpiryChoice>(DEFAULT_EXPIRY);
   const limitId = useId();
@@ -197,7 +191,7 @@ function ConnectCard({
               label:
                 choice === null
                   ? t("settings:openrouter.noLimit")
-                  : t("settings:openrouter.limitUsd", { amount: choice }),
+                  : openRouterMoney(i18n.language, choice * 1_000_000),
             }))}
           />
           <p className="text-xs text-muted-foreground">{t("settings:openrouter.limitHint")}</p>
@@ -219,7 +213,13 @@ function ConnectCard({
         </div>
         {connect.isError && (
           <p role="alert" className="text-sm text-destructive">
-            {t(`settings:openrouter.connectError.${failure}`)}
+            {failure === "rateLimited" &&
+            connect.error instanceof ConnectError &&
+            connect.error.retryAfterSeconds
+              ? t("settings:openrouter.connectError.rateLimitedMinutes", {
+                  count: Math.max(1, Math.ceil(connect.error.retryAfterSeconds / 60)),
+                })
+              : t(`settings:openrouter.connectError.${failure}`)}
           </p>
         )}
         <div className="space-y-2">
@@ -246,15 +246,17 @@ function ConnectedView({ status, lang }: { status: Connected; lang: string }) {
   const [disconnecting, setDisconnecting] = useState(false);
   const disconnect = useEntityMutation(
     orpc.openrouter.disconnect.mutationOptions({
-      onSuccess: () => setDisconnecting(false),
+      onSuccess: (result) => {
+        setDisconnecting(false);
+        toast.success(t(`settings:openrouter.disconnectDialog.toast.${result.stopped}`));
+      },
     }),
     {
       invalidateKey: orpc.openrouter.key(),
-      successMessage: t("settings:openrouter.disconnectDialog.success"),
     },
   );
   const money = (micros: number | null, nullLabel: string) =>
-    micros === null ? nullLabel : microsUsd(i18n.language, micros);
+    micros === null ? nullLabel : openRouterMoney(i18n.language, micros);
   const date = (value: string | null) =>
     value === null
       ? t("settings:openrouter.never")
@@ -288,7 +290,13 @@ function ConnectedView({ status, lang }: { status: Connected; lang: string }) {
             {t(invalid ? "settings:openrouter.invalidTitle" : "settings:openrouter.connectedTitle")}
           </CardTitle>
           {invalid && (
-            <CardDescription>{t("settings:openrouter.invalidDescription")}</CardDescription>
+            <CardDescription>
+              {t(
+                "invalidReason" in status && status.invalidReason === "unreadable"
+                  ? "settings:openrouter.unreadableDescription"
+                  : "settings:openrouter.invalidDescription",
+              )}
+            </CardDescription>
           )}
         </CardHeader>
         <CardContent className="space-y-4">

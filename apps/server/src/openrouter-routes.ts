@@ -49,6 +49,7 @@ const STATE_KEY = "cockpit-chess:openrouter-oauth:";
 export type OpenRouterConnectError =
   | "denied"
   | "expired"
+  | "used"
   | "mismatch"
   | "exchange"
   | "verify"
@@ -58,6 +59,7 @@ export type OpenRouterConnectError =
 interface OpenRouterStateStore {
   set(key: string, value: string, mode: "EX", seconds: number): Promise<unknown>;
   getdel(key: string): Promise<string | null>;
+  get(key: string): Promise<string | null>;
 }
 
 export interface OpenRouterRouteOptions {
@@ -205,10 +207,13 @@ export function mountOpenRouterRoutes<E extends Env>(
     };
     // Take the state first, whatever else is wrong: it must never be usable twice.
     let stored: z.infer<typeof recordSchema> | null = null;
+    let used = false;
     if (state && state.length <= 128) {
       let raw: string | null;
       try {
-        raw = await options.store.getdel(stateKey(state));
+        const key = stateKey(state);
+        raw = await options.store.getdel(key);
+        if (!raw) used = (await options.store.get(`${key}:used`)) !== null;
       } catch {
         return done("unavailable");
       }
@@ -218,11 +223,18 @@ export function mountOpenRouterRoutes<E extends Env>(
       } catch {
         stored = null;
       }
-      if (stored) lang = localeOf(stored.lang);
+      if (stored) {
+        try {
+          await options.store.set(`${stateKey(state)}:used`, "1", "EX", 3600);
+        } catch {
+          return done("unavailable");
+        }
+        lang = localeOf(stored.lang);
+      }
     }
     // OpenRouter echoes no state when the user declines.
     if (!code) return done("denied");
-    if (!stored) return done("expired");
+    if (!stored) return done(used ? "used" : "expired");
     const session = sessionOf(c);
     if (
       !session?.user ||

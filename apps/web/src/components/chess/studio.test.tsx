@@ -340,6 +340,12 @@ it("shows a queued match's position and the next step after an account-limit end
   const html = render();
   expect(html).not.toContain("Queued · position");
   expect(html).toContain("add credits on OpenRouter, then start a new match");
+  expect(html).toContain(enChess.studio.openSettings);
+  fixture.detail.data = {
+    ...(fixture.detail.data as object),
+    archive: { ...ended, termination: "credential-revoked" },
+  };
+  expect(render()).toContain(enChess.studio.connectAction);
 });
 it("keeps publishing controls but hides replay controls for old-rules cards", () => {
   fixture.items = [false, true].map((published) => ({
@@ -363,4 +369,27 @@ it("keeps publishing controls but hides replay controls for old-rules cards", ()
   } finally {
     fixture.items = [];
   }
+});
+
+it("hides publish for queued private matches but keeps live publish and unpublish", () => {
+  const item = {
+    id: "a",
+    slug: "a",
+    title: "Match",
+    whiteName: "W",
+    blackName: "B",
+    ending: null,
+    oldRules: false,
+    published: false,
+    status: "queued",
+  };
+  fixture.items = [item];
+  expect(render()).toContain(enChess.arena.status.queued);
+  expect(render()).toContain(enChess.arena.unpublished);
+  expect(render()).not.toContain(`>${enChess.studio.publish}</button>`);
+  fixture.items = [{ ...item, status: "running" }];
+  expect(render()).toContain(`>${enChess.studio.publish}</button>`);
+  fixture.items = [{ ...item, published: true }];
+  expect(render()).toContain(`>${enChess.studio.unpublish}</button>`);
+  fixture.items = [];
 });

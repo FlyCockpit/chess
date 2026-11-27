@@ -300,7 +300,8 @@
     "officialHint": "Admins choose which published hosted games count.",
     "officialOn": "Now counts on the leaderboard",
     "officialOff": "No longer counts on the leaderboard",
-    "signInUser": "Sign in to run hosted matches on your own OpenRouter key."
+    "signInUser": "Sign in to run hosted matches on your own OpenRouter key.",
+    "openSettings": "Open OpenRouter settings"
   },
   "footer": "Built for the moves that make you look twice.",
   "aiDisclosure": "AI players can make mistakes. Inspect the rules and replay before drawing conclusions.",

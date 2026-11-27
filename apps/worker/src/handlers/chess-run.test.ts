@@ -86,6 +86,11 @@ vi.mock("@cockpit-chess/api/lib/provider-key", () => ({
 const { default: prisma } = await import("@cockpit-chess/db");
 const db = prisma as DeepMockProxy<typeof prismaInstance>;
 const { handleChessReconcileJob, handleChessRunJob } = await import("./chess-run");
+const { applyChessKeyRevocation, resetChessKeyRevocations } = await import(
+  "../chess-key-revocations"
+);
+const { fakeValkey } = await import("@cockpit-chess/queue/chess-key-revocation/test-support");
+const { chessKeyLeasesBlocking } = await import("@cockpit-chess/queue/chess-key-revocation");
 const player = { name: "Baseline", model: "random", protocol: "random" as const };
 /** A cockpit-v1 match with a 2-ply cap: hosted v1 matches still running at deploy resume. */
 const archive = () =>
@@ -768,6 +773,7 @@ describe("hosted matches billed to the owner's own OpenRouter key", () => {
       (_, value) => (typeof value === "bigint" ? value.toString() : value),
     );
   let fetchSpy: ReturnType<typeof catalog>;
+  let valkey: ReturnType<typeof fakeValkey>;
   beforeEach(() => {
     env.CHESS_HOSTED_ENABLED = true;
     env.CHESS_USER_MATCHES_ENABLED = true;
@@ -778,6 +784,8 @@ describe("hosted matches billed to the owner's own OpenRouter key", () => {
       { userId: "user-b", keyHash: "hash-b", status: "active" },
     ] as never);
     fetchSpy = catalog();
+    valkey = fakeValkey();
+    resetChessKeyRevocations(valkey.connection);
   });
   afterEach(() => {
     fetchSpy.mockRestore();
@@ -939,6 +947,124 @@ describe("hosted matches billed to the owner's own OpenRouter key", () => {
         .join(),
     ).toContain("[redacted]");
     expect(observable()).not.toContain(CANARY);
+  });
+
+  describe("Disconnect (key-use leases and the revocation broadcast)", () => {
+    let chatCalls: number;
+    beforeEach(() => {
+      chatCalls = 0;
+    });
+    /** Disconnect's own completion test: no lease loading or on the revoked key. */
+    const disconnectDone = async () =>
+      !(await chessKeyLeasesBlocking(valkey.connection, "user-b", ["hash-b"], null));
+    /** Real runner, real agent runtime: only the network is fake. */
+    const network = (onChat: (signal: AbortSignal | null | undefined) => Promise<Response>) => {
+      fetchSpy.mockImplementation(async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        if (new URL(request.url).pathname.endsWith("/models"))
+          return Response.json({
+            data: [{ id: "vendor/model", pricing: { prompt: "0.000001", completion: "0.000002" } }],
+          });
+        chatCalls += 1;
+        expect(request.headers.get("authorization")).toBe(`Bearer ${CANARY}`);
+        return onChat(init?.signal ?? request.signal);
+      });
+    };
+
+    it("makes zero provider calls once Disconnect sees the key no longer in use", async () => {
+      db.chessMatch.findUnique.mockResolvedValue(userRow() as never);
+      let disconnected = false;
+      network(
+        (signal) =>
+          new Promise<Response>((_resolve, reject) => {
+            // Disconnect lands while the first model request is in flight.
+            if (chatCalls === 1)
+              applyChessKeyRevocation({ userId: "user-b", keyHashes: ["hash-b"] });
+            if (signal?.aborted) reject(signal.reason);
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          }),
+      );
+      expect(await disconnectDone()).toBe(true);
+      const run = handleChessRunJob({ data: { matchId: "match-id" } });
+      // While the run holds the key, Disconnect keeps waiting.
+      await vi.waitFor(() => expect(chatCalls).toBe(1));
+      await vi.waitFor(async () => {
+        disconnected = await disconnectDone();
+        expect(disconnected).toBe(true);
+      });
+      // Disconnect returns here. From now on nothing may leave with the key.
+      const callsAtReturn = chatCalls;
+      const result = await run;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(callsAtReturn).toBe(1);
+      expect(chatCalls).toBe(callsAtReturn);
+      expect(result).toMatchObject({ termination: "credential-revoked", result: "*" });
+      expect(observable()).not.toContain(CANARY);
+    });
+
+    it("never dispatches a run whose revocation arrived while it was starting", async () => {
+      providerKey.load.mockImplementation(async () => {
+        // Disconnect lands while the key is being loaded.
+        applyChessKeyRevocation({ userId: "user-b", keyHashes: ["hash-b"] });
+        return { apiKey: CANARY, keyHash: "hash-b" };
+      });
+      db.chessMatch.findUnique.mockResolvedValue(userRow() as never);
+      network(async () => new Response("{}", { status: 500 }));
+      const result = await handleChessRunJob({ data: { matchId: "match-id" } });
+      expect(chatCalls).toBe(0);
+      expect(result).toMatchObject({ termination: "credential-revoked" });
+      expect(await disconnectDone()).toBe(true);
+    });
+
+    it("never dispatches a run whose key was revoked before it loaded (a missed message)", async () => {
+      valkey.sets.set("cockpit-chess:openrouter-key-revoked:user-b", new Map([["hash-b", 1]]));
+      db.chessMatch.findUnique.mockResolvedValue(userRow() as never);
+      network(async () => new Response("{}", { status: 500 }));
+      const result = await handleChessRunJob({ data: { matchId: "match-id" } });
+      expect(chatCalls).toBe(0);
+      expect(result).toMatchObject({ termination: "credential-revoked" });
+    });
+
+    it("sends nothing from a run whose process stalled past its lease", async () => {
+      db.chessMatch.findUnique.mockResolvedValue(userRow() as never);
+      network(async () => {
+        // The first request is slow; meanwhile the process stalls past the lease.
+        vi.setSystemTime(Date.now() + 25_000);
+        return new Response("{}", { status: 503, headers: { "retry-after": "0" } });
+      });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const result = await handleChessRunJob({ data: { matchId: "match-id" } });
+      // The retry after the stall was refused at the dispatch boundary.
+      expect(chatCalls).toBe(1);
+      expect(result).toMatchObject({ result: "*" });
+      expect(await disconnectDone()).toBe(true);
+    });
+
+    it("refuses to load the key without a lease", async () => {
+      valkey.state.down = true;
+      db.chessMatch.findUnique.mockResolvedValue(userRow() as never);
+      const result = await handleChessRunJob({ data: { matchId: "match-id" } });
+      expect(providerKey.load).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ termination: "interrupted" });
+    });
+
+    it("leaves a run on a newer key of the same user alone", async () => {
+      db.chessMatch.findUnique.mockResolvedValue(userRow() as never);
+      let seen: AbortSignal | undefined;
+      runner.override = async (match, options) => {
+        // The previous key was disconnected while this one runs.
+        applyChessKeyRevocation({ userId: "user-b", keyHashes: ["hash-old"] });
+        seen = options?.signal;
+        finishMatch(match, "1-0", "resignation");
+        await options?.onUpdate?.(match);
+      };
+      await expect(handleChessRunJob({ data: { matchId: "match-id" } })).resolves.toMatchObject({
+        termination: "resignation",
+      });
+      expect(seen?.aborted).toBe(false);
+      // Its lease is gone once it ended.
+      expect(await disconnectDone()).toBe(true);
+    });
   });
 
   it("keeps the operator key for admin operator matches and leaves user keys alone", async () => {

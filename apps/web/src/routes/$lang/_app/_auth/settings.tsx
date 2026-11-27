@@ -1,6 +1,7 @@
-import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, useLocation } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 
+import { useRevealActiveTab } from "@/hooks/use-reveal-active-tab";
 import { settingsNavItems } from "@/lib/nav-items";
 
 export const Route = createFileRoute("/$lang/_app/_auth/settings")({
@@ -17,6 +18,8 @@ type SettingsRoute =
 function SettingsLayout() {
   const { lang } = Route.useParams();
   const { t } = useTranslation("settings");
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const tabsRef = useRevealActiveTab(pathname);
   // Keep the settings tabs in the shared navigation order.
   const navItems = settingsNavItems.map((item) => ({
     to: `/$lang${item.path}` as SettingsRoute,
@@ -30,7 +33,10 @@ function SettingsLayout() {
       <h1 className="mb-6 text-2xl font-semibold break-words">{t("title")}</h1>
       <div className="flex flex-col gap-6 md:flex-row md:gap-8">
         <nav className="w-full min-w-0 md:w-48 flex-shrink-0">
-          <div className="-mx-4 flex flex-row gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-4 no-scrollbar md:mr-0 md:-ml-3 md:flex-col md:overflow-x-visible md:overflow-y-visible md:overscroll-auto md:px-0">
+          <div
+            ref={tabsRef}
+            className="-mx-4 flex flex-row gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-4 no-scrollbar md:mr-0 md:-ml-3 md:flex-col md:overflow-x-visible md:overflow-y-visible md:overscroll-auto md:px-0"
+          >
             {navItems.map((item) => (
               <Link
                 key={item.to}

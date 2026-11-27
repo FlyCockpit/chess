@@ -24,6 +24,7 @@ import { createConsumerHeartbeat } from "@cockpit-chess/queue/consumer-health";
 import { type Processor, Worker, type WorkerOptions } from "bullmq";
 import { syncBackupFreshnessScheduler } from "./backup-freshness-scheduler.js";
 import { startChessCapacity } from "./chess-capacity.js";
+import { startChessKeyRevocations, stopChessKeyRevocations } from "./chess-key-revocations.js";
 import { handleCheckBackupFreshnessJob } from "./handlers/check-backup-freshness.js";
 import { handleChessReconcileJob, handleChessRunJob } from "./handlers/chess-run.js";
 import { handleNotifyDataDeletionsJob } from "./handlers/notify-data-deletions.js";
@@ -52,6 +53,8 @@ export async function startWorkerRuntime(options: {
   claimed = true;
   const { embedded } = options;
   const connection = createRedisConnection();
+  // Subscriber mode: a connection of its own (chess-key-revocations.ts).
+  const revocationSubscriber = createRedisConnection();
   const heartbeatConnection = createRedisConnection({
     maxRetriesPerRequest: 1,
     commandTimeout: 3000,
@@ -103,6 +106,8 @@ export async function startWorkerRuntime(options: {
       if (results.some((result) => result.status === "rejected")) {
         throw new Error("One or more job consumers did not close cleanly.");
       }
+      stopChessKeyRevocations();
+      revocationSubscriber.disconnect();
       connection.disconnect();
       heartbeatConnection.disconnect();
       closeOperationalAlertConnection();
@@ -150,6 +155,14 @@ export async function startWorkerRuntime(options: {
     // Hosted matches mostly wait on the network, so many run at once; their engine
     // work shares one bounded Stockfish pool (chess-capacity.ts).
     chessCapacity = startChessCapacity(connection);
+    // Before any match runs: an OpenRouter Disconnect aborts this process's runs on
+    // that key at once (chess-key-revocations.ts).
+    await withTimeout(
+      startChessKeyRevocations(revocationSubscriber, connection),
+      5000,
+      "Redis subscribe timed out",
+    );
+    requireRunning();
     const chessWorker = createWorker<ChessRunJobData>(
       QUEUE_NAMES.chessRun,
       (job) => handleChessRunJob(job, options.signal),

@@ -110,8 +110,9 @@ export const serverVars = {
   // URL can take up to this long to appear. See apps/server/src/seo.ts.
   SSR_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).default(60),
   // The public source of the code this server runs (AGPL-3.0 § 13). The
-  // footer's "Source code" link points at `<url>/tree/<build commit>`, or at
-  // the URL itself when the commit is unknown. Operators running a modified
-  // copy point it at their own repository.
+  // "Source code" link: a `{commit}` placeholder is replaced by the build
+  // commit; the default upstream repository gets `/tree/<build commit>`; any
+  // other URL is used as given. Operators running a modified copy point it at
+  // their own repository (packages/api/src/lib/build-commit.ts).
   SOURCE_CODE_URL: httpUrl("SOURCE_CODE_URL").default("https://github.com/FlyCockpit/chess"),
 };

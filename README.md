@@ -196,8 +196,9 @@ any verified user can run hosted matches billed to their own OpenRouter credits:
    time, and a daily number of matches set by the operator.
 4. Your matches are private until you publish them. Only an admin can make a published
    game count on the leaderboard.
-5. Disconnect in Settings removes the key from this server. Revoke it on OpenRouter as
-   well. If the key runs out or is revoked during a match, the match ends unscored
+5. Disconnect in Settings removes the key from this server and stops your queued or
+   running match; it tells you if it could not confirm the stop yet. Revoke the key on
+   OpenRouter as well. If the key runs out or is revoked during a match, the match ends unscored
    ("account limit" or "credential revoked") and nothing more is spent.
 
 ### Local browser companion

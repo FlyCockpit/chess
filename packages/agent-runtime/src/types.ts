@@ -66,6 +66,12 @@ export interface AgentModel {
    * (`HTTP-Referer`, `X-OpenRouter-Title`). Never credentials: the key goes in `apiKey`.
    */
   headers?: Record<string, string>;
+  /**
+   * Called synchronously right before every HTTP request to the provider (retries and
+   * fallbacks included); throwing refuses the request, so nothing is sent. Hosted runs
+   * use it to stop at once when the key they hold may no longer be used.
+   */
+  beforeDispatch?: () => void;
 }
 
 export interface AgentTool<TSchema extends z.ZodType = z.ZodType> {

@@ -116,11 +116,10 @@
       "pay": "You pay OpenRouter directly for the tokens your matches use. This server charges nothing.",
       "limit": "OpenRouter creates a key just for this server, with the spend limit and expiry you pick below. You can change both on OpenRouter's consent screen.",
       "safe": "The key stays on the server, encrypted. It is never shown again, not even to you or to admins.",
-      "revoke": "You can disconnect here or revoke the key on OpenRouter at any time; a running match then stops."
+      "revoke": "You can disconnect here at any time: this server deletes the key and stops your queued or running match on it. Revoking the key on OpenRouter also stops a running match, at its next request."
     },
     "limitLabel": "Spend limit for this key",
     "limitHint": "The most this key can ever spend. $10 is a good start; you can raise it later on OpenRouter.",
-    "limitUsd": "${{amount}}",
     "noLimit": "No limit",
     "expiryLabel": "Key expires after",
     "expiryHint": "After this the key stops working and you connect again. 90 days is a good default.",
@@ -140,9 +139,11 @@
       "signIn": "Your session ended. Sign in again, then connect.",
       "forbidden": "Your account can't connect OpenRouter yet. Verify your email address first, then try again.",
       "twoFactor": "Set up two-factor authentication in Settings → Security first, then connect.",
-      "rateLimited": "Too many connection attempts. Wait a minute and try again.",
+      "rateLimited": "Too many connection attempts. Wait a few minutes and try again.",
       "unavailable": "Connecting isn't available on this server right now. Try again later or ask the operator.",
-      "failed": "Couldn't start the connection. Check your network and try again."
+      "failed": "Couldn't start the connection. Check your network and try again.",
+      "rateLimitedMinutes_one": "Too many connection attempts. Try again in {{count}} minute.",
+      "rateLimitedMinutes_other": "Too many connection attempts. Try again in {{count}} minutes."
     },
     "connectedTitle": "Connected",
     "invalidTitle": "Reconnect needed",
@@ -178,19 +179,25 @@
       "verify": "OpenRouter gave a key that doesn't work. Start again, or check your OpenRouter account.",
       "unavailable": "Connecting isn't available on this server right now. Try again later.",
       "disabled": "This server doesn't allow connecting OpenRouter.",
-      "unknown": "The connection didn't finish. Start again."
+      "unknown": "The connection didn't finish. Start again.",
+      "used": "This connection link was already used. If Settings doesn't show your key as connected, start again."
     },
     "dismiss": "Dismiss",
     "disconnectDialog": {
       "title": "Disconnect OpenRouter?",
-      "description": "This server forgets the key at once, and any match running on it stops. The key itself still works on OpenRouter until you revoke it there.",
+      "description": "This server deletes the key and stops your queued or running match on it. Disconnect waits until the match has stopped, and tells you if it can't confirm that. The key itself keeps working on OpenRouter until you revoke it there.",
       "revokeNote": "To revoke it, open “Manage on OpenRouter” before or after disconnecting.",
       "typePrompt": "Type DISCONNECT to confirm",
       "token": "DISCONNECT",
       "copyAriaLabel": "Copy the confirmation word",
       "confirm": "Disconnect",
-      "pending": "Disconnecting…",
-      "success": "OpenRouter disconnected. Revoke the key on OpenRouter too."
-    }
+      "toast": {
+        "none": "OpenRouter disconnected. This server deleted the key. Revoke it on OpenRouter too.",
+        "stopped": "OpenRouter disconnected. Everything on this server that was using the key has stopped, and the key is deleted here. Revoke it on OpenRouter too.",
+        "pending": "OpenRouter disconnected and the key deleted here, but the server couldn't confirm yet that your running match stopped. Revoke the key on OpenRouter now to be sure nothing more is spent."
+      },
+      "pending": "Disconnecting…"
+    },
+    "unreadableDescription": "This server can't open your saved key, usually because its encryption secret changed. Connect again to keep running hosted matches, or ask the operator to check CHESS_PROVIDER_KEY_SECRET."
   }
 }

@@ -2,10 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CATALOG_TTL_MS,
   getModelCatalog,
-  OPENROUTER_MODELS_URL,
+  openRouterModelsUrl,
   parseCatalog,
   resetModelCatalogCache,
 } from "./chess-models";
+
+const { env } = vi.hoisted(() => ({ env: { OPENROUTER_ORIGIN: "https://openrouter.test" } }));
+vi.mock("@cockpit-chess/env/shared", () => ({ env }));
 
 const body = {
   data: [
@@ -76,7 +79,8 @@ describe("getModelCatalog", () => {
     await getModelCatalog(Date.now(), fetcher);
     expect(fetcher).toHaveBeenCalledTimes(1);
     const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe(OPENROUTER_MODELS_URL);
+    expect(url).toBe("https://openrouter.test/api/v1/models");
+    expect(url).toBe(openRouterModelsUrl());
     expect(JSON.stringify(init.headers)).not.toMatch(/authorization/i);
     expect(first.models).toHaveLength(3);
   });

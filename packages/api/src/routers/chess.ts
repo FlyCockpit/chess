@@ -27,6 +27,7 @@ import {
   publicProcedure,
 } from "../index";
 import { sourceCodeUrl } from "../lib/build-commit";
+import { CHESS_CREATE_LOCK } from "../lib/chess-locks";
 import { getModelCatalog } from "../lib/chess-models";
 import { spectatorEvaluationsFor } from "../lib/chess-spectator";
 import { chessStatsColumns, INTERRUPTED_ENDING, STOPPED_ENDING } from "../lib/chess-stats";
@@ -195,7 +196,6 @@ const refuse = (
 ) => new ORPCError(code, { message, data: { reason } });
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** One lock for every create: the queue, active and daily counts are read and written under it. */
-const CREATE_LOCK = "cockpit-chess:chess-create";
 const createInput = matchConfigSchema.extend({
   /**
    * Who pays the players: "operator" (the server's key, admins only) or "openrouter"
@@ -381,11 +381,19 @@ export const chessRouter = {
     // counts below cannot be raced past (creation is rare: 12 per user per hour).
     const capped = billing === "openrouter";
     const row = await prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CREATE_LOCK}))::text AS locked`;
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CHESS_CREATE_LOCK}))::text AS locked`;
       const queued = await tx.chessMatch.count({ where: { status: "queued" } });
       if (queued >= env.CHESS_QUEUE_MAX)
         throw refuse("TOO_MANY_REQUESTS", "queue-full", "The match queue is full");
       if (capped) {
+        // Again under the lock a Disconnect takes: a key deleted since the check above
+        // must not get a match queued after Disconnect cancelled the queued ones.
+        const connected = await tx.openRouterConnection.findFirst({
+          where: { userId: ownerId, status: "active" },
+          select: { id: true },
+        });
+        if (!connected)
+          throw refuse("PRECONDITION_FAILED", "not-connected", "Connect OpenRouter first");
         const active = await tx.chessMatch.count({
           where: {
             ownerId,

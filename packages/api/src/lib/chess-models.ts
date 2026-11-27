@@ -1,4 +1,5 @@
 import { catalogOutputLimits, type ModelProtocol, protocolForModel } from "@cockpit-chess/chess";
+import { env } from "@cockpit-chess/env/shared";
 import { z } from "zod";
 
 /**
@@ -8,7 +9,7 @@ import { z } from "zod";
  * one fetch in flight at a time. A failed refresh keeps serving the last good
  * copy, marked stale, and the next request tries upstream again.
  */
-export const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+export const openRouterModelsUrl = () => `${env.OPENROUTER_ORIGIN}/api/v1/models`;
 export const CATALOG_TTL_MS = 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
 /** Bounds the response the server keeps (OpenRouter lists a few hundred models). */
@@ -111,7 +112,7 @@ export function resetModelCatalogCache() {
 }
 
 async function fetchCatalog(fetcher: typeof fetch): Promise<ModelCatalog> {
-  const response = await fetcher(OPENROUTER_MODELS_URL, {
+  const response = await fetcher(openRouterModelsUrl(), {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });

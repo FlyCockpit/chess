@@ -19,6 +19,19 @@ const { env } = vi.hoisted(() => ({
   },
 }));
 vi.mock("@cockpit-chess/env/shared", () => ({ env }));
+const { fake } = vi.hoisted(() => ({
+  fake: {} as {
+    valkey: ReturnType<
+      typeof import("@cockpit-chess/queue/chess-key-revocation/test-support").fakeValkey
+    >;
+  },
+}));
+vi.mock("@cockpit-chess/queue", async () => {
+  const { fakeValkey } = await import("@cockpit-chess/queue/chess-key-revocation/test-support");
+  fake.valkey = fakeValkey();
+  return { redisConnection: fake.valkey.connection };
+});
+vi.mock("../lib/procedure-budget", () => ({ createProcedureBudget: () => async () => {} }));
 const { default: prisma } = await import("@cockpit-chess/db");
 const db = prisma as DeepMockProxy<typeof prismaInstance>;
 const { openrouterRouter, resetOpenRouterStatusCache } = await import("./openrouter");
@@ -101,6 +114,7 @@ describe("openrouter.status", () => {
       available: true,
       connected: true,
       status: "active",
+      invalidReason: null,
       label: "Live label",
       keyHint: CANARY.slice(-4),
       keyHash: HASH,
@@ -141,7 +155,11 @@ describe("openrouter.status", () => {
       ...sealProviderKey("user-a", CANARY, "33".repeat(32)),
     } as never);
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(keyResponse());
-    expect(await client().status()).toMatchObject({ status: "invalid", live: false });
+    expect(await client().status()).toMatchObject({
+      status: "invalid",
+      invalidReason: "unreadable",
+      live: false,
+    });
     expect(fetchSpy).not.toHaveBeenCalled();
     // Another replica may still hold that secret mid-rotation: the shared row stays active.
     expect(db.openRouterConnection.updateMany).not.toHaveBeenCalled();
@@ -167,7 +185,11 @@ describe("openrouter.status", () => {
     db.openRouterConnection.findUnique.mockResolvedValue(stored("user-a") as never);
     db.openRouterConnection.updateMany.mockResolvedValue({ count: 1 });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(keyResponse(401));
-    expect(await client().status()).toMatchObject({ status: "invalid", live: false });
+    expect(await client().status()).toMatchObject({
+      status: "invalid",
+      invalidReason: "rejected",
+      live: false,
+    });
     expect(db.openRouterConnection.updateMany).toHaveBeenCalledWith({
       where: { userId: "user-a", keyHash: HASH, status: "active" },
       data: { status: "invalid", lastCheckedAt: expect.any(Date) },
@@ -201,13 +223,247 @@ describe("openrouter.status", () => {
   });
 });
 
+const LEASES = "cockpit-chess:openrouter-key-use:";
+const REVOKED = "cockpit-chess:openrouter-key-revoked:";
+/** A live lease in the fake Valkey, as a worker or a status read would hold it. */
+const holdLease = (userId: string, member: string, ms = 30_000) => {
+  const set = fake.valkey.sets.get(`${LEASES}${userId}`) ?? new Map<string, number>();
+  set.set(member, Date.now() + ms);
+  fake.valkey.sets.set(`${LEASES}${userId}`, set);
+  return () => set.delete(member);
+};
+
 describe("openrouter.disconnect", () => {
-  it("deletes only the caller's row and returns the hash for the revoke link", async () => {
-    db.openRouterConnection.findUnique.mockResolvedValue({ keyHash: HASH } as never);
+  const revocations = () =>
+    fake.valkey.published.map(([channel, raw]) => ({ channel, ...JSON.parse(raw) }));
+  beforeEach(() => {
+    fake.valkey.sets.clear();
+    fake.valkey.published.length = 0;
+    fake.valkey.state.down = false;
+    fake.valkey.state.uptimeSeconds = 3600;
+    db.$transaction.mockImplementation((async (run: (tx: typeof db) => unknown) =>
+      run(db)) as never);
+    db.openRouterConnection.findUnique
+      .mockResolvedValueOnce({ keyHash: HASH } as never)
+      .mockResolvedValue(null);
     db.openRouterConnection.deleteMany.mockResolvedValue({ count: 1 });
-    expect(await client("user-c").disconnect()).toEqual({ disconnected: true, keyHash: HASH });
-    expect(db.openRouterConnection.deleteMany).toHaveBeenCalledWith({
-      where: { userId: "user-c" },
+    db.chessMatch.updateMany.mockResolvedValue({ count: 0 });
+  });
+
+  it("records the key as revoked, deletes that exact key and tells every worker", async () => {
+    expect(await client("user-c").disconnect()).toEqual({
+      disconnected: true,
+      keyHash: HASH,
+      stopped: "none",
     });
+    expect([...(fake.valkey.sets.get(`${REVOKED}user-c`)?.keys() ?? [])]).toEqual([HASH]);
+    expect(db.openRouterConnection.deleteMany).toHaveBeenCalledWith({
+      where: { userId: "user-c", keyHash: HASH },
+    });
+    expect(revocations()).toEqual([
+      { channel: "cockpit-chess:openrouter-key-revoked", userId: "user-c", keyHashes: [HASH] },
+    ]);
+    expect(JSON.stringify(fake.valkey.published)).not.toContain("CANARY");
+  });
+
+  it("cancels queued own-key matches in the delete's transaction", async () => {
+    await client("user-c").disconnect();
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
+      where: { ownerId: "user-c", credentialSource: "owner-openrouter", status: "queued" },
+      data: { status: "stopped", runToken: null, ending: { kind: "cancelled" } },
+    });
+    expect(db.openRouterConnection.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+      db.chessMatch.updateMany.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("takes the create lock before reading or deleting anything", async () => {
+    db.$queryRaw.mockResolvedValue([{ locked: "" }] as never);
+    await client("user-c").disconnect();
+    const lock = db.$queryRaw.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(lock[0].join("?")).toContain("pg_advisory_xact_lock");
+    expect(lock[1]).toBe("cockpit-chess:chess-create");
+    expect(db.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      db.openRouterConnection.findUnique.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("says pending while Valkey has just restarted (leases may be missing)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      fake.valkey.state.uptimeSeconds = 3;
+      const pending = client("user-c").disconnect();
+      await vi.advanceTimersByTimeAsync(10_100);
+      expect(await pending).toMatchObject({ stopped: "pending" });
+    } finally {
+      vi.useRealTimers();
+      fake.valkey.state.uptimeSeconds = 3600;
+    }
+  });
+
+  it("keeps a key another tab connected meanwhile, and its queued match", async () => {
+    db.openRouterConnection.findUnique.mockReset();
+    db.openRouterConnection.findUnique
+      .mockResolvedValueOnce({ keyHash: HASH } as never)
+      .mockResolvedValue({ keyHash: "hash-new" } as never);
+    db.openRouterConnection.deleteMany.mockResolvedValue({ count: 0 });
+    const newer = holdLease("user-c", "m9|hash-new");
+    expect(await client("user-c").disconnect()).toMatchObject({ stopped: "none" });
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+    // Only the old key is revoked: the run on the new one never blocks or stops.
+    expect(revocations()[0]?.keyHashes).toEqual([HASH]);
+    newer();
+  });
+
+  it("refuses without deleting anything when the revocation cannot be recorded", async () => {
+    fake.valkey.state.down = true;
+    await expect(client("user-c").disconnect()).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+    });
+    expect(db.openRouterConnection.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("answers only once no run holds the revoked key", async () => {
+    const release = holdLease("user-c", `m1|${HASH}`);
+    const pending = client("user-c").disconnect();
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(settled).toBe(false);
+    release();
+    expect(await pending).toMatchObject({ stopped: "stopped" });
+  });
+
+  it("waits for a run still loading a key and for a status read holding it", async () => {
+    const loading = holdLease("user-c", "m2|loading");
+    const read = holdLease("user-c", "read-1|loading");
+    const pending = client("user-c").disconnect();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    loading();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    read();
+    expect(await pending).toMatchObject({ stopped: "stopped" });
+  });
+
+  it("treats an expired lease as ended (its holder fenced itself before)", async () => {
+    holdLease("user-c", `m3|${HASH}`, -1);
+    expect(await client("user-c").disconnect()).toMatchObject({ stopped: "none" });
+  });
+
+  it("says pending, within the deadline, when a holder does not answer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      holdLease("user-c", `m4|${HASH}`, 60_000);
+      const pending = client("user-c").disconnect();
+      await vi.advanceTimersByTimeAsync(10_100);
+      expect(await pending).toMatchObject({ stopped: "pending" });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(db.openRouterConnection.deleteMany).toHaveBeenCalled();
+  });
+
+  it("says pending, never 'none', when Valkey cannot tell", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      db.$transaction.mockImplementation((async (run: (tx: typeof db) => unknown) => {
+        const result = await run(db);
+        fake.valkey.state.down = true;
+        return result;
+      }) as never);
+      const pending = client("user-c").disconnect();
+      await vi.advanceTimersByTimeAsync(10_100);
+      expect(await pending).toMatchObject({ stopped: "pending" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still waits on a run on a disconnected key when the revoked list was lost", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      // Valkey restarted: no revoked list, no row; a worker that missed the message
+      // still renews its lease on the old key.
+      db.openRouterConnection.findUnique.mockReset();
+      db.openRouterConnection.findUnique.mockResolvedValue(null);
+      holdLease("user-c", "m6|hash-lost", 60_000);
+      const pending = client("user-c").disconnect();
+      await vi.advanceTimersByTimeAsync(10_100);
+      expect(await pending).toMatchObject({ stopped: "pending" });
+      expect(revocations()[0]?.keyHashes).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("answers within the deadline when the database stalls", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      db.$transaction.mockImplementation((() => new Promise(() => {})) as never);
+      const pending = client("user-c").disconnect();
+      const outcome = expect(pending).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+      await vi.advanceTimersByTimeAsync(6000);
+      await outcome;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("repeats the broadcast for recently revoked keys when called again", async () => {
+    fake.valkey.sets.set(`${REVOKED}user-c`, new Map([[HASH, Date.now()]]));
+    db.openRouterConnection.findUnique.mockReset();
+    db.openRouterConnection.findUnique.mockResolvedValue(null);
+    const release = holdLease("user-c", `m5|${HASH}`);
+    const pending = client("user-c").disconnect();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    release();
+    expect(await pending).toEqual({ disconnected: true, keyHash: null, stopped: "stopped" });
+    expect(revocations()[0]?.keyHashes).toEqual([HASH]);
+    expect(db.openRouterConnection.deleteMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("openrouter.status key-use lease", () => {
+  beforeEach(() => {
+    fake.valkey.sets.clear();
+    fake.valkey.state.down = false;
+  });
+
+  it("holds a loading lease while it calls OpenRouter with the key, and releases it", async () => {
+    db.openRouterConnection.findUnique.mockResolvedValue(stored("user-a") as never);
+    let during: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      during = [...(fake.valkey.sets.get(`${LEASES}user-a`)?.keys() ?? [])];
+      expect(init?.signal).toBeDefined();
+      return keyResponse();
+    });
+    await client().status();
+    expect(during).toHaveLength(1);
+    expect(during[0]).toMatch(/\|loading$/);
+    expect([...(fake.valkey.sets.get(`${LEASES}user-a`)?.keys() ?? [])]).toEqual([]);
+  });
+
+  it("releases a lease whose take was applied but whose reply was lost", async () => {
+    db.openRouterConnection.findUnique.mockResolvedValue(stored("user-a") as never);
+    fake.valkey.state.failAfterApplying = true;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(keyResponse());
+    try {
+      await client().status();
+    } finally {
+      fake.valkey.state.failAfterApplying = false;
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect([...(fake.valkey.sets.get(`${LEASES}user-a`)?.keys() ?? [])]).toEqual([]);
+  });
+
+  it("makes no keyed call when the lease cannot be taken", async () => {
+    db.openRouterConnection.findUnique.mockResolvedValue(stored("user-a") as never);
+    fake.valkey.state.down = true;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(keyResponse());
+    expect(await client().status()).toMatchObject({ status: "active", live: false });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

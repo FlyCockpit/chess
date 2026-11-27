@@ -1178,8 +1178,10 @@ export const ENV_VARS: EnvVar[] = [
     advanced: true,
     example: "https://github.com/FlyCockpit/chess",
     comment: [
-      "Public source of the code this server runs (AGPL-3.0 section 13). The footer links",
-      "to <url>/tree/<build commit>. Point it at your own repository if you run a modified copy.",
+      "Public source of the code this server runs (AGPL-3.0 section 13), used as given. Put",
+      "{commit} where the build commit belongs (e.g. https://git.example/you/chess/-/tree/{commit});",
+      "only the default upstream URL gets /tree/<build commit> added. Point it at your own",
+      "repository if you run a modified copy.",
     ],
   },
 

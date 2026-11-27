@@ -41,6 +41,7 @@ function memoryStore() {
       data.set(key, value);
       return "OK";
     }),
+    get: vi.fn(async (key: string) => data.get(key) ?? null),
     getdel: vi.fn(async (key: string) => {
       const value = data.get(key) ?? null;
       data.delete(key);
@@ -102,6 +103,7 @@ const callback = (app: Hono, query: string, cookie?: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  db.openRouterConnection.upsert.mockClear();
   currentUser = { id: "user-a", emailVerified: true };
   admin.value = false;
   env.CHESS_USER_MATCHES_ENABLED = true;
@@ -219,7 +221,7 @@ describe("GET /api/openrouter/callback", () => {
     const { cookie, state } = await begin(ctx);
     await callback(ctx.app, `code=good-code&state=${state}`, cookie);
     const replay = await callback(ctx.app, `code=good-code&state=${state}`, cookie);
-    expect(replay.headers.get("location")).toBe("/en-US/settings/openrouter?error=expired");
+    expect(replay.headers.get("location")).toBe("/en-US/settings/openrouter?error=used");
     expect(ctx.exchanged).toHaveLength(1);
   });
 
@@ -233,7 +235,7 @@ describe("GET /api/openrouter/callback", () => {
     // And the state is spent, so the right user cannot be tricked into it later either.
     currentUser = { id: "user-a", emailVerified: true };
     const again = await callback(ctx.app, `code=good-code&state=${state}`, cookie);
-    expect(again.headers.get("location")).toContain("error=expired");
+    expect(again.headers.get("location")).toContain("error=used");
   });
 
   it("refuses a callback in a browser that did not start the flow", async () => {
@@ -253,6 +255,11 @@ describe("GET /api/openrouter/callback", () => {
     const { cookie, state } = await begin(ctx);
     ctx.store.data.clear();
     const response = await callback(ctx.app, `code=good-code&state=${state}`, cookie);
+    expect(response.headers.get("location")).toContain("error=expired");
+  });
+
+  it("treats an unknown state as expired", async () => {
+    const response = await callback(build().app, "code=good-code&state=unknown");
     expect(response.headers.get("location")).toContain("error=expired");
   });
 

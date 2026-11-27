@@ -34,7 +34,10 @@ export type ConnectFailure =
 
 export class ConnectError extends Error {
   readonly reason: ConnectFailure;
-  constructor(reason: ConnectFailure) {
+  constructor(
+    reason: ConnectFailure,
+    readonly retryAfterSeconds?: number,
+  ) {
     super(`OpenRouter connect failed: ${reason}`);
     this.name = "ConnectError";
     this.reason = reason;
@@ -84,7 +87,12 @@ export async function startOpenRouterConnect(
         typeof body === "object" && body !== null && "error" in body ? body.error : undefined,
       )
       .catch(() => undefined);
-    throw new ConnectError(connectFailureFor(response.status, code));
+    const retry = response.headers.get("retry-after");
+    const seconds = retry && /^[0-9]+$/.test(retry) ? Number(retry) : 0;
+    throw new ConnectError(
+      connectFailureFor(response.status, code),
+      response.status === 429 && Number.isSafeInteger(seconds) && seconds > 0 ? seconds : undefined,
+    );
   }
   let url: unknown;
   try {
@@ -106,6 +114,7 @@ export async function startOpenRouterConnect(
 export const CALLBACK_ERRORS = [
   "denied",
   "expired",
+  "used",
   "mismatch",
   "exchange",
   "verify",
@@ -129,11 +138,11 @@ export function callbackNotice(search: {
 
 /** The route's search, kept to the two values the callback may send. */
 export function parseOpenRouterSearch(search: Record<string, unknown>): {
-  connected?: "1";
+  connected?: 1;
   error?: string;
 } {
-  const out: { connected?: "1"; error?: string } = {};
-  if (search.connected === "1" || search.connected === 1) out.connected = "1";
+  const out: { connected?: 1; error?: string } = {};
+  if (search.connected === "1" || search.connected === 1) out.connected = 1;
   if (typeof search.error === "string" && /^[a-z-]{1,32}$/.test(search.error))
     out.error = search.error;
   return out;
@@ -144,3 +153,15 @@ export const manageKeyUrl = (keyHash: string) =>
   `https://openrouter.ai/keys/${encodeURIComponent(keyHash)}`;
 export const keyActivityUrl = (keyHash: string) =>
   `https://openrouter.ai/logs?api_key_hash=${encodeURIComponent(keyHash)}`;
+
+/** Format amounts on an OpenRouter key consistently, including sub-cent balances. */
+export function openRouterMoney(locale: string, micros: number): string {
+  const tiny = micros > 0 && micros < 10_000;
+  const amount = new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(tiny ? 0.01 : micros / 1_000_000);
+  return tiny ? `<${amount}` : amount;
+}

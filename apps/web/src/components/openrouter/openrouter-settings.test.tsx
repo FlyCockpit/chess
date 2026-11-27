@@ -7,6 +7,9 @@ import { I18nextProvider } from "react-i18next";
 import { beforeAll, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
+  error: undefined as unknown,
+  onSuccess: undefined as undefined | ((result: { stopped: string }) => void),
+  toast: vi.fn(),
   query: {
     data: undefined as unknown,
     error: undefined as unknown,
@@ -17,7 +20,13 @@ const fixture = vi.hoisted(() => ({
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQuery: () => fixture.query,
-  useMutation: () => ({ isPending: false, isSuccess: false, isError: false, mutate: () => {} }),
+  useMutation: () => ({
+    isPending: false,
+    isSuccess: false,
+    isError: !!fixture.error,
+    error: fixture.error,
+    mutate: () => {},
+  }),
 }));
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ to, children }: { to: string; children: ReactNode }) => <a data-to={to}>{children}</a>,
@@ -27,16 +36,22 @@ vi.mock("@/utils/orpc", () => ({
     openrouter: {
       key: () => ["openrouter"],
       status: { queryOptions: () => ({}) },
-      disconnect: { mutationOptions: () => ({}) },
+      disconnect: {
+        mutationOptions: (options: { onSuccess: (result: { stopped: string }) => void }) => {
+          fixture.onSuccess = options.onSuccess;
+          return options;
+        },
+      },
     },
   },
 }));
 vi.mock("@/hooks/use-entity-mutation", () => ({
   useEntityMutation: () => ({ isPending: false, mutate: () => {} }),
 }));
+vi.mock("@cockpit-chess/ui/components/sileo", () => ({ toast: { success: fixture.toast } }));
 vi.mock("@/components/confirm-delete-dialog", () => ({ ConfirmDeleteDialog: () => null }));
 
-import type { CallbackNotice } from "@/lib/openrouter-connect";
+import { type CallbackNotice, ConnectError } from "@/lib/openrouter-connect";
 import { OpenRouterSettings } from "./openrouter-settings";
 
 const i18n = createInstance();
@@ -89,7 +104,7 @@ it("guides a first connection: who pays, a suggested limit and expiry, and what 
   expect(html).toContain(copy.limitLabel);
   expect(html).toContain(copy.expiryLabel);
   // The suggested $10 and 90 days start selected.
-  expect(html).toMatch(/aria-pressed="true"[^>]*>\$10</);
+  expect(html).toMatch(/aria-pressed="true"[^>]*>\$10\.00</);
   expect(html).toMatch(/aria-pressed="true"[^>]*>90 days</);
   expect(html).toContain(copy.connect);
   expect(html).toContain(copy.connectNext);
@@ -142,4 +157,30 @@ it("offers a retry instead of the page when the status cannot load", () => {
 it("never renders key material, even if a response carried some", () => {
   const html = render(connected({ apiKey: CANARY, key: CANARY }));
   expect(html).not.toContain("CANARY");
+});
+
+it("explains an unreadable key separately", () => {
+  expect(render(connected({ status: "invalid", invalidReason: "unreadable" }))).toContain(
+    esc(copy.unreadableDescription),
+  );
+  expect(render(connected({ status: "invalid", invalidReason: "rejected" }))).toContain(
+    esc(copy.invalidDescription),
+  );
+});
+it("shows replay guidance", () => {
+  expect(render({ available: true, connected: false }, { kind: "error", code: "used" })).toContain(
+    esc(copy.result.used),
+  );
+});
+it("uses the retry window or a fallback", () => {
+  fixture.error = new ConnectError("rateLimited", 601);
+  expect(render({ available: true, connected: false })).toContain("Try again in 11 minutes.");
+  fixture.error = new ConnectError("rateLimited");
+  expect(render({ available: true, connected: false })).toContain(copy.connectError.rateLimited);
+  fixture.error = undefined;
+});
+it.each(["none", "stopped", "pending"] as const)("reports disconnect outcome %s", (stopped) => {
+  render(connected());
+  fixture.onSuccess?.({ stopped });
+  expect(fixture.toast).toHaveBeenLastCalledWith(copy.disconnectDialog.toast[stopped]);
 });

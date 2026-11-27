@@ -224,3 +224,56 @@ describe("createModelAdapter — extra request headers", () => {
     ).toEqual(headers);
   });
 });
+
+describe("createModelAdapter — beforeDispatch", () => {
+  const refuse = () => {
+    throw new Error("key lease ended");
+  };
+  it("runs the guard before every OpenRouter request, sending nothing when it throws", async () => {
+    createModelAdapter({ ...nonAnthropicOpenRouter, beforeDispatch: refuse });
+    const client = lastOpenRouterConfig()?.httpClient as HTTPClient;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    await expect(
+      client.request(new Request("https://openrouter.ai/api/v1/chat/completions")),
+    ).rejects.toThrow("key lease ended");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+  it("wraps the Anthropic and OpenAI SDK fetch with the guard", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    let allow = false;
+    const guard = () => {
+      if (!allow) refuse();
+    };
+    createModelAdapter({
+      provider: "anthropic",
+      model: "claude",
+      apiKey: "k",
+      beforeDispatch: guard,
+    });
+    createModelAdapter({
+      provider: "openai-chat",
+      model: "gpt",
+      apiKey: "k",
+      beforeDispatch: guard,
+    });
+    createModelAdapter({
+      provider: "openai-responses",
+      model: "gpt",
+      apiKey: "k",
+      beforeDispatch: guard,
+    });
+    const fetches = [anthropicCalls, chatCompletionsCalls, openaiCalls].map(
+      (calls) => (calls.at(-1)?.[2] as { fetch?: typeof fetch } | undefined)?.fetch,
+    );
+    for (const wrapped of fetches) {
+      expect(wrapped).toBeTypeOf("function");
+      expect(() => wrapped?.("https://x.example/")).toThrow("key lease ended");
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+    allow = true;
+    for (const wrapped of fetches) await wrapped?.("https://x.example/");
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    fetchSpy.mockRestore();
+  });
+});

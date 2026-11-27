@@ -35,7 +35,7 @@ export function durationLabel(t: ChessT, ms: number) {
     : t("duration.minutes", { minutes });
 }
 
-export function usdLabel(locale: string, micros: number) {
+function usdLabel(locale: string, micros: number) {
   const dollars = micros / 1_000_000;
   const cents = Number.isInteger(micros / 10_000) && (dollars >= 0.01 || micros === 0);
   return new Intl.NumberFormat(locale, {

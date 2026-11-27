@@ -306,6 +306,33 @@ describe.each<Protocol>(["openai-chat", "openai-responses", "anthropic"])(
       expect(result.usage).toMatchObject({ inputTokens: 11, outputTokens: 7 });
     });
 
+    it("sends nothing once beforeDispatch refuses, and checks before every request", async () => {
+      let allowed = 1;
+      const guard = vi.fn(() => {
+        if (allowed-- <= 0) throw new Error("key lease ended");
+      });
+      const requests = captureHttp((index) => responseFor(protocol, index === 0));
+      const base = options(protocol);
+      await expect(
+        runAgentLoop({
+          ...base,
+          model: { ...base.model, beforeDispatch: guard },
+          tools: [
+            {
+              name: "legal_moves",
+              description: "Get legal moves for one piece",
+              inputSchema: z.object({ piece: z.string() }),
+              maxResultChars: 1000,
+              execute: () => ["e2e4"],
+            },
+          ],
+        }),
+      ).rejects.toThrow();
+      // The first request went out; the second was refused before anything was sent.
+      expect(requests).toHaveLength(1);
+      expect(guard.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
     it("surfaces provider HTTP rejection instead of reporting a completed turn", async () => {
       const requests = captureHttp(
         () =>

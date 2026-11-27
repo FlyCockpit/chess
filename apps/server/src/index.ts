@@ -188,6 +188,8 @@ if (env.CORS_ORIGIN) {
       // the preflight fails and the request never leaves the browser — a
       // failure mode invisible in local dev. See cors-headers.ts.
       allowHeaders: [...CORS_ALLOW_HEADERS],
+      // Lets the web app say when a rate-limited action may be retried.
+      exposeHeaders: ["Retry-After"],
       credentials: true,
     }),
   );

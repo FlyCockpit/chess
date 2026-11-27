@@ -57,6 +57,10 @@ vi.mock("./operational-alerts.js", () => ({
   closeOperationalAlertConnection: () => state.events.push("alerts-close"),
   sendOperationalFailureAlert: vi.fn(async () => {}),
 }));
+vi.mock("./chess-key-revocations.js", () => ({
+  startChessKeyRevocations: vi.fn(async () => {}),
+  stopChessKeyRevocations: vi.fn(),
+}));
 vi.mock("./chess-capacity.js", () => ({
   startChessCapacity: () => ({ concurrency: 512, poolSize: 4, stop: vi.fn() }),
 }));
@@ -161,7 +165,8 @@ describe("startWorkerRuntime", () => {
         (worker) => worker.run.mock.calls.length === 0 && worker.close.mock.calls.length === 1,
       ),
     ).toBe(true);
-    expect(state.disconnect).toHaveBeenCalledTimes(2);
+    // Consumer, heartbeat and key-revocation subscriber connections.
+    expect(state.disconnect).toHaveBeenCalledTimes(3);
   });
 
   it("retries startup Redis without creating duplicate consumers", async () => {
@@ -229,7 +234,8 @@ describe("startWorkerRuntime", () => {
     publish?.();
     drain?.();
     await rejected;
-    expect(state.disconnect).toHaveBeenCalledTimes(2);
+    // Consumer, heartbeat and key-revocation subscriber connections.
+    expect(state.disconnect).toHaveBeenCalledTimes(3);
   });
 
   it("propagates an unclean startup drain instead of disguising it as an ordinary startup failure", async () => {

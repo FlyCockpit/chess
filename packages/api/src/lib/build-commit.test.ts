@@ -29,12 +29,31 @@ describe("readBuildCommit", () => {
 });
 
 describe("sourceCodeUrl", () => {
-  it("links the exact running commit, or the repository when it is unknown", () => {
-    const sha = "b".repeat(40);
+  const sha = "b".repeat(40);
+  it("links the upstream repository at the exact running commit, or itself when unknown", () => {
     expect(sourceCodeUrl("https://github.com/FlyCockpit/chess", sha)).toBe(
       `https://github.com/FlyCockpit/chess/tree/${sha}`,
     );
+    expect(sourceCodeUrl("https://github.com/FlyCockpit/chess/", null)).toBe(
+      "https://github.com/FlyCockpit/chess",
+    );
+  });
+
+  it("uses any other URL exactly as given", () => {
+    expect(sourceCodeUrl("https://example.com/fork", sha)).toBe("https://example.com/fork");
     expect(sourceCodeUrl("https://git.example.com/fork/", null)).toBe(
+      "https://git.example.com/fork/",
+    );
+  });
+
+  it("fills a {commit} placeholder, or cuts the URL there when the commit is unknown", () => {
+    expect(sourceCodeUrl("https://git.example.com/fork/-/tree/{commit}", sha)).toBe(
+      `https://git.example.com/fork/-/tree/${sha}`,
+    );
+    expect(sourceCodeUrl("https://github.com/me/chess/tree/{commit}", null)).toBe(
+      "https://github.com/me/chess",
+    );
+    expect(sourceCodeUrl("https://git.example.com/fork/-/tree/{commit}", null)).toBe(
       "https://git.example.com/fork",
     );
   });

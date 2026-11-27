@@ -29,7 +29,7 @@ registered access levels; handler tests verify ownership and custom role rules.
 | Inspect own private archive | implemented | none | own | own | `chess.inspect` | Owner-scoped; queue position and who pays; same spectator scores and backfill as `chess.get` |
 | Browse private studio | implemented | none | own | own | `chess.studio` | Owner-scoped; includes drafts |
 | See own OpenRouter connection | implemented | none | own | own | `openrouter.status` | Label, last four characters, key hash and OpenRouter's limit/usage numbers (cached 60 s); never the key or its ciphertext |
-| Disconnect own OpenRouter key | implemented | none | own | own | `openrouter.disconnect` | Deletes the sealed key; a running match on it stops at its next heartbeat |
+| Disconnect own OpenRouter key | implemented | none | own | own | `openrouter.disconnect` | Deletes the sealed key and cancels the caller's queued own-key match; answers `stopped: "stopped"` only once no key-use lease remains on the key (`"pending"` after 10 s without confirmation). Own budget: 20 per 10 min |
 | Spend the first-admin setup link | implemented | write | write | write | `setup.claimFirstAdmin` | The link token is the credential; 404 unless `SETUP_KEY` is set; refused once any admin exists; per-IP budget and secret-free audit line |
 | See that `SETUP_KEY` is still set | implemented | none | none | read | `settings.setupKeyStatus` | Hidden (404) from non-admins; drives the "Remove SETUP_KEY" banner |
 | Play and simulate locally | implemented | full | full | full | — | Public random baseline and local-process provider lab; no hosted spending |

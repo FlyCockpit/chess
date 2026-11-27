@@ -116,11 +116,10 @@
       "pay": "Pagas directamente a OpenRouter por los tokens que usan tus partidas. Este servidor no cobra nada.",
       "limit": "OpenRouter crea una clave solo para este servidor, con el límite de gasto y la caducidad que elijas abajo. Puedes cambiar ambos en la pantalla de autorización de OpenRouter.",
       "safe": "La clave se queda en el servidor, cifrada. Nunca se vuelve a mostrar, ni a ti ni a los administradores.",
-      "revoke": "Puedes desconectarla aquí o revocarla en OpenRouter cuando quieras; una partida en curso se detiene."
+      "revoke": "Puedes desconectarla aquí en cualquier momento: este servidor elimina la clave y detiene tu partida en espera o en curso que la use. Revocar la clave en OpenRouter también detiene una partida en curso, en su siguiente solicitud."
     },
     "limitLabel": "Límite de gasto de esta clave",
     "limitHint": "Lo máximo que esta clave podrá gastar. $10 es un buen comienzo; puedes subirlo después en OpenRouter.",
-    "limitUsd": "${{amount}}",
     "noLimit": "Sin límite",
     "expiryLabel": "La clave caduca después de",
     "expiryHint": "Después de este plazo la clave deja de funcionar y vuelves a conectarte. 90 días es un buen valor.",
@@ -140,9 +139,11 @@
       "signIn": "Tu sesión terminó. Inicia sesión de nuevo y luego conecta.",
       "forbidden": "Tu cuenta todavía no puede conectar OpenRouter. Primero verifica tu correo y vuelve a intentarlo.",
       "twoFactor": "Primero configura la autenticación de dos factores en Configuración → Seguridad y luego conéctate.",
-      "rateLimited": "Demasiados intentos de conexión. Espera un minuto y vuelve a intentarlo.",
+      "rateLimited": "Demasiados intentos de conexión. Espera unos minutos y vuelve a intentarlo.",
       "unavailable": "La conexión no está disponible en este servidor ahora. Inténtalo más tarde o pregunta al operador.",
-      "failed": "No se pudo iniciar la conexión. Revisa tu red y vuelve a intentarlo."
+      "failed": "No se pudo iniciar la conexión. Revisa tu red y vuelve a intentarlo.",
+      "rateLimitedMinutes_one": "Demasiados intentos de conexión. Inténtalo de nuevo en {{count}} minuto.",
+      "rateLimitedMinutes_other": "Demasiados intentos de conexión. Inténtalo de nuevo en {{count}} minutos."
     },
     "connectedTitle": "Conectada",
     "invalidTitle": "Hay que volver a conectar",
@@ -178,19 +179,25 @@
       "verify": "OpenRouter entregó una clave que no funciona. Empieza de nuevo o revisa tu cuenta de OpenRouter.",
       "unavailable": "La conexión no está disponible en este servidor ahora. Inténtalo más tarde.",
       "disabled": "Este servidor no permite conectar OpenRouter.",
-      "unknown": "La conexión no terminó. Empieza de nuevo."
+      "unknown": "La conexión no terminó. Empieza de nuevo.",
+      "used": "Este enlace de conexión ya se usó. Si tu clave no aparece como conectada en Configuración, empieza de nuevo."
     },
     "dismiss": "Cerrar",
     "disconnectDialog": {
       "title": "¿Desconectar OpenRouter?",
-      "description": "Este servidor olvida la clave de inmediato y cualquier partida que la use se detiene. La clave sigue funcionando en OpenRouter hasta que la revoques allí.",
+      "description": "Este servidor elimina la clave y detiene tu partida en espera o en curso que la use. La desconexión espera a que la partida se detenga y te avisa si no puede confirmarlo. La clave seguirá funcionando en OpenRouter hasta que la revoques allí.",
       "revokeNote": "Para revocarla, abre “Administrar en OpenRouter” antes o después de desconectar.",
       "typePrompt": "Escribe DISCONNECT para confirmar",
       "token": "DISCONNECT",
       "copyAriaLabel": "Copiar la palabra de confirmación",
       "confirm": "Desconectar",
-      "pending": "Desconectando…",
-      "success": "OpenRouter desconectado. Revoca también la clave en OpenRouter."
-    }
+      "toast": {
+        "none": "OpenRouter desconectado. Este servidor eliminó la clave. Revócala también en OpenRouter.",
+        "stopped": "OpenRouter desconectado. Todo lo que usaba la clave en este servidor se detuvo y la clave se eliminó de aquí. Revócala también en OpenRouter.",
+        "pending": "OpenRouter desconectado y clave eliminada de aquí, pero el servidor aún no pudo confirmar que tu partida en curso se detuvo. Revoca la clave en OpenRouter ahora para asegurarte de que no se gaste nada más."
+      },
+      "pending": "Desconectando…"
+    },
+    "unreadableDescription": "Este servidor no puede abrir tu clave guardada, normalmente porque cambió su secreto de cifrado. Conéctala de nuevo para seguir jugando partidas alojadas o pide al operador que revise CHESS_PROVIDER_KEY_SECRET."
   }
 }

@@ -1,3 +1,4 @@
+import { defaultStringifySearch } from "@tanstack/react-router";
 import { describe, expect, it, vi } from "vitest";
 
 const { webEnv } = vi.hoisted(() => ({
@@ -14,6 +15,7 @@ import {
   DEFAULT_LIMIT,
   keyActivityUrl,
   manageKeyUrl,
+  openRouterMoney,
   parseOpenRouterSearch,
   startOpenRouterConnect,
 } from "./openrouter-connect";
@@ -114,7 +116,7 @@ describe("the callback's result", () => {
   });
   it("keeps only the two short search values the callback sends", () => {
     expect(parseOpenRouterSearch({ connected: "1", code: "secret", state: "s" })).toEqual({
-      connected: "1",
+      connected: 1,
     });
     expect(parseOpenRouterSearch({ error: "denied" })).toEqual({ error: "denied" });
     expect(parseOpenRouterSearch({ error: "<script>", connected: "yes" })).toEqual({});
@@ -131,4 +133,32 @@ it("suggests a $10 limit and a 90-day expiry", () => {
   expect(DEFAULT_LIMIT).toBe(10);
   expect(DEFAULT_EXPIRY).toBe("90-days");
   expect(connectFailureFor(404)).toBe("unavailable");
+});
+
+it("serializes callback search without an extra redirect", () => {
+  expect(defaultStringifySearch(parseOpenRouterSearch({ connected: "1" }))).toBe("?connected=1");
+  expect(defaultStringifySearch(parseOpenRouterSearch({ error: "denied" }))).toBe("?error=denied");
+});
+
+it.each([
+  ["en-US", "$10.00", "<$0.01"],
+  ["es-MX", "USD 10.00", "<USD 0.01"],
+])("formats key money in %s", (locale, normal, tiny) => {
+  expect(openRouterMoney(locale, 10_000_000)).toBe(normal);
+  expect(openRouterMoney(locale, 1)).toBe(tiny);
+});
+
+it.each([
+  ["600", 600],
+  ["0", undefined],
+  ["1.5", undefined],
+  ["garbage", undefined],
+  ["9007199254740992", undefined],
+])("validates Retry-After %s", async (header, seconds) => {
+  const fetch = vi.fn(
+    async () => new Response("{}", { status: 429, headers: { "Retry-After": header } }),
+  );
+  await expect(
+    startOpenRouterConnect({ limitUsd: 10, expiration: "90-days", lang: "en-US" }, { fetch }),
+  ).rejects.toMatchObject({ reason: "rateLimited", retryAfterSeconds: seconds });
 });

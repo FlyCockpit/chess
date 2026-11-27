@@ -750,11 +750,14 @@ describe("chess.models", () => {
 });
 
 describe("hosted matches on the user's own OpenRouter key", () => {
-  const connected = () =>
+  const connected = () => {
     db.openRouterConnection.findUnique.mockResolvedValue({
       status: "active",
       expiresAt: null,
     } as never);
+    // The re-check under the create lock.
+    db.openRouterConnection.findFirst.mockResolvedValue({ id: "conn" } as never);
+  };
   const userClient = (id = "user-1") =>
     createRouterClient(chessRouter, { context: context("user", id) });
   beforeEach(() => {
@@ -793,6 +796,20 @@ describe("hosted matches on the user's own OpenRouter key", () => {
       }),
     );
     expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses, under the create lock, a key disconnected since the first check", async () => {
+    connected();
+    db.openRouterConnection.findFirst.mockResolvedValue(null);
+    await expect(userClient().create(newConfig())).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      data: { reason: "not-connected" },
+    });
+    expect(db.openRouterConnection.findFirst).toHaveBeenCalledWith({
+      where: { userId: "user-1", status: "active" },
+      select: { id: true },
+    });
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
   });
 
   it("never lets a non-admin bill the operator key", async () => {

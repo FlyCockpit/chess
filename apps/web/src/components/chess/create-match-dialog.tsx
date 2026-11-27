@@ -21,6 +21,7 @@ import { SegmentedControl } from "@/components/segmented-control";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
 import { useRangeFieldLabels } from "@/hooks/use-form-field-labels";
 import { networkFailureKind } from "@/lib/network-failure";
+import { openRouterMoney } from "@/lib/openrouter-connect";
 import { friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 import {
@@ -54,7 +55,7 @@ import {
   TOKEN_ACCOUNTING,
   toMatchConfig,
 } from "./create-match-form";
-import { durationLabel, usdLabel } from "./ending-label";
+import { durationLabel } from "./ending-label";
 import { type CatalogState, ModelPicker } from "./model-picker";
 import { ChoiceField, SettingsSection } from "./settings-section";
 import {
@@ -318,7 +319,7 @@ export function CreateMatchDialog({
                   ? ownKeyRemainingMicros === null
                     ? t("studio.billedToUnlimited")
                     : t("studio.billedTo", {
-                        remaining: usdLabel(i18n.language, ownKeyRemainingMicros),
+                        remaining: openRouterMoney(i18n.language, ownKeyRemainingMicros),
                       })
                   : t("create.billingHint.operator")}
                 {billing === "openrouter" && <> {t("create.billingHint.openrouter")}</>}
@@ -328,7 +329,7 @@ export function CreateMatchDialog({
                 limits.maxCostMicros < operatorLimits.maxCostMicros && (
                   <p className="cc-field-hint">
                     {t("create.remainingCap", {
-                      remaining: usdLabel(i18n.language, ownKeyRemainingMicros),
+                      remaining: openRouterMoney(i18n.language, ownKeyRemainingMicros),
                       max: currency.format(budgetMax),
                     })}
                   </p>

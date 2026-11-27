@@ -96,6 +96,14 @@ export interface ModelAdapter {
   modelOptions?: Record<string, unknown>;
 }
 
+/** `base` (globalThis.fetch when omitted, read at call time) behind `guard`. */
+const guardedFetch =
+  (guard: () => void, base?: typeof fetch): typeof fetch =>
+  (input, init) => {
+    guard();
+    return (base ?? globalThis.fetch)(input, init);
+  };
+
 export const createModelAdapter = (
   model: AgentModel,
   cache?: AdapterCacheOptions,
@@ -115,8 +123,14 @@ export const createModelAdapter = (
     const config: OpenRouterConfig = { retryConfig: { strategy: "none" } };
     if (model.baseUrl) config.serverURL = model.baseUrl;
     const caches = cachingEnabled && isAnthropicModel(model.model);
-    if (caches || model.headers) {
+    if (caches || model.headers || model.beforeDispatch) {
       const httpClient = caches ? createAnthropicCacheHttpClient(HTTPClient) : new HTTPClient();
+      const guard = model.beforeDispatch;
+      if (guard)
+        httpClient.addHook("beforeRequest", (request: Request) => {
+          guard();
+          return request;
+        });
       const extra = model.headers;
       if (extra)
         httpClient.addHook("beforeRequest", (request: Request) => {
@@ -137,9 +151,14 @@ export const createModelAdapter = (
       maxRetries: 0,
       // Anthropic SDK appends /v1/messages; accept a shared /v1 API prefix.
       ...(model.baseUrl ? { baseURL: model.baseUrl.replace(/\/v1\/?$/, "") } : {}),
-      ...(model.baseUrl && new URL(model.baseUrl).hostname === "openrouter.ai"
-        ? { fetch: anthropicGatewayFetch }
-        : {}),
+      ...(() => {
+        const base =
+          model.baseUrl && new URL(model.baseUrl).hostname === "openrouter.ai"
+            ? anthropicGatewayFetch
+            : undefined;
+        if (model.beforeDispatch) return { fetch: guardedFetch(model.beforeDispatch, base) };
+        return base ? { fetch: base } : {};
+      })(),
       ...(model.headers ? { defaultHeaders: model.headers } : {}),
     });
     return { adapter };
@@ -151,6 +170,7 @@ export const createModelAdapter = (
   // `maxRetries: 0` — one retry layer: the runtime's retry/failover adapter owns retries.
   const adapter = factory(model.model as OpenAIModel, model.apiKey, {
     maxRetries: 0,
+    ...(model.beforeDispatch ? { fetch: guardedFetch(model.beforeDispatch) } : {}),
     ...(model.baseUrl ? { baseURL: model.baseUrl } : {}),
     ...(model.headers ? { defaultHeaders: model.headers } : {}),
   });

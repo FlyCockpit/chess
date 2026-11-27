@@ -33,6 +33,7 @@ import {
   isLiveJobState,
   type Job,
 } from "@cockpit-chess/queue";
+import { leaseOwnerKeyRun } from "../chess-key-revocations";
 import { registerHeartbeat } from "./chess-heartbeat";
 import {
   backfillSpectatorEvaluations,
@@ -317,6 +318,7 @@ export async function handleChessRunJob(
     spectators.update(archive);
   }
   let ownerKey: { userId: string; keyHash: string } | undefined;
+  let keyLease: Awaited<ReturnType<typeof leaseOwnerKeyRun>> | undefined;
   // The run's own key, so a message that echoes it (a provider or SDK error) is
   // redacted before it reaches a log line.
   let runKey: string | undefined;
@@ -333,7 +335,28 @@ export async function handleChessRunJob(
     // matches switch, a usable connection, and the heartbeat's disconnect check (a
     // random-only match spends no inference but still holds a slot and the engine).
     const ownKeyMatch = row.credentialSource === "owner-openrouter";
-    const key = requiresModel || ownKeyMatch ? await playerKey(row) : undefined;
+    // An own-key run holds a key-use lease before it even loads the key, so a
+    // Disconnect waits for it (chess-key-revocations.ts). No lease, no key.
+    if (ownKeyMatch) {
+      try {
+        keyLease = await leaseOwnerKeyRun({
+          matchId,
+          userId: row.ownerId,
+          revoke,
+          fence: abort,
+        });
+      } catch {
+        throw new RunRefusedError("Key-use lease unavailable", "interrupted");
+      }
+    }
+    let key: Awaited<ReturnType<typeof playerKey>> | undefined;
+    try {
+      key = requiresModel || ownKeyMatch ? await playerKey(row) : undefined;
+    } finally {
+      // A Disconnect of this key aborts the run here (the signal is checked below and
+      // by every provider request), before anything is sent with it.
+      await keyLease?.loaded(key?.ownerKey?.keyHash ?? null);
+    }
     if (key) {
       runKey = key.apiKey;
       if (key.ownerKey) {
@@ -374,6 +397,8 @@ export async function handleChessRunJob(
           apiKey: key.apiKey,
           baseUrl: `${env.OPENROUTER_ORIGIN}/api/v1`,
           headers: attributionHeaders(),
+          // The key-use lease, checked synchronously before every provider request.
+          ...(keyLease ? { beforeDispatch: keyLease.assertUsable } : {}),
           anthropicAuth: "bearer",
           inputMicrosPerMillion: Math.ceil(inputPrice * 1e12),
           outputMicrosPerMillion: Math.ceil(outputPrice * 1e12),
@@ -436,6 +461,7 @@ export async function handleChessRunJob(
     }
     if (!terminalPersisted) return;
   } finally {
+    keyLease?.finish();
     leaveHeartbeat();
     signal?.removeEventListener("abort", abort);
     // OpenRouter refused the owner's key (401), or the connection changed under the
