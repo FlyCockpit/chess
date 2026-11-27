@@ -19,12 +19,31 @@ describe("sanitizedRequestPath", () => {
     ],
     ["/en-US/reset-password?token=QUERY_SENTINEL", "/en-US/reset-password"],
     ["/rpc/chess/list?input=QUERY_SENTINEL", "/rpc/chess/list"],
+    ["/api/cli/runner/ws?token=RUNNER_QUERY_SENTINEL", "/api/cli/runner/ws"],
   ])("sanitizes %s", (path, expected) => {
     expect(sanitizedRequestPath(`https://example.test${path}`)).toBe(expected);
   });
 });
 
 describe("requestLog", () => {
+  it("never logs runner bearer/cookie/subprotocol or rejected query credentials", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const app = new Hono();
+    app.use("*", requestLog);
+    app.get("/api/cli/runner/ws", (c) => c.json({ error: "UNAUTHORIZED" }, 401));
+    await app.request("/api/cli/runner/ws?token=QUERY_SENTINEL", {
+      headers: {
+        Authorization: "Bearer BEARER_SENTINEL",
+        Cookie: "session=COOKIE_SENTINEL",
+        "Sec-WebSocket-Protocol": "PROTOCOL_SENTINEL",
+      },
+    });
+    expect(log).toHaveBeenCalledOnce();
+    const output = JSON.stringify(log.mock.calls);
+    expect(output).toContain("/api/cli/runner/ws 401");
+    expect(output).not.toContain("SENTINEL");
+  });
+
   it("logs the request ID, method, safe path, status and duration once", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const app = new Hono<{ Variables: { requestId: string } }>();

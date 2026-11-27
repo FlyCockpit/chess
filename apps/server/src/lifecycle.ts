@@ -29,6 +29,7 @@ export function createServerLifecycle() {
   let closing: Promise<void> | undefined;
   let claimed = false;
   let exitCode = 0;
+  const transportDrains: Array<() => Promise<void>> = [];
 
   function requireRunning() {
     if (startup.signal.aborted) throw new Error("Server startup cancelled.");
@@ -59,6 +60,13 @@ export function createServerLifecycle() {
     const instanceDrain = instance?.stop();
     console.log(`[server] Received ${reason} — starting graceful shutdown…`);
     closing = (async () => {
+      // Upgraded connections are not closed by HTTP close(). Stop their
+      // authority and join their storage work before disconnecting clients.
+      await withTimeout(
+        Promise.all(transportDrains.map((drain) => drain())),
+        10_000,
+        "Transport drain",
+      );
       const jobDrain = (async () => {
         let active = runtime;
         if (!active && starting) {
@@ -122,6 +130,10 @@ export function createServerLifecycle() {
     process.exit(1);
   });
   return {
+    addTransportDrain(drain: () => Promise<void>) {
+      if (startup.signal.aborted) throw new Error("Server startup cancelled.");
+      transportDrains.push(drain);
+    },
     isShuttingDown: () => startup.signal.aborted,
     isWorkerReady: () => !startup.signal.aborted && (runtime?.isReady() ?? false),
     async start(listen: (onListening: () => void) => NonNullable<typeof server>) {

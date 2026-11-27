@@ -72,6 +72,8 @@ const readyBudget = rpcRateFamily({ points: 60, windowSeconds: 60 });
 const ssrBudget = rpcRateFamily({ points: 300, windowSeconds: 60 });
 const cliBudget = rpcRateFamily({ points: 100, windowSeconds: 60 });
 const cliIpBudget = rpcRateFamily({ points: 300, windowSeconds: 60 });
+const runnerWsConnectIpBudget = rpcRateFamily({ points: 240, windowSeconds: 60 });
+const runnerWsConnectMachineBudget = rpcRateFamily({ points: 12, windowSeconds: 60 });
 const cliDownloadBudget = rpcRateFamily({ points: 20, windowSeconds: 60 });
 const devicePollBudget = rpcRateFamily({ points: 30, windowSeconds: 60 });
 const openrouterBudget = rpcRateFamily({ points: 20, windowSeconds: 600 });
@@ -550,6 +552,22 @@ export const cliLimiter = createSurfaceLimiter("cli", cliBudget);
  * office NAT fit.
  */
 export const cliIpLimiter = createSurfaceLimiter("cli-ip", cliIpBudget);
+
+/** Runner upgrades have separate fail-closed budgets, before and after auth.
+ * 240/IP/min permits 16 clients behind a NAT to make their initial connection
+ * plus bounded reconnect attempts; 12/machine/min covers the client's 10 retries.
+ * Active leases and message budgets are enforced separately in runner-ws-store.
+ */
+export const runnerWsConnectIpLimiter = createSurfaceLimiter(
+  "runner-ws-connect-ip",
+  runnerWsConnectIpBudget,
+  { insurance: false },
+);
+export const runnerWsConnectMachineLimiter = createSurfaceLimiter(
+  "runner-ws-connect-machine",
+  runnerWsConnectMachineBudget,
+  { insurance: false },
+);
 
 /**
  * CLI download limiter — /api/cli/install.sh, /api/cli/install.ps1,

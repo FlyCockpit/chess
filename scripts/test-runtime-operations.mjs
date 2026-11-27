@@ -2059,14 +2059,22 @@ async function main() {
     else if (process.argv[3] === "invite-race") await inviteRaceCheck();
     else if (process.argv[3] === "password-signin-race") await passwordSignInRaceCheck();
     else if (process.argv[3] === "runner-machines") await runnerMachinesCheck();
-    else await runtimeCheck(process.argv[3]);
+    else if (process.argv[3] === "runner-transport") {
+      const { runnerTransportCheck } = await import("./lib/runner-transport-check.mjs");
+      await runnerTransportCheck();
+    } else await runtimeCheck(process.argv[3]);
     return;
   }
   if (process.argv[2] !== "--disposable-services") {
     throw new Error("Use node scripts/test-runtime-operations.mjs --disposable-services.");
   }
   assert.ok(
-    [undefined, "--chess-admission-only", "--runner-machines-only"].includes(process.argv[3]),
+    [
+      undefined,
+      "--chess-admission-only",
+      "--runner-machines-only",
+      "--runner-transport-only",
+    ].includes(process.argv[3]),
   );
   // Container names only. TEST_CONTAINER_PREFIX (shared with backup:test and
   // db:test-migrations) keeps this run's containers under your own prefix; an
@@ -2217,9 +2225,11 @@ async function main() {
       // independent browser mint to reach the database while that write waits.
       ["password-signin-race", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-machines", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
+      ["runner-transport", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["chess-admission", {}],
     ]) {
       if (process.argv[3] === "--chess-admission-only" && mode !== "chess-admission") continue;
+      if (process.argv[3] === "--runner-transport-only" && mode !== "runner-transport") continue;
       if (
         process.argv[3] === "--runner-machines-only" &&
         !["runner-machines", "password-signin-race", "device-flow"].includes(mode)

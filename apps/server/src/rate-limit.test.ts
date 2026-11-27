@@ -424,6 +424,8 @@ describe("rate-limit budget families", () => {
     expect(options(l.signupLimiter).insuranceLimiter).toBeUndefined();
     expect(options(l.signupRecipientLimiter).insuranceLimiter).toBeUndefined();
     expect(options(l.devicePollLimiter).insuranceLimiter).toBeUndefined();
+    expect(options(l.runnerWsConnectIpLimiter).insuranceLimiter).toBeUndefined();
+    expect(options(l.runnerWsConnectMachineLimiter).insuranceLimiter).toBeUndefined();
     // Fail-open surfaces keep it.
     expect(options(l.cliLimiter).insuranceLimiter).toBeDefined();
   });
@@ -602,5 +604,24 @@ describe("public signup abuse controls together", () => {
       consume.mockRestore();
       error.mockRestore();
     }
+  });
+});
+
+describe("runner WebSocket connection budgets", () => {
+  it("separates pre-auth IP, authenticated machine and existing CLI/RPC buckets", async () => {
+    const l = await import("./rate-limit.js");
+    expect(l.runnerWsConnectIpLimiter.keyPrefix).toBe("rl:runner-ws-connect-ip");
+    expect(l.runnerWsConnectMachineLimiter.keyPrefix).toBe("rl:runner-ws-connect-machine");
+    expect(l.runnerWsConnectIpLimiter.points).toBe(240);
+    expect(l.runnerWsConnectMachineLimiter.points).toBe(12);
+    const key = "runner-budget-fixture";
+    for (let i = 0; i < l.runnerWsConnectMachineLimiter.points; i++)
+      await l.runnerWsConnectMachineLimiter.consume(key);
+    await expect(l.runnerWsConnectMachineLimiter.consume(key)).rejects.toBeInstanceOf(
+      RateLimiterRes,
+    );
+    await expect(l.runnerWsConnectIpLimiter.consume(key)).resolves.toBeDefined();
+    await expect(l.cliIpLimiter.consume(key)).resolves.toBeDefined();
+    await expect(l.rpcLimiter.consume(key)).resolves.toBeDefined();
   });
 });

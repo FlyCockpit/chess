@@ -21,11 +21,13 @@
     "@orpc/server": "catalog:",
     "zod": "catalog:",
     "i18next": "catalog:",
-    "@cockpit-chess/locales": "workspace:*"
+    "@cockpit-chess/locales": "workspace:*",
+    "ws": "catalog:"
   },
   "devDependencies": {
     "@cockpit-chess/api": "workspace:*",
     "@types/node": "catalog:",
+    "@types/ws": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

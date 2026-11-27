@@ -146,6 +146,51 @@ describe("createServerLifecycle", () => {
     expect(process.exit).toHaveBeenCalledWith(1);
   });
 
+  it("joins upgraded connection storage and notification cleanup before shared disconnect", async () => {
+    state.mode = "external";
+    const { createServerLifecycle } = await import("./lifecycle");
+    const lifecycle = createServerLifecycle();
+    let finish: (() => void) | undefined;
+    lifecycle.addTransportDrain(
+      () =>
+        new Promise<void>((resolve) => {
+          state.events.push("transport-closing");
+          finish = () => {
+            state.events.push("transport-drained");
+            resolve();
+          };
+        }),
+    );
+    const starting = lifecycle.start(() => {
+      throw new Error("listen failed");
+    });
+    await vi.waitFor(() => expect(state.events).toContain("transport-closing"));
+    expect(state.disconnectDb).not.toHaveBeenCalled();
+    expect(state.disconnectRedis).not.toHaveBeenCalled();
+    finish?.();
+    await starting;
+    expect(state.events.indexOf("transport-drained")).toBeLessThan(
+      state.events.indexOf("db-disconnect"),
+    );
+    expect(state.disconnectRedis).toHaveBeenCalledOnce();
+    expect(() => lifecycle.addTransportDrain(async () => {})).toThrow("cancelled");
+  });
+
+  it("never disconnects dependencies after an unsuccessful upgraded connection drain", async () => {
+    state.mode = "external";
+    const { createServerLifecycle } = await import("./lifecycle");
+    const lifecycle = createServerLifecycle();
+    lifecycle.addTransportDrain(async () => {
+      throw new Error("unfinished transport");
+    });
+    await lifecycle.start(() => {
+      throw new Error("listen failed");
+    });
+    expect(state.disconnectDb).not.toHaveBeenCalled();
+    expect(state.disconnectRedis).not.toHaveBeenCalled();
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
   it("bounds hung startup cancellation and refuses later listener admission", async () => {
     vi.useFakeTimers();
     state.start.mockImplementation(() => new Promise(() => {}));

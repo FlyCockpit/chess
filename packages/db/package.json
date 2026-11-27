@@ -10,6 +10,9 @@
     "./instance-heartbeat": {
       "default": "./src/instance-heartbeat.ts"
     },
+    "./runner-machine-notifications": {
+      "default": "./src/runner-machine-notifications.ts"
+    },
     "./data-deletion-notices": {
       "default": "./src/data-deletion-notices.ts"
     }
@@ -32,6 +35,7 @@
     "prisma": "catalog:"
   },
   "devDependencies": {
+    "@types/pg": "^8.23.1",
     "@cockpit-chess/config": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:"

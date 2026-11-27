@@ -12,6 +12,11 @@ const state = vi.hoisted(() => ({
   mutate: vi.fn(() => ({ ok: true })),
   passwordPepper: {},
   syncPasswordPepper: vi.fn().mockResolvedValue(undefined),
+  runnerServer: {},
+  runnerCreate: vi.fn(),
+  runnerStop: vi.fn(async () => {}),
+  addTransportDrain: vi.fn<(drain: () => Promise<void>) => void>(),
+  websocket: undefined as { server: unknown } | undefined,
 }));
 
 // Import the real app/handlers without loading dotenv, starting a listener,
@@ -58,12 +63,28 @@ vi.mock("@cockpit-chess/api/routers/index", async () => {
   };
 });
 vi.mock("@hono/node-server", () => ({
-  serve: ({ fetch }: { fetch: NonNullable<typeof state.fetch> }) => {
+  serve: ({
+    fetch,
+    websocket,
+  }: {
+    fetch: NonNullable<typeof state.fetch>;
+    websocket?: { server: unknown };
+  }) => {
     state.fetch = fetch;
+    state.websocket = websocket;
   },
 }));
 vi.mock("./lifecycle.js", () => ({
-  createServerLifecycle: () => ({ start: async (listen: () => unknown) => listen() }),
+  createServerLifecycle: () => ({
+    start: async (listen: () => unknown) => listen(),
+    addTransportDrain: state.addTransportDrain,
+  }),
+}));
+vi.mock("./runner-ws-runtime.js", () => ({
+  createRunnerWebSocketRuntime: (options: { isOwnerActive: null }) => {
+    state.runnerCreate(options);
+    return { server: state.runnerServer, runtime: null, stop: state.runnerStop };
+  },
 }));
 vi.mock("./build-commit.js", () => ({ readBuildCommit: () => null }));
 vi.mock("./client-ip.js", () => ({ resolveClientIp: () => "127.0.0.1" }));
@@ -79,6 +100,8 @@ vi.mock("./rate-limit.js", () => ({
   openrouterLimiter: {},
   readyLimiter: {},
   rpcLimiter: {},
+  runnerWsConnectIpLimiter: {},
+  runnerWsConnectMachineLimiter: {},
   signinRecipientLimiter: {},
   setupLimiter: {},
   signupLimiter: {},
@@ -119,11 +142,13 @@ state.syncPasswordPepper.mockImplementationOnce(() => {
   return pepperSyncPending;
 });
 const startup = import("./index");
-await pepperSyncStarted;
+await Promise.race([pepperSyncStarted, startup]);
 const listenerBeforePepperSyncCompleted = state.fetch;
 const pepperSyncCalls = [...state.syncPasswordPepper.mock.calls];
 releasePepperSync();
 await startup;
+const runnerCreateCalls = [...state.runnerCreate.mock.calls];
+const transportDrains = [...state.addTransportDrain.mock.calls];
 
 function request(path: string, init?: RequestInit) {
   if (!state.fetch) throw new Error("App fetch was not captured");
@@ -178,6 +203,18 @@ it("awaits password pepper synchronization before listening", async () => {
   expect(pepperSyncCalls).toEqual([[prisma, state.passwordPepper]]);
   expect(listenerBeforePepperSyncCompleted).toBeUndefined();
   expect(state.fetch).toBeDefined();
+});
+
+it("registers the runner upgrade adapter and drain with the deletion fence deliberately absent", async () => {
+  expect(runnerCreateCalls).toEqual([[{ isOwnerActive: null }]]);
+  expect(state.websocket).toEqual({ server: state.runnerServer });
+  expect(transportDrains).toHaveLength(1);
+  await transportDrains[0]?.[0]();
+  expect(state.runnerStop).toHaveBeenCalledOnce();
+  const response = await request("/api/cli/runner/ws", {
+    headers: { Upgrade: "websocket", Authorization: "Bearer runner-fixture" },
+  });
+  expect(response.status).toBe(503);
 });
 
 describe.each(["/rpc", "/api-reference"])(

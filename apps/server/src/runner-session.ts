@@ -22,17 +22,18 @@ export type RunnerMachineIdentity = {
  * Runner-only bearer lookup. No cookies, device sessions or general API keys.
  * Re-run on each connection/action/heartbeat; a cached identity is not authority.
  * Unavailable storage fails closed without logging token-bearing query errors.
- * This helper is not mounted on any transport yet.
+ * The optional transaction keeps generation claims under the credential lock.
  */
 export async function resolveRunnerMachineCredential(
   authorization: string | undefined,
+  db: Pick<Prisma.TransactionClient, "runnerMachine"> = prisma,
 ): Promise<RunnerMachineIdentity | null> {
   const match = authorization && /^Bearer ([^\s]+)$/i.exec(authorization);
   if (!match?.[1] || match[0] !== authorization) return null;
   const credentialDigest = digestRunnerMachineSecret(match[1]);
   if (!credentialDigest) return null;
   try {
-    const row = await prisma.runnerMachine.findUnique({
+    const row = await db.runnerMachine.findUnique({
       where: { credentialDigest },
       select: runnerCredentialSelect,
     });

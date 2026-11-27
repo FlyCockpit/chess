@@ -12,7 +12,8 @@
     "./pgn": "./src/pgn.ts",
     "./spectator": "./src/spectator.ts",
     "./prompts": "./src/prompts.ts",
-    "./local-contract": "./src/local-contract.ts"
+    "./local-contract": "./src/local-contract.ts",
+    "./runner-protocol": "./src/runner-protocol.ts"
   },
   "scripts": {
     "test": "vitest run --config ../../vitest.config.ts --passWithNoTests",

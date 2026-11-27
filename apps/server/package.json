@@ -18,6 +18,7 @@
     "@orpc/server": "catalog:",
     "@orpc/zod": "catalog:",
     "@cockpit-chess/api": "workspace:*",
+    "@cockpit-chess/chess": "workspace:*",
     "@cockpit-chess/auth": "workspace:*",
     "@cockpit-chess/db": "workspace:*",
     "@cockpit-chess/env": "workspace:*",
@@ -27,11 +28,13 @@
     "rate-limiter-flexible": "catalog:",
     "zod": "catalog:",
     "worker": "workspace:*",
-    "stockfish": "catalog:"
+    "stockfish": "catalog:",
+    "ws": "catalog:"
   },
   "devDependencies": {
     "@cockpit-chess/config": "workspace:*",
     "@types/node": "catalog:",
+    "@types/ws": "catalog:",
     "tsdown": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",

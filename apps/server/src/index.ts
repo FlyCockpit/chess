@@ -60,12 +60,16 @@ import {
   openrouterLimiter,
   readyLimiter,
   rpcLimiter,
+  runnerWsConnectIpLimiter,
+  runnerWsConnectMachineLimiter,
   signinRecipientLimiter,
   signupLimiter,
   signupRecipientLimiter,
   ssrLimiter,
 } from "./rate-limit.js";
 import { requestLog, sanitizedRequestPath } from "./request-log.js";
+import { mountRunnerWsRoutes } from "./runner-ws-routes.js";
+import { createRunnerWebSocketRuntime } from "./runner-ws-runtime.js";
 import { mountSecurityHeaders } from "./security-headers.js";
 import { registerSeoRoutes } from "./seo.js";
 import { sessionMiddleware } from "./session-middleware.js";
@@ -475,6 +479,24 @@ if (env.NODE_ENV === "production") {
 // The companion-CLI surface: /api/cli/rpc (bearer-authenticated `cliRouter`)
 // plus the install/download endpoints. Mounted before the catch-all oRPC/SSR
 // handlers below. See cli-routes.ts and packages/api/src/routers/cli.ts.
+// D2a must supply its durable deletion predicate before live upgrades activate.
+const runnerWebSocket = createRunnerWebSocketRuntime({ isOwnerActive: null });
+lifecycle.addTransportDrain(() => runnerWebSocket.stop());
+mountRunnerWsRoutes(app, {
+  runtime: runnerWebSocket.runtime,
+  ipBudget: createRateLimiterMiddleware(runnerWsConnectIpLimiter, {
+    failClosed: true,
+    resolveKey: resolveClientIp,
+  }),
+  machineBudget: async (machineId, context) => {
+    const response = await createRateLimiterMiddleware(runnerWsConnectMachineLimiter, {
+      failClosed: true,
+      resolveKey: () => machineId,
+    })(context, async () => {});
+    if (response) return response;
+    return undefined;
+  },
+});
 mountCliRoutes(app, { onOrpcError: logOrpcError });
 
 // "Connect OpenRouter" (OAuth PKCE): users' own keys for hosted matches. Cookie
@@ -625,6 +647,7 @@ await lifecycle.start((onListening) =>
   serve(
     {
       fetch: app.fetch,
+      websocket: { server: runnerWebSocket.server },
       port: env.SERVER_PORT ?? env.PORT ?? 3000,
       // Node's default keepAliveTimeout (5s) is shorter than the idle-reuse window of
       // fronting proxies (nginx keepalive_timeout defaults to 60-75s; Traefik similar),
