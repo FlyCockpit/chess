@@ -67,21 +67,38 @@ function VerifyEmailPage() {
   const { t } = useTranslation(["auth", "common"]);
 
   const isAuthenticated = authSession.state.status === "authenticated";
+  const ssoOnly = configData?.forceSso === true;
   // Resending needs a working mail transport and a password flow to come back
   // to; an SSO-only server has neither. Failing quiet here is better than
   // offering a button that can only ever produce a server-side error.
-  const canResend = configData?.emailEnabled === true && configData?.forceSso !== true;
+  const canResend = configData?.emailEnabled === true && !ssoOnly;
 
   // `error` wins over `ok`: a failed hop arrives as `?ok=1&error=<CODE>`,
   // since Better-Auth appends its code to the callbackURL we already built.
   if (error || !ok) {
     return (
       <AuthCard
-        title={error ? t("auth:verifyEmail.invalidTitle") : t("auth:verifyEmail.pendingTitle")}
-        description={
+        title={
           error
-            ? t("auth:verifyEmail.invalidDescription")
-            : t("auth:verifyEmail.pendingDescription")
+            ? t("auth:verifyEmail.invalidTitle")
+            : ssoOnly
+              ? t("auth:login.ssoRequiredTitle")
+              : t("auth:verifyEmail.pendingTitle")
+        }
+        description={
+          ssoOnly
+            ? t("auth:login.ssoRequiredDescription")
+            : error
+              ? t(
+                  canResend
+                    ? "auth:verifyEmail.invalidDescription"
+                    : "auth:verifyEmail.invalidDescriptionNoResend",
+                )
+              : t(
+                  canResend
+                    ? "auth:verifyEmail.pendingDescription"
+                    : "auth:verifyEmail.pendingDescriptionNoResend",
+                )
         }
       >
         {configPending ? (
@@ -106,7 +123,7 @@ function VerifyEmailPage() {
           </div>
         ) : canResend ? (
           <ResendVerification redirectTo={redirectTo} />
-        ) : (
+        ) : ssoOnly ? null : (
           <p className="text-center text-sm text-muted-foreground">
             {t("auth:verifyEmail.emailUnavailable")}
           </p>

@@ -25,6 +25,8 @@
     "changingPassword": "Changing password…",
     "passwordChangedSuccess": "Password changed. Other devices have been signed out.",
     "currentPasswordMismatch": "Your current password doesn't match.",
+    "passwordWriteUnconfirmed": "Couldn't confirm that the password change completed safely, so password sign-in was disabled as a precaution. Use Forgot password on the sign-in page to set a new password.",
+    "passwordWriteBusy": "Another password update is still finishing for your account. Wait a moment and try again.",
     "passwordChangeError": "Couldn't change your password. Try again.",
     "twoFactorTitle": "Two-Factor Authentication",
     "enabledDescription": "Two-factor authentication is enabled for your account",

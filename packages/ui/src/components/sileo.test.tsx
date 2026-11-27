@@ -5,13 +5,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("sileo/styles.css", () => ({}));
 
-const { Toaster, toast, titleOverflowsPill, pillTitleBudget, defaultToastPosition } = await import(
-  "./sileo"
-);
+const {
+  Toaster,
+  toast,
+  invokeToastAction,
+  titleOverflowsPill,
+  pillTitleBudget,
+  defaultToastPosition,
+} = await import("./sileo");
 
 class FakeNode {
   childNodes: FakeNode[] = [];
   parentNode: FakeNode | null = null;
+  private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
   constructor(
     readonly ownerDocument: FakeDocument | null,
     readonly nodeType: number,
@@ -40,8 +46,52 @@ class FakeNode {
     }
     return child;
   }
-  addEventListener() {}
-  removeEventListener() {}
+  addEventListener(type: string, listener: (event: unknown) => void) {
+    let set = this.listeners.get(type);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(type, set);
+    }
+    set.add(listener);
+  }
+  removeEventListener(type: string, listener: (event: unknown) => void) {
+    this.listeners.get(type)?.delete(listener);
+  }
+  dispatchEvent(event: {
+    type: string;
+    bubbles?: boolean;
+    target?: unknown;
+    currentTarget?: unknown;
+    preventDefault?: () => void;
+    stopPropagation?: () => void;
+  }) {
+    if (!event.target) Object.defineProperty(event, "target", { value: this, configurable: true });
+    let cur: FakeNode | null = this;
+    while (cur) {
+      Object.defineProperty(event, "currentTarget", { value: cur, configurable: true });
+      for (const listener of cur.listeners.get(event.type) ?? []) listener(event);
+      cur = event.bubbles ? cur.parentNode : null;
+    }
+    return true;
+  }
+  closest(selector: string): FakeElement | null {
+    let cur: FakeNode | null = this;
+    while (cur instanceof FakeElement) {
+      if (matchesSimpleAttr(cur, selector)) return cur;
+      cur = cur.parentNode;
+    }
+    return null;
+  }
+  querySelector(selector: string): FakeElement | null {
+    for (const child of this.childNodes) {
+      if (child instanceof FakeElement) {
+        if (matchesSimpleAttr(child, selector)) return child;
+        const found = child.querySelector(selector);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
 }
 
 class FakeText extends FakeNode {
@@ -99,6 +149,24 @@ class FakeElement extends FakeNode {
   }
   addEventListener() {}
   removeEventListener() {}
+  closest(selector: string): FakeElement | null {
+    let cur: FakeNode | null = this;
+    while (cur instanceof FakeElement) {
+      if (matchesSimpleAttr(cur, selector)) return cur;
+      cur = cur.parentNode;
+    }
+    return null;
+  }
+  querySelector(selector: string): FakeElement | null {
+    for (const child of this.childNodes) {
+      if (child instanceof FakeElement) {
+        if (matchesSimpleAttr(child, selector)) return child;
+        const found = child.querySelector(selector);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
   get textContent(): string {
     return this.childNodes
       .map((child) =>
@@ -138,6 +206,19 @@ class FakeDocument extends FakeNode {
   }
 }
 
+function matchesSimpleAttr(el: FakeElement, selector: string): boolean {
+  for (const part of selector.split(",").map((s) => s.trim())) {
+    const attr = part.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
+    if (attr) {
+      const val = el.getAttribute(attr[1]!);
+      if (attr[2] !== undefined ? val === attr[2] : val !== null) return true;
+      continue;
+    }
+    if (el.localName === part) return true;
+  }
+  return false;
+}
+
 function findElements(root: FakeNode, attr: string): FakeElement[] {
   const out: FakeElement[] = [];
   if (root instanceof FakeElement && root.hasAttribute(attr)) out.push(root);
@@ -162,13 +243,16 @@ describe("toast facade", () => {
     toast.message("Heads up");
 
     expect(successSpy).toHaveBeenCalledWith({ id: expect.any(String), title: "Saved" });
-    expect(errorSpy).toHaveBeenCalledWith({
-      id: expect.any(String),
-      title: "Failed",
-      duration: 5000,
-      autopilot: { expand: 0, collapse: 0 },
-      button: { title: "Retry", onClick },
-    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: expect.any(String),
+        title: "Failed",
+        duration: 5000,
+        autopilot: { expand: 0, collapse: 0 },
+        description: expect.anything(),
+      }),
+    );
+    expect(errorSpy.mock.calls[0]?.[0]).not.toHaveProperty("button");
     expect(showSpy).toHaveBeenCalledWith({ id: expect.any(String), title: "Heads up" });
   });
 
@@ -298,6 +382,14 @@ describe("Toaster expansion with real sileo", () => {
     expect(toastEl()?.getAttribute("data-expanded")).toBe("true");
     expect(contentEl()?.getAttribute("data-visible")).toBe("true");
     expect(actionEl()?.textContent).toBe("Undo");
+    expect(actionEl()?.tagName).toBe("SPAN");
+    expect(toastEl()?.getAttribute("aria-label")).toBe("Game deleted — Undo");
+    expect(toastEl()?.querySelector("a, button, [role='button'], [tabindex]")).toBeNull();
+
+    const actionId = actionEl()?.getAttribute("data-toast-action-id");
+    expect(actionId).toBeTruthy();
+    invokeToastAction(actionId!);
+    expect(onUndo).toHaveBeenCalledOnce();
 
     act(() => {
       vi.advanceTimersByTime(4500);

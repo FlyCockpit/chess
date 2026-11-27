@@ -1,5 +1,5 @@
-import { useSyncExternalStore } from "react";
-import { Toaster as SileoToaster, sileo } from "sileo";
+import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { type SileoState, Toaster as SileoToaster, sileo } from "sileo";
 import "sileo/styles.css";
 
 type ToastPosition =
@@ -34,6 +34,58 @@ function subscribeWide(onChange: () => void): () => void {
 const readWide = () => window.matchMedia?.(WIDE_QUERY).matches === true;
 const readWideOnServer = () => false;
 
+const toastActions = new Map<string, () => void>();
+const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
+/** @internal Exposed for unit tests to verify delegated action invocation. */
+export function invokeToastAction(id: string): void {
+  toastActions.get(id)?.();
+}
+
+/**
+ * Renders the toast action inside `description` as a non-interactive pill so
+ * `sileo`'s root `<button data-sileo-toast>` stays a single control with no
+ * nested `<a href>` inside it, while preserving the full accessible name on
+ * that `<button>`.
+ */
+function ToastAction({
+  id,
+  state,
+  title,
+  label,
+  onClick,
+}: {
+  id: string;
+  state: SileoState;
+  title: string;
+  label: string;
+  onClick: () => void;
+}) {
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    toastActions.set(id, onClick);
+    return () => {
+      if (toastActions.get(id) === onClick) toastActions.delete(id);
+    };
+  }, [id, onClick]);
+
+  useIsomorphicLayoutEffect(() => {
+    const toastEl = ref.current?.closest("[data-sileo-toast]");
+    if (!toastEl) return;
+    toastEl.setAttribute("aria-label", title ? `${title} — ${label}` : label);
+    return () => {
+      toastEl.removeAttribute("aria-label");
+    };
+  }, [title, label]);
+
+  return (
+    <span ref={ref} data-sileo-button="" data-state={state} data-toast-action-id={id}>
+      {label}
+    </span>
+  );
+}
+
 // No `theme`: sileo's themes invert the page (a light pill on a dark app).
 // The toast takes the app's popover tokens from globals.css instead, so it
 // follows `.dark` like every other surface, with no JS theme state.
@@ -41,7 +93,24 @@ const readWideOnServer = () => false;
 // resize across the breakpoint moves only the toasts raised after it.
 const Toaster = ({ position, ...props }: ToasterProps) => {
   const wide = useSyncExternalStore(subscribeWide, readWide, readWideOnServer);
-  return <SileoToaster position={position ?? defaultToastPosition(wide)} {...props} />;
+  return (
+    <div
+      style={{ display: "contents" }}
+      onClick={(event) => {
+        const toastEl = (event.target as Element | null)?.closest("[data-sileo-toast]");
+        if (!toastEl || toastEl.getAttribute("data-exiting") === "true") return;
+        const actionId = toastEl
+          .querySelector("[data-toast-action-id]")
+          ?.getAttribute("data-toast-action-id");
+        if (!actionId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        invokeToastAction(actionId);
+      }}
+    >
+      <SileoToaster position={position ?? defaultToastPosition(wide)} {...props} />
+    </div>
+  );
 };
 
 type ToastOptions = {
@@ -103,21 +172,45 @@ export function titleOverflowsPill(message: string, measure: TitleMeasure = meas
 }
 
 function createToastMethod(method: "success" | "error" | "info" | "warning" | "show") {
+  const sileoState: SileoState = method === "show" ? "success" : method;
   return (message: string, options?: ToastOptions): string => {
+    const id = nextToastId();
+    const overflowing = titleOverflowsPill(message);
+    const action = options?.action;
+    if (action && typeof window !== "undefined") {
+      toastActions.set(id, action.onClick);
+    }
+    const description = action ? (
+      overflowing ? (
+        <>
+          {message}
+          <ToastAction
+            id={id}
+            state={sileoState}
+            title={message}
+            label={action.label}
+            onClick={action.onClick}
+          />
+        </>
+      ) : (
+        <ToastAction
+          id={id}
+          state={sileoState}
+          title={message}
+          label={action.label}
+          onClick={action.onClick}
+        />
+      )
+    ) : overflowing ? (
+      message
+    ) : undefined;
     // sileo 0.1.6 reads `options.id` at runtime, but its type omits it.
     return sileo[method]({
-      id: nextToastId(),
+      id,
       title: message,
-      ...(titleOverflowsPill(message)
-        ? { description: message, autopilot: { expand: 0, collapse: 0 } }
-        : {}),
+      ...(description !== undefined ? { description } : {}),
       ...(options?.duration != null ? { duration: options.duration } : {}),
-      ...(options?.action
-        ? {
-            autopilot: { expand: 0, collapse: 0 },
-            button: { title: options.action.label, onClick: options.action.onClick },
-          }
-        : {}),
+      ...(overflowing || action ? { autopilot: { expand: 0, collapse: 0 } } : {}),
     } as Parameters<typeof sileo.show>[0]);
   };
 }
@@ -130,7 +223,10 @@ const toast = {
   info: createToastMethod("info"),
   warning: createToastMethod("warning"),
   dismiss: sileo.dismiss,
-  clear: sileo.clear,
+  clear: () => {
+    toastActions.clear();
+    sileo.clear();
+  },
 };
 
 export { Toaster, toast };

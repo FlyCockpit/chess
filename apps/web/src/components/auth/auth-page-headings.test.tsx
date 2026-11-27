@@ -187,3 +187,32 @@ describe("verification page destination links", () => {
     expect(render(<Page />)).toContain(`data-to="${expected}"`);
   });
 });
+
+describe("verify-email without resend form", () => {
+  it.each([
+    [{}, enAuth.verifyEmail.pendingDescriptionNoResend, enAuth.verifyEmail.pendingDescription],
+    [
+      { ok: true, error: "TOKEN_EXPIRED" },
+      enAuth.verifyEmail.invalidDescriptionNoResend,
+      enAuth.verifyEmail.invalidDescription,
+    ],
+  ])("omits enter-your-email prompt when email is disabled (%j)", (search, shown, hidden) => {
+    fixture.config = { ...OPEN, emailEnabled: false };
+    fixture.search = search;
+    const Page = component(routes.verify);
+    const html = render(<Page />).replaceAll("&#x27;", "'");
+    expect(html).toContain(shown);
+    expect(html).toContain(enAuth.verifyEmail.emailUnavailable);
+    expect(html).not.toContain(hidden);
+  });
+
+  it("points SSO-only deployments to SSO sign-in without emailUnavailable copy", () => {
+    fixture.config = FORCE_SSO;
+    fixture.search = {};
+    const Page = component(routes.verify);
+    const html = render(<Page />).replaceAll("&#x27;", "'");
+    expect(html).toContain(enAuth.login.ssoRequiredDescription);
+    expect(html).not.toContain(enAuth.verifyEmail.emailUnavailable);
+    expect(html).not.toContain(enAuth.verifyEmail.pendingDescription);
+  });
+});

@@ -273,7 +273,7 @@ Memory per running match is bounded:
 
 So the worst case is about 15 MB per match and a typical match is 1–3 MB: 512 typical matches need roughly 1–1.5 GB on top of the process, and the worst case (every match at both limits) about 7.5 GB. Each Stockfish process adds up to about 150 MB (a Node process capped at 128 MB of heap plus an 8 MiB hash). Lower `CHESS_RUN_CONCURRENCY` on small machines; matches beyond it wait in the queue (up to `CHESS_QUEUE_MAX`).
 
-Database load: one batched heartbeat statement per worker process every 2 seconds (not one per match), one write per move and one per spectator score. Raise `DATABASE_POOL_MAX` on the worker (for example to 20–30) when running hundreds of matches, within the database's connection budget. With more than one worker process, each one applies its own `CHESS_RUN_CONCURRENCY` and pool; the admin view adds them up.
+Database load: one batched heartbeat statement per worker process every 2 seconds (not one per match), one write per move and one per spectator score. `DATABASE_POOL_MAX` defaults to `10` and enforces a minimum of `3` at startup (because auth lock transactions reserve up to two connections while leaving one free). Raise `DATABASE_POOL_MAX` on the worker (for example to 20–30) when running hundreds of matches, within the database's connection budget. With more than one worker process, each one applies its own `CHESS_RUN_CONCURRENCY` and pool; the admin view adds them up.
 
 ## Source code (AGPL-3.0 section 13)
 

@@ -110,13 +110,7 @@ function SignupPage() {
         >
           {t("auth:verifyEmail.signIn")}
         </Link>
-        {canResend ? (
-          <ResendVerification email={pendingEmail} redirectTo={redirectTo} />
-        ) : (
-          <p className="text-center text-sm text-muted-foreground">
-            {t("auth:verifyEmail.emailUnavailable")}
-          </p>
-        )}
+        {canResend ? <ResendVerification email={pendingEmail} redirectTo={redirectTo} /> : null}
       </AuthCard>
     );
   } else {

@@ -21,8 +21,9 @@ import z from "zod";
 
 import { TwoFactorSetupDetails } from "@/components/two-factor-setup-details";
 import { authClient } from "@/lib/auth-client";
-import { codeFailureMessage, friendly, isRateLimit } from "@/utils/friendly-error";
+import { codeFailureMessage, friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
+import { resolvePasswordChangeErrorMessage } from "@/utils/password-change-error";
 
 export const Route = createFileRoute("/$lang/_app/_auth/settings/security")({
   staticData: { pendingShape: "form" },
@@ -143,24 +144,14 @@ function ChangePasswordCard() {
         });
 
         if (result.error) {
-          const message =
-            result.error.code === "INVALID_PASSWORD"
-              ? t("settings:security.currentPasswordMismatch")
-              : isRateLimit(result.error)
-                ? friendly(result.error, t("settings:security.passwordChangeError"))
-                : t("settings:security.passwordChangeError");
-          toast.error(message);
+          toast.error(resolvePasswordChangeErrorMessage(result.error, t));
           return;
         }
 
         toast.success(t("settings:security.passwordChangedSuccess"));
         form.reset();
       } catch (error) {
-        toast.error(
-          isRateLimit(error)
-            ? friendly(error, t("settings:security.passwordChangeError"))
-            : t("settings:security.passwordChangeError"),
-        );
+        toast.error(resolvePasswordChangeErrorMessage(error, t));
       }
     },
   });

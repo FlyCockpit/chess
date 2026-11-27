@@ -43,6 +43,8 @@
     "changingPassword": "Cambiando contraseña…",
     "passwordChangedSuccess": "Contraseña cambiada. Los otros dispositivos han cerrado sesión.",
     "currentPasswordMismatch": "Tu contraseña actual no coincide.",
+    "passwordWriteUnconfirmed": "No se pudo confirmar que el cambio de contraseña se completó de forma segura, así que se desactivó el inicio de sesión con contraseña por precaución. Usa ¿Olvidaste tu contraseña? en la página de inicio de sesión para establecer una nueva.",
+    "passwordWriteBusy": "Otra actualización de contraseña aún está terminando para tu cuenta. Espera un momento e intenta de nuevo.",
     "passwordChangeError": "No se pudo cambiar tu contraseña. Intenta de nuevo."
   },
   "title": "Configuración",
