@@ -6,7 +6,13 @@ import { createHash } from "node:crypto";
 import { type CredentialKind, createContext } from "@cockpit-chess/api/context";
 import { appRouter } from "@cockpit-chess/api/routers/index";
 import { auth, passwordPepper, type Session } from "@cockpit-chess/auth";
+import { withDeviceRedemptionLock } from "@cockpit-chess/auth/device-redemption-lock";
 import { syncPasswordPepper } from "@cockpit-chess/auth/password-pepper-store";
+import { withPasswordSignInFence } from "@cockpit-chess/auth/password-sign-in-fence";
+import {
+  PASSWORD_WRITE_PATHS,
+  withPasswordWriteLock,
+} from "@cockpit-chess/auth/password-write-lock";
 import { ORPC_BATCH_MAX_SIZE } from "@cockpit-chess/config/orpc-batch";
 import { THEME_INIT_SCRIPT } from "@cockpit-chess/config/theme-init";
 import prisma from "@cockpit-chess/db";
@@ -399,6 +405,9 @@ app.use("/api/auth/admin/*", betterAuthAdminGate);
 // the CLI surface. 404 rather than 403 — nothing here should look reachable.
 app.all("/api/auth/api-key/*", (c) => c.json({ error: "Not found" }, 404));
 
+const AUTH_BASE_PATH = "/api/auth";
+const PASSWORD_SIGN_IN_PATH = `${AUTH_BASE_PATH}/sign-in/email`;
+
 // Better-Auth's own surface is cookie-authenticated, like /rpc. Strip
 // `Authorization` so no plugin — today's or a future upgrade's — can turn a CLI
 // session token or an API key into a credential for /api/auth/* (password
@@ -406,10 +415,35 @@ app.all("/api/auth/api-key/*", (c) => c.json({ error: "Not found" }, 404));
 // only on /api/cli/* — see cli-session.ts. The device flow's token endpoint
 // takes its secret in the body, so it is unaffected.
 app.on(["POST", "GET"], "/api/auth/*", (c) => {
-  if (!c.req.raw.headers.has("authorization")) return auth.handler(c.req.raw);
-  const headers = new Headers(c.req.raw.headers);
-  headers.delete("authorization");
-  return auth.handler(new Request(c.req.raw, { headers }));
+  let request = c.req.raw;
+  if (request.headers.has("authorization")) {
+    const headers = new Headers(request.headers);
+    headers.delete("authorization");
+    request = new Request(request, { headers });
+  }
+  // Device-token redemption holds the code owner's CLI-credential lock, so a
+  // concurrent password-reset revocation can't be overtaken by a session
+  // minted a moment later (packages/auth/src/device-redemption-lock.ts).
+  if (c.req.method === "POST" && c.req.path === DEVICE_POLL_PATH) {
+    return withDeviceRedemptionLock(request, () => auth.handler(request));
+  }
+  // A password sign-in runs inside a credential fence, so one still verifying
+  // the old password when a reset or change lands gets no session
+  // (packages/auth/src/password-sign-in-fence.ts).
+  if (c.req.method === "POST" && c.req.path === PASSWORD_SIGN_IN_PATH) {
+    return withPasswordSignInFence(request, () => auth.handler(request));
+  }
+  // Every password write (change, reset, admin set) holds the user's
+  // password-write lock, so a change still verifying the old password can't
+  // overwrite a reset that completed meanwhile
+  // (packages/auth/src/password-write-lock.ts).
+  const authPath = c.req.path.slice(AUTH_BASE_PATH.length);
+  if (c.req.method === "POST" && PASSWORD_WRITE_PATHS.has(authPath)) {
+    return withPasswordWriteLock(authPath, request, () => auth.handler(request), {
+      getSession: (headers) => auth.api.getSession({ headers }),
+    });
+  }
+  return auth.handler(request);
 });
 
 // Resolve the Better-Auth session once per request on paths that need it.

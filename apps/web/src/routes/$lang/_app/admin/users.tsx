@@ -31,7 +31,7 @@ import { cn } from "@cockpit-chess/ui/lib/utils";
 import { useForm } from "@tanstack/react-form";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { Archive, ArchiveArrowUp, MoreVertical, Plus, Shield, Trash } from "lucide-react";
+import { Archive, ArchiveArrowUp, MoreVertical, Plus, Send, Shield, Trash } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
@@ -43,7 +43,11 @@ import { PageHeader, PageShell } from "@/components/page-shell";
 import { QueryBoundary } from "@/components/query-boundary";
 import { SegmentedControl } from "@/components/segmented-control";
 import { SkeletonList } from "@/components/skeleton-list";
+import { announceArchivedWithUndo } from "@/hooks/archive-undo";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
+import { isSupportedLocale, type Locale, SUPPORTED_LOCALES } from "@/i18n/config";
+import { LOCALE_LABELS } from "@/i18n/labels";
+import { friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 
 type StatusFilter = "all" | "active" | "archived";
@@ -56,16 +60,36 @@ type UserRow = {
   name: string;
   role: string;
   emailVerified: boolean;
+  /** Server-computed (users.list): an invite nobody has started using. */
+  invitePending: boolean;
   banned: boolean | null;
   banReason: string | null;
   createdAt: Date | string;
 };
+
+/** What `users.invite` / `users.resendInvite` return. */
+type InviteDelivery =
+  | { userId: string; emailSent: true }
+  | { userId: string; emailSent: false; setPasswordUrl: string; expiresAt: Date | string };
+
+type InviteReveal = { email: string; setPasswordUrl: string; expiresAt: Date | string };
+
+/** `users.resendInvite` refused: the user is not (or no longer) a pending invite. */
+function isInviteNotPending(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "INVITE_NOT_PENDING"
+  );
+}
 
 function buildInviteSchema() {
   return z.object({
     email: z.email(),
     name: z.string().trim().min(1).max(100),
     role: z.enum(["user", "admin"]),
+    locale: z.enum(SUPPORTED_LOCALES),
   });
 }
 
@@ -82,12 +106,11 @@ function AdminUsers() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [search, setSearch] = useState("");
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [reveal, setReveal] = useState<{
-    email: string;
-    tempPassword: string;
-    emailSent: boolean;
-  } | null>(null);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [reveal, setReveal] = useState<InviteReveal | null>(null);
+  // Captured when the dialog opens, not looked up in the loaded pages: a
+  // refetch, filter change or search that drops the row must not blank the
+  // confirm token (or retarget the delete) while the dialog is up.
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; email: string } | null>(null);
   const debouncedSearch = useDebounce(search.trim(), 300);
 
   const listQuery = useInfiniteQuery(
@@ -111,14 +134,6 @@ function AdminUsers() {
     { invalidateKey: orpc.users.key(), successMessage: t("admin:users.roleUpdated") },
   );
 
-  const archive = useEntityMutation(
-    {
-      ...orpc.users.archive.mutationOptions(),
-      meta: { errorFallbackKey: "admin:users.archiveFailed" },
-    },
-    { invalidateKey: orpc.users.key(), successMessage: t("admin:users.userArchived") },
-  );
-
   const unarchive = useEntityMutation(
     {
       ...orpc.users.unarchive.mutationOptions(),
@@ -127,11 +142,31 @@ function AdminUsers() {
     { invalidateKey: orpc.users.key(), successMessage: t("admin:users.userRestored") },
   );
 
+  // Archive acts at once (it is fully reversible); its toast offers Undo,
+  // which is the row's Restore (users.unarchive).
+  const archive = useEntityMutation(
+    {
+      ...orpc.users.archive.mutationOptions({
+        onSuccess: (_data, variables) => {
+          announceArchivedWithUndo({
+            message: t("admin:users.userArchived"),
+            undoLabel: t("common:actions.undo"),
+            onUndo: () => {
+              unarchive.mutate({ userId: variables.userId });
+            },
+          });
+        },
+      }),
+      meta: { errorFallbackKey: "admin:users.archiveFailed" },
+    },
+    { invalidateKey: orpc.users.key() },
+  );
+
   const remove = useEntityMutation(
     {
       ...orpc.users.remove.mutationOptions({
         onSuccess: () => {
-          setDeleteId(null);
+          setDeleteTarget(null);
         },
       }),
       meta: { errorFallbackKey: "admin:users.deleteFailed" },
@@ -139,11 +174,41 @@ function AdminUsers() {
     { invalidateKey: orpc.users.key(), successMessage: t("admin:users.userDeleted") },
   );
 
+  const resendInvite = useMutation({
+    ...orpc.users.resendInvite.mutationOptions({
+      onError: (error) => {
+        // The row was stale: the user started using the account (or links
+        // SSO) since the list loaded. Say so and refresh, so the action goes.
+        if (isInviteNotPending(error)) {
+          toast.error(t("admin:users.inviteNotPending"));
+          void queryClient.invalidateQueries({ queryKey: orpc.users.key() });
+          return;
+        }
+        toast.error(friendly(error, t("admin:users.resendFailed")));
+      },
+    }),
+    meta: { skipGlobalErrorToast: true },
+  });
+
+  // Both invite paths end here. An emailed link stays in the invitee's inbox;
+  // only a link the server could not email comes back, for a one-time reveal.
+  const handleInviteDelivery = (delivery: InviteDelivery, email: string) => {
+    if (delivery.emailSent) {
+      toast.success(t("admin:users.inviteSent", { email }));
+    } else {
+      setReveal({ email, setPasswordUrl: delivery.setPasswordUrl, expiresAt: delivery.expiresAt });
+    }
+    void queryClient.invalidateQueries({ queryKey: orpc.users.key() });
+  };
+
   // Status is filtered server-side (see users.list), so every loaded row
   // already matches the active tab. Emptiness and pagination are decided on the
   // server result, never on a client-side slice of the pages we happen to hold.
   const allUsers = (listQuery.data?.pages.flatMap((page) => page.users) ?? []) as UserRow[];
-  const deleteTarget = allUsers.find((u) => u.id === deleteId) ?? null;
+  // One row change at a time: a second click on a stale row while the first
+  // mutation is in flight would act on what the list showed before it.
+  const rowActionPending =
+    setRole.isPending || archive.isPending || unarchive.isPending || resendInvite.isPending;
 
   return (
     <PageShell width="wide">
@@ -263,6 +328,7 @@ function AdminUsers() {
                           isSelf={isSelf}
                           isAdmin={isAdmin}
                           isArchived={isArchived}
+                          disabled={rowActionPending}
                           onSetRole={(role) => {
                             setRole.mutate({ userId: user.id, role });
                           }}
@@ -272,8 +338,16 @@ function AdminUsers() {
                           onUnarchive={() => {
                             unarchive.mutate({ userId: user.id });
                           }}
+                          onResendInvite={() => {
+                            resendInvite.mutate(
+                              { userId: user.id },
+                              {
+                                onSuccess: (delivery) => handleInviteDelivery(delivery, user.email),
+                              },
+                            );
+                          }}
                           onDelete={() => {
-                            setDeleteId(user.id);
+                            setDeleteTarget({ id: user.id, email: user.email });
                           }}
                         />
                       </li>
@@ -294,19 +368,18 @@ function AdminUsers() {
       <InviteUserDialog
         open={inviteOpen}
         onOpenChange={setInviteOpen}
-        onInvited={(payload) => {
+        onInvited={(delivery, email) => {
           setInviteOpen(false);
-          setReveal(payload);
-          queryClient.invalidateQueries({ queryKey: orpc.users.key() });
+          handleInviteDelivery(delivery, email);
         }}
       />
 
       <RevealInviteDialog reveal={reveal} onClose={() => setReveal(null)} />
 
       <ConfirmDeleteDialog
-        open={!!deleteId}
+        open={deleteTarget !== null}
         onOpenChange={(open) => {
-          if (!open) setDeleteId(null);
+          if (!open) setDeleteTarget(null);
         }}
         title={t("admin:users.deleteTitle")}
         description={t("admin:users.deleteDescription")}
@@ -329,20 +402,29 @@ function UserActions({
   isSelf,
   isAdmin,
   isArchived,
+  disabled,
   onSetRole,
   onArchive,
   onUnarchive,
+  onResendInvite,
   onDelete,
 }: {
   user: UserRow;
   isSelf: boolean;
   isAdmin: boolean;
   isArchived: boolean;
+  /** A row mutation is in flight; every item waits for it. */
+  disabled: boolean;
   onSetRole: (role: "user" | "admin") => void;
   onArchive: () => void;
   onUnarchive: () => void;
+  onResendInvite: () => void;
   onDelete: () => void;
 }) {
+  // The server decides what a pending invite is (unverified, password account
+  // only, never signed in) and enforces it again on resend. `emailVerified`
+  // alone is not it: an active SSO user can be unverified.
+  const invitePending = user.invitePending && !isArchived;
   const { t } = useTranslation("admin");
   return (
     <DropdownMenu>
@@ -359,29 +441,35 @@ function UserActions({
         <MoreVertical aria-hidden className="size-4" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-52">
+        {invitePending && (
+          <DropdownMenuItem disabled={disabled} onClick={onResendInvite}>
+            <Send className="size-4" />
+            {t("users.resendInvite")}
+          </DropdownMenuItem>
+        )}
         {isAdmin ? (
-          <DropdownMenuItem disabled={isSelf} onClick={() => onSetRole("user")}>
+          <DropdownMenuItem disabled={isSelf || disabled} onClick={() => onSetRole("user")}>
             <Shield className="size-4" />
             {t("users.demoteToUser")}
           </DropdownMenuItem>
         ) : (
-          <DropdownMenuItem onClick={() => onSetRole("admin")}>
+          <DropdownMenuItem disabled={disabled} onClick={() => onSetRole("admin")}>
             <Shield className="size-4" />
             {t("users.promoteToAdmin")}
           </DropdownMenuItem>
         )}
         {isArchived ? (
-          <DropdownMenuItem onClick={onUnarchive}>
+          <DropdownMenuItem disabled={disabled} onClick={onUnarchive}>
             <ArchiveArrowUp className="size-4" />
             {t("users.restoreUser")}
           </DropdownMenuItem>
         ) : (
-          <DropdownMenuItem disabled={isSelf} onClick={onArchive}>
+          <DropdownMenuItem disabled={isSelf || disabled} onClick={onArchive}>
             <Archive className="size-4" />
             {t("users.archiveUser")}
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem disabled={isSelf} onClick={onDelete}>
+        <DropdownMenuItem disabled={isSelf || disabled} onClick={onDelete}>
           <Trash className="size-4" />
           {t("users.deleteAction")}
         </DropdownMenuItem>
@@ -431,35 +519,42 @@ function InviteUserDialog({
 }: {
   open: boolean;
   onOpenChange: (next: boolean) => void;
-  onInvited: (reveal: { email: string; tempPassword: string; emailSent: boolean }) => void;
+  onInvited: (delivery: InviteDelivery, email: string) => void;
 }) {
-  const { t } = useTranslation(["admin", "common"]);
-  const invite = useMutation(orpc.users.invite.mutationOptions());
+  const { t, i18n } = useTranslation(["admin", "common"]);
+  // The invitee's language defaults to the admin's own; the admin changes it
+  // when the invitee reads another one.
+  const adminLocale: Locale = isSupportedLocale(i18n.language) ? i18n.language : "en-US";
+  const invite = useMutation({
+    ...orpc.users.invite.mutationOptions(),
+    meta: { errorFallbackKey: "admin:users.inviteFailed" },
+  });
 
   const form = useForm({
-    defaultValues: { email: "", name: "", role: "user" as "user" | "admin" },
+    defaultValues: {
+      email: "",
+      name: "",
+      role: "user" as "user" | "admin",
+      locale: adminLocale,
+    },
     validators: { onChange: buildInviteSchema() },
     onSubmit: async ({ value }) => {
-      const result = await invite.mutateAsync(value);
-      onInvited({
-        email: value.email,
-        tempPassword: result.tempPassword,
-        emailSent: result.emailSent,
-      });
+      const delivery = await invite.mutateAsync(value);
+      onInvited(delivery, value.email.toLowerCase());
       form.reset();
     },
   });
 
+  // The one close path for Escape, backdrop, X and Cancel: an invite in flight
+  // can't be abandoned, and every close starts the next open from a blank form.
+  const handleOpenChange = (next: boolean) => {
+    if (invite.isPending) return;
+    if (!next) form.reset();
+    onOpenChange(next);
+  };
+
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!invite.isPending) {
-          if (!next) form.reset();
-          onOpenChange(next);
-        }
-      }}
-    >
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t("admin:users.inviteTitle")}</DialogTitle>
@@ -513,12 +608,27 @@ function InviteUserDialog({
             )}
           </form.Field>
 
+          <form.Field name="locale">
+            {(field) => (
+              <SelectField
+                field={field}
+                label={t("admin:users.localeLabel")}
+                description={t("admin:users.localeDescription")}
+                className="space-y-1.5"
+                options={SUPPORTED_LOCALES.map((locale) => ({
+                  value: locale,
+                  label: LOCALE_LABELS[locale],
+                }))}
+              />
+            )}
+          </form.Field>
+
           <DialogFooter>
             <Button
               type="button"
               variant="ghost"
               className="min-h-[44px]"
-              onClick={() => onOpenChange(false)}
+              onClick={() => handleOpenChange(false)}
               disabled={invite.isPending}
             >
               {t("common:actions.cancel")}
@@ -547,41 +657,43 @@ function RevealInviteDialog({
   reveal,
   onClose,
 }: {
-  reveal: { email: string; tempPassword: string; emailSent: boolean } | null;
+  reveal: InviteReveal | null;
   onClose: () => void;
 }) {
-  const { t } = useTranslation(["admin", "common", "errors"]);
+  const { t, i18n } = useTranslation(["admin", "common", "errors"]);
+  const expires = reveal
+    ? new Date(reveal.expiresAt).toLocaleString(i18n.language, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      })
+    : "";
   return (
-    <Dialog
-      open={!!reveal}
-      onOpenChange={(next) => {
-        if (!next) onClose();
-      }}
-    >
-      <DialogContent>
+    // One-time reveal (patterns/overlays.md): the set-password link is never
+    // shown again, so Escape and backdrop requests are ignored and the X is
+    // hidden. Only the explicit Done button closes the dialog.
+    <Dialog open={!!reveal} onOpenChange={() => {}}>
+      <DialogContent showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle>{t("admin:users.revealTitle")}</DialogTitle>
-          <DialogDescription>
-            {reveal?.emailSent
-              ? t("admin:users.revealEmailedDescription", { email: reveal.email })
-              : t("admin:users.revealNotEmailedDescription", { email: reveal?.email ?? "" })}
-          </DialogDescription>
+          <DialogTitle>{t("admin:users.revealTitle", { email: reveal?.email ?? "" })}</DialogTitle>
+          <DialogDescription>{t("admin:users.revealDescription")}</DialogDescription>
         </DialogHeader>
 
         <div className="min-w-0 space-y-1.5">
-          <Label>{t("admin:users.tempPasswordLabel")}</Label>
+          <Label>{t("admin:users.setPasswordLinkLabel")}</Label>
           <CopyField
-            value={reveal?.tempPassword ?? ""}
-            copyLabel={t("admin:users.copyTempPasswordAriaLabel")}
-            onCopied={() => toast.success(t("admin:users.passwordCopied"))}
+            value={reveal?.setPasswordUrl ?? ""}
+            copyLabel={t("admin:users.copySetPasswordLinkAriaLabel")}
+            onCopied={() => toast.success(t("admin:users.linkCopied"))}
             onCopyError={() => toast.error(t("errors:couldNotCopy"))}
           />
-          <p className="text-xs text-muted-foreground">{t("admin:users.tempPasswordHint")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("admin:users.setPasswordLinkHint", { date: expires })}
+          </p>
         </div>
 
         <DialogFooter>
           <Button onClick={onClose} className="min-h-[44px]">
-            {t("admin:users.savedPassword")}
+            {t("admin:users.savedLink")}
           </Button>
         </DialogFooter>
       </DialogContent>

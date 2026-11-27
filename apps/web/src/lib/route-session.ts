@@ -1,3 +1,4 @@
+import { appShellHydrated } from "@/lib/app-shell-hydration";
 import { admitRouteIdentity, documentIdentityEpoch } from "@/lib/document-identity";
 import type { RouteSessionResolution } from "@/lib/route-session-access";
 import { getRouteSession } from "@/server/auth-session";
@@ -10,13 +11,23 @@ import { getRouteSession } from "@/server/auth-session";
  * is replaced and this never settles, so nothing under the guard renders the
  * previous identity's data. An answer to a probe that started before a
  * newer identity was recorded (a hover preload sent before this tab signed
- * in) is out of date: the probe runs again, and only its answer is used. Every session guard
- * uses this, never `getRouteSession()` alone.
+ * in) is out of date: the probe runs again, and only its answer is used. It
+ * also waits for the server-rendered app shell to hydrate, so a guard's
+ * redirect never lands mid-hydration. Every session guard uses this, never
+ * `getRouteSession()` alone.
  */
 export async function resolveRouteSession(): Promise<RouteSessionResolution> {
+  // Nothing a guard decides (redirect, not-found, error) may reach the router
+  // while the server-rendered app shell is still hydrating
+  // (lib/app-shell-hydration.ts). The wait runs alongside the first probe, and
+  // a failed probe (a transport error) also waits before it reaches the
+  // router. Taken once: a re-probe below runs after the shell hydrated.
+  const shellHydrated = appShellHydrated();
   for (;;) {
     const startedAt = documentIdentityEpoch();
-    const resolution = await getRouteSession();
+    const [probe] = await Promise.allSettled([getRouteSession(), shellHydrated]);
+    if (probe.status === "rejected") throw probe.reason;
+    const resolution = probe.value;
     // Out of date: probe again rather than act on (or hand the route) an
     // answer older than the identity recorded meanwhile. Terminates: the
     // recorded identity changes at most twice (unknown → anonymous → a user)

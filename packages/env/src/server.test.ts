@@ -120,8 +120,18 @@ describe("shared env — DATABASE_POOL_MAX", () => {
     expect(mod.env.DATABASE_POOL_MAX).toBe(25);
   });
 
-  it("rejects zero, negative, and non-numeric values", async () => {
+  it("accepts the minimum of 3", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mod = await importServerEnv({ DATABASE_POOL_MAX: "3" });
+    expect(mod.env.DATABASE_POOL_MAX).toBe(3);
+  });
+
+  // Lock transactions take at most pool - 1 connections, and a password write
+  // holds two (its password-write lock and the revocation it runs).
+  it("rejects a pool of 2 or 1, zero, negative, and non-numeric values", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(importServerEnv({ DATABASE_POOL_MAX: "2" })).rejects.toThrow();
+    await expect(importServerEnv({ DATABASE_POOL_MAX: "1" })).rejects.toThrow();
     await expect(importServerEnv({ DATABASE_POOL_MAX: "0" })).rejects.toThrow();
     await expect(importServerEnv({ DATABASE_POOL_MAX: "-5" })).rejects.toThrow();
     await expect(importServerEnv({ DATABASE_POOL_MAX: "many" })).rejects.toThrow();

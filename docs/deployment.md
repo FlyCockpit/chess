@@ -178,7 +178,7 @@ For scripts and CI, pass `--url` and `--email` and pipe the key on stdin: `print
 
 ### With `ADMIN_EMAILS` (needs SMTP)
 
-Set `ADMIN_EMAILS` on the server, sign up with that exact address, and click the verification link; the account carries the admin role. SSO-created users are never promoted from `ADMIN_EMAILS`. The sign-up page (and the header's Sign Up) is offered only until the first administrator exists (`appConfig.adminBootstrapSignupEnabled`, [packages/api/src/routers/index.ts](../packages/api/src/routers/index.ts)); after that, an administrator invites further accounts from Admin → Users.
+Set `ADMIN_EMAILS` on the server, sign up with that exact address, and click the verification link; the account carries the admin role. SSO-created users are never promoted from `ADMIN_EMAILS`. The sign-up page (and the header's Sign Up) is offered only until the first administrator exists (`appConfig.adminBootstrapSignupEnabled`, [packages/api/src/routers/index.ts](../packages/api/src/routers/index.ts)); after that, an administrator invites further accounts from Admin → Users. An invite is one email in the language the admin picks, carrying a one-time set-password link that expires after 7 days; setting the password also confirms the address, so the invitee signs in right after and gets no separate verification mail. No password is ever mailed or shown. If SMTP is not configured or the send fails, the admin gets the link once to pass on; **Resend invite** in the row menu mints a fresh link and kills the earlier one ([packages/api/src/lib/set-password-link.ts](../packages/api/src/lib/set-password-link.ts)).
 
 ## Backups before real data
 

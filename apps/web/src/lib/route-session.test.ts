@@ -30,7 +30,12 @@ beforeEach(() => {
   probe.calls = 0;
   reload.mockReset();
   vi.stubGlobal("window", { location: { reload, assign: vi.fn() } });
-  vi.stubGlobal("document", { documentElement: { style: { visibility: "" } } });
+  // No app shell in the document: the hydration wait (lib/app-shell-hydration.ts)
+  // resolves at once; app-shell-hydration.test.ts covers it.
+  vi.stubGlobal("document", {
+    documentElement: { style: { visibility: "" } },
+    querySelector: () => null,
+  });
 });
 afterEach(() => {
   vi.unstubAllGlobals();

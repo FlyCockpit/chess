@@ -71,7 +71,10 @@ function DevicePage() {
     <PageShell width="narrow" className="max-w-lg">
       <Card>
         <CardHeader>
-          <CardTitle>{t("auth:device.title")}</CardTitle>
+          {/* The page's one h1 (the card is the whole page). */}
+          <CardTitle>
+            <h1>{t("auth:device.title")}</h1>
+          </CardTitle>
           <CardDescription>{t("auth:device.description")}</CardDescription>
         </CardHeader>
         <CardContent>

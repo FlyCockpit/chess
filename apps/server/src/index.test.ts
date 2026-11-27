@@ -5,6 +5,10 @@ const state = vi.hoisted(() => ({
   fetch: undefined as ((request: Request) => Response | Promise<Response>) | undefined,
   getSession: vi.fn(),
   authHandler: vi.fn(),
+  withDeviceRedemptionLock: vi.fn(),
+  withPasswordSignInFence: vi.fn(),
+  withPasswordWriteLock: vi.fn(),
+  order: [] as string[],
   mutate: vi.fn(() => ({ ok: true })),
   passwordPepper: {},
   syncPasswordPepper: vi.fn().mockResolvedValue(undefined),
@@ -28,6 +32,20 @@ vi.mock("@cockpit-chess/auth", () => ({
 }));
 vi.mock("@cockpit-chess/auth/password-pepper-store", () => ({
   syncPasswordPepper: state.syncPasswordPepper,
+}));
+vi.mock("@cockpit-chess/auth/device-redemption-lock", () => ({
+  withDeviceRedemptionLock: state.withDeviceRedemptionLock,
+}));
+vi.mock("@cockpit-chess/auth/password-sign-in-fence", () => ({
+  withPasswordSignInFence: state.withPasswordSignInFence,
+}));
+vi.mock("@cockpit-chess/auth/password-write-lock", () => ({
+  PASSWORD_WRITE_PATHS: new Set([
+    "/change-password",
+    "/reset-password",
+    "/admin/set-user-password",
+  ]),
+  withPasswordWriteLock: state.withPasswordWriteLock,
 }));
 vi.mock("@cockpit-chess/queue", () => ({ QUEUE_NAMES: {}, redisConnection: {} }));
 vi.mock("@cockpit-chess/queue/consumer-health", () => ({ hasExternalConsumer: vi.fn() }));
@@ -119,6 +137,38 @@ beforeEach(() => {
     session: { id: "cookie-session" },
   });
   state.authHandler.mockImplementation(() => new Response("auth ok"));
+  state.order.length = 0;
+  state.withDeviceRedemptionLock.mockImplementation(
+    async (request: Request, run: () => Promise<Response>) => {
+      const body = (await request.clone().json()) as { device_code?: string };
+      state.order.push(`lock:${body.device_code}`);
+      const response = await run();
+      state.order.push("unlock");
+      return response;
+    },
+  );
+  state.withPasswordSignInFence.mockImplementation(
+    async (_request: Request, run: () => Promise<Response>) => {
+      state.order.push("fence");
+      const response = await run();
+      state.order.push("recheck");
+      return response;
+    },
+  );
+  state.withPasswordWriteLock.mockImplementation(
+    async (
+      path: string,
+      _request: Request,
+      run: () => Promise<Response>,
+      { getSession }: { getSession: (headers: Headers) => Promise<unknown> },
+    ) => {
+      state.order.push(`write-lock:${path}`);
+      await getSession(new Headers());
+      const response = await run();
+      state.order.push("write-unlock");
+      return response;
+    },
+  );
   vi.spyOn(console, "log").mockImplementation(() => {});
 });
 afterEach(() => vi.restoreAllMocks());
@@ -253,5 +303,129 @@ describe("request logging", () => {
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining(`GET ${label} 500 `));
     const output = JSON.stringify([vi.mocked(console.log).mock.calls, error.mock.calls]);
     expect(output).not.toContain("SENTINEL");
+  });
+});
+
+describe("/api/auth device-token redemption", () => {
+  it("runs the token POST inside the CLI-credential lock, body intact and Authorization stripped", async () => {
+    state.authHandler.mockImplementation(async (request: Request) => {
+      state.order.push("handler");
+      return Response.json({
+        body: await request.json(),
+        authorization: request.headers.get("authorization"),
+      });
+    });
+    const body = { device_code: "dc-1", client_id: "cockpit-chess-cli" };
+
+    const res = await request("/api/auth/device/token", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer untrusted" },
+      body: JSON.stringify(body),
+    });
+
+    expect(await res.json()).toEqual({ body, authorization: null });
+    expect(state.order).toEqual(["lock:dc-1", "handler", "unlock"]);
+    expect(state.withDeviceRedemptionLock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["GET", "/api/auth/device/token"],
+    ["POST", "/api/auth/sign-in/email"],
+    ["POST", "/api/auth/device/code"],
+  ])("never takes the lock for %s %s", async (method, path) => {
+    const res = await request(path, {
+      method,
+      ...(method === "POST"
+        ? { headers: { "content-type": "application/json" }, body: JSON.stringify({}) }
+        : {}),
+    });
+
+    expect(await res.text()).toBe("auth ok");
+    expect(state.authHandler).toHaveBeenCalledOnce();
+    expect(state.withDeviceRedemptionLock).not.toHaveBeenCalled();
+  });
+});
+
+describe("/api/auth password sign-in", () => {
+  it("runs the sign-in POST inside the credential fence, body intact and Authorization stripped", async () => {
+    state.authHandler.mockImplementation(async (request: Request) => {
+      state.order.push("handler");
+      return Response.json({
+        body: await request.json(),
+        authorization: request.headers.get("authorization"),
+      });
+    });
+    const body = { email: "a@example.test", password: "correct horse battery" };
+
+    const res = await request("/api/auth/sign-in/email", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer untrusted" },
+      body: JSON.stringify(body),
+    });
+
+    expect(await res.json()).toEqual({ body, authorization: null });
+    expect(state.order).toEqual(["fence", "handler", "recheck"]);
+    const [fenced] = state.withPasswordSignInFence.mock.calls[0] as [Request];
+    expect(fenced.headers.get("authorization")).toBeNull();
+  });
+
+  it.each([
+    ["POST", "/api/auth/sign-up/email"],
+    ["POST", "/api/auth/two-factor/verify-totp"],
+    ["POST", "/api/auth/device/token"],
+  ])("never fences %s %s", async (method, path) => {
+    await request(path, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: "dc-1" }),
+    });
+
+    expect(state.authHandler).toHaveBeenCalledOnce();
+    expect(state.withPasswordSignInFence).not.toHaveBeenCalled();
+  });
+});
+
+describe("/api/auth password writes", () => {
+  it.each(["/change-password", "/reset-password", "/admin/set-user-password"])(
+    "runs POST /api/auth%s inside the password-write lock, body intact and Authorization stripped",
+    async (path) => {
+      state.authHandler.mockImplementation(async (request: Request) => {
+        state.order.push("handler");
+        return Response.json({
+          body: await request.json(),
+          authorization: request.headers.get("authorization"),
+        });
+      });
+      const body = { newPassword: "a-new-password-123", token: "t", userId: "u1" };
+
+      const res = await request(`/api/auth${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer untrusted" },
+        body: JSON.stringify(body),
+      });
+
+      expect(await res.json()).toEqual({ body, authorization: null });
+      expect(state.order).toEqual([`write-lock:${path}`, "handler", "write-unlock"]);
+      const [, locked] = state.withPasswordWriteLock.mock.calls[0] as [string, Request];
+      expect(locked.headers.get("authorization")).toBeNull();
+      // The session lookup it is given is Better-Auth's.
+      expect(state.getSession).toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["POST", "/api/auth/sign-in/email"],
+    ["POST", "/api/auth/two-factor/disable"],
+    ["GET", "/api/auth/reset-password/tok"],
+    ["POST", "/api/auth/request-password-reset"],
+  ])("never takes the password-write lock for %s %s", async (method, path) => {
+    await request(path, {
+      method,
+      ...(method === "POST"
+        ? { headers: { "content-type": "application/json" }, body: JSON.stringify({}) }
+        : {}),
+    });
+    expect(state.authHandler).toHaveBeenCalledOnce();
+    expect(state.withPasswordWriteLock).not.toHaveBeenCalled();
   });
 });

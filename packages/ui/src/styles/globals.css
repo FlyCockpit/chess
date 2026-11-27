@@ -49,7 +49,12 @@
      panels included (WCAG 1.4.11, apps/web/src/lib/theme-contrast.test.ts).
      --border stays decorative and light. */
   --input: oklch(0.62 0.012 214.3);
-  --ring: var(--primary-ink);
+  /* Focus ring and focused border: the accent green, >= 3:1 on every surface
+     and >= 2:1 against the resting --input outline, so a focused field is
+     clearly not the resting one (apps/web/src/lib/theme-contrast.test.ts).
+     Light --primary-ink is only 1.7:1 against --input, so the light ring is
+     the green ramp's deeper 700 step; dark --primary-ink already clears it. */
+  --ring: oklch(0.42 0.11 155);
   --grey-50: oklch(0.985 0.002 228);
   --grey-100: oklch(0.96 0.004 228);
   --grey-200: oklch(0.92 0.005 228);
@@ -128,6 +133,7 @@
   --state-loading-bg: color-mix(in oklch, var(--muted-foreground) 15%, transparent);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(0.56 0.012 220);
+  /* 2.8:1 against --input, 3:1 or more on the dark field fill. */
   --ring: var(--primary-ink);
   --grey-50: oklch(0.25 0.004 228);
   --grey-100: oklch(0.3 0.006 228);
@@ -392,6 +398,18 @@
     --safe-area-bottom: env(safe-area-inset-bottom, 0px);
     --safe-area-left: env(safe-area-inset-left, 0px);
     --safe-area-right: env(safe-area-inset-right, 0px);
+    /* The phone BottomNav's bar (apps/web bottom-nav.tsx draws itself at this
+       height) and the room it takes at the bottom of the screen: 0 while no
+       BottomNav is on screen (md and up, the arena and public pages, the CLI
+       lab, an open software keyboard). Fixed bottom surfaces (toasts) sit
+       above it. */
+    --bottom-nav-bar: 3.5rem;
+    --bottom-nav-height: 0px;
+  }
+  @media (width < 48rem) {
+    :root:has([data-bottom-nav]) {
+      --bottom-nav-height: calc(var(--bottom-nav-bar) + var(--safe-area-bottom));
+    }
   }
 }
 
@@ -532,6 +550,22 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Bottom toasts (bottom-center on phones, bottom-right from md, sileo.tsx)
+   sit above the phone BottomNav instead of covering it (--bottom-nav-height),
+   or above the home indicator where there is no nav. One more attribute than
+   sileo's `[data-sileo-viewport][data-position^="bottom"] { bottom: 0 }`. */
+:root [data-sileo-viewport][data-position^="bottom"] {
+  bottom: max(var(--bottom-nav-height), var(--safe-area-bottom));
+}
+/* sileo draws the action ("Undo", "Try again") 1.75rem (28px) tall. On a touch
+   screen it is at least 44px, the touch floor; the expanded body re-measures
+   itself, so the taller button fits. */
+@media (pointer: coarse) {
+  :root [data-sileo-viewport] [data-sileo-button] {
+    height: auto;
+    min-height: 44px;
+  }
 }
 :root [data-sileo-viewport] [data-sileo-button][data-state] {
   --sileo-btn-color: var(--popover-foreground);

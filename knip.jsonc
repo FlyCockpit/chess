@@ -93,8 +93,6 @@
     "packages/db": {
       "ignoreDependencies": ["@prisma/client", "pg", "zod"]
     },
-    "packages/auth": {
-      "ignoreDependencies": ["zod"]
-    }
+    "packages/auth": {}
   }
 }

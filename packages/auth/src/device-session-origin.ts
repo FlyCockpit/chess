@@ -1,7 +1,7 @@
 import { DEVICE_FLOW_SESSION_ORIGIN } from "@cockpit-chess/config/cli";
 
 /** The device-authorization plugin's token endpoint (`cockpit-chess login` polls it). */
-const DEVICE_TOKEN_PATH = "/device/token";
+export const DEVICE_TOKEN_PATH = "/device/token";
 
 /**
  * Session-create hook data for a session minted by the device flow, or

@@ -1,14 +1,23 @@
 import { randomBytes } from "node:crypto";
 import { auth } from "@cockpit-chess/auth";
+import { isUserBanned } from "@cockpit-chess/auth/ban";
 import { runWithAllowedUserCreation } from "@cockpit-chess/auth/user-creation-policy";
+import { SUPPORTED_LOCALES } from "@cockpit-chess/config/locales";
 import prisma, { type Prisma } from "@cockpit-chess/db";
-import { env } from "@cockpit-chess/env/server";
-import { renderInviteUser, sendEmail } from "@cockpit-chess/mailer";
+import { isEmailConfigured, renderInviteUser, sendEmail } from "@cockpit-chess/mailer";
 import { ORPCError } from "@orpc/server";
 import { z } from "zod";
 
 import { adminOr404Procedure } from "../index";
 import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagination";
+import { createProcedureBudget } from "../lib/procedure-budget";
+import {
+  createSetPasswordLink,
+  INVITE_LINK_TTL_DAYS,
+  inviteStateSelect,
+  isInvitePending,
+  SetPasswordLinkRefusedError,
+} from "../lib/set-password-link";
 
 // Roles surfaced in the admin UI. Better-auth itself stores `role` as a free-
 // form string (and supports comma-separated lists), but the admin dashboard
@@ -21,10 +30,140 @@ const userIdInput = z.object({ userId: z.string().min(1) });
 
 const userStatusFilter = z.enum(["all", "active", "archived"]);
 
-function generateTempPassword(): string {
-  // 24 url-safe bytes → ~32 chars. Long enough to satisfy any reasonable
-  // strength check; short enough to read from an email.
-  return randomBytes(24).toString("base64url");
+function generateUnusablePassword(): string {
+  // 48 random bytes, discarded right after hashing: a credential nobody holds.
+  return randomBytes(48).toString("base64url");
+}
+
+/**
+ * Thrown by `resendInvite` (409) when the user is not a pending invite. The
+ * admin UI shows its own copy for it and refreshes the list.
+ */
+const INVITE_NOT_PENDING = "INVITE_NOT_PENDING";
+
+function inviteNotPending() {
+  return new ORPCError(INVITE_NOT_PENDING, {
+    status: 409,
+    message:
+      "This user has already set up their account or signs in another way, so there is no invite to resend.",
+  });
+}
+
+function inviteeArchived() {
+  return new ORPCError("BAD_REQUEST", {
+    message: "Restore this user before resending their invite.",
+  });
+}
+
+/** The mint's own (race-free) refusal, as the procedure's error. */
+function refusalError(err: SetPasswordLinkRefusedError) {
+  if (err.reason === "missing") return new ORPCError("NOT_FOUND", { message: "User not found" });
+  if (err.reason === "archived") return inviteeArchived();
+  return inviteNotPending();
+}
+
+/**
+ * Invite mail budgets. Each `invite` / `resendInvite` call writes rows and
+ * sends one email, and one batched `/rpc` request carries many calls, so the
+ * HTTP limiter cannot meter them. Fail-closed: these are mail-sending writes.
+ *
+ * - Per admin, shared by both procedures: 30 invite mails an hour covers
+ *   onboarding a team in one sitting.
+ * - Per invitee, resend only: 5 an hour. Every resend kills the previous link,
+ *   so more than that is a stuck mailbox, not progress, and the invitee's
+ *   inbox should not be the thing an admin session can flood.
+ */
+const consumeInviteMailBudget = createProcedureBudget({
+  keyPrefix: "rl:users-invite-mail",
+  points: 30,
+  durationSeconds: 3600,
+  failClosed: true,
+  overBudgetMessage: (retryAfterSeconds) =>
+    `Too many invites sent. Try again in ${retryAfterSeconds}s.`,
+  unavailableMessage: "Invites are temporarily unavailable. Please try again in a moment.",
+  unavailableLog: "[users] invite mail limiter unavailable, failing closed:",
+});
+
+const consumeResendInviteBudget = createProcedureBudget({
+  keyPrefix: "rl:users-resend-invite",
+  points: 5,
+  durationSeconds: 3600,
+  failClosed: true,
+  overBudgetMessage: (retryAfterSeconds) =>
+    `This invite was re-sent too often. Try again in ${retryAfterSeconds}s.`,
+  unavailableMessage: "Invites are temporarily unavailable. Please try again in a moment.",
+  unavailableLog: "[users] resend-invite limiter unavailable, failing closed:",
+});
+
+const INVITE_TARGET_SELECT = {
+  id: true,
+  email: true,
+  name: true,
+  locale: true,
+  banned: true,
+  banExpires: true,
+} satisfies Prisma.UserSelect;
+
+/**
+ * The invite result. The set-password link is returned only when it could not
+ * be emailed: the admin then has to pass it on themselves (one-time reveal in
+ * the admin UI). When the email went out, the link exists only in the
+ * invitee's inbox.
+ */
+type InviteDelivery =
+  | { userId: string; emailSent: true }
+  | { userId: string; emailSent: false; setPasswordUrl: string; expiresAt: Date };
+
+async function deliverInvite(args: {
+  userId: string;
+  name: string;
+  email: string;
+  locale: string;
+}): Promise<InviteDelivery> {
+  let link: { url: string; expiresAt: Date };
+  try {
+    link = await createSetPasswordLink({ userId: args.userId, locale: args.locale });
+  } catch (err) {
+    if (err instanceof SetPasswordLinkRefusedError) throw refusalError(err);
+    console.error(
+      "[users.invite] failed to create a set-password link for",
+      args.userId,
+      err instanceof Error ? `${err.name}: ${err.message}` : "unknown error",
+    );
+    throw new ORPCError("INTERNAL_SERVER_ERROR", {
+      message: "Couldn't create the invite link. Try resending the invite.",
+    });
+  }
+
+  // Skip the SMTP attempt (and its retries) when email is not configured at
+  // all; a configured-but-failing server falls through to the same reveal.
+  if (isEmailConfigured()) {
+    try {
+      const { subject, html } = renderInviteUser({
+        name: args.name,
+        email: args.email,
+        setPasswordUrl: link.url,
+        expiresInDays: INVITE_LINK_TTL_DAYS,
+        locale: args.locale,
+      });
+      // The admin is waiting on this response; the mailer's own send deadline
+      // bounds it, and a failure falls back to the link reveal.
+      await sendEmail({ to: args.email, subject, html });
+      return { userId: args.userId, emailSent: true };
+    } catch (err) {
+      // Never log the link: it is a credential until it is spent.
+      console.warn(
+        "[users.invite] failed to send invite email",
+        err instanceof Error ? `${err.name}: ${err.message}` : "unknown error",
+      );
+    }
+  }
+  return {
+    userId: args.userId,
+    emailSent: false,
+    setPasswordUrl: link.url,
+    expiresAt: link.expiresAt,
+  };
 }
 
 const USER_SELECT = {
@@ -40,7 +179,7 @@ const USER_SELECT = {
   image: true,
   createdAt: true,
   updatedAt: true,
-} as const;
+} satisfies Prisma.UserSelect;
 
 export const usersRouter = {
   list: adminOr404Procedure
@@ -71,6 +210,7 @@ export const usersRouter = {
             ],
           }
         : undefined;
+      const now = new Date();
       const statusWhere: Prisma.UserWhereInput | undefined =
         status === "active"
           ? { OR: [{ banned: false }, { banned: null }] }
@@ -96,10 +236,16 @@ export const usersRouter = {
         where: withCursor(where, "createdAt", cursor, "desc"),
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: pageTake(limit),
-        select: USER_SELECT,
+        select: { ...USER_SELECT, ...inviteStateSelect(now) },
       });
       const page = cursorPage(rows, limit, "createdAt");
-      return { users: page.items, nextCursor: page.nextCursor };
+      // The account/session probes decide `invitePending` and go no further:
+      // the client gets the verdict, never the user's linked providers.
+      const users = page.items.map(({ accounts, sessions, ...user }) => ({
+        ...user,
+        invitePending: isInvitePending({ emailVerified: user.emailVerified, accounts, sessions }),
+      }));
+      return { users, nextCursor: page.nextCursor };
     }),
 
   invite: adminOr404Procedure
@@ -108,10 +254,26 @@ export const usersRouter = {
         email: z.string().email().toLowerCase(),
         name: z.string().trim().min(1).max(100),
         role: assignableRoleSchema.default("user"),
+        // The invitee's language: the invite email, the set-password page it
+        // links to, and every later email use it, and it is saved as their
+        // `User.locale` (they can change it in settings). The admin UI
+        // defaults it to the admin's own language.
+        locale: z.enum(SUPPORTED_LOCALES),
       }),
     )
-    .handler(async ({ input }) => {
-      const tempPassword = generateTempPassword();
+    .handler(async ({ input, context }) => {
+      await consumeInviteMailBudget(`admin:${context.session.user.id}`);
+      // The account is created with a random password that is never stored
+      // anywhere, shown, or sent — nobody can sign in with it. The invitee
+      // gets a one-time set-password link instead and chooses their own.
+      //
+      // The account starts unverified, and the invite email is the only mail:
+      // createUser sends no verification mail, and sign-in's resend
+      // (`sendOnSignIn`) needs the correct password, which nobody has. Spending
+      // the link proves the inbox and marks the email verified then
+      // (`onPasswordReset`), so an invite to a mistyped address never yields
+      // a verified account.
+      const unusablePassword = generateUnusablePassword();
 
       // `auth.api.createUser` is the only admin-plugin endpoint that accepts
       // server-side calls without a session in headers (verified in the
@@ -119,28 +281,23 @@ export const usersRouter = {
       // uniqueness, and writes through the Prisma adapter so it stays in
       // sync with any custom databaseHooks (e.g. ADMIN_EMAILS auto-promote).
       let userId: string;
-      let recipientLocale: string;
       try {
-        const created = await runWithAllowedUserCreation("admin-invite", () =>
-          auth.api.createUser({
-            body: {
-              email: input.email,
-              password: tempPassword,
-              name: input.name,
-              role: input.role,
-            },
-          }),
+        // The grant's locale seeds `User.locale` in the user-create hook
+        // (packages/auth): a server-side createUser carries no locale header.
+        const created = await runWithAllowedUserCreation(
+          "admin-invite",
+          () =>
+            auth.api.createUser({
+              body: {
+                email: input.email,
+                password: unusablePassword,
+                name: input.name,
+                role: input.role,
+              },
+            }),
+          { locale: input.locale },
         );
         userId = created.user.id;
-        // The User row was just created with the Prisma `@default("en-US")`
-        // for `locale`. Read it back so a future change to the default (or a
-        // hook that overrides it) flows through to the email render without
-        // additional plumbing here.
-        const fresh = await prisma.user.findUnique({
-          where: { id: userId },
-          select: { locale: true },
-        });
-        recipientLocale = fresh?.locale ?? "en-US";
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to invite user";
         if (/already exists|already in use|duplicate/i.test(message)) {
@@ -154,10 +311,10 @@ export const usersRouter = {
               "Account creation is disabled by the auth configuration. Ask an admin to check the invite setup.",
           });
         }
-        // Log only name+message — the generated temp password was just
-        // passed to auth.api.createUser, so we don't dump the raw error
-        // object in case a future better-auth release attaches request
-        // context to thrown errors.
+        // Log only name+message — the generated password was just passed to
+        // auth.api.createUser, so we don't dump the raw error object in case
+        // a future better-auth release attaches request context to thrown
+        // errors.
         const errLabel = err instanceof Error ? `${err.name}: ${err.message}` : "unknown error";
         console.error("[users.invite] auth.api.createUser failed:", errLabel);
         throw new ORPCError("INTERNAL_SERVER_ERROR", {
@@ -166,28 +323,49 @@ export const usersRouter = {
         });
       }
 
-      // Email send is best-effort: if SMTP is not configured (or fails) we
-      // still return the temp password to the admin so they can share it
-      // out of band. The email failure is logged but does not roll back the
-      // user creation — undoing it would race against any concurrent admin
-      // who is already looking at the new row.
-      let emailSent = false;
-      try {
-        const { subject, html } = renderInviteUser({
-          name: input.name,
-          email: input.email,
-          tempPassword,
-          signInUrl: `${env.BETTER_AUTH_URL}/login`,
-          locale: recipientLocale,
-        });
-        await sendEmail({ to: input.email, subject, html });
-        emailSent = true;
-      } catch (err) {
-        console.warn("[users.invite] failed to send invite email", err);
-      }
-
-      return { userId, tempPassword, emailSent };
+      // A link failure does not roll back the user creation — undoing it would
+      // race against any concurrent admin already looking at the new row. The
+      // admin can mint a fresh link with "Resend invite".
+      return deliverInvite({
+        userId,
+        name: input.name,
+        email: input.email,
+        locale: input.locale,
+      });
     }),
+
+  /**
+   * Mint a fresh set-password link for an invited user who has not finished
+   * setting up their account, and email it (or hand it to the admin when it
+   * can't be emailed). Every earlier link for the user stops working.
+   *
+   * Pending is decided server-side by `isInvitePending` (unverified, only a
+   * credential account, never signed in) — not by `emailVerified` alone, which
+   * an active SSO user can also have. Anything else is refused with
+   * INVITE_NOT_PENDING (409), and `createSetPasswordLink` independently refuses
+   * any user with a non-credential account, under its per-user lock.
+   *
+   * The checks here are a fast path; `createSetPasswordLink` repeats them
+   * under the lock a finishing password reset also takes, so an invitee who
+   * completes their reset in the meantime never gets a fresh link.
+   */
+  resendInvite: adminOr404Procedure.input(userIdInput).handler(async ({ input, context }) => {
+    await consumeInviteMailBudget(`admin:${context.session.user.id}`);
+    await consumeResendInviteBudget(`user:${input.userId}`);
+    const target = await prisma.user.findUnique({
+      where: { id: input.userId },
+      select: { ...INVITE_TARGET_SELECT, ...inviteStateSelect(new Date()) },
+    });
+    if (!target) throw new ORPCError("NOT_FOUND", { message: "User not found" });
+    if (!isInvitePending(target)) throw inviteNotPending();
+    if (isUserBanned(target)) throw inviteeArchived();
+    return deliverInvite({
+      userId: target.id,
+      name: target.name,
+      email: target.email,
+      locale: target.locale,
+    });
+  }),
 
   setRole: adminOr404Procedure
     .input(

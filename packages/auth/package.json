@@ -13,8 +13,23 @@
     "./ban": {
       "default": "./src/ban.ts"
     },
+    "./credential-revocation": {
+      "default": "./src/credential-revocation.ts"
+    },
+    "./device-redemption-lock": {
+      "default": "./src/device-redemption-lock.ts"
+    },
+    "./password-sign-in-fence": {
+      "default": "./src/password-sign-in-fence.ts"
+    },
+    "./password-write-lock": {
+      "default": "./src/password-write-lock.ts"
+    },
     "./roles": {
       "default": "./src/roles.ts"
+    },
+    "./set-password-link-lock": {
+      "default": "./src/set-password-link-lock.ts"
     },
     "./two-factor-policy": {
       "default": "./src/two-factor-policy.ts"

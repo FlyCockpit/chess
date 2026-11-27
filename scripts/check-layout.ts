@@ -52,13 +52,19 @@
  * Classic (non-overlay) scrollbars are what expose a reserved gutter; headless
  * Chromium on Linux draws them, overlay scrollbars on macOS hide the defect.
  */
-import { execFileSync, spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { signInStep } from "./browser-checks.config.ts";
+import {
+  type CheckRun,
+  decideConsent,
+  formSignIn,
+  sessionName,
+  withBrowser,
+} from "./browser-check-lib.ts";
+import { loginAccount } from "./browser-checks.config.ts";
 
 // One session per run: two checks running at once (two checkouts, two agents) must not share a browser.
-const SESSION = `check-layout-${process.pid}`;
+const SESSION = sessionName("check-layout");
 const THEME_KEY = "vite-ui-theme";
 
 /** What the in-page probe reports. Pure data, so `judgeLayout` is testable. */
@@ -353,27 +359,35 @@ const RESERVE_PROBE = `(async () => {
   return JSON.stringify({ vh: window.innerHeight, inset, before, after, contentEnd, footer: footerEnd });
 })()`;
 
+/** What the app marks as still loading: a `Skeleton`, or a busy region (the route skeleton). */
+export const LOADING_MARKER = '[data-slot="skeleton"], [aria-busy="true"]';
+
 /**
- * Runs in the page before the probes: waits (8s at most) until `<main>`'s
- * content stops growing for half a second. The footer is there before the
- * cards, the leaderboard rows and the demonstration board, so a page measured
- * as soon as it shows grows after the probe scrolled to its end, and the
- * footer it measured is no longer the scroller's last box. True once settled,
- * false if it still changes after 8s (the caller reports that page).
- * Self-contained: no closures.
+ * Runs in the page before the probes: waits (8s at most) until `<main>`
+ * shows no loading marker and its content stops growing for half a second.
+ * The footer is there before the cards, the leaderboard rows and the
+ * demonstration board, so a page measured as soon as it shows grows after the
+ * probe scrolled to its end, and the footer it measured is no longer the
+ * scroller's last box. A skeleton can hold one height for a while before the
+ * data comes, so reads while a marker is present never count as still.
+ * Returns (JSON-encoded, as every page script) "settled", or why it was not:
+ * "loading" (a marker was still there after 8s) or "changing" (the height
+ * kept moving). Self-contained: no closures.
  */
 export const SETTLED = `(async () => {
   const main = document.querySelector('[data-scroll-restoration-id="app-main"]');
-  if (!main) return true;
+  if (!main) return JSON.stringify("settled");
   let last = -1;
   let still = 0;
+  let loading = false;
   for (let i = 0; i < 80 && still < 5; i++) {
     const height = main.scrollHeight;
-    still = height === last ? still + 1 : 0;
-    last = height;
+    loading = !!main.querySelector(${JSON.stringify(LOADING_MARKER)});
+    still = !loading && height === last ? still + 1 : 0;
+    last = loading ? -1 : height;
     await new Promise((r) => setTimeout(r, 100));
   }
-  return still >= 5;
+  return JSON.stringify(still >= 5 ? "settled" : loading ? "loading" : "changing");
 })()`;
 
 // Runs in the page (agent-browser eval). Self-contained: no closures.
@@ -421,56 +435,6 @@ const PROBE = `(async () => {
   }
   return JSON.stringify(out);
 })()`;
-
-/**
- * One agent-browser command. Asynchronous, so a signal (Ctrl+C, a kill) is
- * handled between commands instead of after the whole run.
- */
-function browser(args: string[], input?: string): Promise<string> {
-  return new Promise((done, fail) => {
-    const child = spawn("agent-browser", ["--session", SESSION, ...args], {
-      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    });
-    let out = "";
-    let err = "";
-    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
-      out += chunk;
-    });
-    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
-      err += chunk;
-    });
-    child.on("error", fail);
-    child.on("close", (code) =>
-      code === 0
-        ? done(out.trim())
-        : fail(new Error(`agent-browser ${args.join(" ")} exited ${code}: ${err.trim()}`)),
-    );
-    if (input !== undefined) child.stdin?.end(input);
-  });
-}
-
-function closeBrowser(): void {
-  try {
-    execFileSync("agent-browser", ["--session", SESSION, "close"], { stdio: "ignore" });
-  } catch {}
-}
-
-async function evalJson<T>(script: string): Promise<T> {
-  let value: unknown = JSON.parse(await browser(["eval", "--stdin"], script));
-  if (typeof value === "string") value = JSON.parse(value);
-  return value as T;
-}
-
-async function waitFor(url: string, ms: number): Promise<void> {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    try {
-      if ((await fetch(url)).ok) return;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(`the dev server did not answer ${url} within ${ms / 1000}s`);
-}
 
 interface Page {
   name: string;
@@ -543,197 +507,97 @@ const DROP_FILE = `(async () => {
   return !!pill();
 })()`;
 
-/**
- * Types a value into a React-controlled input through the native setter. The script goes over
- * stdin, so a password never appears in a process's arguments or in a failed command's message.
- */
-function fillScript(selector: string, value: string): string {
-  return `(() => { const el = document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, ${JSON.stringify(value)}); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`;
-}
-
-/** Clicks Verify once React has enabled it for the typed code (the button after the code field). */
-const VERIFY_CODE = `(async () => {
-  const button = document.getElementById("totp-code").closest("div").nextElementSibling;
-  for (let i = 0; i < 20 && button.disabled; i++) await new Promise((r) => setTimeout(r, 100));
-  button.click();
-  return true;
-})()`;
-
-/**
- * Waits (20s at most) until React has hydrated the sign-in form. Before that a click submits the
- * bare HTML form, which reloads the sign-in page instead of signing in.
- */
-const FORM_HYDRATED = `(async () => {
-  for (let i = 0; i < 40; i++) {
-    const form = document.querySelector("form");
-    if (form && Object.keys(form).some((key) => key.startsWith("__reactProps"))) return true;
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return false;
-})()`;
-
-async function signIn(base: string, email: string, password: string): Promise<void> {
-  // Straight to Settings, an app-shell page: the signed-in home is the public
-  // arena (apps/web/src/lib/app-home.ts), so a plain sign-in leaves the app shell.
-  await browser(["open", `${base}/en-US/login?redirectTo=%2Fen-US%2Fsettings`]);
-  await browser(["wait", "input[autocomplete=current-password]"]);
-  if (JSON.parse(await browser(["eval", "--stdin"], FORM_HYDRATED)) !== true)
-    throw new Error("check:layout: the sign-in form did not hydrate within 20s");
-  await browser(["eval", "--stdin"], fillScript("input[type=email]", email));
-  try {
-    await browser(
-      ["eval", "--stdin"],
-      fillScript("input[autocomplete=current-password]", password),
-    );
-  } catch {
-    // agent-browser may echo the failing script; never pass its output on.
-    throw new Error("check:layout: could not type the password into the sign-in form");
-  }
-  // Submitted in the page, not clicked: a click lands on whatever covers the button (the cookie
-  // banner on a short viewport).
-  await browser(["eval", 'document.querySelector("form").requestSubmit(); true']);
-  // Either the app opens, or an account with a second factor gets the code step.
-  const step = await signInStep((commandArgs) => browser(commandArgs));
-  if (step === "code") {
-    const code = process.env.CHECK_LAYOUT_TOTP;
-    if (!code)
-      throw new Error(
-        "check:layout: this account has a second factor; put a current code in CHECK_LAYOUT_TOTP (or use an account still in its enrollment grace)",
-      );
-    try {
-      await browser(["eval", "--stdin"], `${fillScript("#totp-code", code)} && ${VERIFY_CODE}`);
-    } catch {
-      throw new Error("check:layout: could not submit the verification code");
-    }
-  } else if (step !== "app") {
-    throw new Error(`check:layout: sign-in did not open the app (${step})`);
-  }
-  await browser(["wait", "--url", "**/settings"]);
-}
-
-async function main(): Promise<number> {
-  const args = process.argv.slice(2);
-  const option = (name: string) => {
-    const index = args.indexOf(name);
-    return index >= 0 ? args[index + 1] : undefined;
-  };
-  const base = option("--url")?.replace(/\/$/, "");
-  if (!base) {
-    console.error(
-      "check:layout: pass --url <web dev server>, e.g. --url http://localhost:3001 (docs/design-system.md § Shell rules)",
-    );
-    return 2;
-  }
-  const email = option("--login");
-  const password = process.env.CHECK_LAYOUT_PASSWORD;
-  if (email && !password) {
-    console.error("check:layout: --login needs the password in CHECK_LAYOUT_PASSWORD");
-    return 2;
-  }
-  const onSignal = (signal: NodeJS.Signals) => {
-    closeBrowser();
-    process.exit(signal === "SIGINT" ? 130 : 143);
-  };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+async function measure(run: CheckRun): Promise<string[]> {
+  const { base, browser, args } = run;
+  // Read before the browser work starts, so a missing password fails at once.
+  const account = args.includes("--login") ? loginAccount(args) : undefined;
   const failures: string[] = [];
-  try {
-    await waitFor(`${base}/en-US`, 120_000);
-    await browser([
-      "open",
-      "about:blank",
-      ...(args.includes("--no-sandbox") ? ["--args", "--no-sandbox"] : []),
-    ]);
-    await browser(["cookies", "clear"]);
-    // A decided consent, so an app with analytics shows no banner while the
-    // shell is measured; the banner's reserve is probed on its own (judgeReserve).
-    await browser(["open", `${base}/en-US/login`]);
-    await browser([
-      "eval",
-      "localStorage.setItem('cockpit-chess.consent.v1', JSON.stringify({ v: 1, analytics: false, decidedAt: Date.now() })); true",
-    ]);
-    const pages = PAGES.filter((page) => !page.signedIn || email);
-    if (pages.length < PAGES.length)
-      console.log("check:layout: no --login, so the signed-in pages are skipped");
-    const anonymous = pages.filter((page) => !page.signedIn);
-    const signedIn = pages.filter((page) => page.signedIn);
-    const measure = async (list: Page[]) => {
-      for (const [w, h] of VIEWPORTS) {
-        await browser(["set", "viewport", String(w), String(h)]);
-        for (const page of list) {
-          await browser(["open", `${base}${page.path}`]);
-          await browser(["wait", page.ready]);
-          const label = `${page.name} ${w}×${h}`;
-          if (!(await evalJson<boolean>(SETTLED))) {
-            failures.push(`${label}: the content kept changing for 8s, so it was not measured`);
-            continue;
-          }
-          const probe = await evalJson<Probe>(PROBE);
-          failures.push(...judgeLayout(label, probe, page.expect));
-          failures.push(...judgeReserve(label, await evalJson<ReserveProbe | null>(RESERVE_PROBE)));
-          console.log(
-            `check:layout: ${label} measured (${probe.main?.scrollable ? "long" : "short"} page)`,
+  await browser.run(["cookies", "clear"]);
+  // A decided consent, so an app with analytics shows no banner while the
+  // shell is measured; the banner's reserve is probed on its own (judgeReserve).
+  await browser.run(["open", `${base}/en-US/login`]);
+  await decideConsent(run);
+  const pages = PAGES.filter((page) => !page.signedIn || account);
+  if (pages.length < PAGES.length)
+    console.log("check:layout: no --login, so the signed-in pages are skipped");
+  const anonymous = pages.filter((page) => !page.signedIn);
+  const signedIn = pages.filter((page) => page.signedIn);
+  const measurePages = async (list: Page[]) => {
+    for (const [w, h] of VIEWPORTS) {
+      await browser.run(["set", "viewport", String(w), String(h)]);
+      for (const page of list) {
+        await browser.run(["open", `${base}${page.path}`]);
+        await browser.run(["wait", page.ready]);
+        const label = `${page.name} ${w}×${h}`;
+        const settled = await browser.evalJson<"settled" | "loading" | "changing">(SETTLED);
+        if (settled !== "settled") {
+          failures.push(
+            settled === "loading"
+              ? `${label}: still showing a loading skeleton after 8s, so it was not measured; check that its data loads`
+              : `${label}: the content kept changing for 8s, so it was not measured`,
           );
+          continue;
         }
+        const probe = await browser.evalJson<Probe>(PROBE);
+        failures.push(...judgeLayout(label, probe, page.expect));
+        failures.push(
+          ...judgeReserve(label, await browser.evalJson<ReserveProbe | null>(RESERVE_PROBE)),
+        );
+        console.log(
+          `check:layout: ${label} measured (${probe.main?.scrollable ? "long" : "short"} page)`,
+        );
       }
-    };
-    // The arena header in every shipped locale, at every width from 320 to 3840px.
-    const locales = shippedLocales();
-    const measureHeader = async (signedInNow: boolean) => {
-      for (const w of HEADER_WIDTHS) {
-        await browser(["set", "viewport", String(w), "800"]);
-        for (const locale of locales) {
-          await browser(["open", `${base}/${locale}`]);
-          // The `_public` layout seeds the session hint, so a signed-in account
-          // link is in the first HTML; its absence is judged, not waited for.
-          await browser(["wait", "header [data-header-controls]"]);
-          const label = `header ${locale} ${w}px signed ${signedInNow ? "in" : "out"}`;
-          const probe = await evalJson<HeaderProbe>(HEADER_PROBE);
-          failures.push(...judgeHeader(label, probe, signedInNow));
-          console.log(
-            `check:layout: ${label} measured${probe.navOverflow > 0 ? ` (tabs scroll ${probe.navOverflow}px)` : ""}`,
-          );
-        }
+    }
+  };
+  // The arena header in every shipped locale, at every width from 320 to 3840px.
+  const locales = shippedLocales();
+  const measureHeader = async (signedInNow: boolean) => {
+    for (const w of HEADER_WIDTHS) {
+      await browser.run(["set", "viewport", String(w), "800"]);
+      for (const locale of locales) {
+        await browser.run(["open", `${base}/${locale}`]);
+        // The `_public` layout seeds the session hint, so a signed-in account
+        // link is in the first HTML; its absence is judged, not waited for.
+        await browser.run(["wait", "header [data-header-controls]"]);
+        const label = `header ${locale} ${w}px signed ${signedInNow ? "in" : "out"}`;
+        const probe = await browser.evalJson<HeaderProbe>(HEADER_PROBE);
+        failures.push(...judgeHeader(label, probe, signedInNow));
+        console.log(
+          `check:layout: ${label} measured${probe.navOverflow > 0 ? ` (tabs scroll ${probe.navOverflow}px)` : ""}`,
+        );
       }
-    };
-    // Signed-in pages first, while a CHECK_LAYOUT_TOTP code is still current; then sign out.
-    if (email && password && signedIn.length) {
-      await signIn(base, email, password);
-      await measure(signedIn);
-      await measureHeader(true);
-      await browser(["cookies", "clear"]);
     }
-    await measure(anonymous);
-    await measureHeader(false);
-    // Toasts, light and dark at one width, each with the OS set to the other.
-    await browser(["set", "viewport", "1280", "800"]);
-    for (const theme of ["light", "dark"] as const) {
-      await browser(["set", "media", theme === "dark" ? "light" : "dark"]);
-      await browser(["open", `${base}/en-US`]);
-      await browser(["eval", `localStorage.setItem('${THEME_KEY}', '${theme}'); true`]);
-      await browser(["open", `${base}/en-US`]);
-      await browser(["wait", "footer[data-public-footer]"]);
-      await browser(["eval", "--stdin"], DROP_FILE);
-      await browser(["wait", "[data-sileo-viewport] [data-sileo-pill]"]);
-      await browser(["wait", "800"]);
-      failures.push(
-        ...judgeLayout(`toast ${theme}`, await evalJson<Probe>(PROBE), {
-          footer: true,
-          toast: theme,
-        }),
-      );
-      console.log(`check:layout: toast ${theme} measured`);
-    }
-  } finally {
-    closeBrowser();
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+  };
+  // Signed-in pages first, then sign out (dropping the cookies).
+  if (account && signedIn.length) {
+    await formSignIn(run, account);
+    await measurePages(signedIn);
+    await measureHeader(true);
+    await browser.run(["cookies", "clear"]);
   }
-  for (const failure of failures) console.error(`check:layout: ${failure}`);
-  console.log(
-    failures.length ? `check:layout: ${failures.length} failure(s)` : "check:layout: passed",
-  );
-  return failures.length ? 1 : 0;
+  await measurePages(anonymous);
+  await measureHeader(false);
+  // Toasts, light and dark at one width, each with the OS set to the other.
+  await browser.run(["set", "viewport", "1280", "800"]);
+  for (const theme of ["light", "dark"] as const) {
+    await browser.run(["set", "media", theme === "dark" ? "light" : "dark"]);
+    await browser.run(["open", `${base}/en-US`]);
+    await browser.run(["eval", `localStorage.setItem('${THEME_KEY}', '${theme}'); true`]);
+    await browser.run(["open", `${base}/en-US`]);
+    await browser.run(["wait", "footer[data-public-footer]"]);
+    await browser.run(["eval", "--stdin"], DROP_FILE);
+    await browser.run(["wait", "[data-sileo-viewport] [data-sileo-pill]"]);
+    await browser.run(["wait", "800"]);
+    failures.push(
+      ...judgeLayout(`toast ${theme}`, await browser.evalJson<Probe>(PROBE), {
+        footer: true,
+        toast: theme,
+      }),
+    );
+    console.log(`check:layout: toast ${theme} measured`);
+  }
+  return failures;
 }
 
-if (import.meta.filename === process.argv[1]) process.exitCode = await main();
+if (import.meta.filename === process.argv[1])
+  process.exitCode = await withBrowser("check:layout", SESSION, measure, { mockServer: false });

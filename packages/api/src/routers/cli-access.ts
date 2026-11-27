@@ -1,4 +1,8 @@
 import { auth } from "@cockpit-chess/auth";
+import {
+  CliCredentialSessionRevokedError,
+  mintCliCredentialForSession,
+} from "@cockpit-chess/auth/device-redemption-lock";
 import { CLI_INSTALL_AUTH_SCHEME } from "@cockpit-chess/config/cli";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { env } from "@cockpit-chess/env/server";
@@ -80,40 +84,25 @@ export const cliAccessRouter = {
       )
       .handler(async ({ input, context }) => {
         const userId = context.session.user.id;
-        const existing = await prisma.apiKey.count({ where: { referenceId: userId } });
-        if (existing >= MAX_API_KEYS_PER_USER) {
-          throw new ORPCError("BAD_REQUEST", {
-            message: `You can have at most ${MAX_API_KEYS_PER_USER} API keys. Revoke one first.`,
-          });
+        // Under the user's CLI-credential lock, after re-checking that the
+        // session that asked still exists: the request was authorized
+        // earlier (possibly from the 60 s cookie cache), and a password reset
+        // that finished since must not leave a key behind
+        // (packages/auth/src/device-redemption-lock.ts).
+        try {
+          return await mintCliCredentialForSession(
+            { userId, sessionId: context.session.session.id },
+            {
+              mint: () => mintApiKey(userId, input),
+              discard: (created) =>
+                prisma.apiKey.deleteMany({ where: { id: created.id, referenceId: userId } }),
+            },
+          );
+        } catch (error) {
+          if (error instanceof CliCredentialSessionRevokedError)
+            throw new ORPCError("UNAUTHORIZED");
+          throw error;
         }
-        // Server-side call (no headers): `userId` comes from the verified
-        // session, never from input.
-        const created = await auth.api.createApiKey({
-          body: {
-            name: input.name,
-            expiresIn: input.expiresInDays * 24 * 60 * 60,
-            userId,
-          },
-        });
-        // The count above and the insert are separate steps, so concurrent
-        // creates can each pass it. Recount and undo our own insert if it
-        // overshot: the cap then always holds, which is what keeps the bounded
-        // `list` complete (this procedure is the only way to mint a key — the
-        // plugin's HTTP routes are 404-gated).
-        const after = await prisma.apiKey.count({ where: { referenceId: userId } });
-        if (after > MAX_API_KEYS_PER_USER) {
-          await prisma.apiKey.deleteMany({ where: { id: created.id, referenceId: userId } });
-          throw new ORPCError("BAD_REQUEST", {
-            message: `You can have at most ${MAX_API_KEYS_PER_USER} API keys. Revoke one first.`,
-          });
-        }
-        return {
-          id: created.id,
-          name: created.name,
-          start: created.start,
-          expiresAt: created.expiresAt,
-          key: created.key,
-        };
       }),
 
     revoke: protectedProcedure
@@ -129,3 +118,47 @@ export const cliAccessRouter = {
       }),
   },
 };
+
+/**
+ * Insert one API key for `userId`, enforcing {@link MAX_API_KEYS_PER_USER}.
+ * Only `apiKeys.create` calls it, inside the CLI-credential lock.
+ */
+async function mintApiKey(
+  userId: string,
+  input: { name: string; expiresInDays: (typeof API_KEY_EXPIRY_DAYS)[number] },
+) {
+  const existing = await prisma.apiKey.count({ where: { referenceId: userId } });
+  if (existing >= MAX_API_KEYS_PER_USER) {
+    throw new ORPCError("BAD_REQUEST", {
+      message: `You can have at most ${MAX_API_KEYS_PER_USER} API keys. Revoke one first.`,
+    });
+  }
+  // Server-side call (no headers): `userId` comes from the verified
+  // session, never from input.
+  const created = await auth.api.createApiKey({
+    body: {
+      name: input.name,
+      expiresIn: input.expiresInDays * 24 * 60 * 60,
+      userId,
+    },
+  });
+  // The count above and the insert are separate steps, so concurrent
+  // creates can each pass it. Recount and undo our own insert if it
+  // overshot: the cap then always holds, which is what keeps the bounded
+  // `list` complete (this procedure is the only way to mint a key — the
+  // plugin's HTTP routes are 404-gated).
+  const after = await prisma.apiKey.count({ where: { referenceId: userId } });
+  if (after > MAX_API_KEYS_PER_USER) {
+    await prisma.apiKey.deleteMany({ where: { id: created.id, referenceId: userId } });
+    throw new ORPCError("BAD_REQUEST", {
+      message: `You can have at most ${MAX_API_KEYS_PER_USER} API keys. Revoke one first.`,
+    });
+  }
+  return {
+    id: created.id,
+    name: created.name,
+    start: created.start,
+    expiresAt: created.expiresAt,
+    key: created.key,
+  };
+}

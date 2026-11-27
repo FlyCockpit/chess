@@ -30,7 +30,13 @@ export const sharedVars = {
   // Default 10 matches the driver default — raise it only against the
   // database's connection budget, since every server/worker replica holds its
   // own pool. See docs/deployment.md
-  DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
+  // At least 3: advisory-lock transactions take at most pool - 1
+  // connections, so Better-Auth's own queries always have one
+  // (packages/auth/src/lock-slots.ts), and a password write holds two of
+  // them: its password-write lock and the credential revocation it runs
+  // (packages/auth/src/password-write-lock.ts). A smaller pool would stall
+  // a reset until its lock transaction timed out.
+  DATABASE_POOL_MAX: z.coerce.number().int().min(3).default(10),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   // Fresh UUID set by the image entrypoint for each server/worker host.
   // Admission and the serving-process heartbeat must share this identity.

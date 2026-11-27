@@ -19,13 +19,33 @@ import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { createAuthMiddleware } from "better-auth/api";
 import { admin, deviceAuthorization, genericOAuth, twoFactor } from "better-auth/plugins";
+import {
+  passwordChangeRevocationTarget,
+  revokeCredentialsAfterPasswordChange,
+  revokeCredentialsAfterPasswordReset,
+} from "./credential-revocation.js";
+import {
+  assertDeviceRedemptionLocked,
+  removeDeviceSessionIfUnlocked,
+} from "./device-redemption-lock.js";
 import { deviceFlowSessionData } from "./device-session-origin.js";
 import { createPasswordPepper } from "./password-pepper.js";
+import {
+  fencePasswordSessionAfter,
+  fencePasswordSessionBefore,
+  recordTwoFactorChallenge,
+} from "./password-sign-in-fence.js";
+import {
+  confirmPasswordWriteLocked,
+  guardPasswordAccountCreate,
+  guardPasswordAccountUpdate,
+} from "./password-write-lock.js";
 import { resolveSignupLocale } from "./signup-locale.js";
 import { neutralizeSignUpResponse, SIGN_UP_EMAIL_PATH } from "./signup-response.js";
 import { TWO_FACTOR_ALLOW_PASSWORDLESS_ENROLLMENT } from "./two-factor-policy.js";
 import {
   getAllowedUserCreationMode,
+  getGrantedUserLocale,
   getUserCreationBlockReason,
   markUserCreatedUnderGrant,
 } from "./user-creation-policy.js";
@@ -51,6 +71,13 @@ export const passwordPepper = createPasswordPepper({
 });
 
 export const auth = betterAuth({
+  // No adapter transactions (Better-Auth's default, `transaction: false`), on
+  // purpose. With them, sign-up would run its whole body — including
+  // `sendVerificationEmail`, which reads the new user's locale through the
+  // shared client and so cannot see the uncommitted row, and an SMTP send that
+  // can outlast Prisma's 5 s interactive-transaction timeout — inside one
+  // transaction. Each adapter write therefore commits on its own; see
+  // `revokeSessionsOnPasswordReset` below for what that means for a reset.
   database: prismaAdapter(prisma, {
     provider: "postgresql",
   }),
@@ -96,6 +123,38 @@ export const auth = betterAuth({
     // authenticate.
     minPasswordLength: 12,
     password: { hash: passwordPepper.hash, verify: passwordPepper.verify },
+    // A password reset is what a user does when they think someone else has
+    // their password, so it must sign out every existing session — including
+    // the attacker's. Better-Auth spends the token, deletes the user's session
+    // rows and writes the new password in that order. Without adapter
+    // transactions (above) each step commits on its own, so if the password
+    // write fails the token is already spent and the sessions are gone while
+    // the old password stays: the request fails, no session survives, and the
+    // user recovers with a fresh forgot-password link (a retry of the spent
+    // link gets the reset page's invalid-link card). (An already-issued cookie-cache entry can still answer for
+    // up to the cache max-age; after that the deleted row 401s. CLI
+    // credentials minted from such a cached session re-check the session row
+    // under a lock: see device-redemption-lock.ts.) A sign-in that was still
+    // verifying the old password when the reset landed is refused or removed
+    // by the credential fence (password-sign-in-fence.ts); the revocation
+    // below deletes every session again after the new hash is written. A
+    // password change still in flight cannot overwrite the reset: both hold
+    // the user's password-write lock (password-write-lock.ts).
+    revokeSessionsOnPasswordReset: true,
+    // Session revocation does not reach API keys: they authenticate from their
+    // own row. Revoke them (and any device-flow login still in flight) once the
+    // new password is committed, and mark the mailbox verified — see
+    // credential-revocation.ts. Better-Auth calls this AFTER committing the
+    // password and consuming the token, so a throw cannot undo the reset; the
+    // revocation therefore retries (idempotently) and, if it still fails, logs a
+    // SECURITY error and makes the request report failure — the user then
+    // recovers with a fresh forgot-password link, which revokes again.
+    onPasswordReset: async ({ user }) => {
+      await revokeCredentialsAfterPasswordReset(user.id);
+    },
+    // Reset links (forgot-password) keep Better-Auth's 1-hour default. Admin
+    // invites mint their own, longer-lived set-password token through the same
+    // `reset-password:` verification rows (packages/api/src/lib/set-password-link.ts).
     sendResetPassword: async ({ user, url }) => {
       // Same locale-resolution dance as sendVerificationEmail: Better-Auth's
       // callback `user` is typed against the base user shape, so `locale`
@@ -214,12 +273,25 @@ export const auth = betterAuth({
   // a `secondaryStorage` first — the defaults are not safe behind a proxy.
   rateLimit: { enabled: false },
   hooks: {
-    // Sign-up answers byte-identically for a free and a registered address,
-    // so it is no account-existence oracle (signup-response.ts).
+    // A password change that signs out other devices (the web settings form
+    // always asks for that) means "my old password may have leaked": revoke
+    // the user's CLI credentials too. Better-Auth already deleted the session
+    // rows; API keys live in their own table. Runs only after the endpoint
+    // succeeded — a rejected change has no `user` in its result — so the new
+    // password is already committed; the revocation retries and logs loudly
+    // exactly as it does for a reset (credential-revocation.ts).
     after: createAuthMiddleware(async (ctx) => {
+      // Sign-up answers byte-identically for a free and a registered address,
+      // so it is no account-existence oracle (signup-response.ts).
       if (ctx.path === SIGN_UP_EMAIL_PATH) {
         return neutralizeSignUpResponse(ctx, { signupEnabled: SIGNUP_ENABLED });
       }
+      const target = passwordChangeRevocationTarget({
+        path: ctx.path,
+        body: ctx.body,
+        returned: ctx.context.returned,
+      });
+      if (target) await revokeCredentialsAfterPasswordChange(target);
     }),
   },
   plugins: [
@@ -340,7 +412,51 @@ export const auth = betterAuth({
         // Tag sessions minted by the device flow's token endpoint. The CLI
         // surface (apps/server/src/cli-session.ts) accepts only these as
         // bearers, so a browser session token is never a CLI credential.
-        before: async (session, context) => deviceFlowSessionData(session, context),
+        // A device-flow mint must also hold the user's CLI-credential lock,
+        // so it cannot land after a concurrent revocation
+        // (device-redemption-lock.ts); otherwise it is refused.
+        // Every other session must be proved too, or it is refused (or removed
+        // once committed): a password sign-in and its two-factor code step by
+        // an unchanged credential, a rotation of a signed-in session (2FA
+        // enable/disable, enrolment, impersonation) by a parent row that still
+        // exists, a password change by the password-write lock; only an SSO
+        // callback mints a session with none of these
+        // (password-sign-in-fence.ts).
+        before: async (session, context) => {
+          const tagged = deviceFlowSessionData(session, context);
+          if (tagged) assertDeviceRedemptionLocked(session.userId);
+          await fencePasswordSessionBefore(session, context);
+          return tagged;
+        },
+        after: async (session, context) => {
+          if (deviceFlowSessionData(session, context)) await removeDeviceSessionIfUnlocked(session);
+          await fencePasswordSessionAfter(session, context);
+        },
+      },
+    },
+    account: {
+      // Password writes for one user are serialized (password-write-lock.ts):
+      // apps/server holds the user's password-write lock across every
+      // endpoint that writes one, and a write without it (or after it
+      // lapsed) is refused. Creating the credential of a NEW user (sign-up,
+      // admin create-user) needs no lock: nothing else can write it yet.
+      // Once the write has committed, the after hook confirms the lock was
+      // still held; a write that landed after it lapsed is quarantined
+      // (scrambled hash, every session revoked) and the request fails.
+      create: {
+        before: async (account, context) => guardPasswordAccountCreate(account, context),
+        after: async () => confirmPasswordWriteLocked({ hash: passwordPepper.hash }),
+      },
+      update: {
+        before: async (data) => guardPasswordAccountUpdate(data),
+        after: async () => confirmPasswordWriteLocked({ hash: passwordPepper.hash }),
+      },
+    },
+    verification: {
+      create: {
+        // A two-factor challenge opened by a password sign-in carries that
+        // sign-in's credential snapshot (password-sign-in-fence.ts).
+        after: async (verification) => recordTwoFactorChallenge(verification),
       },
     },
     user: {
@@ -352,7 +468,9 @@ export const auth = betterAuth({
           if (blockReason) {
             throw new Error(blockReason);
           }
-          const locale = resolveSignupLocale(context?.headers);
+          // An admin invite chooses the invitee's language; a sign-up uses the
+          // locale the client is rendering.
+          const locale = getGrantedUserLocale() ?? resolveSignupLocale(context?.headers);
           // ADMIN_EMAILS promotion is only for the explicit email/password
           // bootstrap path wrapped by the server signup guard. Never infer it
           // from SSO/JIT user creation or from emailVerified claims.

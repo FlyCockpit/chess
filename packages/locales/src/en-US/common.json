@@ -23,7 +23,8 @@
     "saving": "Saving…",
     "tryAgain": "Try again",
     "loadMore": "Load more",
-    "loadingMore": "Loading…"
+    "loadingMore": "Loading…",
+    "undo": "Undo"
   },
   "fileDrop": {
     "ignored": "That file can't be dropped here."

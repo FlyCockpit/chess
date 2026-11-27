@@ -23,6 +23,10 @@ export const Route = createFileRoute("/$lang/_app/reset-password")({
   validateSearch: (search: Record<string, unknown>) => ({
     token: typeof search.token === "string" ? search.token : undefined,
     error: typeof search.error === "string" ? search.error : undefined,
+    // Set by the admin-invite link (packages/api/src/lib/set-password-link.ts):
+    // the same reset token flow, with "set your password" copy. The search
+    // parser may hand `1` back as a number.
+    invite: search.invite === 1 || search.invite === "1" ? (1 as const) : undefined,
     // Set by the SETUP_KEY first-admin link (packages/api/src/lib/admin-bootstrap.ts):
     // its token is spent by `setup.claimFirstAdmin`, not by Better-Auth, and
     // the page shows "set your password" copy. The search parser may hand `1`
@@ -52,8 +56,9 @@ export const Route = createFileRoute("/$lang/_app/reset-password")({
 
 function ResetPasswordPage() {
   const { lang } = Route.useParams();
-  const { token, error, setup } = Route.useSearch();
+  const { token, error, invite, setup } = Route.useSearch();
   const isSetup = setup === 1;
+  const isInvite = invite === 1 && !isSetup;
   const {
     isPending: configPending,
     isError: configError,
@@ -91,8 +96,16 @@ function ResetPasswordPage() {
           </AuthCard>
         ) : (
           <AuthCard
-            title={t("auth:resetPassword.invalidTitle")}
-            description={t("auth:resetPassword.invalidDescription")}
+            title={
+              isInvite
+                ? t("auth:resetPassword.invite.invalidTitle")
+                : t("auth:resetPassword.invalidTitle")
+            }
+            description={
+              isInvite
+                ? t("auth:resetPassword.invite.invalidDescription")
+                : t("auth:resetPassword.invalidDescription")
+            }
           >
             <Link
               to="/$lang/forgot-password"
@@ -106,17 +119,26 @@ function ResetPasswordPage() {
         )
       ) : (
         <AuthCard
-          title={isSetup ? t("auth:resetPassword.setup.title") : t("auth:resetPassword.title")}
+          title={
+            isSetup
+              ? t("auth:resetPassword.setup.title")
+              : isInvite
+                ? t("auth:resetPassword.invite.title")
+                : t("auth:resetPassword.title")
+          }
           description={
             isSetup
               ? t("auth:resetPassword.setup.description")
-              : t("auth:resetPassword.description")
+              : isInvite
+                ? t("auth:resetPassword.invite.description")
+                : t("auth:resetPassword.description")
           }
         >
           <ResetPasswordForm
             lang={lang}
             token={token}
             isSetup={isSetup}
+            isInvite={isInvite}
             onTokenRejected={() => setTokenRejected(true)}
           />
         </AuthCard>
@@ -139,11 +161,13 @@ function ResetPasswordForm({
   lang,
   token,
   isSetup,
+  isInvite,
   onTokenRejected,
 }: {
   lang: string;
   token: string;
   isSetup: boolean;
+  isInvite: boolean;
   onTokenRejected: () => void;
 }) {
   const navigate = useNavigate();
@@ -190,14 +214,22 @@ function ResetPasswordForm({
           toast.error(friendly(result.error));
           return;
         }
-        // A rejected token (expired / already used) is the common failure here
-        // — surface the invalid state with a path back to forgot-password.
         console.error("[reset-password.reset]", result.error);
-        toast.error(t("auth:resetPassword.failed"));
-        onTokenRejected();
+        // Only a rejected token (expired / already used) is terminal: surface
+        // the invalid state with a path back to forgot-password. Any other
+        // failure (network, password policy, server error) leaves the form up
+        // so the user can retry with the same, still-valid link.
+        if (result.error.code === "INVALID_TOKEN") {
+          toast.error(t("auth:resetPassword.failed"));
+          onTokenRejected();
+          return;
+        }
+        toast.error(friendly(result.error));
         return;
       }
-      toast.success(t("auth:resetPassword.success"));
+      toast.success(
+        isInvite ? t("auth:resetPassword.invite.success") : t("auth:resetPassword.success"),
+      );
       navigate({ to: "/$lang/login", params: { lang }, search: { redirectTo: undefined } });
     },
     validators: {
@@ -261,9 +293,13 @@ function ResetPasswordForm({
               ? isSubmitting
                 ? t("auth:resetPassword.setup.submitting")
                 : t("auth:resetPassword.setup.submit")
-              : isSubmitting
-                ? t("auth:resetPassword.resetting")
-                : t("auth:resetPassword.submit")}
+              : isInvite
+                ? isSubmitting
+                  ? t("auth:resetPassword.invite.submitting")
+                  : t("auth:resetPassword.invite.submit")
+                : isSubmitting
+                  ? t("auth:resetPassword.resetting")
+                  : t("auth:resetPassword.submit")}
           </Button>
         )}
       </form.Subscribe>

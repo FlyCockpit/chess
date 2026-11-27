@@ -128,10 +128,149 @@ async function runtimeCheck(mode) {
   }
 }
 
+/**
+ * SEC-03 on real Postgres with the real Better-Auth handler: device-flow token
+ * redemption and password-reset revocation share one per-user advisory lock,
+ * so a redemption that claimed its code just before the revocation cannot
+ * insert its session just after it.
+ */
+async function deviceFlowRaceCheck() {
+  const [{ auth }, lock, revocation, { default: prisma }, cli, { loadPg }] = await Promise.all([
+    import("../packages/auth/src/index.ts"),
+    import("../packages/auth/src/device-redemption-lock.ts"),
+    import("../packages/auth/src/credential-revocation.ts"),
+    import("../packages/db/src/index.ts"),
+    import("../packages/config/src/cli.ts"),
+    import("./db/lib/prisma.mjs"),
+  ]);
+  const pg = loadPg();
+  const observer = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await observer.connect();
+  const userId = `race-${randomUUID()}`;
+  const deviceSessions = () =>
+    prisma.session.count({ where: { userId, origin: cli.DEVICE_FLOW_SESSION_ORIGIN } });
+  const approvedCode = async () => {
+    const deviceCode = randomUUID();
+    await prisma.deviceCode.create({
+      data: {
+        deviceCode,
+        userCode: randomUUID().slice(0, 8),
+        userId,
+        status: "approved",
+        clientId: cli.CLI_CLIENT_ID,
+        expiresAt: new Date(Date.now() + 600_000),
+      },
+    });
+    return deviceCode;
+  };
+  const tokenRequest = (deviceCode) =>
+    new Request(`${process.env.BETTER_AUTH_URL}/api/auth/device/token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        device_code: deviceCode,
+        client_id: cli.CLI_CLIENT_ID,
+      }),
+    });
+  const redeem = (deviceCode) => {
+    const request = tokenRequest(deviceCode);
+    return lock.withDeviceRedemptionLock(request, () => auth.handler(request));
+  };
+  /** Poll pg_locks until `predicate(rows)`; the race is staged, not timed. */
+  const waitForLocks = async (label, predicate) => {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const { rows } = await observer.query(
+        `SELECT l.locktype, l.granted, a.query FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+         WHERE a.datname = current_database() AND a.pid <> pg_backend_pid()`,
+      );
+      if (predicate(rows)) return;
+      await delay(25);
+    }
+    throw new Error(`Timed out waiting for: ${label}`);
+  };
+  try {
+    await prisma.user.create({
+      data: { id: userId, name: "Race", email: `${userId}@example.test`, emailVerified: true },
+    });
+
+    // 1. The normal login works through the lock and is tagged as a CLI session.
+    const ok = await redeem(await approvedCode());
+    assert.equal(ok.status, 200, await ok.clone().text());
+    assert.ok((await ok.json()).access_token);
+    assert.equal(await deviceSessions(), 1);
+
+    // 2. A redemption that reaches Better-Auth without the lock mints nothing.
+    const unlocked = await auth.handler(tokenRequest(await approvedCode()));
+    assert.notEqual(unlocked.status, 200);
+    assert.equal(await deviceSessions(), 1);
+
+    // 3. The race: the redemption has claimed its code and is about to insert
+    //    its session (held there by a row lock on the user) when the password
+    //    reset's revocation starts. The revocation must wait for the lock and
+    //    then delete that session.
+    const racing = await approvedCode();
+    const concurrent = await approvedCode();
+    const holder = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await holder.connect();
+    try {
+      // FOR UPDATE blocks the session insert's foreign-key check (KEY SHARE).
+      await holder.query("BEGIN");
+      await holder.query(`SELECT 1 FROM "user" WHERE id = $1 FOR UPDATE`, [userId]);
+      const pending = redeem(racing);
+      await waitForLocks(
+        "redemption holding the advisory lock, its session insert blocked",
+        (rows) =>
+          rows.some((r) => r.locktype === "advisory" && r.granted) &&
+          rows.some((r) => !r.granted && /INSERT INTO "public"\."session"/i.test(r.query)),
+      );
+      // A second login for the same user does not queue behind the lock (a
+      // waiter would pin a pooled connection); it is told to poll again.
+      const busy = await redeem(concurrent);
+      assert.equal(busy.status, 400);
+      assert.equal((await busy.json()).error, "slow_down");
+      await prisma.deviceCode.deleteMany({ where: { deviceCode: concurrent } });
+      assert.equal(
+        await prisma.deviceCode.count({ where: { userId } }),
+        0,
+        "the code is already claimed, so revocation alone would find nothing to delete",
+      );
+      const revoking = revocation.revokeCredentialsAfterPasswordReset(userId);
+      await waitForLocks("revocation waiting on the advisory lock", (rows) =>
+        rows.some((r) => r.locktype === "advisory" && !r.granted),
+      );
+      await holder.query("COMMIT");
+      const raced = await pending;
+      assert.equal(raced.status, 200, "the redemption itself completes");
+      const { access_token: token } = await raced.json();
+      await revoking;
+      assert.equal(await deviceSessions(), 0, "revocation removed the session minted under it");
+      assert.equal(await prisma.session.count({ where: { token } }), 0);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      await holder.end();
+    }
+
+    // 4. Revocation first: the approved code is gone, so redemption is refused.
+    const late = await approvedCode();
+    await revocation.revokeCredentialsAfterPasswordReset(userId);
+    const refused = await redeem(late);
+    assert.equal(refused.status, 400);
+    assert.equal((await refused.json()).error, "invalid_grant");
+    assert.equal(await deviceSessions(), 0);
+    console.log("device flow: redemption and revocation serialize on real Postgres (5 cases).");
+  } finally {
+    await prisma.user.deleteMany({ where: { id: userId } });
+    await observer.end();
+    await prisma.$disconnect();
+  }
+}
+
 async function main() {
   if (process.argv[2] === "--runtime-child") {
     assert.equal(process.env.RUNTIME_OPERATIONS_CHILD, "owned-disposable-services");
-    await runtimeCheck(process.argv[3]);
+    if (process.argv[3] === "device-flow") await deviceFlowRaceCheck();
+    else await runtimeCheck(process.argv[3]);
     return;
   }
   if (process.argv[2] !== "--disposable-services") {
@@ -264,7 +403,17 @@ async function main() {
       );
       console.log(`Canonical apply with real Prisma: ${operation} passed.`);
     }
-    for (const mode of ["embedded", "external"]) {
+    // The device-flow child loads the real Better-Auth instance, which needs
+    // its secret and origin; throwaway values, never the developer's.
+    const deviceEnv = {
+      BETTER_AUTH_SECRET: randomUUID() + randomUUID(),
+      BETTER_AUTH_URL: "https://app.example.test",
+    };
+    for (const [mode, extra] of [
+      ["embedded", {}],
+      ["external", {}],
+      ["device-flow", deviceEnv],
+    ]) {
       const result = execFileSync(
         process.execPath,
         ["--import", "tsx", file, "--runtime-child", mode],
@@ -272,6 +421,7 @@ async function main() {
           cwd: root,
           env: {
             ...fixtureEnv,
+            ...extra,
             RUNTIME_OPERATIONS_CHILD: "owned-disposable-services",
           },
           timeout: 45_000,

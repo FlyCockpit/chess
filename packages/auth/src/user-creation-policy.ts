@@ -1,12 +1,15 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { Locale } from "@cockpit-chess/config/locales";
 
 type UserCreationMode = "admin-bootstrap" | "admin-invite";
 
 // One grant per wrapped call. `created` is set by the user.create database
 // hook once a user row really exists, so the sign-up after-hook can tell a
 // real bootstrap from Better-Auth's duplicate answer without a lookup whose
-// cost would differ by address (signup-response.ts).
-type UserCreationGrant = { mode: UserCreationMode; created: boolean };
+// cost would differ by address (signup-response.ts). `locale` is the language
+// the server chose for the new account (an admin invite picks the invitee's);
+// the user.create hook seeds `User.locale` from it instead of the request.
+type UserCreationGrant = { mode: UserCreationMode; created: boolean; locale?: Locale };
 
 const userCreationModeStorage = new AsyncLocalStorage<UserCreationGrant>();
 
@@ -34,8 +37,18 @@ export function getAllowedUserCreationMode(): UserCreationMode | undefined {
 export function runWithAllowedUserCreation<T>(
   mode: UserCreationMode,
   fn: () => T | Promise<T>,
+  options: { locale?: Locale } = {},
 ): T | Promise<T> {
-  return userCreationModeStorage.run({ mode, created: false }, fn);
+  return userCreationModeStorage.run({ mode, created: false, locale: options.locale }, fn);
+}
+
+/**
+ * The locale the current grant chose for the account being created, if any.
+ * Server-chosen (an admin invite's language field), so it beats the request's
+ * locale header, which on a server-side `auth.api.createUser` call is absent.
+ */
+export function getGrantedUserLocale(): Locale | undefined {
+  return userCreationModeStorage.getStore()?.locale;
 }
 
 export function markUserCreatedUnderGrant(): void {

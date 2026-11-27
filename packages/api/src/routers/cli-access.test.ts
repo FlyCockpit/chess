@@ -19,6 +19,36 @@ vi.mock("@cockpit-chess/env/server", () => ({ env, ADMIN_EMAILS: new Set<string>
 vi.mock("@cockpit-chess/env/shared", () => ({ env: {} }));
 const createApiKey = vi.hoisted(() => vi.fn());
 vi.mock("@cockpit-chess/auth", () => ({ auth: { api: { createApiKey } } }));
+// The lock itself is proven in packages/auth (device-redemption-race.test.ts);
+// here it is a pass-through that records how the procedure uses it and can
+// play a session that a password reset has already revoked.
+const lock = vi.hoisted(() => ({
+  calls: [] as Array<{ userId: string; sessionId: string }>,
+  revoked: false,
+  lapseAfterMint: false,
+}));
+vi.mock("@cockpit-chess/auth/device-redemption-lock", () => {
+  class CliCredentialSessionRevokedError extends Error {}
+  return {
+    CliCredentialSessionRevokedError,
+    mintCliCredentialForSession: async (
+      session: { userId: string; sessionId: string },
+      {
+        mint,
+        discard,
+      }: { mint: () => Promise<unknown>; discard: (m: unknown) => Promise<unknown> },
+    ) => {
+      lock.calls.push(session);
+      if (lock.revoked) throw new CliCredentialSessionRevokedError();
+      const minted = await mint();
+      if (lock.lapseAfterMint) {
+        await discard(minted);
+        throw new Error("lapsed");
+      }
+      return minted;
+    },
+  };
+});
 
 const { default: db } = await import("@cockpit-chess/db");
 const { API_KEY_EXPIRY_DAYS, MAX_API_KEYS_PER_USER, cliAccessRouter } = await import(
@@ -67,6 +97,9 @@ const isCode = (code: string) => (error: ORPCError<string, unknown>) => error.co
 
 beforeEach(() => {
   vi.clearAllMocks();
+  lock.calls.length = 0;
+  lock.revoked = false;
+  lock.lapseAfterMint = false;
   invalidateForceTwoFactorSettingsCache();
   db.appSetting.findMany.mockResolvedValue([]);
   delete env.CLI_RELEASE_REPO;
@@ -131,6 +164,8 @@ describe("cliAccess.apiKeys", () => {
     expect(createApiKey).toHaveBeenCalledWith({
       body: { name: "CI", expiresIn: 90 * 24 * 60 * 60, userId: "user-1" },
     });
+    // Minted under the user's CLI-credential lock, for the session that asked.
+    expect(lock.calls).toEqual([{ userId: "user-1", sessionId: "auth-session" }]);
     expect(created).toEqual({
       id: "key-1",
       name: "CI",
@@ -209,6 +244,33 @@ describe("cliAccess.apiKeys", () => {
       id: "key-25",
     });
     expect(db.apiKey.deleteMany).not.toHaveBeenCalled();
+  });
+
+  // The request was authorized (maybe from the cookie cache) before a password
+  // reset deleted its session and revoked the user's keys.
+  it("answers UNAUTHORIZED and mints nothing when the session is gone under the lock", async () => {
+    lock.revoked = true;
+    db.apiKey.count.mockResolvedValue(0);
+    await expect(client().apiKeys.create({ name: "x", expiresInDays: 30 })).rejects.toSatisfy(
+      isCode("UNAUTHORIZED"),
+    );
+    expect(createApiKey).not.toHaveBeenCalled();
+  });
+
+  it("discards exactly its own key when the lock lapsed", async () => {
+    lock.lapseAfterMint = true;
+    db.apiKey.count.mockResolvedValue(0);
+    createApiKey.mockResolvedValue({
+      id: "key-late",
+      name: "x",
+      start: null,
+      expiresAt: null,
+      key: "k",
+    });
+    await expect(client().apiKeys.create({ name: "x", expiresInDays: 30 })).rejects.toThrow();
+    expect(db.apiKey.deleteMany).toHaveBeenCalledWith({
+      where: { id: "key-late", referenceId: "user-1" },
+    });
   });
 
   it("revokes only within the caller's own keys", async () => {

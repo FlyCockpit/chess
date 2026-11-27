@@ -23,7 +23,8 @@
     "saving": "Guardando…",
     "tryAgain": "Intentar de nuevo",
     "loadMore": "Cargar más",
-    "loadingMore": "Cargando…"
+    "loadingMore": "Cargando…",
+    "undo": "Deshacer"
   },
   "fileDrop": {
     "ignored": "Ese archivo no se puede soltar aquí."
