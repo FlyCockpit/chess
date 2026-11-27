@@ -373,6 +373,40 @@ describe("Better-Auth config", () => {
     expect(revokeCredentialsAfterPasswordReset).toHaveBeenCalledWith("u1");
   });
 
+  it("applies full reset revocation after a successful admin password reset", async () => {
+    revokeCredentialsAfterPasswordReset.mockClear();
+    await options.hooks?.after?.({
+      path: "/admin/set-user-password",
+      body: { userId: "target-user" },
+      context: { returned: { status: true } },
+    });
+    expect(revokeCredentialsAfterPasswordReset).toHaveBeenCalledExactlyOnceWith("target-user");
+  });
+
+  it.each([null, { status: false }, new Error("denied")])(
+    "does not revoke credentials after a refused admin password reset (%s)",
+    async (returned) => {
+      revokeCredentialsAfterPasswordReset.mockClear();
+      await options.hooks?.after?.({
+        path: "/admin/set-user-password",
+        body: { userId: "target-user" },
+        context: { returned },
+      });
+      expect(revokeCredentialsAfterPasswordReset).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fails an admin reset when its post-write revocation fails", async () => {
+    revokeCredentialsAfterPasswordReset.mockRejectedValueOnce(new Error("sweep failed"));
+    await expect(
+      options.hooks?.after?.({
+        path: "/admin/set-user-password",
+        body: { userId: "target-user" },
+        context: { returned: { status: true } },
+      }),
+    ).rejects.toThrow("sweep failed");
+  });
+
   // A spent link verifies the email only if it was mailed (password-reset-links.ts).
   it("records mailbox delivery before spending a forgot-password link", async () => {
     recordResetLinkMailed.mockClear();
@@ -1703,7 +1737,9 @@ describe("cookie cache renewal on Better Auth writes (real pinned handler)", () 
       database: memoryAdapter(db),
       logger: { disabled: true },
       rateLimit: { enabled: false },
-      session: options.session,
+      // Keep exercising the write guard with legacy cookies, even after the
+      // production read path stops accepting the cache.
+      session: { ...options.session, cookieCache: { enabled: true, maxAge: 60 } },
       emailAndPassword: {
         enabled: true,
         password: { hash: async (p) => p, verify: async () => true },
@@ -1783,8 +1819,38 @@ describe("cookie cache renewal on Better Auth writes (real pinned handler)", () 
     return { db, call, cookies, instance };
   }
 
-  it("keeps origin's cache configuration", () => {
-    expect(options.session?.cookieCache).toEqual({ enabled: true, maxAge: 60 });
+  it.each(["revoked", "expired"])(
+    "production reads immediately refuse a %s session with a previously issued cache cookie",
+    async (state) => {
+      const { db, cookies } = await fixture(false);
+      const { betterAuth: realBetterAuth } =
+        await vi.importActual<typeof import("better-auth")>("better-auth");
+      const { memoryAdapter } = await import("better-auth/adapters/memory");
+      const instance = realBetterAuth({
+        baseURL: "https://app.example.test",
+        secret: "disposable-cache-test-secret-with-no-external-use",
+        database: memoryAdapter(db),
+        logger: { disabled: true },
+        session: options.session,
+      });
+      const headers = new Headers({ cookie: cookies });
+      expect(await instance.api.getSession({ headers })).toMatchObject({
+        user: { name: "Before" },
+      });
+      if (state === "revoked") db.session = [];
+      else if (db.session?.[0]) db.session[0].expiresAt = new Date(0);
+      // Same session call as the server shell guard, with no query bypass.
+      expect(await instance.api.getSession({ headers })).toBeNull();
+      const response = await instance.handler(
+        new Request("https://app.example.test/api/auth/get-session", { headers }),
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toBeNull();
+    },
+  );
+
+  it("disables cookie caching for all production session consumers", () => {
+    expect(options.session?.cookieCache?.enabled).toBe(false);
   });
 
   it("demonstrates the upstream renewal chain with the guard removed", async () => {

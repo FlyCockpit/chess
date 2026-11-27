@@ -57,7 +57,7 @@ Authenticated gates reject active bans, including permanent archival bans,
 even if a session row survives. Expired temporary bans permit access. Cookie
 session resolution treats active bans as anonymous for rate-limit/context
 consumers; hidden admin procedures retain their 404 response. These checks
-use the resolved user and do not remove Better-Auth's 60-second cookie cache.
+use the resolved user; Better-Auth's cookie cache is disabled so session reads see revocations on the next request.
 
 The reviewed endpoint baseline in `scripts/access-matrix-pre-notes-baseline.json`
 additionally preserves the minimum access level of existing procedures. Change

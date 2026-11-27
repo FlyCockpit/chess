@@ -238,11 +238,10 @@ export const auth = betterAuth({
     // session:30d, refresh every 1d
     expiresIn: 60 * 60 * 24 * 30,
     updateAge: 60 * 60 * 24,
-    // Short-lived signed cookie cache: skips the session DB lookup on most
-    // requests; revocations/role changes propagate within 60s.
+    // Route guards and identity checks must see revocations and role changes
+    // on the next request, including requests carrying previously issued caches.
     cookieCache: {
-      enabled: true,
-      maxAge: 60,
+      enabled: false,
     },
     additionalFields: {
       // How the session was issued (`Session.origin` in auth.prisma).
@@ -399,6 +398,20 @@ export const auth = betterAuth({
       // so it is no account-existence oracle (signup-response.ts).
       if (ctx.path === SIGN_UP_EMAIL_PATH) {
         return neutralizeSignUpResponse(ctx, { signupEnabled: SIGNUP_ENABLED });
+      }
+      // The admin plugin only writes the password. Its successful result is
+      // the authorization proof: never sweep from the untrusted body before
+      // the endpoint has checked the administrator's permission.
+      const returned = ctx.context.returned;
+      if (
+        ctx.path === "/admin/set-user-password" &&
+        returned &&
+        typeof returned === "object" &&
+        "status" in returned &&
+        returned.status === true &&
+        typeof ctx.body?.userId === "string"
+      ) {
+        await revokeCredentialsAfterPasswordReset(ctx.body.userId);
       }
       const target = passwordChangeRevocationTarget({
         path: ctx.path,

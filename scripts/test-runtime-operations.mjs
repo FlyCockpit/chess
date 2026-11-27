@@ -267,6 +267,247 @@ async function deviceFlowRaceCheck() {
   }
 }
 
+async function passwordSignInRaceCheck() {
+  const [{ auth }, fence, writeLock, links, { default: prisma }] = await Promise.all([
+    import("../packages/auth/src/index.ts"),
+    import("../packages/auth/src/password-sign-in-fence.ts"),
+    import("../packages/auth/src/password-write-lock.ts"),
+    import("../packages/auth/src/password-reset-links.ts"),
+    import("../packages/db/src/index.ts"),
+  ]);
+  const context = await auth.$context;
+  const oldPassword = "disposable-old-proof-password-13579";
+  const newPassword = "disposable-new-proof-password-24680";
+  const oldHash = await context.password.hash(oldPassword);
+  const created = [];
+  const hooks = context.options.databaseHooks.session.create;
+  const originalBefore = hooks.before;
+  const originalVerify = context.password.verify;
+  const request = (path, body, cookie = "") =>
+    new Request(`${process.env.BETTER_AUTH_URL}/api/auth${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: process.env.BETTER_AUTH_URL,
+        cookie,
+      },
+      body: JSON.stringify(body),
+    });
+  const send = (path, body, cookie) => {
+    const req = request(path, body, cookie);
+    if (path === "/sign-in/email")
+      return fence.withPasswordSignInFence(req, () => auth.handler(req));
+    return writeLock.withPasswordWriteLock(path, req, () => auth.handler(req), {
+      getSession: (headers) => auth.api.getSession({ headers }),
+    });
+  };
+  const fixtureUser = async (label, role = "user") => {
+    const id = `password-race-${label}-${randomUUID()}`;
+    created.push(id);
+    const email = `${id}@example.test`;
+    await prisma.user.create({
+      data: { id, name: "Password race", email, emailVerified: true, role },
+    });
+    await prisma.account.create({
+      data: {
+        id: randomUUID(),
+        accountId: id,
+        userId: id,
+        providerId: "credential",
+        password: oldHash,
+      },
+    });
+    return { id, email };
+  };
+  const signedIn = async (user) => {
+    const response = await send("/sign-in/email", { email: user.email, password: oldPassword });
+    assert.equal(response.status, 200, "fixture's normal sign-in succeeds");
+    const cookie = response.headers
+      .getSetCookie()
+      .map((value) => value.split(";")[0])
+      .join("; ");
+    assert.ok(cookie.includes("session_token="));
+    return cookie;
+  };
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  };
+  try {
+    // This tests the production Better Auth admin role check. Hono's separate
+    // HTTP admin/forced-2FA gate is covered by its own named gate tests.
+    const adminCookie = await signedIn(await fixtureUser("admin", "admin"));
+    for (const writer of ["change-keep", "change-revoke", "reset", "admin-reset"]) {
+      for (const point of ["verified", "before-insert"]) {
+        const user = await fixtureUser(`${writer}-${point}`);
+        const writerCookie = await signedIn(user);
+        await prisma.session.createMany({
+          data: [
+            {
+              id: randomUUID(),
+              userId: user.id,
+              token: randomUUID(),
+              expiresAt: new Date(Date.now() + 60_000),
+            },
+            {
+              id: randomUUID(),
+              userId: user.id,
+              token: randomUUID(),
+              origin: "device-flow",
+              expiresAt: new Date(Date.now() + 60_000),
+            },
+          ],
+        });
+        await prisma.apiKey.create({ data: { referenceId: user.id, key: randomUUID() } });
+        await prisma.deviceCode.create({
+          data: {
+            userId: user.id,
+            deviceCode: randomUUID(),
+            userCode: randomUUID(),
+            status: "approved",
+            expiresAt: new Date(Date.now() + 60_000),
+          },
+        });
+        const challenge = `2fa-${randomUUID()}`;
+        await prisma.verification.create({
+          data: { identifier: challenge, value: user.id, expiresAt: new Date(Date.now() + 60_000) },
+        });
+        const reached = deferred();
+        const released = deferred();
+        let armed = true;
+        if (point === "verified") {
+          context.password.verify = async (input) => {
+            const valid = await originalVerify(input);
+            if (armed && valid && input.hash === oldHash && input.password === oldPassword) {
+              armed = false;
+              reached.resolve();
+              await released.promise;
+            }
+            return valid;
+          };
+        } else {
+          hooks.before = async (session, endpoint) => {
+            const result = await originalBefore(session, endpoint);
+            if (armed && session.userId === user.id && endpoint?.path === "/sign-in/email") {
+              armed = false;
+              reached.resolve();
+              await released.promise;
+            }
+            return result;
+          };
+        }
+        const signingIn = send("/sign-in/email", { email: user.email, password: oldPassword });
+        try {
+          // A failure before the pause must fail promptly instead of hanging.
+          await Promise.race([
+            reached.promise,
+            signingIn.then(() => {
+              throw new Error("Sign-in finished before its pause point");
+            }),
+          ]);
+          let changed;
+          if (writer.startsWith("change-")) {
+            changed = await send(
+              "/change-password",
+              {
+                currentPassword: oldPassword,
+                newPassword,
+                revokeOtherSessions: writer === "change-revoke",
+              },
+              writerCookie,
+            );
+          } else if (writer === "reset") {
+            const token = randomUUID();
+            await prisma.verification.create({
+              data: {
+                identifier: `reset-password:${token}`,
+                value: user.id,
+                expiresAt: new Date(Date.now() + 60_000),
+              },
+            });
+            assert.equal(
+              await links.recordResetLinkMailed({ token, userId: user.id, email: user.email }),
+              true,
+            );
+            changed = await send("/reset-password", { token, newPassword });
+          } else {
+            changed = await send(
+              "/admin/set-user-password",
+              { userId: user.id, newPassword },
+              adminCookie,
+            );
+          }
+          assert.equal(changed.status, 200, `${writer} completes while old proof is paused`);
+          const credential = await prisma.account.findFirstOrThrow({
+            where: { userId: user.id, providerId: "credential" },
+          });
+          assert.notEqual(credential.password, oldHash, "the password write is committed");
+          assert.equal(
+            await originalVerify({ hash: credential.password, password: newPassword }),
+            true,
+          );
+          const isReset = writer === "reset" || writer === "admin-reset";
+          const revoked = isReset || writer === "change-revoke";
+          const expectedSessions = isReset ? 0 : writer === "change-revoke" ? 1 : 3;
+          assert.equal(
+            await prisma.session.count({ where: { userId: user.id } }),
+            expectedSessions,
+            `${writer}: established sessions follow policy`,
+          );
+          assert.equal(
+            await prisma.apiKey.count({ where: { referenceId: user.id } }),
+            revoked ? 0 : 1,
+            `${writer}: standing API keys follow policy`,
+          );
+          assert.equal(
+            await prisma.deviceCode.count({ where: { userId: user.id } }),
+            revoked ? 0 : 1,
+            `${writer}: approved device codes follow policy`,
+          );
+          if (isReset) {
+            assert.equal(
+              await prisma.verification.count({ where: { identifier: challenge } }),
+              0,
+              `${writer}: pending second-factor proof is revoked`,
+            );
+          }
+          released.resolve();
+          const raced = await signingIn;
+          assert.equal(raced.status, 401, `${writer}/${point}: old proof is refused`);
+          assert.equal((await raced.json()).code, "INVALID_EMAIL_OR_PASSWORD");
+          assert.deepEqual(
+            raced.headers.getSetCookie(),
+            [],
+            "a refused sign-in returns no cookies",
+          );
+          assert.equal(
+            await prisma.session.count({ where: { userId: user.id } }),
+            expectedSessions,
+            "the delayed insert leaves no extra session",
+          );
+          console.log(
+            `password sign-in: ${writer}/${point} refused the old proof on real PostgreSQL.`,
+          );
+        } finally {
+          released.resolve();
+          await signingIn.catch(() => {});
+          context.password.verify = originalVerify;
+          hooks.before = originalBefore;
+        }
+      }
+    }
+  } finally {
+    context.password.verify = originalVerify;
+    hooks.before = originalBefore;
+    await prisma.verification.deleteMany({ where: { value: { in: created } } });
+    await prisma.user.deleteMany({ where: { id: { in: created } } });
+    await prisma.$disconnect();
+  }
+}
+
 /**
  * Admin invites on real Postgres with the real Better-Auth handler: only a
  * mailed link verifies the email, neither a resend racing the invitee's own
@@ -768,6 +1009,7 @@ async function main() {
     assert.equal(process.env.RUNTIME_OPERATIONS_CHILD, "owned-disposable-services");
     if (process.argv[3] === "device-flow") await deviceFlowRaceCheck();
     else if (process.argv[3] === "invite-race") await inviteRaceCheck();
+    else if (process.argv[3] === "password-signin-race") await passwordSignInRaceCheck();
     else await runtimeCheck(process.argv[3]);
     return;
   }
@@ -919,6 +1161,7 @@ async function main() {
       ["external", {}],
       ["device-flow", deviceEnv],
       ["invite-race", inviteEnv],
+      ["password-signin-race", inviteEnv],
     ]) {
       const result = execFileSync(
         process.execPath,
