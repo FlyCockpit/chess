@@ -88,6 +88,41 @@ describe("adminBootstrapMarker", () => {
       user: { email: ADMIN },
     });
   });
+
+  it("does not leak a bootstrap grant into an overlapping public request", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const app = new Hono();
+    app.use(PATH, adminBootstrapMarker(MEMBER_SET));
+    app.post(PATH, async (c) => {
+      const body = await c.req.json<{ email: string }>();
+      if (body.email === ADMIN) await pending;
+      else release();
+      return c.json({ mode: getAllowedUserCreationMode() ?? null });
+    });
+    const [admin, publicUser] = await Promise.all([
+      post(app, { email: ADMIN }),
+      post(app, { email: "public@example.com" }),
+    ]);
+    expect(await admin.json()).toEqual({ mode: "admin-bootstrap" });
+    expect(await publicUser.json()).toEqual({ mode: null });
+    expect(getAllowedUserCreationMode()).toBeUndefined();
+  });
+
+  it("normalizes listed-address case but never accepts a body-supplied grant", async () => {
+    const { app, seenModes } = buildApp({ signupEnabled: true });
+    await post(app, { email: ADMIN.toUpperCase(), password: "long-enough-password" });
+    await post(app, {
+      email: "public@example.com",
+      password: "long-enough-password",
+      role: "admin",
+      mode: "admin-bootstrap",
+      emailVerified: true,
+    });
+    expect(seenModes).toEqual(["admin-bootstrap", undefined]);
+  });
 });
 
 describe("signup-disabled oracle — member vs non-member responses are indistinguishable", () => {

@@ -107,6 +107,27 @@ describe("signup recipient limiting", () => {
     expect(res.headers.get("Retry-After")).toBe("45");
   });
 
+  it("fails open on a signup recipient-store error (the primary IP guard is separate)", async () => {
+    signupLimiter.consume.mockRejectedValue(new Error("Valkey unavailable"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await buildSignupApp().request(SIGNUP_RECIPIENT_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "new@example.com", password: "long-enough-password" }),
+      });
+      expect(response.status).toBe(200);
+      expect(signupLimiter.consume).toHaveBeenCalledWith("new@example.com");
+      expect(limiter.consume).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(
+        "[rate-limit] email-recipient limiter error, failing open:",
+        expect.any(Error),
+      );
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it("is skipped entirely when the signup budget is disabled", async () => {
     signupLimiter.points = 0;
     const app = buildSignupApp();

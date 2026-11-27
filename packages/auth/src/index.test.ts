@@ -172,9 +172,9 @@ const prismaStub = vi.hoisted(() => {
 });
 vi.mock("@cockpit-chess/db", () => ({ default: prismaStub }));
 vi.mock("@cockpit-chess/env/shared", () => ({ env: { DATABASE_POOL_MAX: 10 } }));
-const envState = vi.hoisted(() => ({ signupEnabled: true }));
+const envState = vi.hoisted(() => ({ signupEnabled: true, adminEmails: new Set<string>() }));
 vi.mock("@cockpit-chess/env/server", () => ({
-  ADMIN_EMAILS: new Set<string>(),
+  ADMIN_EMAILS: envState.adminEmails,
   FORCE_SSO: false,
   get SIGNUP_ENABLED() {
     return envState.signupEnabled;
@@ -238,6 +238,7 @@ const { expectedIdentity } = await vi.importActual<{
 type CapturedOptions = {
   database?: ReturnType<typeof import("./credential-setup-adapter").createCredentialSetupAdapter>;
   emailAndPassword?: {
+    requireEmailVerification?: boolean;
     revokeSessionsOnPasswordReset?: boolean;
     minPasswordLength?: number;
     onPasswordReset?: (data: { user: { id: string } }) => Promise<void>;
@@ -652,14 +653,14 @@ it("uses the pepper password hooks", () => {
 // fence) are left out: they need the server's sign-in wrappers, and these
 // tests sign the admin in directly. Every sign-up pays a real scrypt hash,
 // hence the roomier timeouts below.
-async function realAuth() {
+async function realAuth({ verificationDeliveryFails = false, withTwoFactor = false } = {}) {
   const { betterAuth: realBetterAuth } =
     await vi.importActual<typeof import("better-auth")>("better-auth");
   const { createAuthMiddleware } =
     await vi.importActual<typeof import("better-auth/api")>("better-auth/api");
   // The plugin factories are stubbed above; the real admin plugin is what
   // gives a created user `role: "user"` and the synthetic duplicate `null`.
-  const { admin } =
+  const { admin, twoFactor } =
     await vi.importActual<typeof import("better-auth/plugins")>("better-auth/plugins");
   const { memoryAdapter } = await import("better-auth/adapters/memory");
   const after = options.hooks?.after;
@@ -670,6 +671,7 @@ async function realAuth() {
     account: [],
     session: [],
     verification: [],
+    twoFactor: [],
   };
   prismaStub.memory.db = db;
   // Back to the stub's own behaviour: a one-off implementation a failed test
@@ -701,7 +703,9 @@ async function realAuth() {
   const memory = memoryAdapter(db);
   const countingAdapter = ((adapterOptions: Parameters<typeof memory>[0]) =>
     recording(memory(adapterOptions))) as typeof memory;
-  const sendVerificationEmail = vi.fn(async () => {});
+  const sendVerificationEmail = vi.fn(async () => {
+    if (verificationDeliveryFails) throw new Error("Test verification delivery unavailable");
+  });
   const instance = realBetterAuth({
     baseURL: "https://app.example.test",
     secret: "disposable-unit-test-secret-with-no-external-use",
@@ -718,7 +722,10 @@ async function realAuth() {
       user: options.databaseHooks?.user,
       account: options.databaseHooks?.account,
     },
-    plugins: [admin({ defaultRole: "user" })],
+    plugins: [
+      admin({ defaultRole: "user" }),
+      ...(withTwoFactor ? [twoFactor({ issuer: "Cockpit Chess", allowPasswordless: true })] : []),
+    ],
   } as Parameters<typeof realBetterAuth>[0]);
   const signUp = async (email: string) => {
     const res = await instance.handler(
@@ -887,6 +894,179 @@ describe("sign-up response is the same for free and registered addresses", {
     } finally {
       envState.signupEnabled = true;
     }
+  });
+});
+
+describe("public signup readiness on the real handler", { timeout: 20_000 }, () => {
+  it("does not activate an account or issue a session when verification mail cannot be delivered", async () => {
+    envState.signupEnabled = true;
+    const { db, instance, signUp, sendVerificationEmail } = await realAuth({
+      verificationDeliveryFails: true,
+    });
+    const fresh = await signUp("mail-unavailable@example.test");
+    expect(fresh).toMatchObject({ status: 200, body: '{"token":null,"user":null}' });
+    expect(JSON.stringify(fresh.headers)).not.toContain("session_token=");
+    expect(sendVerificationEmail).toHaveBeenCalledTimes(1);
+    expect(db.user).toHaveLength(1);
+    expect(db.user?.[0]).toMatchObject({ role: "user", emailVerified: false });
+    expect(await signUp("mail-unavailable@example.test")).toEqual(fresh);
+    const user = db.user?.[0];
+    if (!user) throw new Error("signup user missing");
+    user.emailVerified = true;
+    expect(await signUp("mail-unavailable@example.test")).toEqual(fresh);
+    user.emailVerified = false;
+    const response = await instance.handler(
+      new Request("https://app.example.test/api/auth/sign-in/email", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://app.example.test" },
+        body: JSON.stringify({
+          email: "mail-unavailable@example.test",
+          password: "same-password-12345",
+        }),
+      }),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: "EMAIL_NOT_VERIFIED" });
+    expect(response.headers.getSetCookie().join(";")).not.toContain("session_token=");
+    expect(db.user?.[0]?.emailVerified).toBe(false);
+    expect(db.session).toEqual([]);
+  });
+
+  it.each([
+    ["role", "admin", 400],
+    ["emailVerified", true, 200],
+    ["twoFactorEnabled", true, 200],
+  ] as const)(
+    "does not trust the independently forged signup field %s",
+    async (field, value, status) => {
+      envState.signupEnabled = true;
+      const { db, instance, sendVerificationEmail } = await realAuth({ withTwoFactor: true });
+      const response = await instance.handler(
+        new Request("https://app.example.test/api/auth/sign-up/email", {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: "https://app.example.test" },
+          body: JSON.stringify({
+            name: "Public user",
+            email: "public@example.test",
+            password: "same-password-12345",
+            [field]: value,
+          }),
+        }),
+      );
+      expect(response.status).toBe(status);
+      expect(response.headers.getSetCookie().join(";")).not.toContain("session_token=");
+      if (status === 200) {
+        expect(await response.json()).toEqual({ token: null, user: null });
+        expect(db.user).toHaveLength(1);
+        expect(db.user?.[0]).toMatchObject({
+          role: "user",
+          emailVerified: false,
+          twoFactorEnabled: false,
+        });
+        expect(sendVerificationEmail).toHaveBeenCalledTimes(1);
+      } else {
+        expect(db.user).toEqual([]);
+        expect(sendVerificationEmail).not.toHaveBeenCalled();
+      }
+      expect(db.twoFactor).toEqual([]);
+      expect(db.session).toEqual([]);
+    },
+  );
+
+  it("grants admin only when both the server marker and the address allow it", async () => {
+    const { runWithAllowedUserCreation } = await import("./user-creation-policy");
+    envState.signupEnabled = true;
+    envState.adminEmails.add("owner@example.test");
+    envState.adminEmails.add("unmarked@example.test");
+    try {
+      const { db, signUp, sendVerificationEmail } = await realAuth();
+      expect(await signUp("public@example.test")).toMatchObject({
+        status: 200,
+        body: '{"token":null,"user":null}',
+      });
+      expect(await signUp("unmarked@example.test")).toMatchObject({ status: 200 });
+      const bootstrap = await runWithAllowedUserCreation("admin-bootstrap", () =>
+        signUp("owner@example.test"),
+      );
+      expect(bootstrap).toMatchObject({ status: 200, body: '{"token":null,"user":null}' });
+      // A creation grant alone is not enough: the email must also be listed.
+      await runWithAllowedUserCreation("admin-bootstrap", () => signUp("member@example.test"));
+      expect(
+        db.user?.map(({ email, role, emailVerified }) => ({ email, role, emailVerified })),
+      ).toEqual([
+        { email: "public@example.test", role: "user", emailVerified: false },
+        { email: "unmarked@example.test", role: "user", emailVerified: false },
+        { email: "owner@example.test", role: "admin", emailVerified: false },
+        { email: "member@example.test", role: "user", emailVerified: false },
+      ]);
+      expect(db.session).toEqual([]);
+      expect(sendVerificationEmail).toHaveBeenCalledTimes(4);
+      expect(
+        await runWithAllowedUserCreation("admin-bootstrap", () => signUp("owner@example.test")),
+      ).toEqual(bootstrap);
+      expect(db.user).toHaveLength(4);
+    } finally {
+      envState.adminEmails.clear();
+    }
+  });
+
+  it("requires mailbox proof for both ordinary and bootstrap accounts even with the correct password", async () => {
+    const { runWithAllowedUserCreation } = await import("./user-creation-policy");
+    envState.signupEnabled = true;
+    envState.adminEmails.add("owner@example.test");
+    try {
+      const { db, instance, signUp, sendVerificationEmail } = await realAuth();
+      await signUp("public@example.test");
+      await runWithAllowedUserCreation("admin-bootstrap", () => signUp("owner@example.test"));
+      sendVerificationEmail.mockClear();
+      for (const email of ["public@example.test", "owner@example.test"]) {
+        const response = await instance.handler(
+          new Request("https://app.example.test/api/auth/sign-in/email", {
+            method: "POST",
+            headers: { "content-type": "application/json", origin: "https://app.example.test" },
+            body: JSON.stringify({ email, password: "same-password-12345" }),
+          }),
+        );
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({ code: "EMAIL_NOT_VERIFIED" });
+        expect(response.headers.getSetCookie().join(";")).not.toContain("session_token=");
+      }
+      expect(sendVerificationEmail).toHaveBeenCalledTimes(2);
+      expect(db.session).toEqual([]);
+      expect(db.user?.every((user) => user.emailVerified === false)).toBe(true);
+      expect(options.emailAndPassword?.requireEmailVerification).toBe(true);
+    } finally {
+      envState.adminEmails.clear();
+    }
+  });
+
+  it("rejects invalid signup input identically inside and outside the bootstrap grant without mailing", async () => {
+    const { runWithAllowedUserCreation } = await import("./user-creation-policy");
+    envState.signupEnabled = true;
+    const { db, instance, sendVerificationEmail } = await realAuth();
+    const invalid = (email: string, password: string) =>
+      instance.handler(
+        new Request("https://app.example.test/api/auth/sign-up/email", {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: "https://app.example.test" },
+          body: JSON.stringify({ name: "Invalid", email, password }),
+        }),
+      );
+    for (const [email, password] of [
+      ["invalid-address", "same-password-12345"],
+      ["valid@example.test", "short"],
+    ] as const) {
+      const ordinary = await invalid(email, password);
+      const marked = await runWithAllowedUserCreation("admin-bootstrap", () =>
+        invalid(email, password),
+      );
+      expect(ordinary.status).toBe(400);
+      expect(marked.status).toBe(ordinary.status);
+      expect(await marked.text()).toBe(await ordinary.text());
+    }
+    expect(db.user).toEqual([]);
+    expect(db.session).toEqual([]);
+    expect(sendVerificationEmail).not.toHaveBeenCalled();
   });
 });
 

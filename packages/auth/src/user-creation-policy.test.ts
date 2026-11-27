@@ -39,6 +39,39 @@ describe("user creation policy context", () => {
     });
     expect(wasUserCreatedUnderGrant()).toBe(false);
   });
+
+  it("isolates overlapping public signup, bootstrap and invite requests, including a failed grant", async () => {
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const bootstrap = runWithAllowedUserCreation("admin-bootstrap", async () => {
+      await ready;
+      markUserCreatedUnderGrant();
+      expect(getAllowedUserCreationMode()).toBe("admin-bootstrap");
+      expect(getGrantedUserLocale()).toBeUndefined();
+      expect(getUserCreationBlockReason({ signupEnabled: false })).toBeNull();
+      throw new Error("failed bootstrap");
+    });
+    const invite = runWithAllowedUserCreation(
+      "admin-invite",
+      async () => {
+        release();
+        await ready;
+        expect(getAllowedUserCreationMode()).toBe("admin-invite");
+        expect(wasUserCreatedUnderGrant()).toBe(false);
+        expect(getGrantedUserLocale()).toBe("es-MX");
+      },
+      { locale: "es-MX" },
+    );
+    expect(getUserCreationBlockReason({ signupEnabled: false })).toBe(SIGNUP_DISABLED_MESSAGE);
+    expect(getUserCreationBlockReason({ signupEnabled: true })).toBeNull();
+    await expect(bootstrap).rejects.toThrow("failed bootstrap");
+    await invite;
+    expect(getAllowedUserCreationMode()).toBeUndefined();
+    expect(wasUserCreatedUnderGrant()).toBe(false);
+    expect(getGrantedUserLocale()).toBeUndefined();
+  });
 });
 
 describe("granted locale", () => {

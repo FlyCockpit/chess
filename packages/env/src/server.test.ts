@@ -107,6 +107,47 @@ describe("server env — rate-limit budget defaults", () => {
   });
 });
 
+describe("server env — public signup mail readiness", () => {
+  it("keeps public signup disabled by default, including when mail is configured", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mod = await importServerEnv({
+      NODE_ENV: "production",
+      SMTP_HOST: "smtp.example.com",
+      SMTP_FROM: "Chess <no-reply@example.com>",
+    });
+    expect(mod.SIGNUP_ENABLED).toBe(false);
+  });
+
+  it("refuses public signup in production without SMTP", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(
+      importServerEnv({ NODE_ENV: "production", SIGNUP_ENABLED: "true" }),
+    ).rejects.toThrow("SIGNUP_ENABLED=true but SMTP_HOST is not configured");
+  });
+
+  it("refuses a configured relay without an explicit sender in production", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(
+      importServerEnv({
+        NODE_ENV: "production",
+        SIGNUP_ENABLED: "true",
+        SMTP_HOST: "smtp.example.com",
+      }),
+    ).rejects.toThrow("SMTP_HOST is set but SMTP_FROM is not");
+  });
+
+  it("warns about missing mail in development without weakening the verification requirement", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mod = await importServerEnv({ SIGNUP_ENABLED: "true" });
+    expect(mod.SIGNUP_ENABLED).toBe(true);
+    expect(
+      warn.mock.calls.some((call) =>
+        call.join(" ").includes("SIGNUP_ENABLED=true but SMTP_HOST is not configured"),
+      ),
+    ).toBe(true);
+  });
+});
+
 describe("shared env — DATABASE_POOL_MAX", () => {
   it("defaults to the node-postgres default of 10", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});

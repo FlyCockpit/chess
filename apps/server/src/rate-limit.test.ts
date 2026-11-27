@@ -312,6 +312,8 @@ describe("rate-limit budget families", () => {
     const options = (limiter: unknown) => (limiter as { options: Record<string, unknown> }).options;
     // Insurance would absorb a Redis outage before `failClosed` could 503.
     expect(options(l.authLimiter).insuranceLimiter).toBeUndefined();
+    expect(options(l.signupLimiter).insuranceLimiter).toBeUndefined();
+    expect(options(l.signupRecipientLimiter).insuranceLimiter).toBeUndefined();
     expect(options(l.devicePollLimiter).insuranceLimiter).toBeUndefined();
     // Fail-open surfaces keep it.
     expect(options(l.cliLimiter).insuranceLimiter).toBeDefined();
@@ -375,5 +377,121 @@ describe("rate-limit budget families", () => {
     expect(l.emailRecipientLimiter.points).toBe(0);
     expect(l.signupRecipientLimiter.points).toBe(0);
     expect(l.signinRecipientLimiter.points).toBe(0);
+  });
+});
+
+describe("public signup abuse controls together", () => {
+  async function signupApp() {
+    vi.resetModules();
+    envMock.TRUST_PROXY_HOPS = undefined;
+    mockGetConnInfo.mockReturnValue({ remote: { address: "198.51.100.10" } });
+    const l = await import("./rate-limit.js");
+    const { emailRecipientLimit, FORM_OR_JSON_MEDIA_TYPES } = await import(
+      "./email-recipient-limit.js"
+    );
+    const { adminBootstrapMarker } = await import("./signup-gate.js");
+    const app = new Hono();
+    const delivered = vi.fn();
+    // Same order and fail modes as server/index.ts. Memory replaces only the
+    // Redis store; the shipped budgets and middleware are exercised together.
+    app.use("/api/auth/sign-up/email", adminBootstrapMarker(new Set(["admin@example.test"])));
+    app.use(
+      "/api/auth/sign-up/*",
+      l.createRateLimiterMiddleware(l.signupLimiter, { failClosed: true }),
+    );
+    app.use("/api/auth/*", l.createRateLimiterMiddleware(l.authLimiter, { failClosed: true }));
+    app.use(
+      "/api/auth/sign-up/email",
+      emailRecipientLimit(l.signupRecipientLimiter, FORM_OR_JSON_MEDIA_TYPES),
+    );
+    app.post("/api/auth/sign-up/email", async (c) => {
+      delivered(await c.req.json());
+      return c.json({ token: null, user: null });
+    });
+    app.post("/api/auth/request-password-reset", (c) => c.json({ status: true }));
+    const signup = (email: string) =>
+      app.request("/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, password: "long-enough-password" }),
+      });
+    return { app, l, signup, delivered };
+  }
+
+  it("shares ten signup attempts behind a NAT without spending the independent recovery allowance", async () => {
+    const { app, signup, delivered } = await signupApp();
+    for (let i = 0; i < 10; i++) {
+      expect((await signup(`person-${i}@example.test`)).status).toBe(200);
+    }
+    const blocked = await signup("admin@example.test");
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Retry-After")).toBeTruthy();
+    expect(delivered).toHaveBeenCalledTimes(10);
+    // More rejected attempts than the general auth bucket could absorb if
+    // signup rejection were mounted after it. Recovery must still work.
+    for (let i = 0; i < 30; i++) {
+      expect((await signup(`blocked-${i}@example.test`)).status).toBe(429);
+    }
+    // The signup limiter rejects before charging the more generous auth
+    // bucket. A shared-NAT signup flood must leave recovery reachable.
+    expect((await app.request("/api/auth/request-password-reset", { method: "POST" })).status).toBe(
+      200,
+    );
+    mockGetConnInfo.mockReturnValue({ remote: { address: "198.51.100.11" } });
+    expect((await signup("new-network@example.test")).status).toBe(200);
+  });
+
+  it("keeps the six-per-recipient ceiling across changing caller IPs, including admin-listed addresses", async () => {
+    const { signup, delivered } = await signupApp();
+    for (let i = 0; i < 7; i++) {
+      mockGetConnInfo.mockReturnValue({ remote: { address: `198.51.100.${20 + i}` } });
+      const response = await signup("admin@example.test");
+      expect(response.status).toBe(i < 6 ? 200 : 429);
+    }
+    expect(delivered).toHaveBeenCalledTimes(6);
+  });
+
+  it.each(["signupLimiter", "authLimiter"] as const)(
+    "fails closed before delivery when %s loses Valkey",
+    async (name) => {
+      const { l, signup, delivered } = await signupApp();
+      const consume = vi
+        .spyOn(l[name], "consume")
+        .mockRejectedValue(new Error("Valkey unavailable"));
+      const recipient = vi.spyOn(l.signupRecipientLimiter, "consume");
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        for (const email of ["new@example.test", "admin@example.test", "not-an-address"]) {
+          const response = await signup(email);
+          expect(response.status).toBe(503);
+          expect(response.headers.get("Retry-After")).toBe("5");
+        }
+        expect(delivered).not.toHaveBeenCalled();
+        expect(recipient).not.toHaveBeenCalled();
+      } finally {
+        consume.mockRestore();
+        recipient.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
+
+  it("allows delivery when only the recipient store fails while the IP ceiling still applies", async () => {
+    const { l, signup, delivered } = await signupApp();
+    const consume = vi
+      .spyOn(l.signupRecipientLimiter, "consume")
+      .mockRejectedValue(new Error("recipient store unavailable"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (let i = 0; i < 10; i++) {
+        expect((await signup("same@example.test")).status).toBe(200);
+      }
+      expect((await signup("same@example.test")).status).toBe(429);
+      expect(delivered).toHaveBeenCalledTimes(10);
+      expect(consume).toHaveBeenCalledTimes(10);
+    } finally {
+      consume.mockRestore();
+      error.mockRestore();
+    }
   });
 });
