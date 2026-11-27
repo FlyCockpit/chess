@@ -12,16 +12,25 @@ import { createAuthClient } from "better-auth/react";
 import i18n from "@/i18n";
 import {
   announceSessionChange,
+  confirmAuthoritativeSessionCheck,
+  confirmOutsideAppIdentity,
   guardIdentityResponse,
+  identityVerificationGeneration,
+  needsAuthoritativeSessionCheck,
   reportAuthErrorStatus,
   withExpectedIdentity,
 } from "@/lib/document-identity";
 
 import {
+  connectSessionRetry,
+  observeSessionRetry,
   recordSessionRetryAfter,
+  runSessionCheck,
   trackNativeSessionCheck,
   waitForSessionCooldown,
 } from "@/lib/session-retry";
+
+const authoritativeRequests = new WeakMap<object, number>();
 
 export const authClient = createAuthClient({
   baseURL: env.VITE_SERVER_URL,
@@ -49,6 +58,12 @@ export const authClient = createAuthClient({
         const signal = context.signal;
         if (signal) trackSessionAtomRefresh(signal);
         await waitForSessionCooldown(signal);
+        if (needsAuthoritativeSessionCheck()) {
+          const url = new URL(context.url);
+          url.searchParams.set("disableCookieCache", "true");
+          context.url = url;
+          authoritativeRequests.set(context, identityVerificationGeneration());
+        }
       }
       if (!/\/(get-session|sign-out)\/?$/.test(path)) {
         context.headers = withExpectedIdentity(context.headers);
@@ -56,7 +71,11 @@ export const authClient = createAuthClient({
       return context;
     },
     onError(context) {
-      reportAuthErrorStatus(context.response.status);
+      // A session endpoint401 is consumed by its owning verifier. Reporting
+      // it as an account action would invalidate that terminal answer again.
+      if (!new URL(context.request.url).pathname.endsWith("/get-session")) {
+        reportAuthErrorStatus(context.response.status);
+      }
     },
     async onResponse({ response, request }) {
       const path = new URL(request.url).pathname;
@@ -65,8 +84,15 @@ export const authClient = createAuthClient({
       if (path.endsWith("/sign-out")) return;
       if (path.endsWith("/get-session")) {
         recordSessionRetryAfter(response);
+        const since = authoritativeRequests.get(request);
+        if (response.status === 401 && since !== undefined) confirmAuthoritativeSessionCheck(since);
       }
       await guardIdentityResponse(response);
+    },
+    // Clear the targeted bypass only after a parsed successful session answer.
+    onSuccess({ request }) {
+      const since = authoritativeRequests.get(request);
+      if (since !== undefined) confirmAuthoritativeSessionCheck(since);
     },
   },
   sessionOptions: {
@@ -93,7 +119,9 @@ export const authClient = createAuthClient({
 function trackSessionAtomRefresh(signal: AbortSignal): void {
   const session = authClient.$store.atoms.session;
   // Reading value avoids mounting the atom for an imperative getSession().
-  if (!session?.value.isRefetching) return;
+  // Listening mounts the atom; public imperative probes already own the
+  // coordinator and must not trigger a second initial session fetch.
+  if (!session?.value.isRefetching || session.lc === 0) return;
   const finish = trackNativeSessionCheck();
   const stop = () => {
     unlisten();
@@ -113,3 +141,34 @@ function trackSessionAtomRefresh(signal: AbortSignal): void {
 // now, whatever page this tab lands on. docs/auth-and-routing.md § Query
 // cache follows identity.
 authClient.$store.atoms.$sessionSignal?.listen(() => announceSessionChange());
+
+// Public/error/404 surfaces have no mounted session atom. Lazy reconciliation
+// uses the same coordinator, budget and failure scheduler as the app watcher.
+let disconnectOutsideRetry: (() => void) | undefined;
+async function probeOutsideAppSession(): Promise<void> {
+  const since = identityVerificationGeneration();
+  const atom = authClient.$store.atoms.session;
+  if (!atom) return;
+  // Update the same atom the watcher consumes. If the app mounts during this
+  // request, joining its coordinator slot must never read an older atom.
+  await atom.value.refetch();
+  const snapshot = atom.value;
+  const pending = snapshot.isPending || snapshot.isRefetching;
+  observeSessionRetry(snapshot.error, pending);
+  if (pending || since !== identityVerificationGeneration()) return;
+  if (snapshot.error && snapshot.error.status !== 401) return;
+  disconnectOutsideRetry?.();
+  disconnectOutsideRetry = undefined;
+  confirmOutsideAppIdentity(snapshot.data?.user.id ?? null, since);
+}
+export async function checkDocumentSession(): Promise<void> {
+  disconnectOutsideRetry?.();
+  // Register the raw transport, never a callback that recursively joins its
+  // own in-flight coordinator promise when the failure scheduler invokes it.
+  disconnectOutsideRetry = connectSessionRetry(probeOutsideAppSession);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const since = identityVerificationGeneration();
+    const ran = await runSessionCheck(probeOutsideAppSession, { automatic: true });
+    if (!ran || since === identityVerificationGeneration()) return;
+  }
+}

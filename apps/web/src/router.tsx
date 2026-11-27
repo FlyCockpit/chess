@@ -16,6 +16,7 @@ import {
   onAccountStateDiscarded,
   onDocumentReplaced,
   replaceDocumentBeforeNavigation,
+  retryQueryAfterFailure,
   sealQueryClient,
   setAccountFreePage,
   skipErrorToastForIdentity,
@@ -70,7 +71,7 @@ const getI18n = createIsomorphicFn()
 export function getRouter() {
   const queryClient = new QueryClient({
     defaultOptions: {
-      queries: { staleTime: 1000 * 60 * 5 },
+      queries: { staleTime: 1000 * 60 * 5, retry: retryQueryAfterFailure },
     },
     queryCache: new QueryCache({
       onError: (error, query) => {

@@ -1,7 +1,7 @@
 import type { AppRouterClient } from "@cockpit-chess/api/routers/index";
 import { ORPC_BATCH_MAX_SIZE } from "@cockpit-chess/config/orpc-batch";
 import { env } from "@cockpit-chess/env/web";
-import { createORPCClient } from "@orpc/client";
+import { createORPCClient, onError } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import {
   BatchLinkPlugin,
@@ -16,11 +16,25 @@ import {
   guardIdentityResponse,
   isDocumentQuarantined,
   isDocumentReplaced,
+  reportSessionRejected,
   withExpectedIdentity,
 } from "@/lib/document-identity";
 
 const link = new RPCLink({
   url: `${env.VITE_SERVER_URL}/rpc`,
+  // Runs after individual RPC decoding, including streaming batch items, and
+  // before Query retry/final-error callbacks. No HTTP-envelope assumptions.
+  interceptors: [
+    onError((error) => {
+      if (
+        error &&
+        typeof error === "object" &&
+        (("code" in error && error.code === "UNAUTHORIZED") ||
+          ("status" in error && error.status === 401))
+      )
+        reportSessionRejected(error);
+    }),
+  ],
   plugins: [
     new SimpleCsrfProtectionLinkPlugin(),
     // `maxSize` must stay in sync with the server's `BatchHandlerPlugin` —

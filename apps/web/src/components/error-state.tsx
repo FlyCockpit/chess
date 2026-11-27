@@ -16,14 +16,15 @@ import { friendly } from "../utils/friendly-error";
  * could not be reached; anything else is the generic error. See
  * docs/design-system.md § Offline and network failures.
  */
-export default function ErrorState({ error, reset }: ErrorComponentProps) {
+export default function ErrorState({ error }: ErrorComponentProps) {
   useRouteImportFailure(error);
   const { t } = useTranslation(["common", "errors"]);
   const router = useRouter();
   const online = useNetworkStatus();
-  // `invalidate` reloads the failed matches (a failed route chunk included)
-  // and gives them new identities, which resets this boundary.
-  const retry = () => void router.invalidate();
+  // Re-run guarded ancestors before recovering children, including render
+  // errors on otherwise successful matches. A boundary reset alone can
+  // reuse the previous session context without running its guard.
+  const retry = () => void router.invalidate({ forcePending: true }).catch(() => {});
   useRetryOnReconnect(retry, !online);
 
   if (!online || isFetchFailure(error)) {
@@ -57,7 +58,7 @@ export default function ErrorState({ error, reset }: ErrorComponentProps) {
         </p>
       </div>
       <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
-        <Button onClick={reset} variant="outline" className="min-h-[44px]">
+        <Button onClick={retry} variant="outline" className="min-h-[44px]">
           {t("common:actions.tryAgain")}
         </Button>
         <Button onClick={() => window.location.reload()} className="min-h-[44px]">
