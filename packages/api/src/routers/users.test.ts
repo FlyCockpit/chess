@@ -33,6 +33,16 @@ vi.mock("@cockpit-chess/auth", () => ({
 
 // The real grant runs (so the stubbed createUser still executes inside it); the
 // spy lets a test read the grant's mode and locale.
+// Snapshot-lock interleavings are covered in auth and disposable-PG checks;
+// here keep the admin guard transaction observable without a second connection.
+vi.mock("@cockpit-chess/auth/device-redemption-lock", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@cockpit-chess/auth/device-redemption-lock")>()),
+  withCliCredentialSnapshotLock: async (
+    _userId: string,
+    run: (timeout: number) => Promise<unknown>,
+  ) => run(20_000),
+}));
+
 vi.mock("@cockpit-chess/auth/user-creation-policy", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@cockpit-chess/auth/user-creation-policy")>();
   return { ...actual, runWithAllowedUserCreation: vi.fn(actual.runWithAllowedUserCreation) };
@@ -160,6 +170,7 @@ function buildContext(
 describe("usersRouter", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prisma.runnerMachine.updateMany.mockResolvedValue({ count: 0 });
     budget.charges.length = 0;
     budget.errorQueue.length = 0;
     mailer.configured = true;
@@ -846,9 +857,12 @@ describe("usersRouter", () => {
       async (oldRole, newRole) => {
         db.user.findUnique.mockResolvedValue({ ...target, role: oldRole });
         await expect(changeRole(newRole)).resolves.toEqual({ success: true });
-        expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), {
-          isolationLevel: "Serializable",
-        });
+        expect(db.$transaction).toHaveBeenCalledWith(
+          expect.any(Function),
+          expect.objectContaining({
+            isolationLevel: "Serializable",
+          }),
+        );
         expect(db.user.findUnique).toHaveBeenCalledWith({
           where: { id: target.id },
           select: { id: true, role: true, emailVerified: true, banned: true, banExpires: true },
@@ -989,6 +1003,7 @@ describe("usersRouter", () => {
       let tx: ReturnType<typeof mockDeep<typeof prisma>>;
       beforeEach(() => {
         tx = mockDeep<typeof prisma>();
+        tx.runnerMachine.updateMany.mockResolvedValue({ count: 1 });
         tx.user.findUnique.mockResolvedValue({
           id: "target",
           role: "user, Admin",
@@ -1008,9 +1023,12 @@ describe("usersRouter", () => {
           code: "FORBIDDEN",
           data: { reason: "LAST_ACTIVE_ADMIN" },
         });
-        expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), {
-          isolationLevel: "Serializable",
-        });
+        expect(db.$transaction).toHaveBeenCalledWith(
+          expect.any(Function),
+          expect.objectContaining({
+            isolationLevel: "Serializable",
+          }),
+        );
         expect(tx.$queryRaw).toHaveBeenCalledOnce();
         expect(tx.user.update).not.toHaveBeenCalled();
         expect(tx.user.delete).not.toHaveBeenCalled();
@@ -1075,6 +1093,7 @@ describe("usersRouter", () => {
           ],
         ]);
         const tx = mockDeep<typeof prisma>();
+        tx.runnerMachine.updateMany.mockResolvedValue({ count: 1 });
         // Prisma's fluent clients expose relation methods as well as a promise;
         // these stubs only model the awaited IO boundary used by the guard.
         const store = tx as unknown as typeof db;
@@ -1133,12 +1152,20 @@ describe("usersRouter", () => {
         });
         expect(rows.get("a")).toMatchObject({ role: "admin", emailVerified: true, banned: false });
         expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
-        expect(db.$transaction).toHaveBeenNthCalledWith(1, expect.any(Function), {
-          isolationLevel: "Serializable",
-        });
-        expect(db.$transaction).toHaveBeenNthCalledWith(2, expect.any(Function), {
-          isolationLevel: "Serializable",
-        });
+        expect(db.$transaction).toHaveBeenNthCalledWith(
+          1,
+          expect.any(Function),
+          expect.objectContaining({
+            isolationLevel: "Serializable",
+          }),
+        );
+        expect(db.$transaction).toHaveBeenNthCalledWith(
+          2,
+          expect.any(Function),
+          expect.objectContaining({
+            isolationLevel: "Serializable",
+          }),
+        );
       },
     );
   });
@@ -1158,6 +1185,10 @@ describe("usersRouter", () => {
 
       expect(res).toEqual({ success: true });
       expect(db.$transaction).toHaveBeenCalledOnce();
+      expect(prisma.runnerMachine.updateMany).toHaveBeenCalledWith({
+        where: { userId: "other-user-id", revokedAt: null },
+        data: { revokedAt: expect.any(Date), connectionGeneration: { increment: 1 } },
+      });
       expect(db.user.update).toHaveBeenCalledWith({
         where: { id: "other-user-id" },
         data: { banned: true, banReason: "Inactive", banExpires: null },
@@ -1186,6 +1217,7 @@ describe("usersRouter", () => {
       const res = await client.unarchive({ userId: "other-user-id" });
 
       expect(res).toEqual({ success: true });
+      expect(prisma.runnerMachine.updateMany).not.toHaveBeenCalled();
       expect(db.user.update).toHaveBeenCalledWith({
         where: { id: "other-user-id" },
         data: { banned: false, banReason: null, banExpires: null },
@@ -1209,6 +1241,13 @@ describe("usersRouter", () => {
 
       expect(res).toEqual({ success: true });
       expect(db.user.delete).toHaveBeenCalledWith({ where: { id: "other-user-id" } });
+      expect(prisma.runnerMachine.updateMany).toHaveBeenCalledWith({
+        where: { userId: "other-user-id", revokedAt: null },
+        data: { revokedAt: expect.any(Date), connectionGeneration: { increment: 1 } },
+      });
+      expect(prisma.runnerMachine.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
+        db.user.delete.mock.invocationCallOrder[0] ?? 0,
+      );
     });
 
     it("blocks self-delete", async () => {

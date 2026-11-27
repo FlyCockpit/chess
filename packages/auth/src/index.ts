@@ -51,6 +51,7 @@ import {
 } from "./password-sign-in-fence.js";
 import {
   confirmPasswordWriteLocked,
+  fenceAdminPasswordReset,
   guardPasswordAccountCreate,
   guardPasswordAccountUpdate,
 } from "./password-write-lock.js";
@@ -580,14 +581,20 @@ export const auth = betterAuth({
       // Linking an IdP identity activates an invited account: its leftover
       // set-password links die (account-activation.ts).
       create: {
-        before: async (account, context) => guardPasswordAccountCreate(account, context),
+        before: async (account, context) => {
+          guardPasswordAccountCreate(account, context);
+          if (account.password) await fenceAdminPasswordReset();
+        },
         after: async (account) => {
           await confirmPasswordWriteLocked({ hash: passwordPepper.hash });
           await afterAccountCreate(account);
         },
       },
       update: {
-        before: async (data) => guardPasswordAccountUpdate(data),
+        before: async (data) => {
+          guardPasswordAccountUpdate(data);
+          if (data.password !== undefined) await fenceAdminPasswordReset();
+        },
         after: async () => confirmPasswordWriteLocked({ hash: passwordPepper.hash }),
       },
     },

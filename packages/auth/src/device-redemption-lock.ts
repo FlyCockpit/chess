@@ -68,6 +68,34 @@ export function withCliCredentialLockSlot<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Take the credential lock BEFORE starting a separate Serializable snapshot.
+ * Archive uses this because taking a waiting advisory lock inside its existing
+ * Serializable transaction could miss a machine committed while it waited.
+ * The callback's database transaction must honor the supplied timeout, leaving
+ * five seconds before this lock transaction can expire.
+ */
+export function withCliCredentialSnapshotLock<T>(
+  userId: string,
+  run: (timeoutMs: number) => Promise<T>,
+): Promise<T> {
+  return withLockSlot(
+    () => {
+      const deadline = performance.now() + REDEMPTION_HELD_FOR_MS;
+      return prisma.$transaction(
+        async (tx) => {
+          await lockCliCredentials(userId, tx);
+          const remaining = Math.floor(deadline - performance.now());
+          if (remaining <= 0) throw lockLapsed();
+          return run(Math.min(20_000, remaining));
+        },
+        { timeout: REDEMPTION_LOCK_TIMEOUT_MS },
+      );
+    },
+    { nested: 1 },
+  );
+}
+
+/**
  * The session a credential mint was authorized by is gone (signed out, or
  * deleted by a password reset or change) or expired. Callers answer it like
  * any other unauthenticated request.

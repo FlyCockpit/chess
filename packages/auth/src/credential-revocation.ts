@@ -4,6 +4,7 @@ import prisma, { type Prisma } from "@cockpit-chess/db";
 import { APIError } from "better-auth/api";
 import { hashPassword } from "better-auth/crypto";
 import { lockCliCredentials, withCliCredentialLockSlot } from "./device-redemption-lock.js";
+import { runnerMachineRevocationWrites } from "./runner-machine-revocation.js";
 import { deleteResetLinks, lockSetPasswordLinks } from "./set-password-link-lock.js";
 
 /**
@@ -44,6 +45,9 @@ function cliCredentialRevocationWrites(userId: string, revokeAllSessions = false
       },
     }),
     prisma.deviceCode.deleteMany({ where: { userId } }),
+    // Recovery/reset revokes machine authority. An ordinary signed-in
+    // password change deliberately retains paired runners (owner policy).
+    ...(revokeAllSessions ? runnerMachineRevocationWrites(userId) : []),
   ] as const;
 }
 
@@ -96,7 +100,7 @@ async function runRevocation(
   userId: string,
   writes: () => Prisma.PrismaPromise<unknown>[],
   sleep: (ms: number) => Promise<void>,
-  failureWarning = "the user’s API keys and CLI logins may still be live. Revoke them by hand.",
+  failureWarning = "the user’s API keys, CLI logins and runner machines may still be live. Revoke them by hand.",
 ): Promise<void> {
   let lastError: unknown;
   for (let attempt = 0; attempt < REVOCATION_ATTEMPTS; attempt += 1) {
@@ -160,6 +164,31 @@ export async function revokeCredentialsBeforePasswordReset(ctx: {
     throw new APIError("SERVICE_UNAVAILABLE", {
       message:
         "We couldn't finish securing your account. Your password is unchanged — try the link again. Existing sign-ins and API keys may already have been revoked.",
+    });
+  }
+}
+
+/**
+ * Called by the password-account before hook only AFTER Better Auth's admin
+ * endpoint has authorized the actor and validated the password. Never call
+ * this from a request body or the outer password-write lock: those run before
+ * authorization. Deleting sessions under the credential lock fences both
+ * machine actions and credential minting before the password write starts.
+ */
+export async function revokeCredentialsBeforeAdminPasswordReset(userId: string): Promise<void> {
+  try {
+    await runRevocation(
+      "admin-password-reset pre-commit",
+      userId,
+      () => [
+        ...cliCredentialRevocationWrites(userId, true),
+        passwordResetTwoFactorRevocationWrite(userId),
+      ],
+      defaultSleep,
+    );
+  } catch {
+    throw new APIError("SERVICE_UNAVAILABLE", {
+      message: "Account security could not be confirmed. Retry the password reset.",
     });
   }
 }
@@ -278,7 +307,7 @@ export async function quarantineUntrustedPasswordWrite(
     "untrusted-password-write",
     userId,
     () => [
-      ...cliCredentialRevocationWrites(userId),
+      ...cliCredentialRevocationWrites(userId, true),
       prisma.session.deleteMany({ where: { userId } }),
       passwordResetTwoFactorRevocationWrite(userId),
     ],
@@ -325,6 +354,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Reuse the activation/reset transaction; its credential lock is already held. */
 export async function revokeCredentialsInTransaction(tx: Prisma.TransactionClient, userId: string) {
+  for (const write of runnerMachineRevocationWrites(userId, tx)) await write;
   await tx.apiKey.deleteMany({ where: { referenceId: userId } });
   await tx.deviceCode.deleteMany({ where: { userId } });
   await tx.session.deleteMany({ where: { OR: [{ userId }, { impersonatedBy: userId }] } });

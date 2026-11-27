@@ -1,7 +1,11 @@
-/** Explicit operations smoke; owns disposable services and never loads the root .env. */
+/**
+ * Explicit operations smoke; owns disposable services and never loads root .env.
+ * Full gate: node scripts/test-runtime-operations.mjs --disposable-services
+ * E1 gate: append --runner-machines-only (includes shared device/password races).
+ */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -11,6 +15,15 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const file = fileURLToPath(import.meta.url);
+
+/** Bounded observer polling stages database races without relying on sleeps. */
+async function waitForPg(observer, label, inspect) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (await inspect(observer)) return;
+    await delay(25);
+  }
+  throw new Error(`Timed out waiting for: ${label}`);
+}
 
 async function runtimeCheck(mode) {
   assert.ok(["embedded", "external"].includes(mode));
@@ -259,7 +272,20 @@ async function deviceFlowRaceCheck() {
     assert.equal(refused.status, 400);
     assert.equal((await refused.json()).error, "invalid_grant");
     assert.equal(await deviceSessions(), 0);
-    console.log("device flow: redemption and revocation serialize on real Postgres (5 cases).");
+    // 5. A redeemed code is one-use, and expired approval cannot mint authority.
+    const once = await approvedCode();
+    assert.equal((await redeem(once)).status, 200);
+    const used = await redeem(once);
+    assert.equal(used.status, 400);
+    assert.equal((await used.json()).error, "invalid_grant");
+    const expired = await approvedCode();
+    await prisma.deviceCode.update({
+      where: { deviceCode: expired },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+    assert.equal((await redeem(expired)).status, 400);
+    assert.equal(await deviceSessions(), 1, "used/expired approval creates no extra session");
+    console.log("device flow: redemption/reset locks and expired/used codes passed on real PG.");
   } finally {
     await prisma.user.deleteMany({ where: { id: userId } });
     await observer.end();
@@ -267,14 +293,612 @@ async function deviceFlowRaceCheck() {
   }
 }
 
-async function passwordSignInRaceCheck() {
-  const [{ auth }, fence, writeLock, links, { default: prisma }] = await Promise.all([
-    import("../packages/auth/src/index.ts"),
-    import("../packages/auth/src/password-sign-in-fence.ts"),
-    import("../packages/auth/src/password-write-lock.ts"),
-    import("../packages/auth/src/password-reset-links.ts"),
+/**
+ * E1 uses production mint/reset/revoke/resolver code against owned PostgreSQL.
+ * Enrollment is internal: E1L owns the future public claim/exchange endpoint.
+ */
+async function runnerMachinesCheck() {
+  const [
+    runners,
+    locks,
+    revocation,
+    resolver,
+    cliResolver,
+    { default: prisma },
+    { loadPg },
+    { cliAccessRouter },
+    { usersRouter },
+    queues,
+  ] = await Promise.all([
+    import("../packages/auth/src/runner-machine.ts"),
+    import("../packages/auth/src/device-redemption-lock.ts"),
+    import("../packages/auth/src/credential-revocation.ts"),
+    import("../apps/server/src/runner-session.ts"),
+    import("../apps/server/src/cli-session.ts"),
     import("../packages/db/src/index.ts"),
+    import("./db/lib/prisma.mjs"),
+    import("../packages/api/src/routers/cli-access.ts"),
+    import("../packages/api/src/routers/users.ts"),
+    import("../packages/queue/src/index.ts"),
   ]);
+  const { createRouterClient } = await import(
+    createRequire(new URL("../packages/api/package.json", import.meta.url)).resolve("@orpc/server")
+  );
+  const pg = loadPg();
+  const observer = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await observer.connect();
+  const owned = [];
+  const notifications = [];
+  observer.on("notification", (event) => {
+    if (event.channel === "runner_machine_revoked") notifications.push(JSON.parse(event.payload));
+  });
+  await observer.query("LISTEN runner_machine_revoked");
+  const fixture = async (label, data = {}) => {
+    const id = `runner-${label}-${randomUUID()}`;
+    owned.push(id);
+    const user = await prisma.user.create({
+      data: {
+        id,
+        name: "Runner fixture",
+        email: `${id}@example.test`,
+        emailVerified: true,
+        role: "user",
+        ...data,
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        id: randomUUID(),
+        userId: id,
+        token: randomUUID(),
+        origin: "sign-in",
+        expiresAt: new Date(Date.now() + 600_000),
+      },
+    });
+    return { user, session, authority: { userId: id, sessionId: session.id } };
+  };
+  const mint = (owner, label = "Runner fixture") =>
+    runners.mintRunnerMachineForSession(owner.authority, { displayName: label });
+  const resolveMachine = (minted) =>
+    resolver.resolveRunnerMachineCredential(`Bearer ${minted.secret}`);
+  const client = (owner, credential) =>
+    createRouterClient(cliAccessRouter, {
+      context: { session: { user: owner.user, session: owner.session }, credential },
+    });
+  const isCode = (code) => (error) => error.code === code;
+  const revoke = (userId, machineId) =>
+    locks.withCliCredentialLockSlot(() =>
+      prisma.$transaction(
+        async (tx) => {
+          await locks.lockCliCredentials(userId, tx);
+          return runners.revokeRunnerMachinesInTransaction(tx, userId, machineId);
+        },
+        { timeout: 15_000 },
+      ),
+    );
+  const advisoryWaiters = async (userId, count) =>
+    waitForPg(observer, `${count} CLI lock waiters`, async (db) => {
+      const { rows } = await db.query(
+        `SELECT count(*)::int AS count FROM pg_locks
+       WHERE locktype = 'advisory' AND NOT granted
+         AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+         AND objid::bigint = (hashtext($1)::bigint & 4294967295)`,
+        [locks.cliCredentialLockKey(userId)],
+      );
+      return rows[0].count >= count;
+    });
+  try {
+    const owner = await fixture("purpose");
+    const minted = await mint(owner);
+    const stored = await prisma.runnerMachine.findUniqueOrThrow({
+      where: { id: minted.machine.id },
+    });
+    assert.ok(minted.secret.startsWith(runners.RUNNER_MACHINE_TOKEN_PREFIX));
+    assert.equal(
+      stored.credentialDigest,
+      createHash("sha256")
+        .update(runners.RUNNER_MACHINE_DIGEST_DOMAIN)
+        .update(minted.secret)
+        .digest("hex"),
+    );
+    assert.notEqual(
+      stored.credentialDigest,
+      createHash("sha256").update(minted.secret).digest("hex"),
+    );
+    assert.ok(minted.secret.startsWith(stored.credentialPrefix));
+    assert.notEqual(stored.credentialPrefix, minted.secret);
+    assert.equal(
+      JSON.stringify(stored).includes(minted.secret),
+      false,
+      "plaintext is never stored",
+    );
+    assert.equal("credentialDigest" in minted.machine, false);
+    assert.deepEqual(await resolveMachine(minted), {
+      userId: owner.user.id,
+      machineId: minted.machine.id,
+      connectionGeneration: 0,
+      expiresAt: minted.machine.expiresAt,
+    });
+    assert.equal(
+      await cliResolver.resolveCliCredential(`Bearer ${minted.secret}`),
+      null,
+      "runner authority cannot authenticate general companion procedures",
+    );
+    for (const authorization of [
+      undefined,
+      minted.secret,
+      `Basic ${minted.secret}`,
+      `Bearer ${owner.session.token}`,
+      "Bearer cockpit_chess_cli_not-a-runner",
+      `Bearer ${minted.secret} trailing`,
+    ]) {
+      assert.equal(await resolver.resolveRunnerMachineCredential(authorization), null);
+    }
+    const inventory = await client(owner).runners.list({ limit: 1 });
+    assert.equal(inventory.items.length, 1);
+    assert.equal(inventory.items[0].id, minted.machine.id);
+    assert.equal(inventory.items[0].status, "active");
+    assert.equal("credentialDigest" in inventory.items[0], false);
+    assert.equal("userId" in inventory.items[0], false);
+    assert.equal(JSON.stringify(inventory).includes(minted.secret), false);
+    assert.equal("create" in cliAccessRouter.runners, false, "E1 does not mount enrollment");
+
+    const foreign = await fixture("foreign");
+    await assert.rejects(
+      runners.mintRunnerMachineForSession(
+        { userId: owner.user.id, sessionId: foreign.session.id },
+        { displayName: "Foreign browser" },
+      ),
+      isCode("UNAUTHORIZED"),
+    );
+    await assert.rejects(
+      client(foreign).runners.revoke({ id: minted.machine.id }),
+      isCode("NOT_FOUND"),
+    );
+    assert.ok(await resolveMachine(minted), "foreign revoke has no effect");
+    await assert.rejects(
+      client(owner, "api-key").runners.revoke({ id: minted.machine.id }),
+      isCode("UNAUTHORIZED"),
+    );
+    await assert.rejects(
+      client(owner, "session-token").runners.list({ limit: 1 }),
+      isCode("UNAUTHORIZED"),
+    );
+    await client(owner).runners.revoke({ id: minted.machine.id });
+    assert.equal(await resolveMachine(minted), null);
+    assert.equal(
+      (await prisma.runnerMachine.findUniqueOrThrow({ where: { id: minted.machine.id } }))
+        .connectionGeneration,
+      1,
+    );
+
+    // Captured browser identity is intentionally stale; enrollment/revoke must
+    // read current authority under the credential lock, not trust this object.
+    for (const state of [
+      "banned",
+      "unverified",
+      "expired-session",
+      "deleted-session",
+      "device-session",
+      "impersonated",
+      "two-factor",
+    ]) {
+      const live = await fixture(state);
+      const machine = await mint(live);
+      if (state === "banned")
+        await prisma.user.update({
+          where: { id: live.user.id },
+          data: { banned: true, banExpires: null },
+        });
+      if (state === "unverified")
+        await prisma.user.update({ where: { id: live.user.id }, data: { emailVerified: false } });
+      if (state === "expired-session")
+        await prisma.session.update({
+          where: { id: live.session.id },
+          data: { expiresAt: new Date(Date.now() - 1000) },
+        });
+      if (state === "deleted-session")
+        await prisma.session.delete({ where: { id: live.session.id } });
+      if (state === "device-session")
+        await prisma.session.update({
+          where: { id: live.session.id },
+          data: { origin: "device-flow" },
+        });
+      if (state === "impersonated")
+        await prisma.session.update({
+          where: { id: live.session.id },
+          data: { impersonatedBy: foreign.user.id },
+        });
+      if (state === "two-factor")
+        await prisma.user.update({
+          where: { id: live.user.id },
+          data: {
+            role: "admin",
+            createdAt: new Date(Date.now() - 172_800_000),
+            twoFactorEnabled: false,
+          },
+        });
+      const before = await prisma.runnerMachine.count({ where: { userId: live.user.id } });
+      await assert.rejects(mint(live), (error) =>
+        ["UNAUTHORIZED", "FORBIDDEN"].includes(error.code),
+      );
+      assert.equal(await prisma.runnerMachine.count({ where: { userId: live.user.id } }), before);
+      if (
+        ["banned", "expired-session", "deleted-session", "device-session", "impersonated"].includes(
+          state,
+        )
+      ) {
+        await assert.rejects(
+          client(live).runners.revoke({ id: machine.machine.id }),
+          isCode("UNAUTHORIZED"),
+        );
+        assert.equal(
+          (await prisma.runnerMachine.findUniqueOrThrow({ where: { id: machine.machine.id } }))
+            .revokedAt,
+          null,
+        );
+      }
+      if (["banned", "unverified"].includes(state))
+        assert.equal(await resolveMachine(machine), null);
+    }
+    const factor = await fixture("two-factor-enrolled", {
+      role: "admin",
+      createdAt: new Date(Date.now() - 172_800_000),
+      twoFactorEnabled: true,
+    });
+    assert.ok(await resolveMachine(await mint(factor)), "enrolled owner satisfies forced 2FA");
+    const expiredOwner = await fixture("expired-machine");
+    const expiredMachine = await mint(expiredOwner);
+    await prisma.runnerMachine.update({
+      where: { id: expiredMachine.machine.id },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+    assert.equal(await resolveMachine(expiredMachine), null);
+    const deletedOwner = await fixture("deleted-owner");
+    const deletedMachine = await mint(deletedOwner);
+    await prisma.user.delete({ where: { id: deletedOwner.user.id } });
+    assert.equal(await resolveMachine(deletedMachine), null);
+
+    // Real advisory wait queues establish BOTH reset/mint orders. The first
+    // order blocks the mint's FK insert; the second blocks reset's row update.
+    for (const resetFirst of [false, true]) {
+      const live = await fixture(resetFirst ? "reset-first" : "mint-first");
+      const initial = await mint(live);
+      const holder = new pg.Client({ connectionString: process.env.DATABASE_URL });
+      await holder.connect();
+      let minting;
+      let resetting;
+      try {
+        await holder.query("BEGIN");
+        if (resetFirst) {
+          await holder.query('SELECT 1 FROM "runner_machine" WHERE id = $1 FOR UPDATE', [
+            initial.machine.id,
+          ]);
+          resetting = revocation.revokeCredentialsAfterPasswordReset(live.user.id).then(
+            () => ({}),
+            (error) => ({ error }),
+          );
+        } else {
+          await holder.query('SELECT 1 FROM "user" WHERE id = $1 FOR UPDATE', [live.user.id]);
+          minting = mint(live).then(
+            (value) => ({ value }),
+            (error) => ({ error }),
+          );
+        }
+        await waitForPg(
+          observer,
+          resetFirst
+            ? "reset holding CLI lock before machine update"
+            : "mint holding CLI lock before machine insert",
+          async (db) => {
+            const { rows } = await db.query(
+              `SELECT a.query FROM pg_stat_activity a
+             WHERE a.datname = current_database() AND a.wait_event_type = 'Lock'
+               AND $1::int = ANY(pg_blocking_pids(a.pid))`,
+              [holder.processID],
+            );
+            return rows.some((row) =>
+              resetFirst
+                ? /UPDATE "public"\."runner_machine"/i.test(row.query)
+                : /INSERT INTO "public"\."runner_machine"/i.test(row.query),
+            );
+          },
+        );
+        if (resetFirst)
+          minting = mint(live).then(
+            (value) => ({ value }),
+            (error) => ({ error }),
+          );
+        else
+          resetting = revocation.revokeCredentialsAfterPasswordReset(live.user.id).then(
+            () => ({}),
+            (error) => ({ error }),
+          );
+        await advisoryWaiters(live.user.id, 1);
+        await holder.query("COMMIT");
+        const result = await minting;
+        assert.ifError((await resetting).error);
+        if (resetFirst) {
+          assert.equal(result.error?.code, "UNAUTHORIZED", "reset wins: stale browser cannot mint");
+          assert.equal(await prisma.runnerMachine.count({ where: { userId: live.user.id } }), 1);
+        } else {
+          assert.ok(result.value, "mint wins: the insert completes before reset's sweep");
+          assert.equal(
+            await resolveMachine(result.value),
+            null,
+            "the committed reset revokes that mint",
+          );
+          assert.equal(await prisma.runnerMachine.count({ where: { userId: live.user.id } }), 2);
+        }
+        assert.equal(
+          await prisma.runnerMachine.count({ where: { userId: live.user.id, revokedAt: null } }),
+          0,
+        );
+        assert.equal(await prisma.session.count({ where: { userId: live.user.id } }), 0);
+      } finally {
+        await holder.query("ROLLBACK").catch(() => {});
+        await holder.end();
+        await Promise.allSettled([minting, resetting].filter(Boolean));
+      }
+    }
+
+    const capped = await fixture("cap");
+    for (let index = 0; index < runners.RUNNER_MACHINE_MAX_ACTIVE - 1; index++) await mint(capped);
+    const capHolder = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await capHolder.connect();
+    let competing;
+    try {
+      await capHolder.query("BEGIN");
+      await capHolder.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        locks.cliCredentialLockKey(capped.user.id),
+      ]);
+      competing = Promise.allSettled([mint(capped), mint(capped)]);
+      await advisoryWaiters(capped.user.id, 2);
+      await capHolder.query("COMMIT");
+      const results = await competing;
+      assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+      assert.equal(
+        results.find((result) => result.status === "rejected")?.reason.code,
+        "TOO_MANY_REQUESTS",
+      );
+      assert.equal(
+        await prisma.runnerMachine.count({ where: { userId: capped.user.id, revokedAt: null } }),
+        runners.RUNNER_MACHINE_MAX_ACTIVE,
+      );
+    } finally {
+      await capHolder.query("ROLLBACK").catch(() => {});
+      await capHolder.end();
+      await competing;
+    }
+    const listed = new Set();
+    let cursor;
+    for (let pageNumber = 0; pageNumber < runners.RUNNER_MACHINE_MAX_ACTIVE; pageNumber++) {
+      const page = await client(capped).runners.list({ limit: 7, cursor });
+      assert.ok(page.items.length <= 7, "inventory respects the requested bound");
+      for (const machine of page.items) {
+        assert.equal(listed.has(machine.id), false, "cursor pages do not repeat machines");
+        listed.add(machine.id);
+      }
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+    assert.equal(listed.size, runners.RUNNER_MACHINE_MAX_ACTIVE, "all own machines are pageable");
+
+    const composable = await fixture("composable");
+    const abortEnrollment = new Error("intentional enrollment rollback");
+    await assert.rejects(
+      locks.withCliCredentialLockSlot(() =>
+        prisma.$transaction(async (tx) => {
+          await runners.mintRunnerMachineInTransaction(tx, composable.authority, {
+            displayName: "Rolled back enrollment",
+          });
+          throw abortEnrollment;
+        }),
+      ),
+      (error) => error === abortEnrollment,
+    );
+    assert.equal(await prisma.runnerMachine.count({ where: { userId: composable.user.id } }), 0);
+
+    // PG NOTIFY is transactional: rollback restores generation and sends no
+    // push; a commit delivers only IDs, after durable revocation is visible.
+    const notifying = await fixture("notify");
+    const rollbackMachine = await mint(notifying);
+    const commitMachine = await mint(notifying);
+    const rollback = new Error("intentional runner revocation rollback");
+    await assert.rejects(
+      locks.withCliCredentialLockSlot(() =>
+        prisma.$transaction(async (tx) => {
+          await locks.lockCliCredentials(notifying.user.id, tx);
+          assert.equal(
+            await runners.revokeRunnerMachinesInTransaction(
+              tx,
+              notifying.user.id,
+              rollbackMachine.machine.id,
+            ),
+            1,
+          );
+          throw rollback;
+        }),
+      ),
+      (error) => error === rollback,
+    );
+    assert.ok(await resolveMachine(rollbackMachine));
+    assert.equal(
+      (await prisma.runnerMachine.findUniqueOrThrow({ where: { id: rollbackMachine.machine.id } }))
+        .connectionGeneration,
+      0,
+    );
+    await locks.withCliCredentialLockSlot(() =>
+      prisma.$transaction(async (tx) => {
+        await locks.lockCliCredentials(notifying.user.id, tx);
+        assert.equal(
+          await runners.revokeRunnerMachinesInTransaction(
+            tx,
+            notifying.user.id,
+            commitMachine.machine.id,
+          ),
+          1,
+        );
+        await observer.query("SELECT 1");
+        assert.equal(
+          notifications.filter((event) => event.userId === notifying.user.id).length,
+          0,
+          "no invalidation before commit or from rollback",
+        );
+        assert.ok(await resolveMachine(commitMachine), "uncommitted revocation is invisible");
+      }),
+    );
+    await waitForPg(observer, "committed runner invalidation", async (db) => {
+      await db.query("SELECT 1");
+      return notifications.some((event) => event.userId === notifying.user.id);
+    });
+    assert.deepEqual(
+      notifications.filter((event) => event.userId === notifying.user.id),
+      [{ userId: notifying.user.id, machineId: commitMachine.machine.id }],
+    );
+    assert.equal(await resolveMachine(commitMachine), null);
+    assert.equal(await revoke(notifying.user.id, commitMachine.machine.id), 0);
+    assert.equal(
+      (await prisma.runnerMachine.findUniqueOrThrow({ where: { id: commitMachine.machine.id } }))
+        .connectionGeneration,
+      1,
+    );
+    const beforeAll = notifications.length;
+    assert.equal(await revoke(notifying.user.id), 1);
+    await waitForPg(observer, "owner-wide invalidation", async (db) => {
+      await db.query("SELECT 1");
+      return notifications
+        .slice(beforeAll)
+        .some((event) => event.userId === notifying.user.id && !("machineId" in event));
+    });
+    assert.deepEqual(
+      notifications.findLast((event) => event.userId === notifying.user.id),
+      { userId: notifying.user.id },
+    );
+
+    // Existing activation/quarantine and actual admin archive paths must also
+    // revoke machines. Restoring the user must never restore old authority.
+    for (const path of ["activation", "quarantine", "archive"]) {
+      const live = await fixture(path);
+      const machine = await mint(live);
+      if (path === "activation")
+        await locks.withCliCredentialLockSlot(() =>
+          prisma.$transaction(async (tx) => {
+            await locks.lockCliCredentials(live.user.id, tx);
+            await revocation.revokeCredentialsInTransaction(tx, live.user.id);
+          }),
+        );
+      else if (path === "quarantine")
+        await revocation.quarantineUntrustedPasswordWrite(live.user.id);
+      else {
+        const admin = await fixture("archive-admin", { role: "admin", twoFactorEnabled: true });
+        const users = createRouterClient(usersRouter, {
+          context: { session: { user: admin.user, session: admin.session } },
+        });
+        await users.archive({ userId: live.user.id });
+        assert.equal(
+          (await prisma.user.findUniqueOrThrow({ where: { id: live.user.id } })).banned,
+          true,
+        );
+        await users.unarchive({ userId: live.user.id });
+        assert.equal(
+          (await prisma.user.findUniqueOrThrow({ where: { id: live.user.id } })).banned,
+          false,
+        );
+      }
+      assert.equal(await resolveMachine(machine), null, `${path}: machine authority stays revoked`);
+      assert.equal(await prisma.session.count({ where: { userId: live.user.id } }), 0);
+      const storedMachine = await prisma.runnerMachine.findUniqueOrThrow({
+        where: { id: machine.machine.id },
+      });
+      assert.ok(storedMachine.revokedAt);
+      assert.equal(storedMachine.connectionGeneration, 1);
+    }
+    const lifecycleAdmin = await fixture("lifecycle-admin", {
+      role: "admin",
+      twoFactorEnabled: true,
+    });
+    const users = createRouterClient(usersRouter, {
+      context: { session: { user: lifecycleAdmin.user, session: lifecycleAdmin.session } },
+    });
+    const racingArchive = await fixture("archive-mint-race");
+    const archiveHolder = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await archiveHolder.connect();
+    let mintingBeforeArchive;
+    let archiving;
+    try {
+      await archiveHolder.query("BEGIN");
+      await archiveHolder.query('SELECT 1 FROM "user" WHERE id = $1 FOR UPDATE', [
+        racingArchive.user.id,
+      ]);
+      mintingBeforeArchive = mint(racingArchive);
+      await waitForPg(observer, "mint insert before archive", async (db) => {
+        const { rows } = await db.query(
+          `SELECT a.query FROM pg_stat_activity a WHERE a.datname = current_database()
+           AND a.wait_event_type = 'Lock' AND $1::int = ANY(pg_blocking_pids(a.pid))`,
+          [archiveHolder.processID],
+        );
+        return rows.some((row) => /INSERT INTO "public"\."runner_machine"/i.test(row.query));
+      });
+      archiving = users.archive({ userId: racingArchive.user.id });
+      await advisoryWaiters(racingArchive.user.id, 1);
+      await archiveHolder.query("COMMIT");
+      const archivedMachine = await mintingBeforeArchive;
+      await archiving;
+      await users.unarchive({ userId: racingArchive.user.id });
+      assert.equal(
+        await resolveMachine(archivedMachine),
+        null,
+        "archive's fresh snapshot includes the mint it waited for",
+      );
+      const archivedRow = await prisma.runnerMachine.findUniqueOrThrow({
+        where: { id: archivedMachine.machine.id },
+      });
+      assert.ok(archivedRow.revokedAt);
+      assert.equal(archivedRow.connectionGeneration, 1);
+    } finally {
+      await archiveHolder.query("ROLLBACK").catch(() => {});
+      await archiveHolder.end();
+      await Promise.allSettled([mintingBeforeArchive, archiving].filter(Boolean));
+    }
+    const removing = await fixture("admin-remove");
+    const removedMachine = await mint(removing);
+    await users.remove({ userId: removing.user.id });
+    assert.equal(await resolveMachine(removedMachine), null);
+    assert.equal(await prisma.runnerMachine.count({ where: { userId: removing.user.id } }), 0);
+    await waitForPg(observer, "admin deletion invalidation", async (db) => {
+      await db.query("SELECT 1");
+      return notifications.some((event) => event.userId === removing.user.id);
+    });
+    console.log(
+      "runner machines: purpose, live browser fences, ownership, resolver, both reset lock orders, concurrent cap, PG commit/rollback notifications, activation/quarantine/archive, archive-mint race and admin deletion passed.",
+    );
+  } finally {
+    await prisma.verification.deleteMany({ where: { value: { in: owned } } });
+    await prisma.user.deleteMany({ where: { id: { in: owned } } });
+    await observer.end();
+    await Promise.all(
+      Object.values(queues)
+        .filter((value) => value instanceof queues.Queue)
+        .map((queue) => queue.close()),
+    );
+    queues.redisConnection.disconnect();
+    await prisma.$disconnect();
+  }
+}
+
+async function passwordSignInRaceCheck() {
+  const [{ auth }, fence, writeLock, links, runners, resolver, { default: prisma }, { loadPg }] =
+    await Promise.all([
+      import("../packages/auth/src/index.ts"),
+      import("../packages/auth/src/password-sign-in-fence.ts"),
+      import("../packages/auth/src/password-write-lock.ts"),
+      import("../packages/auth/src/password-reset-links.ts"),
+      import("../packages/auth/src/runner-machine.ts"),
+      import("../apps/server/src/runner-session.ts"),
+      import("../packages/db/src/index.ts"),
+      import("./db/lib/prisma.mjs"),
+    ]);
   const context = await auth.$context;
   const oldPassword = "disposable-old-proof-password-13579";
   const newPassword = "disposable-new-proof-password-24680";
@@ -340,10 +964,18 @@ async function passwordSignInRaceCheck() {
     // This tests the production Better Auth admin role check. Hono's separate
     // HTTP admin/forced-2FA gate is covered by its own named gate tests.
     const adminCookie = await signedIn(await fixtureUser("admin", "admin"));
+    const nonadminCookie = await signedIn(await fixtureUser("nonadmin"));
     for (const writer of ["change-keep", "change-revoke", "reset", "admin-reset"]) {
       for (const point of ["verified", "before-insert"]) {
         const user = await fixtureUser(`${writer}-${point}`);
         const writerCookie = await signedIn(user);
+        const browser = await prisma.session.findFirstOrThrow({
+          where: { userId: user.id, origin: "sign-in" },
+        });
+        const machine = await runners.mintRunnerMachineForSession(
+          { userId: user.id, sessionId: browser.id },
+          { displayName: "Password policy fixture" },
+        );
         await prisma.session.createMany({
           data: [
             {
@@ -451,6 +1083,19 @@ async function passwordSignInRaceCheck() {
           );
           const isReset = writer === "reset" || writer === "admin-reset";
           const revoked = isReset || writer === "change-revoke";
+          const retainedMachine = await prisma.runnerMachine.findUniqueOrThrow({
+            where: { id: machine.machine.id },
+          });
+          assert.equal(
+            retainedMachine.revokedAt !== null,
+            isReset,
+            `${writer}: only recovery/admin reset revokes the machine`,
+          );
+          assert.equal(retainedMachine.connectionGeneration, isReset ? 1 : 0);
+          const runnerAuthority = await resolver.resolveRunnerMachineCredential(
+            `Bearer ${machine.secret}`,
+          );
+          assert.equal(runnerAuthority?.machineId ?? null, isReset ? null : machine.machine.id);
           const expectedSessions = isReset ? 0 : writer === "change-revoke" ? 1 : 3;
           assert.equal(
             await prisma.session.count({ where: { userId: user.id } }),
@@ -498,6 +1143,114 @@ async function passwordSignInRaceCheck() {
           hooks.before = originalBefore;
         }
       }
+    }
+
+    // Block the actual password INSERT/UPDATE after its authorized before hook.
+    // The independent observer must already see durable machine/session revocation
+    // while the old hash is still stored (or the SSO-only account is still absent).
+    const pg = loadPg();
+    const observer = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await observer.connect();
+    try {
+      for (const createAccount of [false, true]) {
+        const user = await fixtureUser(createAccount ? "admin-create" : "admin-update");
+        await signedIn(user);
+        const browser = await prisma.session.findFirstOrThrow({
+          where: { userId: user.id, origin: "sign-in" },
+        });
+        const session = { userId: user.id, sessionId: browser.id };
+        const minted = await runners.mintRunnerMachineForSession(session, {
+          displayName: "Admin prewrite fence",
+        });
+        if (createAccount)
+          await prisma.account.deleteMany({ where: { userId: user.id, providerId: "credential" } });
+
+        const denied = await send(
+          "/admin/set-user-password",
+          { userId: user.id, newPassword },
+          nonadminCookie,
+        );
+        assert.notEqual(denied.status, 200, "a nonadmin cannot reset another password");
+        assert.equal(await prisma.session.count({ where: { id: browser.id } }), 1);
+        assert.equal(
+          (await prisma.runnerMachine.findUniqueOrThrow({ where: { id: minted.machine.id } }))
+            .revokedAt,
+          null,
+          "unauthorized request body cannot trigger a revocation sweep",
+        );
+
+        const holder = new pg.Client({ connectionString: process.env.DATABASE_URL });
+        await holder.connect();
+        let resetting;
+        try {
+          await holder.query("BEGIN");
+          if (createAccount)
+            await holder.query('SELECT 1 FROM "user" WHERE id = $1 FOR UPDATE', [user.id]);
+          else
+            await holder.query(
+              'SELECT 1 FROM "account" WHERE "userId" = $1 AND "providerId" = $2 FOR UPDATE',
+              [user.id, "credential"],
+            );
+          resetting = send(
+            "/admin/set-user-password",
+            { userId: user.id, newPassword },
+            adminCookie,
+          );
+          await waitForPg(
+            observer,
+            "authorized admin password write blocked after its fence",
+            async (db) => {
+              const { rows } = await db.query(
+                `SELECT a.query FROM pg_stat_activity a
+               WHERE a.datname = current_database() AND a.wait_event_type = 'Lock'
+                 AND $1::int = ANY(pg_blocking_pids(a.pid))`,
+                [holder.processID],
+              );
+              return rows.some((row) =>
+                /(?:UPDATE|INSERT INTO) "public"\."account"/i.test(row.query),
+              );
+            },
+          );
+          const { rows: machines } = await observer.query(
+            'SELECT "revokedAt", "connectionGeneration" FROM "runner_machine" WHERE id = $1',
+            [minted.machine.id],
+          );
+          assert.ok(machines[0].revokedAt, "revocation commits before the password write");
+          assert.equal(machines[0].connectionGeneration, 1);
+          const { rows: accounts } = await observer.query(
+            'SELECT password FROM "account" WHERE "userId" = $1 AND "providerId" = $2',
+            [user.id, "credential"],
+          );
+          assert.equal(accounts.length, createAccount ? 0 : 1);
+          if (!createAccount) assert.equal(accounts[0].password, oldHash);
+          await assert.rejects(
+            runners.mintRunnerMachineForSession(session, { displayName: "Stale browser" }),
+            (error) => error.code === "UNAUTHORIZED",
+          );
+          await holder.query("COMMIT");
+          assert.equal((await resetting).status, 200, "authorized admin reset completes");
+          const changed = await prisma.account.findFirstOrThrow({
+            where: { userId: user.id, providerId: "credential" },
+          });
+          assert.equal(
+            await originalVerify({ hash: changed.password, password: newPassword }),
+            true,
+          );
+          assert.equal(
+            await prisma.runnerMachine.count({ where: { userId: user.id, revokedAt: null } }),
+            0,
+          );
+        } finally {
+          await holder.query("ROLLBACK").catch(() => {});
+          await holder.end();
+          await resetting?.catch(() => {});
+        }
+      }
+      console.log(
+        "runner machines: authorized admin create/update prewrite fences and nonadmin refusal passed.",
+      );
+    } finally {
+      await observer.end();
     }
   } finally {
     context.password.verify = originalVerify;
@@ -1305,13 +2058,16 @@ async function main() {
     else if (process.argv[3] === "chess-admission") await chessAdmissionCheck();
     else if (process.argv[3] === "invite-race") await inviteRaceCheck();
     else if (process.argv[3] === "password-signin-race") await passwordSignInRaceCheck();
+    else if (process.argv[3] === "runner-machines") await runnerMachinesCheck();
     else await runtimeCheck(process.argv[3]);
     return;
   }
   if (process.argv[2] !== "--disposable-services") {
     throw new Error("Use node scripts/test-runtime-operations.mjs --disposable-services.");
   }
-  assert.ok(process.argv[3] === undefined || process.argv[3] === "--chess-admission-only");
+  assert.ok(
+    [undefined, "--chess-admission-only", "--runner-machines-only"].includes(process.argv[3]),
+  );
   // Container names only. TEST_CONTAINER_PREFIX (shared with backup:test and
   // db:test-migrations) keeps this run's containers under your own prefix; an
   // empty or invalid value is an error, never the default.
@@ -1457,10 +2213,18 @@ async function main() {
       ["external", {}],
       ["device-flow", deviceEnv],
       ["invite-race", inviteEnv],
-      ["password-signin-race", inviteEnv],
+      // Admin's paused password write reserves two lock slots; allow a truly
+      // independent browser mint to reach the database while that write waits.
+      ["password-signin-race", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
+      ["runner-machines", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["chess-admission", {}],
     ]) {
       if (process.argv[3] === "--chess-admission-only" && mode !== "chess-admission") continue;
+      if (
+        process.argv[3] === "--runner-machines-only" &&
+        !["runner-machines", "password-signin-race", "device-flow"].includes(mode)
+      )
+        continue;
       const result = execFileSync(
         process.execPath,
         ["--import", "tsx", file, "--runtime-child", mode],
@@ -1471,7 +2235,7 @@ async function main() {
             ...extra,
             RUNTIME_OPERATIONS_CHILD: "owned-disposable-services",
           },
-          timeout: 45_000,
+          timeout: ["runner-machines", "password-signin-race"].includes(mode) ? 60_000 : 45_000,
           stdio: mode === "chess-admission" ? "inherit" : ["ignore", "pipe", "pipe"],
           encoding: "utf8",
         },

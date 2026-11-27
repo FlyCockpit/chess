@@ -1,7 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import prisma from "@cockpit-chess/db";
 import { APIError } from "better-auth/api";
-import { quarantineUntrustedPasswordWrite } from "./credential-revocation.js";
+import {
+  quarantineUntrustedPasswordWrite,
+  revokeCredentialsBeforeAdminPasswordReset,
+} from "./credential-revocation.js";
 import { LockSlotTimeoutError, withLockSlot } from "./lock-slots.js";
 import { readBodyFields } from "./request-body-field.js";
 import { RESET_PASSWORD_IDENTIFIER_PREFIX } from "./set-password-link-lock.js";
@@ -264,6 +267,22 @@ export function guardPasswordAccountUpdate(data: Record<string, unknown>): void 
   if (!("password" in data) || data.password === undefined) return;
   assertPasswordWriteLocked();
   markUnconfirmedWrite();
+}
+
+/**
+ * Account before hooks run after the endpoint's authorization checks. The
+ * outer request lock intentionally does not revoke from its untrusted body.
+ * Fence an authorized admin reset before its first password write, including
+ * creation of a password account for an SSO-only user.
+ */
+export async function fenceAdminPasswordReset(): Promise<void> {
+  const lock = heldFor.getStore();
+  if (lock?.path !== "/admin/set-user-password") return;
+  assertPasswordWriteLocked();
+  await revokeCredentialsBeforeAdminPasswordReset(lock.userId);
+  // The revocation waited on another transaction. A lapsed password-write
+  // lock must not authorize the following hash write.
+  assertPasswordWriteLocked();
 }
 
 function markUnconfirmedWrite(): void {

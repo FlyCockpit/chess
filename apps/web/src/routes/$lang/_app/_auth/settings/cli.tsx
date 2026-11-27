@@ -10,7 +10,7 @@ import { CopyField } from "@cockpit-chess/ui/components/copy-field";
 import { Label } from "@cockpit-chess/ui/components/label";
 import { toast } from "@cockpit-chess/ui/components/sileo";
 import { Skeleton } from "@cockpit-chess/ui/components/skeleton";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { RefreshCw } from "lucide-react";
 import { useState } from "react";
@@ -18,8 +18,10 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { CreateApiKeyDialog } from "@/components/cli/create-api-key-dialog";
 import { type ApiKeyRow, RevokeApiKeyDialog } from "@/components/cli/revoke-api-key-dialog";
+import { RevokeRunnerDialog, type RunnerRow } from "@/components/cli/revoke-runner-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { InlineRetry } from "@/components/inline-retry";
+import { LoadMore } from "@/components/load-more";
 import { QueryBoundary } from "@/components/query-boundary";
 import { SkeletonList } from "@/components/skeleton-list";
 import { orpc } from "@/utils/orpc";
@@ -38,8 +40,132 @@ function CliSettings() {
   return (
     <div className="space-y-6">
       <InstallCard />
+      <RunnersCard />
       <ApiKeysCard />
     </div>
+  );
+}
+
+function RunnersCard() {
+  const { t, i18n } = useTranslation(["settings", "common"]);
+  const [revoking, setRevoking] = useState<RunnerRow | null>(null);
+  const listQuery = useInfiniteQuery(
+    orpc.cliAccess.runners.list.infiniteOptions({
+      input: (cursor: string | undefined) => ({ limit: 20, cursor }),
+      initialPageParam: undefined as string | undefined,
+      getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    }),
+  );
+  const { fetchNextPage, hasNextPage, isFetchingNextPage } = listQuery;
+  const formatDate = (value: Date | string) => new Date(value).toLocaleString(i18n.language);
+  const statuses = {
+    active: t("settings:cli.runners.status.active"),
+    expired: t("settings:cli.runners.status.expired"),
+    revoked: t("settings:cli.runners.status.revoked"),
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("settings:cli.runners.title")}</CardTitle>
+        <CardDescription>{t("settings:cli.runners.description")}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4 p-0">
+        <p className="px-4 text-sm text-muted-foreground">
+          {t("settings:cli.runners.resetPolicy")}
+        </p>
+        <QueryBoundary
+          query={listQuery}
+          skeleton={
+            <SkeletonList count={2}>
+              <div className="min-w-0 flex-1 space-y-2">
+                <Skeleton className="h-5 w-1/3" />
+                <Skeleton className="h-4 w-20" />
+                <Skeleton className="h-3 w-2/3" />
+                <Skeleton className="h-3 w-1/2" />
+              </div>
+              <Skeleton className="h-11 w-20" />
+            </SkeletonList>
+          }
+          errorMessage={t("settings:cli.runners.loadFailed")}
+          errorClassName="py-6"
+          isEmpty={(data) => data.pages.every((page) => page.items.length === 0)}
+          empty={
+            <EmptyState
+              title={t("settings:cli.runners.emptyTitle")}
+              description={t("settings:cli.runners.emptyDescription")}
+            />
+          }
+        >
+          {(data) => (
+            <>
+              <ul className="divide-y border-t">
+                {data.pages
+                  .flatMap((page) => page.items)
+                  .map((runner) => (
+                    <li
+                      key={runner.id}
+                      className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <p className="truncate font-medium">{runner.displayName}</p>
+                        <span className="inline-block rounded-full border bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+                          {statuses[runner.status]}
+                        </span>
+                        <p className="break-all text-xs text-muted-foreground">
+                          {t("settings:cli.runners.credentialPrefix", {
+                            prefix: runner.credentialPrefix,
+                          })}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {t("settings:cli.runners.expiresOn", {
+                            date: formatDate(runner.expiresAt),
+                          })}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {runner.lastSeenAt
+                            ? t("settings:cli.runners.lastSeen", {
+                                date: formatDate(runner.lastSeenAt),
+                              })
+                            : t("settings:cli.runners.neverSeen")}
+                        </p>
+                        {runner.revokedAt && (
+                          <p className="text-xs text-muted-foreground">
+                            {t("settings:cli.runners.revokedOn", {
+                              date: formatDate(runner.revokedAt),
+                            })}
+                          </p>
+                        )}
+                      </div>
+                      {runner.status !== "revoked" && (
+                        <Button
+                          variant="outline"
+                          className="min-h-[44px] shrink-0"
+                          onClick={() => setRevoking(runner)}
+                        >
+                          {t("settings:cli.runners.revoke")}
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+              </ul>
+              <LoadMore
+                onLoadMore={() => void fetchNextPage()}
+                hasNextPage={hasNextPage}
+                isFetchingNextPage={isFetchingNextPage}
+              />
+            </>
+          )}
+        </QueryBoundary>
+      </CardContent>
+      <RevokeRunnerDialog
+        runner={revoking}
+        open={revoking !== null}
+        onOpenChange={(open) => {
+          if (!open) setRevoking(null);
+        }}
+      />
+    </Card>
   );
 }
 

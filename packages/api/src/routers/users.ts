@@ -1,11 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { auth } from "@cockpit-chess/auth";
 import { isUserBanned } from "@cockpit-chess/auth/ban";
+import { withCliCredentialSnapshotLock } from "@cockpit-chess/auth/device-redemption-lock";
 import {
   inviteStateSelect,
   isInvitePending,
   recordResetLinkMailed,
 } from "@cockpit-chess/auth/password-reset-links";
+import { revokeRunnerMachinesInTransaction } from "@cockpit-chess/auth/runner-machine";
 import { runWithAllowedUserCreation } from "@cockpit-chess/auth/user-creation-policy";
 import { SUPPORTED_LOCALES } from "@cockpit-chess/config/locales";
 import prisma, { type Prisma } from "@cockpit-chess/db";
@@ -456,18 +458,26 @@ export const usersRouter = {
       // (an API key, a personal access token), revoke it here too: deleting
       // sessions does not touch it, so it would outlive the ban everywhere a
       // per-surface ban re-check does not reach.
-      await withAdminRemovalGuard(input.userId, async (tx) => {
-        await tx.user.update({
-          where: { id: input.userId },
-          data: {
-            banned: true,
-            banReason: input.reason ?? null,
-            banExpires: null,
+      await withCliCredentialSnapshotLock(input.userId, (timeout) =>
+        withAdminRemovalGuard(
+          input.userId,
+          async (tx) => {
+            await tx.user.update({
+              where: { id: input.userId },
+              data: {
+                banned: true,
+                banReason: input.reason ?? null,
+                banExpires: null,
+              },
+              select: { id: true },
+            });
+            await tx.session.deleteMany({ where: { userId: input.userId } });
+            await revokeRunnerMachinesInTransaction(tx, input.userId);
           },
-          select: { id: true },
-        });
-        await tx.session.deleteMany({ where: { userId: input.userId } });
-      });
+          undefined,
+          timeout,
+        ),
+      );
       return { success: true };
     }),
 
@@ -503,9 +513,19 @@ export const usersRouter = {
     // constraint mapping below is defensive: a future `onDelete: Restrict`
     // relation would surface as a friendly "archive instead" message.
     try {
-      await withAdminRemovalGuard(input.userId, async (tx) => {
-        await tx.user.delete({ where: { id: input.userId } });
-      });
+      await withCliCredentialSnapshotLock(input.userId, (timeout) =>
+        withAdminRemovalGuard(
+          input.userId,
+          async (tx) => {
+            // Cascade removes rows; the ID-only notification also tells
+            // runner transports on every replica to close immediately.
+            await revokeRunnerMachinesInTransaction(tx, input.userId);
+            await tx.user.delete({ where: { id: input.userId } });
+          },
+          undefined,
+          timeout,
+        ),
+      );
     } catch (err) {
       if (err instanceof ORPCError) throw err;
       const message = err instanceof Error ? err.message : "Failed to delete user";

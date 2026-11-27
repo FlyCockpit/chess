@@ -37,6 +37,8 @@ registered access levels; handler tests verify ownership and custom role rules.
 | Archive a user | implemented | none | none | full | `users.archive` | Self-archive refused; same last-admin guard; ban and session deletion in the guarded transaction |
 | Delete a user | implemented | none | none | full | `users.remove` | Self-delete refused; same last-admin guard; existing FK/cascade behavior retained |
 | Create an own CLI API key | implemented | none | own | own | `cliAccess.apiKeys.create` | Existing protected/forced-2FA gate; live session checked under credential lock before and after mint; revoked/expired session remains UNAUTHORIZED |
+| List own runner machines | implemented | none | own | own | `cliAccess.runners.list` | Cookie browser session only, protected/forced-2FA gate; fresh live non-impersonated browser session and ban check under the CLI-credential lock; cursor bounded; safe metadata only |
+| Revoke an own runner machine | implemented | none | own | own | `cliAccess.runners.revoke` | Same live browser gate and lock; foreign IDs are NOT_FOUND; durable revocation increments generation and publishes transactional ID-only invalidation; revoked runners cannot resume |
 | Play and simulate locally | implemented | full | full | full | — | Public random baseline and local-process provider lab; no hosted spending |
 | Connect own OpenRouter account | implemented | none | own | own | — | Hono routes `POST /api/openrouter/connect` and `GET /api/openrouter/callback` (OAuth PKCE S256, single-use state bound to the session user and a cookie, CSRF header, own fail-closed limiter); key sealed AES-256-GCM, never returned |
 | Purchase hosted play | planned | none | none | none | — | Deferred pending pricing and spend controls |
@@ -49,6 +51,26 @@ registered access levels; handler tests verify ownership and custom role rules.
 Route visibility never substitutes for procedure authorization. Public records
 must exclude keys, private inference context, owner account details, and drafts.
 CLI endpoints retain the access levels registered in the server.
+
+Runner enrollment is an internal helper for the later per-run claim/exchange
+surface; no public enrollment endpoint is enabled. It requires a live,
+non-impersonated browser session, a verified unbanned owner, the current forced
+second-factor policy, a finite expiry and a cap of 25 active machines under the
+same credential lock as reset. Only a purpose-bound digest and display prefix
+are stored. Runner secrets are refused by the companion CLI resolver and never
+become browser sessions, API keys or admin authority.
+
+Password recovery, authorized admin password reset, untrusted-password-write
+quarantine, pending invite/SSO activation and archival revoke runner machines.
+Admin deletion revokes and publishes invalidation before the user cascade.
+The authorized admin reset fences live credentials in its account before hook,
+before the password write; unauthorized reset bodies have no revocation effect.
+An ordinary signed-in password change retains runner machines while preserving
+the existing companion API-key/device-session policy. Unarchive never restores
+revoked machines. Transactional `runner_machine_revoked` PostgreSQL notifications
+carry user/machine IDs only; runner transport must subscribe on each replica and
+also check durable authority on connect, action and heartbeat so missed pushes
+cannot preserve access.
 
 The cookie OpenAPI procedure surface (`/api-reference/<procedure>`) requires
 the `x-csrf-token: orpc` request header, just like `/rpc`.

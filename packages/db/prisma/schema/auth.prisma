@@ -28,6 +28,7 @@ model User {
   OpenRouterConnection OpenRouterConnection?
   DeviceCodes          DeviceCode[]
   ApiKeys              ApiKey[]
+  RunnerMachines       RunnerMachine[]
 
   @@unique([email])
   @@index([role])

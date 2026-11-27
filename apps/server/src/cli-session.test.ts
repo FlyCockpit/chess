@@ -61,6 +61,13 @@ beforeEach(() => {
 });
 
 describe("resolveCliCredential", () => {
+  it("refuses runner machine credentials before any companion lookup", async () => {
+    await expect(
+      resolveCliCredential(`Bearer cockpit_chess_runner_${"ab".repeat(32)}`),
+    ).resolves.toBeNull();
+    expect(verifyApiKey).not.toHaveBeenCalled();
+    expect(db.session.findUnique).not.toHaveBeenCalled();
+  });
   it("returns null without an Authorization header", async () => {
     await expect(resolveCliCredential(undefined)).resolves.toBeNull();
     await expect(resolveCliCredential("")).resolves.toBeNull();

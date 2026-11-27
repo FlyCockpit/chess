@@ -1,9 +1,10 @@
-// Companion-CLI credentials. Both models are owned by Better-Auth plugins
+// Companion-CLI credentials. DeviceCode and ApiKey are owned by Better-Auth plugins
 // (`deviceAuthorization` from better-auth core, `apiKey` from
 // `@better-auth/api-key`); field names must match the plugin schemas exactly.
 // They are only ever accepted on the CLI surface (`/api/cli/rpc`) — every
 // cookie surface strips `Authorization`. See the Authentication section of
-// packages/api/src/routers/cli.ts.
+// packages/api/src/routers/cli.ts. RunnerMachine is separate, purpose-scoped
+// authority for the runner transport, never a companion or browser session.
 
 /// One RFC 8628 device-authorization request (`cockpit-chess login`). Short-lived:
 /// pending rows expire after the plugin's `expiresIn`, and the daily
@@ -67,4 +68,24 @@ model ApiKey {
   @@index([referenceId])
   @@index([expiresAt])
   @@map("apikey")
+}
+
+/// Purpose-scoped runner authority. Never a Better-Auth session or companion API key.
+/// Only the digest and a display prefix are stored; the secret is returned once.
+model RunnerMachine {
+  id                   String    @id @default(cuid(2))
+  userId               String
+  User                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  displayName          String
+  credentialDigest     String    @unique
+  credentialPrefix     String
+  createdAt            DateTime  @default(now())
+  expiresAt            DateTime
+  revokedAt            DateTime?
+  lastSeenAt           DateTime?
+  connectionGeneration Int       @default(0)
+
+  @@index([userId, id])
+  @@index([expiresAt])
+  @@map("runner_machine")
 }

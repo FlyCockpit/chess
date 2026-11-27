@@ -78,7 +78,8 @@ const db = vi.hoisted(() => {
   return {
     $executeRaw: (strings: TemplateStringsArray, ...values: unknown[]) =>
       statement(async (ctx) =>
-        strings.join("").includes('WITH "resetChallenges"')
+        strings.join("").includes('WITH "resetChallenges"') ||
+        strings.join("").includes("pg_notify")
           ? 0
           : blockingLock(strings, values, ctx),
       ),
@@ -121,6 +122,7 @@ const db = vi.hoisted(() => {
         for (const release of ctx.releases) release();
       }
     },
+    runnerMachine: { updateMany: () => statement(async () => ({ count: 0 })) },
     deviceCode: {
       findUnique: async ({ where }: { where: { deviceCode: string } }) => {
         const row = store.deviceCodes.find((code) => code.deviceCode === where.deviceCode);

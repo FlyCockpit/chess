@@ -82,6 +82,7 @@ vi.mock("@cockpit-chess/db", () => {
       session: table("session"),
       verification: table("verification"),
       apiKey: table("apikey"),
+      runnerMachine: table("runnerMachine"),
       deviceCode: table("deviceCode"),
       // The revocation's blocking CLI-credential lock: uncontended here.
       $executeRaw: async (strings: TemplateStringsArray, userId: string) => {

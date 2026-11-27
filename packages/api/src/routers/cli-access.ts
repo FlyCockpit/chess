@@ -1,17 +1,22 @@
 import { auth } from "@cockpit-chess/auth";
+import { isUserBanned } from "@cockpit-chess/auth/ban";
 import {
   CliCredentialSessionRevokedError,
+  lockCliCredentials,
   mintCliCredentialForSession,
+  withCliCredentialLockSlot,
 } from "@cockpit-chess/auth/device-redemption-lock";
+import { revokeRunnerMachinesInTransaction } from "@cockpit-chess/auth/runner-machine";
 import { CLI_INSTALL_AUTH_SCHEME } from "@cockpit-chess/config/cli";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { env } from "@cockpit-chess/env/server";
 import { ORPCError } from "@orpc/server";
 import { z } from "zod";
-
+import type { Context } from "../context";
 import { protectedProcedure } from "../index";
 import { createCliInstallToken } from "../lib/cli-install-token";
 import { isCliReleaseConfigured } from "../lib/cli-release";
+import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagination";
 import { entityId } from "../lib/schemas";
 
 /**
@@ -39,7 +44,82 @@ const apiKeySelect = {
   lastRequest: true,
 } satisfies Prisma.ApiKeySelect;
 
+const runnerSelect = {
+  id: true,
+  displayName: true,
+  credentialPrefix: true,
+  createdAt: true,
+  expiresAt: true,
+  revokedAt: true,
+  lastSeenAt: true,
+} satisfies Prisma.RunnerMachineSelect;
+
+/** Inventory and revocation share reset's lock and recheck browser authority in that transaction. */
+async function withRunnerBrowserSession<T>(
+  context: Context & { session: NonNullable<Context["session"]> },
+  run: (tx: Prisma.TransactionClient, userId: string) => Promise<T>,
+): Promise<T> {
+  if (context.credential !== undefined) throw new ORPCError("UNAUTHORIZED");
+  const userId = context.session.user.id;
+  return withCliCredentialLockSlot(() =>
+    prisma.$transaction(
+      async (tx) => {
+        await lockCliCredentials(userId, tx);
+        const live = await tx.session.findFirst({
+          where: {
+            id: context.session.session.id,
+            userId,
+            expiresAt: { gt: new Date() },
+            origin: "sign-in",
+            impersonatedBy: null,
+          },
+          select: { user: { select: { banned: true, banExpires: true } } },
+        });
+        if (!live || isUserBanned(live.user)) throw new ORPCError("UNAUTHORIZED");
+        return run(tx, userId);
+      },
+      { timeout: 30_000 },
+    ),
+  );
+}
+
 export const cliAccessRouter = {
+  runners: {
+    list: protectedProcedure.input(cursorPageInput).handler(({ input, context }) =>
+      withRunnerBrowserSession(context, async (tx, userId) => {
+        const rows = await tx.runnerMachine.findMany({
+          where: withCursor({ userId }, "createdAt", input.cursor, "desc"),
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          take: pageTake(input.limit),
+          select: runnerSelect,
+        });
+        const now = new Date();
+        const page = cursorPage(rows, input.limit, "createdAt");
+        return {
+          ...page,
+          items: page.items.map((machine) => ({
+            ...machine,
+            status: machine.revokedAt
+              ? ("revoked" as const)
+              : machine.expiresAt <= now
+                ? ("expired" as const)
+                : ("active" as const),
+          })),
+        };
+      }),
+    ),
+    revoke: protectedProcedure.input(z.object({ id: entityId })).handler(({ input, context }) =>
+      withRunnerBrowserSession(context, async (tx, userId) => {
+        const own = await tx.runnerMachine.findFirst({
+          where: { id: input.id, userId },
+          select: { id: true },
+        });
+        if (!own) throw new ORPCError("NOT_FOUND", { message: "Runner not found" });
+        await revokeRunnerMachinesInTransaction(tx, userId, own.id);
+        return { success: true };
+      }),
+    ),
+  },
   /**
    * A fresh copy-paste install command. Minted on every call (the page
    * refetches on mount) so the embedded token is always newly issued and

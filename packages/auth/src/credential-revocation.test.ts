@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Never a real DB. Each write returns a tag (not a promise) so the transaction
 // assertions can see exactly which statements were batched together.
 const db = vi.hoisted(() => ({
+  runnerMachine: { updateMany: vi.fn() },
   apiKey: { deleteMany: vi.fn() },
   session: { deleteMany: vi.fn() },
   deviceCode: { deleteMany: vi.fn() },
@@ -21,6 +22,7 @@ const {
   quarantineUntrustedPasswordWrite,
   REVOCATION_ATTEMPTS,
   revokeCredentialsBeforePasswordReset,
+  revokeCredentialsBeforeAdminPasswordReset,
   revokeCredentialsAfterPasswordChange,
   revokeCredentialsAfterPasswordReset,
   revokeCredentialsInTransaction,
@@ -29,6 +31,7 @@ const { cliCredentialLockKey } = await import("./device-redemption-lock");
 
 beforeEach(() => {
   vi.clearAllMocks();
+  db.runnerMachine.updateMany.mockReturnValue("runnerMachine.updateMany");
   db.apiKey.deleteMany.mockReturnValue("apiKey.deleteMany");
   db.session.deleteMany.mockReturnValue("session.deleteMany");
   db.deviceCode.deleteMany.mockReturnValue("deviceCode.deleteMany");
@@ -38,9 +41,11 @@ beforeEach(() => {
   db.$executeRaw.mockImplementation((strings: TemplateStringsArray, key: string) =>
     strings.join("").includes('WITH "resetChallenges"')
       ? "twoFactor.deleteMany"
-      : key.startsWith("set-password-link:")
-        ? "setupLock"
-        : "advisoryLock",
+      : strings.join("").includes("pg_notify")
+        ? "runnerMachine.notify"
+        : key.startsWith("set-password-link:")
+          ? "setupLock"
+          : "advisoryLock",
   );
   db.$transaction.mockResolvedValue([]);
 });
@@ -124,6 +129,8 @@ describe("revokeCredentialsBeforePasswordReset", () => {
       "apiKey.deleteMany",
       "session.deleteMany",
       "deviceCode.deleteMany",
+      "runnerMachine.updateMany",
+      "runnerMachine.notify",
       "twoFactor.deleteMany",
     ]);
     expect(db.user.updateMany).not.toHaveBeenCalled();
@@ -139,6 +146,8 @@ describe("revokeCredentialsAfterPasswordReset", () => {
       "apiKey.deleteMany",
       "session.deleteMany",
       "deviceCode.deleteMany",
+      "runnerMachine.updateMany",
+      "runnerMachine.notify",
       "twoFactor.deleteMany",
     ]);
     expect(db.$transaction).toHaveBeenNthCalledWith(2, ["setupLock", "verification.deleteMany"]);
@@ -417,6 +426,7 @@ describe("impersonator credential revocation", () => {
 describe("activation revocation on the bound client", () => {
   it("uses only the existing transaction for all Chess standing credentials and 2FA", async () => {
     const tx = {
+      runnerMachine: { updateMany: vi.fn() },
       apiKey: { deleteMany: vi.fn() },
       deviceCode: { deleteMany: vi.fn() },
       session: { deleteMany: vi.fn() },
@@ -435,12 +445,61 @@ describe("activation revocation on the bound client", () => {
     expect(tx.session.deleteMany).toHaveBeenCalledExactlyOnceWith({
       where: { OR: [{ userId: "invitee" }, { impersonatedBy: "invitee" }] },
     });
-    expect(tx.$executeRaw).toHaveBeenCalledOnce();
-    expect(tx.$executeRaw.mock.calls[0]?.slice(1)).toEqual(["invitee", "invitee"]);
+    expect(tx.runnerMachine.updateMany).toHaveBeenCalledWith({
+      where: { userId: "invitee", revokedAt: null },
+      data: { revokedAt: expect.any(Date), connectionGeneration: { increment: 1 } },
+    });
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(tx.$executeRaw.mock.calls[1]?.slice(1)).toEqual(["invitee", "invitee"]);
     expect(db.$executeRaw).not.toHaveBeenCalled();
     expect(db.$transaction).not.toHaveBeenCalled();
     expect(db.apiKey.deleteMany).not.toHaveBeenCalled();
     expect(db.deviceCode.deleteMany).not.toHaveBeenCalled();
     expect(db.session.deleteMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("runner machine recovery policy", () => {
+  it.each(["forgot", "admin", "quarantine"])(
+    "%s revokes durable runner authority and publishes IDs",
+    async (kind) => {
+      if (kind === "forgot") await revokeCredentialsAfterPasswordReset("owner");
+      else if (kind === "admin") await revokeCredentialsBeforeAdminPasswordReset("owner");
+      else
+        await quarantineUntrustedPasswordWrite("owner", {
+          hash: async () => "unusable",
+          sleep: async () => {},
+        });
+      expect(db.runnerMachine.updateMany).toHaveBeenCalledWith({
+        where: { userId: "owner", revokedAt: null },
+        data: { revokedAt: expect.any(Date), connectionGeneration: { increment: 1 } },
+      });
+      const notify = db.$executeRaw.mock.calls.find(([sql]) => sql.join("").includes("pg_notify"));
+      expect(notify?.slice(1)).toEqual([
+        "runner_machine_revoked",
+        JSON.stringify({ userId: "owner" }),
+      ]);
+    },
+  );
+  it("ordinary signed-in change retains runners while companion credentials are revoked", async () => {
+    await revokeCredentialsAfterPasswordChange({
+      userId: "owner",
+      keepSessionToken: "new-session",
+    });
+    expect(db.runnerMachine.updateMany).not.toHaveBeenCalled();
+    expect(db.apiKey.deleteMany).toHaveBeenCalled();
+    expect(db.deviceCode.deleteMany).toHaveBeenCalled();
+  });
+  it("admin reset fails closed before a password write when revocation cannot commit", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    db.$transaction.mockRejectedValue(new Error("offline"));
+    try {
+      await expect(revokeCredentialsBeforeAdminPasswordReset("owner")).rejects.toMatchObject({
+        status: "SERVICE_UNAVAILABLE",
+      });
+      expect(db.$transaction).toHaveBeenCalledTimes(REVOCATION_ATTEMPTS);
+    } finally {
+      log.mockRestore();
+    }
   });
 });

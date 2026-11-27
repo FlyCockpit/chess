@@ -79,6 +79,7 @@ const prismaStub = vi.hoisted(() => {
   const findVerification = async ({ where }: { where: Record<string, unknown> }) =>
     table("verification").find((row) => matches(row, where)) ?? null;
   const tx = {
+    runnerMachine: { updateMany: async () => ({ count: 0 }) },
     $executeRaw: async (..._sql: unknown[]) => 1,
     // The password-write lock's `pg_try_advisory_xact_lock` and its probe.
     $queryRaw: vi.fn(async (..._sql: unknown[]) => [{ locked: true }]),
@@ -142,6 +143,7 @@ const prismaStub = vi.hoisted(() => {
     memory,
     tx,
     runTransaction,
+    runnerMachine: { updateMany: vi.fn(() => "runners") },
     apiKey: { deleteMany: vi.fn(() => "keys") },
     deviceCode: { deleteMany: vi.fn(() => "codes") },
     session: {
@@ -594,11 +596,16 @@ describe("Better-Auth config", () => {
       if (lapsed) {
         expect(outcome).toMatchObject({ body: { code: "PASSWORD_WRITE_UNCONFIRMED" } });
         expect(quarantineUntrustedPasswordWrite).toHaveBeenCalledWith("u3", expect.anything());
-        expect(cleanupBatches()).toEqual([]);
+        // The authorized admin reset already fenced standing credentials
+        // before the write; a lapsed write must not run activation cleanup.
+        expect(cleanupBatches()).toHaveLength(1);
+        expect(cleanupBatches()[0]).toContain("runners");
       } else {
         expect(outcome).toBeUndefined();
         expect(quarantineUntrustedPasswordWrite).not.toHaveBeenCalled();
-        expect(cleanupBatches()).toEqual([cleanupBatchFor("u3")]);
+        expect(cleanupBatches()).toHaveLength(2);
+        expect(cleanupBatches()[0]).toContain("runners");
+        expect(cleanupBatches()[1]).toEqual(cleanupBatchFor("u3"));
       }
     }
   });

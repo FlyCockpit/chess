@@ -7,6 +7,9 @@ import { chessCliProcedures, chessRouter } from "./chess";
 /**
  * The companion CLI's API — served ONLY on `/api/cli/rpc` (bearer credentials:
  * device-flow session tokens and API keys), never on the cookie surface.
+ * Runner-machine secrets are a separate purpose-scoped authority, refused by
+ * this surface's resolver. They cannot call these procedures or enroll another
+ * machine; per-run claim/exchange and runner transport have separate surfaces.
  * `apps/cli` imports `CliRouterClient` as a TYPE and gets an end-to-end typed
  * client. See packages/api/src/routers/cli.ts.
  *

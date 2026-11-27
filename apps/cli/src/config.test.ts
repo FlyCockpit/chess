@@ -1,15 +1,18 @@
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
+import { registerConfig } from "./commands/config";
 import {
   isSettableKey,
   loadConfig,
   resolveCredential,
+  resolveRunnerCredential,
   resolveServer,
   saveConfig,
   withCredential,
+  withRunnerCredential,
 } from "./config";
 import { CliError } from "./exit";
 
@@ -20,6 +23,8 @@ describe("config file", () => {
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
 
   it("reads a missing file as empty", async () => {
@@ -31,6 +36,11 @@ describe("config file", () => {
     const config = {
       server: "https://app.example.com",
       credentials: { "https://app.example.com": { kind: "session" as const, value: "t" } },
+      runnerCredentials: {
+        "https://app.example.com": {
+          "machine-1": { value: "runner-test-secret", expiresAt: "2027-01-01T00:00:00Z" },
+        },
+      },
     };
     await saveConfig(config, path);
     expect(await loadConfig(path)).toEqual(config);
@@ -46,6 +56,36 @@ describe("config file", () => {
     await import("node:fs/promises").then((fs) => fs.writeFile(path, "{nope"));
     await expect(loadConfig(path)).rejects.toBeInstanceOf(CliError);
   });
+
+  it.each([{ flags: [] }, { flags: ["--json"] }])(
+    "config show $flags omits all runner secrets",
+    async ({ flags }) => {
+      vi.stubEnv("COCKPIT_CHESS_CONFIG_DIR", dir);
+      await saveConfig({
+        server: "https://app.example.com",
+        credentials: {
+          "https://app.example.com": { kind: "session", value: "companion-test-secret" },
+        },
+        runnerCredentials: {
+          "https://app.example.com": {
+            "machine-1": { value: "runner-test-secret", expiresAt: "2027-01-01T00:00:00Z" },
+          },
+        },
+      });
+      const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+      const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+      const program = new Command();
+      registerConfig(program);
+      await program.parseAsync(["config", "show", ...flags], { from: "user" });
+      const output = stdout.mock.calls.map(([value]) => String(value)).join("");
+      expect(output).toContain("https://app.example.com");
+      expect(output).not.toMatch(
+        /runnerCredentials|runner-test-secret|companion-test-secret|machine-1/,
+      );
+      expect(stderr).not.toHaveBeenCalled();
+      if (flags.length > 0) expect(JSON.parse(output)).not.toHaveProperty("runnerCredentials");
+    },
+  );
 });
 
 describe("resolveServer", () => {
@@ -139,4 +179,51 @@ describe("withCredential", () => {
 it("only exposes non-credential keys to `config set`", () => {
   expect(isSettableKey("server")).toBe(true);
   expect(isSettableKey("credentials")).toBe(false);
+  expect(isSettableKey("runnerCredentials")).toBe(false);
+});
+
+describe("runner credentials", () => {
+  const prod = "https://app.example.com";
+  const staging = "https://staging.example.com";
+  const credential = { value: "runner-test-secret", expiresAt: "2027-01-01T00:00:00Z" };
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("resolves only the exact origin and machine without falling back to companion authority", () => {
+    vi.stubEnv("COCKPIT_CHESS_API_KEY", "companion-env-test-key");
+    const config = withRunnerCredential({}, prod, "machine-1", credential);
+    expect(resolveRunnerCredential(config, prod, "machine-1")).toEqual(credential);
+    expect(resolveRunnerCredential(config, staging, "machine-1")).toBeUndefined();
+    expect(resolveRunnerCredential(config, `${prod}.evil.example`, "machine-1")).toBeUndefined();
+    expect(resolveRunnerCredential(config, prod, "machine-2")).toBeUndefined();
+    expect(
+      resolveRunnerCredential(
+        { credentials: { [prod]: { kind: "session", value: "s" } } },
+        prod,
+        "machine-1",
+      ),
+    ).toBeUndefined();
+    vi.stubEnv("COCKPIT_CHESS_API_KEY", "");
+    expect(resolveCredential(config, prod)).toBeUndefined();
+  });
+
+  it("replaces/removes exactly one machine and preserves companion credentials and other origins", () => {
+    const companion = { credentials: { [prod]: { kind: "session" as const, value: "session" } } };
+    const first = withRunnerCredential(companion, prod, "one", credential);
+    const second = withRunnerCredential(first, prod, "two", credential);
+    const third = withRunnerCredential(second, staging, "one", credential);
+    const replacement = { ...credential, value: "replacement-test-secret" };
+    expect(
+      resolveRunnerCredential(withRunnerCredential(third, prod, "one", replacement), prod, "one"),
+    ).toEqual(replacement);
+    const removed = withRunnerCredential(third, prod, "one", undefined);
+    expect(removed).toEqual({
+      ...companion,
+      runnerCredentials: { [prod]: { two: credential }, [staging]: { one: credential } },
+    });
+    expect(withRunnerCredential(first, prod, "one", undefined)).toEqual(companion);
+    expect(withCredential(first, prod, undefined).runnerCredentials).toEqual(
+      first.runnerCredentials,
+    );
+    expect(third.runnerCredentials?.[prod]?.one).toEqual(credential);
+  });
 });

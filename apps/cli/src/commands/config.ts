@@ -21,7 +21,11 @@ export function registerConfig(program: Command): void {
     .description("Print the settings (credentials are never printed)")
     .option("--json", "print JSON")
     .action(async (options: { json?: boolean }) => {
-      const { credentials, ...settings } = await loadConfig();
+      const {
+        credentials,
+        runnerCredentials: _runnerCredentials,
+        ...settings
+      } = await loadConfig();
       const shown = {
         ...settings,
         defaultServer: DEFAULT_SERVER ?? "",

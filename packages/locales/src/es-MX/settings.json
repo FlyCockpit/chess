@@ -104,6 +104,34 @@
         "pending": "Revocando…",
         "success": "Clave de API revocada"
       }
+    },
+    "runners": {
+      "title": "Equipos de ejecución",
+      "description": "Los equipos vinculados a tu cuenta pueden reconectarse hasta que venza su acceso o lo revoques.",
+      "resetPolicy": "La recuperación de contraseña y los restablecimientos realizados por un administrador desconectan los equipos. Los cambios normales de contraseña mantienen la vinculación.",
+      "loadFailed": "No se pudieron cargar los equipos de ejecución.",
+      "emptyTitle": "No hay equipos vinculados",
+      "emptyDescription": "La vinculación aparecerá aquí cuando se vincule un equipo de ejecución a tu cuenta.",
+      "status": {
+        "active": "Activo",
+        "expired": "Vencido",
+        "revoked": "Revocado"
+      },
+      "credentialPrefix": "Credencial: {{prefix}}…",
+      "expiresOn": "Vence: {{date}}",
+      "lastSeen": "Última conexión: {{date}}",
+      "neverSeen": "Aún no se ha conectado",
+      "revokedOn": "Revocado: {{date}}",
+      "revoke": "Revocar acceso",
+      "revokeDialog": {
+        "title": "¿Revocar el acceso del equipo?",
+        "description": "Se desconectará el equipo y se eliminará su acceso a tu cuenta. No podrá reconectarse ni reanudar la ejecución con esta credencial.",
+        "typeNameToConfirm": "Escribe el nombre del equipo para confirmar.",
+        "copyNameAriaLabel": "Copiar el nombre del equipo",
+        "confirm": "Revocar acceso",
+        "pending": "Revocando…",
+        "success": "Se revocó el acceso del equipo."
+      }
     }
   },
   "navOpenRouter": "OpenRouter",

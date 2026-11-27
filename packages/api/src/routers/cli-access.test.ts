@@ -1,8 +1,11 @@
 import type { Session } from "@cockpit-chess/auth";
+import type { Prisma } from "@cockpit-chess/db";
 import { createRouterClient, type ORPCError } from "@orpc/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mockDeep, mockReset } from "vitest-mock-extended";
 
 import type { Context } from "../context";
+import { encodeCursor } from "../lib/pagination";
 
 vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
@@ -27,10 +30,20 @@ const lock = vi.hoisted(() => ({
   revoked: false,
   lapseAfterMint: false,
 }));
+const runnerLock = vi.hoisted(() => ({
+  acquire: vi.fn(async () => {}),
+  slot: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
+  revoke: vi.fn(async () => 1),
+}));
+vi.mock("@cockpit-chess/auth/runner-machine", () => ({
+  revokeRunnerMachinesInTransaction: runnerLock.revoke,
+}));
 vi.mock("@cockpit-chess/auth/device-redemption-lock", () => {
   class CliCredentialSessionRevokedError extends Error {}
   return {
     CliCredentialSessionRevokedError,
+    lockCliCredentials: runnerLock.acquire,
+    withCliCredentialLockSlot: runnerLock.slot,
     mintCliCredentialForSession: async (
       session: { userId: string; sessionId: string },
       {
@@ -58,9 +71,15 @@ const { verifyCliInstallToken } = await import("../lib/cli-install-token");
 const { invalidateForceTwoFactorSettingsCache } = await import("../lib/two-factor-policy");
 
 const now = new Date("2026-10-20T00:00:00Z");
+const tx = mockDeep<Prisma.TransactionClient>();
 
-function client(userId = "user-1", userOverrides: Partial<Session["user"]> = {}) {
+function client(
+  userId = "user-1",
+  userOverrides: Partial<Session["user"]> = {},
+  credential?: Context["credential"],
+) {
   const context: Context = {
+    credential,
     session: {
       user: {
         id: userId,
@@ -98,6 +117,8 @@ const isCode = (code: string) => (error: ORPCError<string, unknown>) => error.co
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockReset(db);
+  mockReset(tx);
   lock.calls.length = 0;
   lock.revoked = false;
   lock.lapseAfterMint = false;
@@ -296,12 +317,220 @@ describe("cliAccess auth", () => {
       () => anon.apiKeys.list(),
       () => anon.apiKeys.create({ name: "x", expiresInDays: 30 }),
       () => anon.apiKeys.revoke({ id: "key-1" }),
+      () => anon.runners.list({}),
+      () => anon.runners.revoke({ id: "machine-1" }),
     ]) {
       await expect(call()).rejects.toSatisfy(isCode("UNAUTHORIZED"));
     }
     expect(db.apiKey.findMany).not.toHaveBeenCalled();
     expect(db.apiKey.deleteMany).not.toHaveBeenCalled();
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(runnerLock.slot).not.toHaveBeenCalled();
+    expect(runnerLock.revoke).not.toHaveBeenCalled();
     expect(createApiKey).not.toHaveBeenCalled();
+  });
+});
+
+describe("cliAccess.runners", () => {
+  const order: string[] = [];
+  const machine = {
+    id: "machine-1",
+    displayName: "Laptop",
+    credentialPrefix: "cockpit_chess_runner_abcd1234",
+    createdAt: now,
+    expiresAt: new Date("2099-01-01"),
+    revokedAt: null,
+    lastSeenAt: null,
+  };
+  beforeEach(() => {
+    order.length = 0;
+    runnerLock.slot.mockImplementation(async (run) => {
+      order.push("slot");
+      return run();
+    });
+    runnerLock.acquire.mockImplementation(async () => {
+      order.push("lock");
+    });
+    runnerLock.revoke.mockImplementation(async () => {
+      order.push("revoke");
+      return 1;
+    });
+    db.$transaction.mockImplementation(
+      async (run: (tx: Prisma.TransactionClient) => Promise<unknown>) => run(tx),
+    );
+    tx.session.findFirst.mockImplementation(async () => {
+      order.push("session");
+      return { user: { banned: false, banExpires: null } };
+    });
+    tx.runnerMachine.findMany.mockResolvedValue([]);
+  });
+
+  it("lists safe metadata with a bounded cursor, including active, expired and revoked status", async () => {
+    tx.runnerMachine.findMany.mockImplementation(async () => {
+      order.push("list");
+      return [
+        machine,
+        { ...machine, id: "expired", expiresAt: new Date("2000-01-01") },
+        { ...machine, id: "revoked", revokedAt: now },
+        { ...machine, id: "lookahead" },
+      ];
+    });
+    const page = await client().runners.list({ limit: 3 });
+    expect(page.items.map(({ status }) => status)).toEqual(["active", "expired", "revoked"]);
+    expect(page.nextCursor).toBe(encodeCursor({ id: "revoked", sortValue: now }));
+    expect(tx.runnerMachine.findMany).toHaveBeenCalledWith({
+      where: { AND: [{ userId: "user-1" }] },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 4,
+      select: {
+        id: true,
+        displayName: true,
+        credentialPrefix: true,
+        createdAt: true,
+        expiresAt: true,
+        revokedAt: true,
+        lastSeenAt: true,
+      },
+    });
+    expect(page.items[0]).not.toHaveProperty("credentialDigest");
+    expect(page.items[0]).not.toHaveProperty("userId");
+    expect(runnerLock.slot).toHaveBeenCalledOnce();
+    expect(runnerLock.acquire).toHaveBeenCalledExactlyOnceWith("user-1", tx);
+    expect(db.$transaction).toHaveBeenCalledExactlyOnceWith(expect.any(Function), {
+      timeout: 30_000,
+    });
+    expect(order).toEqual(["slot", "lock", "session", "list"]);
+    expect(db.runnerMachine.findMany).not.toHaveBeenCalled();
+  });
+
+  it("keeps ownership on the next page and orders equal timestamps by ID", async () => {
+    const cursor = encodeCursor({ id: "machine-1", sortValue: now });
+    await expect(client().runners.list({ limit: 2, cursor })).resolves.toEqual({
+      items: [],
+      nextCursor: null,
+    });
+    expect(tx.runnerMachine.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { userId: "user-1" },
+            { OR: [{ createdAt: { lt: now } }, { createdAt: now, id: { lt: "machine-1" } }] },
+          ],
+        },
+        take: 3,
+      }),
+    );
+  });
+
+  it("rejects unbounded or malformed pagination inputs", async () => {
+    for (const input of [{ limit: 0 }, { limit: 101 }, { cursor: "invalid" }]) {
+      await expect(client().runners.list(input)).rejects.toSatisfy(isCode("BAD_REQUEST"));
+    }
+    expect(db.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("calls the transactional revocation/notification helper only for an owned machine", async () => {
+    tx.runnerMachine.findFirst.mockResolvedValue({ id: "machine-1" });
+    await expect(client().runners.revoke({ id: "machine-1" })).resolves.toEqual({ success: true });
+    expect(tx.runnerMachine.findFirst).toHaveBeenCalledExactlyOnceWith({
+      where: { id: "machine-1", userId: "user-1" },
+      select: { id: true },
+    });
+    expect(runnerLock.revoke).toHaveBeenCalledExactlyOnceWith(tx, "user-1", "machine-1");
+    expect(order).toEqual(["slot", "lock", "session", "revoke"]);
+    expect(db.runnerMachine.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("returns NOT_FOUND for foreign or missing machines without publishing invalidation", async () => {
+    tx.runnerMachine.findFirst.mockResolvedValue(null);
+    await expect(client().runners.revoke({ id: "foreign" })).rejects.toSatisfy(isCode("NOT_FOUND"));
+    expect(tx.runnerMachine.findFirst).toHaveBeenCalledWith({
+      where: { id: "foreign", userId: "user-1" },
+      select: { id: true },
+    });
+    expect(runnerLock.revoke).not.toHaveBeenCalled();
+  });
+
+  it("allows repeated revoke of an owned revoked machine", async () => {
+    tx.runnerMachine.findFirst.mockResolvedValue({ id: "machine-1" });
+    runnerLock.revoke.mockResolvedValueOnce(0);
+    await expect(client().runners.revoke({ id: "machine-1" })).resolves.toEqual({ success: true });
+    expect(runnerLock.revoke).toHaveBeenCalledWith(tx, "user-1", "machine-1");
+  });
+
+  it("propagates notification failure so the transaction cannot report successful revocation", async () => {
+    tx.runnerMachine.findFirst.mockResolvedValue({ id: "machine-1" });
+    const failure = new Error("notification failed");
+    runnerLock.revoke.mockRejectedValueOnce(failure);
+    await expect(client().runners.revoke({ id: "machine-1" })).rejects.toBe(failure);
+  });
+
+  it.each(["list", "revoke"] as const)(
+    "rejects a stale session on %s under the lock",
+    async (action) => {
+      tx.session.findFirst.mockResolvedValue(null);
+      const runners = client().runners;
+      await expect(
+        action === "list" ? runners.list({}) : runners.revoke({ id: "machine-1" }),
+      ).rejects.toSatisfy(isCode("UNAUTHORIZED"));
+      expect(tx.session.findFirst).toHaveBeenCalledExactlyOnceWith({
+        where: {
+          id: "auth-session",
+          userId: "user-1",
+          expiresAt: { gt: expect.any(Date) },
+          origin: "sign-in",
+          impersonatedBy: null,
+        },
+        select: { user: { select: { banned: true, banExpires: true } } },
+      });
+      expect(runnerLock.acquire).toHaveBeenCalledWith("user-1", tx);
+      expect(tx.runnerMachine.findMany).not.toHaveBeenCalled();
+      expect(tx.runnerMachine.findFirst).not.toHaveBeenCalled();
+      expect(runnerLock.revoke).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["api-key", "session-token"] as const)(
+    "refuses %s bearers on both browser procedures",
+    async (credential) => {
+      const runners = client("user-1", {}, credential).runners;
+      await expect(runners.list({})).rejects.toSatisfy(isCode("UNAUTHORIZED"));
+      await expect(runners.revoke({ id: "machine-1" })).rejects.toSatisfy(isCode("UNAUTHORIZED"));
+      expect(db.$transaction).not.toHaveBeenCalled();
+      expect(runnerLock.revoke).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["list", "revoke"] as const)("rechecks fresh owner bans on %s", async (action) => {
+    tx.session.findFirst.mockResolvedValue({ user: { banned: true, banExpires: null } });
+    const runners = client().runners;
+    await expect(
+      action === "list" ? runners.list({}) : runners.revoke({ id: "machine-1" }),
+    ).rejects.toSatisfy(isCode("UNAUTHORIZED"));
+    expect(tx.runnerMachine.findMany).not.toHaveBeenCalled();
+    expect(tx.runnerMachine.findFirst).not.toHaveBeenCalled();
+    expect(runnerLock.revoke).not.toHaveBeenCalled();
+  });
+
+  it("permits an expired temporary ban, using the shared predicate", async () => {
+    tx.session.findFirst.mockResolvedValue({
+      user: { banned: true, banExpires: new Date("2000-01-01") },
+    });
+    await expect(client().runners.list({})).resolves.toEqual({ items: [], nextCursor: null });
+  });
+
+  it("retains the banned-user and forced-2FA gates before taking a transaction slot", async () => {
+    for (const [overrides, code] of [
+      [{ banned: true, banExpires: null }, "UNAUTHORIZED"],
+      [{ role: "admin", twoFactorEnabled: false, createdAt: new Date("2020-01-01") }, "FORBIDDEN"],
+    ] as const) {
+      const runners = client("user-1", overrides).runners;
+      await expect(runners.list({})).rejects.toSatisfy(isCode(code));
+      await expect(runners.revoke({ id: "machine-1" })).rejects.toSatisfy(isCode(code));
+    }
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(runnerLock.slot).not.toHaveBeenCalled();
+    expect(runnerLock.revoke).not.toHaveBeenCalled();
   });
 });
 

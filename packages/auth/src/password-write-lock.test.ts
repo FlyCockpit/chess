@@ -8,9 +8,13 @@ const db = vi.hoisted(() => ({
 }));
 
 const quarantine = vi.hoisted(() => vi.fn(async (_userId: string) => {}));
+const adminPreFence = vi.hoisted(() => vi.fn(async (_userId: string) => {}));
 
 vi.mock("@cockpit-chess/db", () => ({ default: db }));
-vi.mock("./credential-revocation.js", () => ({ quarantineUntrustedPasswordWrite: quarantine }));
+vi.mock("./credential-revocation.js", () => ({
+  quarantineUntrustedPasswordWrite: quarantine,
+  revokeCredentialsBeforeAdminPasswordReset: adminPreFence,
+}));
 // Pool of 3 → two lock slots: exactly one password write (its lock plus the
 // revocation it runs) at a time.
 vi.mock("@cockpit-chess/env/shared", () => ({ env: { DATABASE_POOL_MAX: 3 } }));
@@ -53,6 +57,45 @@ beforeEach(() => {
 });
 
 describe("withPasswordWriteLock", () => {
+  it("does not revoke from an untrusted admin body; only the authorized account hook fences", async () => {
+    const { fenceAdminPasswordReset } = await import("./password-write-lock");
+    await withPasswordWriteLock(
+      "/admin/set-user-password",
+      post("/admin/set-user-password", { userId: "target" }),
+      async () => new Response("Forbidden", { status: 403 }),
+      { getSession: noSession },
+    );
+    expect(adminPreFence).not.toHaveBeenCalled();
+    await withPasswordWriteLock(
+      "/admin/set-user-password",
+      post("/admin/set-user-password", { userId: "target" }),
+      async () => {
+        await fenceAdminPasswordReset();
+        expect(adminPreFence).toHaveBeenCalledWith("target");
+        return ok();
+      },
+      { getSession: noSession },
+    );
+  });
+
+  it("refuses the authorized admin password write if the pre-fence fails", async () => {
+    const { fenceAdminPasswordReset } = await import("./password-write-lock");
+    adminPreFence.mockRejectedValueOnce(new Error("revocation unavailable"));
+    const write = vi.fn();
+    await expect(
+      withPasswordWriteLock(
+        "/admin/set-user-password",
+        post("/admin/set-user-password", { userId: "target" }),
+        async () => {
+          await fenceAdminPasswordReset();
+          write();
+          return ok();
+        },
+        { getSession: noSession },
+      ),
+    ).rejects.toThrow("revocation unavailable");
+    expect(write).not.toHaveBeenCalled();
+  });
   it("locks the user a reset token belongs to (body or query), and the user an admin sets", async () => {
     db.verification.findFirst.mockResolvedValue({ value: "u1" });
     const seen: string[] = [];

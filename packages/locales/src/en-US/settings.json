@@ -104,6 +104,34 @@
         "pending": "Revoking…",
         "success": "API key revoked"
       }
+    },
+    "runners": {
+      "title": "Runner machines",
+      "description": "Runners linked to your account can reconnect until they expire or you revoke access.",
+      "resetPolicy": "Password recovery and administrator password resets disconnect runners. Ordinary password changes keep them linked.",
+      "loadFailed": "Could not load runner machines.",
+      "emptyTitle": "No runners linked",
+      "emptyDescription": "Runner pairing will appear here when a runner is linked to your account.",
+      "status": {
+        "active": "Active",
+        "expired": "Expired",
+        "revoked": "Revoked"
+      },
+      "credentialPrefix": "Credential: {{prefix}}…",
+      "expiresOn": "Expires: {{date}}",
+      "lastSeen": "Last seen: {{date}}",
+      "neverSeen": "Not connected yet",
+      "revokedOn": "Revoked: {{date}}",
+      "revoke": "Revoke access",
+      "revokeDialog": {
+        "title": "Revoke runner access?",
+        "description": "This disconnects the runner and removes its access to your account. It cannot reconnect or resume with this credential.",
+        "typeNameToConfirm": "Type the runner name to confirm.",
+        "copyNameAriaLabel": "Copy runner name",
+        "confirm": "Revoke access",
+        "pending": "Revoking…",
+        "success": "Runner access revoked."
+      }
     }
   },
   "navOpenRouter": "OpenRouter",

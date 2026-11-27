@@ -34,6 +34,9 @@
     "./roles": {
       "default": "./src/roles.ts"
     },
+    "./runner-machine": {
+      "default": "./src/runner-machine.ts"
+    },
     "./set-password-link-lock": {
       "default": "./src/set-password-link-lock.ts"
     },

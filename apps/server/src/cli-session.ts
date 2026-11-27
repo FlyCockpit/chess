@@ -1,6 +1,7 @@
 import type { CredentialKind } from "@cockpit-chess/api/context";
 import { auth, type Session } from "@cockpit-chess/auth";
 import { isUserBanned } from "@cockpit-chess/auth/ban";
+import { RUNNER_MACHINE_TOKEN_PREFIX } from "@cockpit-chess/auth/runner-machine";
 import { API_KEY_PREFIX, DEVICE_FLOW_SESSION_ORIGIN } from "@cockpit-chess/config/cli";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import type { Context, Next } from "hono";
@@ -117,6 +118,9 @@ export async function resolveCliCredential(
 ): Promise<CliCredential | null> {
   const token = bearerToken(authorization);
   if (!token) return null;
+  // Purpose-scoped runner authority never becomes a companion session/key,
+  // even though its display prefix shares the application's brand prefix.
+  if (token.startsWith(RUNNER_MACHINE_TOKEN_PREFIX)) return null;
   const credential: CredentialKind = token.startsWith(API_KEY_PREFIX) ? "api-key" : "session-token";
   let session: Session | null = null;
   try {

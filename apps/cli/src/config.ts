@@ -17,6 +17,13 @@ export type StoredCredential = {
   value: string;
 };
 
+/** Runner-only authority. Never accepted by the companion API credential resolver. */
+export type StoredRunnerCredential = {
+  value: string;
+  /** ISO 8601 expiry supplied by the server. */
+  expiresAt: string;
+};
+
 export type Config = {
   /**
    * The app's API origin, e.g. https://app.example.com. Set by the installer;
@@ -29,6 +36,8 @@ export type Config = {
    * staging a production token.
    */
   credentials?: Record<string, StoredCredential>;
+  /** Exact server origin → machine ID → runner-only credential. */
+  runnerCredentials?: Record<string, Record<string, StoredRunnerCredential>>;
 };
 
 /** Keys `cockpit-chess config get/set` may touch. Credentials are managed by login/logout. */
@@ -120,4 +129,29 @@ export function withCredential(
   const credentials = credential ? { ...others, [server]: credential } : others;
   const { credentials: _all, ...rest } = config;
   return Object.keys(credentials).length > 0 ? { ...rest, credentials } : rest;
+}
+
+/** Resolve only the specified machine at the exact origin; no environment or login fallback. */
+export function resolveRunnerCredential(
+  config: Config,
+  server: string,
+  machineId: string,
+): StoredRunnerCredential | undefined {
+  return config.runnerCredentials?.[server]?.[machineId];
+}
+
+/** Replace/remove one runner credential without changing companion logins or other machines. */
+export function withRunnerCredential(
+  config: Config,
+  server: string,
+  machineId: string,
+  credential: StoredRunnerCredential | undefined,
+): Config {
+  const { [server]: previous, ...otherServers } = config.runnerCredentials ?? {};
+  const { [machineId]: _previous, ...otherMachines } = previous ?? {};
+  const machines = credential ? { ...otherMachines, [machineId]: credential } : otherMachines;
+  const runnerCredentials =
+    Object.keys(machines).length > 0 ? { ...otherServers, [server]: machines } : otherServers;
+  const { runnerCredentials: _all, ...rest } = config;
+  return Object.keys(runnerCredentials).length > 0 ? { ...rest, runnerCredentials } : rest;
 }

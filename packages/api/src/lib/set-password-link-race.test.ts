@@ -54,6 +54,13 @@ const db = vi.hoisted(() => {
   const execute = async (strings: TemplateStringsArray, values: unknown[], ctx: TxContext) => {
     const sql = strings.join("?");
     if (sql === "SELECT pg_advisory_xact_lock(hashtext(?))") return lock(strings, values, ctx);
+    if (sql === "SELECT pg_notify(?, ?)") {
+      expect(values[0]).toBe("runner_machine_revoked");
+      const event = JSON.parse(String(values[1])) as { userId: string };
+      expect(event).toEqual({ userId: store.user.id });
+      expect(ctx.keys.has(`cli-credentials:${event.userId}`)).toBe(true);
+      return 1;
+    }
     // Accept only the complete cleanup statement, including both user predicates
     // and the materialized challenge snapshot used to find OTP/counter rows.
     expect(sql.replace(/\s+/g, " ").trim()).toBe(
@@ -116,6 +123,7 @@ const db = vi.hoisted(() => {
   };
   const none = () => statement(async () => ({ count: 0 }));
   const interactive = (ctx: TxContext) => ({
+    runnerMachine: { updateMany: async () => ({ count: 0 }) },
     $executeRaw: (strings: TemplateStringsArray, ...values: unknown[]) =>
       execute(strings, values, ctx),
     user: {
@@ -162,6 +170,7 @@ const db = vi.hoisted(() => {
       }
     },
     apiKey: { deleteMany: none },
+    runnerMachine: { updateMany: none },
     session: { deleteMany: none },
     deviceCode: { deleteMany: none },
     verification: {

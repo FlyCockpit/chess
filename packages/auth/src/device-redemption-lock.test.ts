@@ -26,6 +26,7 @@ const {
   deviceRedemptionLockHeld,
   removeDeviceSessionIfUnlocked,
   withCliCredentialLockSlot,
+  withCliCredentialSnapshotLock,
   withDeviceRedemptionLock,
 } = await import("./device-redemption-lock");
 
@@ -325,6 +326,34 @@ describe("browser device approval", () => {
       );
       expect((await approve()).status).toBe(401);
       expect(data.deviceCode?.[0]?.status).toBe("pending");
+    }
+  });
+});
+
+describe("credential lock before a Serializable snapshot", () => {
+  it("acquires the per-user lock before starting a bounded guarded transaction", async () => {
+    const run = vi.fn(async (timeout: number) => {
+      expect(tx.$executeRaw).toHaveBeenCalledWith(expect.anything(), "cli-credentials:owner");
+      expect(timeout).toBeGreaterThan(0);
+      expect(timeout).toBeLessThanOrEqual(20_000);
+      return "archived";
+    });
+    await expect(withCliCredentialSnapshotLock("owner", run)).resolves.toBe("archived");
+    expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 30_000 });
+  });
+
+  it("does not start a snapshot if the lock wait consumes its safe lifetime", async () => {
+    vi.useFakeTimers();
+    try {
+      tx.$executeRaw.mockImplementationOnce(async () => {
+        await vi.advanceTimersByTimeAsync(25_001);
+        return 1;
+      });
+      const run = vi.fn(async () => "never");
+      await expect(withCliCredentialSnapshotLock("owner", run)).rejects.toThrow(/lock lapsed/);
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

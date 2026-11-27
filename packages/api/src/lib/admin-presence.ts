@@ -73,6 +73,7 @@ export async function withAdminRemovalGuard<T>(
   userId: string,
   mutate: (tx: Prisma.TransactionClient, target: AdminRemovalTarget) => Promise<T>,
   nextRole?: string,
+  timeout?: number,
 ): Promise<T> {
   try {
     return await prisma.$transaction(
@@ -102,7 +103,7 @@ export async function withAdminRemovalGuard<T>(
         }
         return mutate(tx, target);
       },
-      { isolationLevel: "Serializable" },
+      { isolationLevel: "Serializable", ...(timeout === undefined ? {} : { timeout }) },
     );
   } catch (error) {
     if (typeof error === "object" && error !== null && "code" in error && error.code === "P2034") {
