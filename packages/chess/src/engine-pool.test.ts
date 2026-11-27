@@ -19,6 +19,7 @@ const FAKE = `
 import { createInterface } from "node:readline";
 import { existsSync, writeFileSync } from "node:fs";
 const marker = process.argv[2];
+const spectatorRelease = process.argv[3];
 const lines = createInterface({ input: process.stdin });
 let fen = "";
 let hashCleared = false;
@@ -34,7 +35,14 @@ lines.on("line", (line) => {
     if (move === "99") process.exit(2);
     if (move === "77" && !existsSync(marker)) { writeFileSync(marker, "x"); process.exit(2); }
     if (move === "88") return;
-    setTimeout(() => process.stdout.write("info depth 1 nodes 10 score cp 7\\nbestmove e2e4\\n"), 15);
+    const reply = () => process.stdout.write("info depth 1 nodes 10 score cp 7\\nbestmove e2e4\\n");
+    if (spectatorRelease && Number(move) < 10) {
+      const gate = setInterval(() => {
+        if (!existsSync(spectatorRelease)) return;
+        clearInterval(gate);
+        reply();
+      }, 5);
+    } else setTimeout(reply, 15);
   }
 });
 `;
@@ -90,18 +98,33 @@ describe("shared engine pool", () => {
   });
 
   it("serves players ahead of spectators and keeps one process free of spectator work", async () => {
-    const wrapper = path.join(dir, "wrapper.mjs");
+    const release = path.join(dir, "release-spectators");
+    rmSync(release, { force: true });
+    const wrapper = path.join(dir, "priority-wrapper.mjs");
+    writeFileSync(
+      wrapper,
+      `process.argv[2] = ${JSON.stringify(marker)};\nprocess.argv[3] = ${JSON.stringify(release)};\nawait import(${JSON.stringify(script)});\n`,
+    );
     configureEnginePool({ size: 2, engineFile: wrapper });
     const order: string[] = [];
     const spectators = Array.from({ length: 6 }, (_, index) =>
       evaluatePosition(fen(index + 1), { lane: "spectators" }).then(() => order.push("s")),
     );
-    // Spectators may hold one of the two processes; the other stays for players.
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(enginePoolStats().busy).toBe(1);
-    const player = evaluatePosition(fen(30)).then(() => order.push("p"));
-    await Promise.all([...spectators, player]);
-    expect(order.indexOf("p")).toBeLessThan(3);
+    // Hold spectator answers explicitly. Starting a second cold process can
+    // take longer than several spectator evaluations under suite load.
+    try {
+      expect(enginePoolStats()).toMatchObject({ busy: 1, waiting: 5 });
+      await evaluatePosition(fen(30), { signal: AbortSignal.timeout(4_000) }).then(() =>
+        order.push("p"),
+      );
+      expect(order).toEqual(["p"]);
+      expect(enginePoolStats()).toMatchObject({ busy: 1, waiting: 5 });
+    } finally {
+      writeFileSync(release, "release");
+      await Promise.all(spectators);
+    }
+    expect(order).toEqual(["p", ...Array<string>(6).fill("s")]);
+    expect(enginePoolStats()).toMatchObject({ busy: 0, waiting: 0, total: 2 });
   });
 
   it("replaces a crashed process and retries that one evaluation once", async () => {
