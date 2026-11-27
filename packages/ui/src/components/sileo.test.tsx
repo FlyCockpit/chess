@@ -1,70 +1,209 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { sileo as realSileo } from "sileo";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The facade calls sileo directly (no lazy chunk in this app). The stand-in
-// records each call and, like sileo, returns the id it was given.
-const backend = vi.hoisted(() => {
-  const method = () => vi.fn((options: { id?: string }) => options.id ?? "sileo-default");
-  return {
-    show: method(),
-    success: method(),
-    error: method(),
-    info: method(),
-    warning: method(),
-    dismiss: vi.fn(),
-    clear: vi.fn(),
-  };
-});
-vi.mock("sileo", () => ({ sileo: backend, Toaster: () => null }));
 vi.mock("sileo/styles.css", () => ({}));
 
-const { toast } = await import("./sileo");
+const { Toaster, toast, titleOverflowsPill, pillTitleBudget, defaultToastPosition } = await import(
+  "./sileo"
+);
 
-beforeEach(() => {
-  vi.clearAllMocks();
-});
+class FakeNode {
+  childNodes: FakeNode[] = [];
+  parentNode: FakeNode | null = null;
+  constructor(
+    readonly ownerDocument: FakeDocument | null,
+    readonly nodeType: number,
+    readonly nodeName: string,
+  ) {}
+  appendChild<T extends FakeNode>(child: T): T {
+    child.parentNode?.removeChild(child);
+    child.parentNode = this;
+    this.childNodes.push(child);
+    return child;
+  }
+  insertBefore<T extends FakeNode>(child: T, ref: FakeNode | null): T {
+    if (!ref) return this.appendChild(child);
+    child.parentNode?.removeChild(child);
+    const index = this.childNodes.indexOf(ref);
+    if (index === -1) return this.appendChild(child);
+    child.parentNode = this;
+    this.childNodes.splice(index, 0, child);
+    return child;
+  }
+  removeChild<T extends FakeNode>(child: T): T {
+    const index = this.childNodes.indexOf(child);
+    if (index !== -1) {
+      this.childNodes.splice(index, 1);
+      child.parentNode = null;
+    }
+    return child;
+  }
+  addEventListener() {}
+  removeEventListener() {}
+}
+
+class FakeText extends FakeNode {
+  nodeValue: string;
+  constructor(ownerDocument: FakeDocument, text: string, nodeType = 3) {
+    super(ownerDocument, nodeType, nodeType === 3 ? "#text" : "#comment");
+    this.nodeValue = text;
+  }
+  get textContent() {
+    return this.nodeValue;
+  }
+  set textContent(value: string) {
+    this.nodeValue = value;
+  }
+}
+
+class FakeElement extends FakeNode {
+  readonly attributes = new Map<string, string>();
+  readonly style: Record<string, unknown> & {
+    setProperty: (name: string, value: string) => void;
+    removeProperty: (name: string) => void;
+  } = {
+    setProperty: (name: string, value: string) => {
+      this.style[name] = value;
+    },
+    removeProperty: (name: string) => {
+      delete this.style[name];
+    },
+  };
+  scrollWidth = 120;
+  scrollHeight = 40;
+  readonly tagName: string;
+  constructor(
+    ownerDocument: FakeDocument,
+    readonly localName: string,
+    readonly namespaceURI: string,
+  ) {
+    super(ownerDocument, 1, localName.toUpperCase());
+    this.tagName = this.nodeName;
+  }
+  setAttribute(name: string, value: unknown) {
+    this.attributes.set(name, String(value));
+  }
+  setAttributeNS(_ns: string, name: string, value: unknown) {
+    this.setAttribute(name, value);
+  }
+  getAttribute(name: string) {
+    return this.attributes.get(name) ?? null;
+  }
+  hasAttribute(name: string) {
+    return this.attributes.has(name);
+  }
+  removeAttribute(name: string) {
+    this.attributes.delete(name);
+  }
+  addEventListener() {}
+  removeEventListener() {}
+  get textContent(): string {
+    return this.childNodes
+      .map((child) =>
+        child instanceof FakeText || child instanceof FakeElement ? child.textContent : "",
+      )
+      .join("");
+  }
+  set textContent(value: string) {
+    this.childNodes = [];
+    if (value) this.appendChild(this.ownerDocument!.createTextNode(value));
+  }
+}
+
+class FakeDocument extends FakeNode {
+  readonly documentElement: FakeElement;
+  readonly head: FakeElement;
+  readonly body: FakeElement;
+  readonly activeElement = null;
+  defaultView: unknown = null;
+  constructor() {
+    super(null, 9, "#document");
+    this.documentElement = this.appendChild(this.createElement("html"));
+    this.head = this.documentElement.appendChild(this.createElement("head"));
+    this.body = this.documentElement.appendChild(this.createElement("body"));
+  }
+  createElement(tag: string) {
+    return new FakeElement(this, tag.toLowerCase(), "http://www.w3.org/1999/xhtml");
+  }
+  createElementNS(ns: string, tag: string) {
+    return new FakeElement(this, tag, ns);
+  }
+  createTextNode(text: string) {
+    return new FakeText(this, text);
+  }
+  createComment(text: string) {
+    return new FakeText(this, text, 8);
+  }
+}
+
+function findElements(root: FakeNode, attr: string): FakeElement[] {
+  const out: FakeElement[] = [];
+  if (root instanceof FakeElement && root.hasAttribute(attr)) out.push(root);
+  for (const child of root.childNodes) out.push(...findElements(child, attr));
+  return out;
+}
 
 describe("toast facade", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    realSileo.clear();
+  });
+
   it("maps each method and its options onto sileo", () => {
+    const successSpy = vi.spyOn(realSileo, "success");
+    const errorSpy = vi.spyOn(realSileo, "error");
+    const showSpy = vi.spyOn(realSileo, "show");
     const onClick = vi.fn();
+
     toast.success("Saved");
     toast.error("Failed", { duration: 5000, action: { label: "Retry", onClick } });
     toast.message("Heads up");
 
-    expect(backend.success).toHaveBeenCalledWith({ id: expect.any(String), title: "Saved" });
-    expect(backend.error).toHaveBeenCalledWith({
+    expect(successSpy).toHaveBeenCalledWith({ id: expect.any(String), title: "Saved" });
+    expect(errorSpy).toHaveBeenCalledWith({
       id: expect.any(String),
       title: "Failed",
       duration: 5000,
+      autopilot: { expand: 0, collapse: 0 },
       button: { title: "Retry", onClick },
     });
-    expect(backend.show).toHaveBeenCalledWith({ id: expect.any(String), title: "Heads up" });
+    expect(showSpy).toHaveBeenCalledWith({ id: expect.any(String), title: "Heads up" });
   });
 
   it("gives every toast its own id so two toasts stack instead of merging", () => {
-    // sileo defaults every toast to id "sileo-default" and replaces in place.
+    const errorSpy = vi.spyOn(realSileo, "error");
     const first = toast.error("That wasn't found.");
     const second = toast.error("That wasn't found.");
 
     expect(first).not.toBe(second);
     expect(first).not.toBe("sileo-default");
-    expect(backend.error.mock.calls.map(([options]) => options.id)).toEqual([first, second]);
+    expect(errorSpy.mock.calls.map(([options]) => (options as { id?: string }).id)).toEqual([
+      first,
+      second,
+    ]);
   });
 
   it("repeats a long message in the description so the clipped pill loses nothing", () => {
+    const errorSpy = vi.spyOn(realSileo, "error");
+    const successSpy = vi.spyOn(realSileo, "success");
     const long = "That code didn't work. Check your authenticator and try again.";
 
     toast.error(long);
     toast.success("Saved");
 
-    expect(backend.error).toHaveBeenCalledWith(
-      expect.objectContaining({ title: long, description: long }),
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: long,
+        description: long,
+        autopilot: { expand: 0, collapse: 0 },
+      }),
     );
-    expect(backend.success.mock.calls[0]?.[0]).not.toHaveProperty("description");
+    expect(successSpy.mock.calls[0]?.[0]).not.toHaveProperty("description");
   });
 
-  it("decides by the measured width, not the character count", async () => {
-    const { titleOverflowsPill, pillTitleBudget } = await import("./sileo");
-    // ~8px per glyph at a 16px root: 36 characters fit, 36 wide glyphs don't.
+  it("decides by the measured width, not the character count", () => {
     const at16 = (perChar: number) => (m: string) => ({
       width: m.length * perChar,
       budget: pillTitleBudget(16),
@@ -72,22 +211,130 @@ describe("toast facade", () => {
     expect(pillTitleBudget(16)).toBe(292);
     expect(titleOverflowsPill("a".repeat(36), at16(6.5))).toBe(false);
     expect(titleOverflowsPill("W".repeat(30), at16(11))).toBe(true);
-    // At a 24px root the font grows but sileo's pill does not: a 36-character
-    // message that fit at 16px no longer does.
     const at24 = (m: string) => ({ width: m.length * 6.5 * 1.5, budget: pillTitleBudget(24) });
     expect(titleOverflowsPill("We've emailed you a verification code", at24)).toBe(true);
   });
 
-  it("falls back to a length rule when nothing can be measured", async () => {
-    const { titleOverflowsPill } = await import("./sileo");
+  it("falls back to a length rule when nothing can be measured", () => {
     expect(titleOverflowsPill("Saved", () => null)).toBe(false);
     expect(titleOverflowsPill("x".repeat(41), () => null)).toBe(true);
   });
 });
 
+describe("Toaster expansion with real sileo", () => {
+  let container: FakeElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    const doc = new FakeDocument();
+    const classes = {
+      Node: FakeNode,
+      Element: FakeElement,
+      HTMLElement: FakeElement,
+      HTMLIFrameElement: class {},
+      ResizeObserver: class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    };
+    const win = {
+      ...classes,
+      document: doc,
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      requestAnimationFrame: (cb: FrameRequestCallback) => globalThis.setTimeout(() => cb(0), 0),
+      cancelAnimationFrame: (id: number) => globalThis.clearTimeout(id),
+      getComputedStyle: () => ({
+        paddingLeft: "8",
+        paddingRight: "8",
+        fontSize: "16px",
+        fontFamily: "sans-serif",
+      }),
+      matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    doc.defaultView = win;
+    vi.stubGlobal("window", win);
+    vi.stubGlobal("document", doc);
+    vi.stubGlobal("getComputedStyle", win.getComputedStyle);
+    vi.stubGlobal("requestAnimationFrame", win.requestAnimationFrame);
+    vi.stubGlobal("cancelAnimationFrame", win.cancelAnimationFrame);
+    for (const [name, value] of Object.entries(classes)) vi.stubGlobal(name, value);
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+
+    container = doc.body.appendChild(doc.createElement("div"));
+    root = createRoot(container as unknown as Element);
+    act(() => {
+      root.render(<Toaster position="bottom-right" />);
+    });
+  });
+
+  afterEach(() => {
+    act(() => {
+      realSileo.clear();
+      root.unmount();
+    });
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("opens action toasts immediately and keeps Undo visible past 4 seconds", () => {
+    const onUndo = vi.fn();
+
+    act(() => {
+      toast.success("Game deleted", {
+        duration: 10_000,
+        action: { label: "Undo", onClick: onUndo },
+      });
+    });
+
+    const toastEl = () => findElements(container, "data-sileo-toast")[0];
+    const contentEl = () => findElements(container, "data-sileo-content")[0];
+    const actionEl = () => findElements(container, "data-sileo-button")[0];
+
+    expect(toastEl()?.getAttribute("data-expanded")).toBe("true");
+    expect(contentEl()?.getAttribute("data-visible")).toBe("true");
+    expect(actionEl()?.textContent).toBe("Undo");
+
+    act(() => {
+      vi.advanceTimersByTime(4500);
+    });
+
+    expect(toastEl()?.getAttribute("data-expanded")).toBe("true");
+    expect(contentEl()?.getAttribute("data-visible")).toBe("true");
+    expect(actionEl()?.textContent).toBe("Undo");
+  });
+
+  it("opens overflowing body messages immediately and keeps them visible past 4 seconds", () => {
+    const long = "That code didn't work. Check your authenticator and try again.";
+
+    act(() => {
+      toast.error(long);
+    });
+
+    const toastEl = () => findElements(container, "data-sileo-toast")[0];
+    const contentEl = () => findElements(container, "data-sileo-content")[0];
+    const descEl = () => findElements(container, "data-sileo-description")[0];
+
+    expect(toastEl()?.getAttribute("data-expanded")).toBe("true");
+    expect(contentEl()?.getAttribute("data-visible")).toBe("true");
+    expect(descEl()?.textContent).toBe(long);
+
+    act(() => {
+      vi.advanceTimersByTime(4500);
+    });
+
+    expect(toastEl()?.getAttribute("data-expanded")).toBe("true");
+    expect(contentEl()?.getAttribute("data-visible")).toBe("true");
+    expect(descEl()?.textContent).toBe(long);
+  });
+});
+
 describe("defaultToastPosition", () => {
-  it("keeps phones centred and moves wide screens off centred form actions", async () => {
-    const { defaultToastPosition } = await import("./sileo");
+  it("keeps phones centred and moves wide screens off centred form actions", () => {
     expect(defaultToastPosition(false)).toBe("bottom-center");
     expect(defaultToastPosition(true)).toBe("bottom-right");
   });

@@ -17,7 +17,7 @@
   "rootError": "Esta página no cargó. Intenta de nuevo o recarga.",
   "serverError": "Algo no funcionó de nuestra parte. Inténtalo de nuevo en un momento.",
   "sessionEnded": "Tu sesión ha terminado. Inicia sesión de nuevo.",
-  "offline": "No tienes conexión. Revisa tu conexión e inténtalo de nuevo.",
+  "offline": "Sin conexión. Revisa tu conexión.",
   "unreachable": "No se pudo conectar con el servidor. Revisa tu conexión e inténtalo de nuevo.",
   "offlineContent": "No tienes conexión. Esto se cargará cuando te vuelvas a conectar.",
   "offlinePage": {

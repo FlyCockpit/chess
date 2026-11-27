@@ -627,4 +627,9 @@ async function measure(run: CheckRun): Promise<string[]> {
 }
 
 if (import.meta.filename === process.argv[1])
-  process.exitCode = await withBrowser("check:layout", SESSION, measure, { mockServer: false });
+  process.exitCode = await withBrowser("check:layout", SESSION, measure, {
+    mockServer: false,
+    preflight: (args) => {
+      if (args.includes("--login")) loginAccount(args);
+    },
+  });

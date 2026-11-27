@@ -261,7 +261,11 @@ function Enable2FASection() {
       });
       if (result.error) {
         console.error("[settings.security.twoFactor.enable]", result.error);
-        toast.error(t("settings:security.couldNotStartSetup"));
+        toast.error(
+          result.error.code === "INVALID_PASSWORD"
+            ? t("settings:security.currentPasswordMismatch")
+            : friendly(result.error, t("settings:security.couldNotStartSetup")),
+        );
         return;
       }
       if (result.data?.method !== "totp") {
@@ -407,7 +411,11 @@ function Disable2FASection() {
       });
       if (result.error) {
         console.error("[settings.security.twoFactor.disable]", result.error);
-        toast.error(t("settings:security.couldNotDisable"));
+        toast.error(
+          result.error.code === "INVALID_PASSWORD"
+            ? t("settings:security.currentPasswordMismatch")
+            : friendly(result.error, t("settings:security.couldNotDisable")),
+        );
         return;
       }
       toast.success(t("settings:security.disabledSuccess"));

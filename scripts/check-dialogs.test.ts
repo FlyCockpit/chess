@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { byRole, type CheckRun, formSignIn, pollPage, sessionName } from "./browser-check-lib.ts";
+import {
+  byRole,
+  type CheckRun,
+  formSignIn,
+  pollPage,
+  sessionName,
+  withBrowser,
+} from "./browser-check-lib.ts";
 import { DIALOGS, loginAccount, SHELL_PAGES, signIn } from "./browser-checks.config.ts";
 import { type DialogProbe, judgeDialog, stepScript } from "./check-dialogs.ts";
 
@@ -333,6 +340,37 @@ describe("signing in with --login", () => {
     } finally {
       if (before === undefined) delete process.env.CHECK_LAYOUT_PASSWORD;
       else process.env.CHECK_LAYOUT_PASSWORD = before;
+    }
+  });
+
+  it("stops at once when preflight rejects before launching a browser", async () => {
+    const argvBefore = process.argv;
+    process.argv = [
+      argvBefore[0]!,
+      argvBefore[1]!,
+      "--url",
+      "http://127.0.0.1:9",
+      "--login",
+      "a@example.test",
+    ];
+    let called = false;
+    try {
+      const rc = await withBrowser(
+        "check:dialogs",
+        "test-preflight",
+        async () => {
+          called = true;
+          return [];
+        },
+        {
+          mockServer: false,
+          preflight: (args) => loginAccount(args, {}),
+        },
+      );
+      assert.equal(rc, 1);
+      assert.equal(called, false);
+    } finally {
+      process.argv = argvBefore;
     }
   });
 });

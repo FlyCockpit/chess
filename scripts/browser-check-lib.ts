@@ -81,7 +81,10 @@ function agentBrowser(session: string): Browser {
     },
     close() {
       try {
-        execFileSync("agent-browser", ["--session", session, "close"], { stdio: "ignore" });
+        execFileSync("agent-browser", ["--session", session, "close"], {
+          stdio: "ignore",
+          timeout: 5000,
+        });
       } catch {}
     },
   };
@@ -158,6 +161,8 @@ export interface BrowserOptions {
    * running stack: `--url` is then required.
    */
   mockServer?: boolean;
+  /** Runs before any server or browser starts (missing credentials fail at once). */
+  preflight?: (args: string[]) => void;
 }
 
 /**
@@ -170,7 +175,7 @@ export async function withBrowser(
   name: string,
   session: string,
   body: (run: CheckRun) => Promise<string[]>,
-  { launch = [], mockServer = true }: BrowserOptions = {},
+  { launch = [], mockServer = true, preflight }: BrowserOptions = {},
 ): Promise<number> {
   const args = process.argv.slice(2);
   const urlIndex = args.indexOf("--url");
@@ -178,6 +183,12 @@ export async function withBrowser(
   let server: ReturnType<typeof spawn> | undefined;
   if (!base && !mockServer) {
     console.error(`${name}: this app has no mock mode; pass --url <the running app>`);
+    return 1;
+  }
+  try {
+    preflight?.(args);
+  } catch (error) {
+    console.error(`${name}: stopped: ${(error as Error).message.split("\n")[0]}`);
     return 1;
   }
   if (!base) {

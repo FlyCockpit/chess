@@ -110,6 +110,15 @@ describe("drawFrame", () => {
     expect(headline.every((item) => item.font.includes("48px"))).toBe(true);
   });
 
+  it("shrinks a long square title to avoid ellipsis", () => {
+    const { ctx, drawn } = fontRecordingContext();
+    const longTitle = "E2E5 G R5 cap64 ds-flash vs nano";
+    drawFrame(ctx, frameLayout("square"), { ...final(), title: longTitle });
+    const titleDraw = drawn.find((item) => item.x === 48 && item.y === 96);
+    expect(titleDraw?.text).toBe(longTitle);
+    expect(titleDraw?.font).not.toMatch(/^bold 44px /);
+  });
+
   it("ellipsizes an impossible square banner inside its box", () => {
     const { ctx, drawn } = fontRecordingContext();
     const layout = frameLayout("square");

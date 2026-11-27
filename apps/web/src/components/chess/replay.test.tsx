@@ -162,7 +162,7 @@ describe("MatchReplay", () => {
     let html = render(match);
     expect(html).toContain("White · spent at least $0.00 of $1.00 (usage still settling)");
     expect(html).toContain("Black · spent $0.00 of $1.00");
-    expect(html).toContain("at most 9000 tokens reserved for one request");
+    expect(html).toContain("at most 9,000 tokens reserved for one request");
     // Once the game has ended, a missing report will never arrive: final wording.
     const ended = structuredClone(match);
     finishMatch(ended, "0-1", "move-timeout");
@@ -182,6 +182,7 @@ describe("MatchReplay", () => {
     });
     html = render(match);
     expect(html).toContain("White · spent $0.12 of $1.00");
+    expect(html).toContain("<strong>1,200</strong>");
   });
   it("counts illegal attempts per side in the result banner and the stats", () => {
     const match = fixtureGame({ remarks: "off" });

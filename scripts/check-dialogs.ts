@@ -27,6 +27,7 @@ import {
   DIALOGS,
   type DialogCase,
   type DialogStep,
+  loginAccount,
   MOCK_SERVER,
   signIn,
 } from "./browser-checks.config.ts";
@@ -159,4 +160,7 @@ async function measure(run: CheckRun): Promise<string[]> {
 if (import.meta.filename === process.argv[1])
   process.exitCode = await withBrowser("check:dialogs", SESSION, measure, {
     mockServer: MOCK_SERVER,
+    preflight: (args) => {
+      if (!MOCK_SERVER) loginAccount(args);
+    },
   });

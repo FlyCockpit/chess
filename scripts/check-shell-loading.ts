@@ -37,7 +37,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { byRole, type CheckRun, sessionName, withBrowser } from "./browser-check-lib.ts";
-import { MOCK_SERVER, SHELL_PAGES, type ShellPage, signIn } from "./browser-checks.config.ts";
+import {
+  loginAccount,
+  MOCK_SERVER,
+  SHELL_PAGES,
+  type ShellPage,
+  signIn,
+} from "./browser-checks.config.ts";
 
 // One session per run, so runs in other checkouts on this machine are untouched.
 const SESSION = sessionName("check-shell-loading");
@@ -476,6 +482,9 @@ if (import.meta.filename === process.argv[1]) {
     process.exitCode = await withBrowser("check:shell-loading", SESSION, measure, {
       launch: ["--init-script", init],
       mockServer: MOCK_SERVER,
+      preflight: (args) => {
+        if (!MOCK_SERVER) loginAccount(args);
+      },
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });

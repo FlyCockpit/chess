@@ -93,7 +93,7 @@ function TwoFactorSetupRequired() {
   const [verifyCode, setVerifyCode] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const { t } = useTranslation("auth");
+  const { t } = useTranslation(["auth", "settings"]);
 
   const handleEnable = async () => {
     setIsLoading(true);
@@ -104,7 +104,11 @@ function TwoFactorSetupRequired() {
       });
       if (result.error) {
         console.error("[_auth.twoFactor.enable]", result.error);
-        toast.error(t("twoFactor.couldNotStartSetup"));
+        toast.error(
+          result.error.code === "INVALID_PASSWORD"
+            ? t("settings:security.currentPasswordMismatch")
+            : friendly(result.error, t("twoFactor.couldNotStartSetup")),
+        );
         return;
       }
       if (result.data?.method !== "totp") {

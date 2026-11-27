@@ -452,6 +452,7 @@ export function MatchReplay({
       }),
     [i18n.language],
   );
+  const count = useMemo(() => new Intl.NumberFormat(i18n.language), [i18n.language]);
   const frame = frameAt(replay, index);
   // The board catches up with `index` one animated step at a time (single steps and
   // autoplay; new events of a followed game play in order, the poll that ends it
@@ -725,9 +726,9 @@ export function MatchReplay({
             <p key={side} className="cc-muted mb-2 text-xs">
               {t(`colors.${side}`)} ·{" "}
               {t("replay.sharedSpend", {
-                input: shared.sharedInputTokens,
-                output: shared.sharedOutputTokens,
-                limit: match.config.rules.tokenBudget,
+                input: count.format(shared.sharedInputTokens),
+                output: count.format(shared.sharedOutputTokens),
+                limit: count.format(match.config.rules.tokenBudget),
               })}
             </p>
           ))}
@@ -745,7 +746,7 @@ export function MatchReplay({
               stats.costMicros === null
                 ? t("replay.unknownCost")
                 : currency.format(stats.costMicros / 1000000),
-            reserved: stats.peakReservedTokens,
+            reserved: count.format(stats.peakReservedTokens),
           })}
         </p>
         <details className="cc-muted mb-4 text-xs">
@@ -754,7 +755,7 @@ export function MatchReplay({
         </details>
         <div className="cc-mini-stats">
           <div>
-            <strong>{stats.moves}</strong>
+            <strong>{count.format(stats.moves)}</strong>
             <span>{t("stats.plies")}</span>
           </div>
           <div>
@@ -764,7 +765,7 @@ export function MatchReplay({
             <span>{t("stats.rejectedBySide")}</span>
           </div>
           <div>
-            <strong>{stats.inputTokens + stats.outputTokens}</strong>
+            <strong>{count.format(stats.inputTokens + stats.outputTokens)}</strong>
             <span>{t("stats.tokens")}</span>
           </div>
         </div>

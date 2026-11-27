@@ -453,14 +453,17 @@ export function drawFrame(
   ctx.fillStyle = ACCENT;
   ctx.fillText(state.brand, layout.brand.x, layout.brand.y);
   const { title } = layout;
-  ctx.font = `bold ${title.size}px ${SANS}`;
+  let titleSize = title.size;
+  let titleLines: string[] = [];
+  const measureTitle = (s: string) => ctx.measureText(s).width;
+  for (const scale of [1, 0.85, 0.72, 0.62]) {
+    titleSize = Math.round(title.size * scale);
+    ctx.font = `bold ${titleSize}px ${SANS}`;
+    const wrapped = wrapComplete(measureTitle, state.title, title.width, title.lines);
+    titleLines = wrapped.lines;
+    if (wrapped.complete) break;
+  }
   ctx.fillStyle = PAPER;
-  const titleLines = wrapText(
-    (s) => ctx.measureText(s).width,
-    state.title,
-    title.width,
-    title.lines,
-  );
   const titleBox = {
     x: title.x,
     y: title.y - title.size * 1.1,
@@ -469,7 +472,7 @@ export function drawFrame(
   };
   clipped(ctx, titleBox, () => {
     titleLines.forEach((text, i) => {
-      ctx.fillText(text, title.x, title.y + i * title.size * 1.15);
+      ctx.fillText(text, title.x, title.y + i * titleSize * 1.15);
     });
   });
   if (state.moveLabel) {

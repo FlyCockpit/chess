@@ -108,10 +108,15 @@ function createToastMethod(method: "success" | "error" | "info" | "warning" | "s
     return sileo[method]({
       id: nextToastId(),
       title: message,
-      ...(titleOverflowsPill(message) ? { description: message } : {}),
+      ...(titleOverflowsPill(message)
+        ? { description: message, autopilot: { expand: 0, collapse: 0 } }
+        : {}),
       ...(options?.duration != null ? { duration: options.duration } : {}),
       ...(options?.action
-        ? { button: { title: options.action.label, onClick: options.action.onClick } }
+        ? {
+            autopilot: { expand: 0, collapse: 0 },
+            button: { title: options.action.label, onClick: options.action.onClick },
+          }
         : {}),
     } as Parameters<typeof sileo.show>[0]);
   };
