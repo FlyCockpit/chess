@@ -276,6 +276,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
               />
             </>
           )}
+          <p className="cc-muted my-4">{t("studio.publicationHint")}</p>
           <QueryBoundary
             query={{ data, error, isPending, isError, fetchStatus, refetch }}
             skeleton={<Skeleton className="h-32" />}
@@ -303,6 +304,9 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                             ? `${t("arena.status.queued")} · ${t("arena.unpublished")}`
                             : t("arena.unpublished")}
                       </span>
+                      <p className="cc-muted">
+                        {t(game.official ? "studio.officialRecord" : "studio.practiceRecord")}
+                      </p>
                       <h3>{game.title}</h3>
                       <p>
                         {game.whiteName} × {game.blackName}

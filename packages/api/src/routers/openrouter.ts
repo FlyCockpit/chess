@@ -270,6 +270,15 @@ export const openrouterRouter = {
           where: { userId },
           select: { keyHash: true },
         });
+        // Lock before making revocation visible outside this transaction. Otherwise
+        // a worker can observe Redis revocation and settle an account error while
+        // Disconnect is still trying to acquire the row for owner withdrawal.
+        // pagination:audited — admission permits one active own-key match per owner;
+        // lock any surviving active rows, without returning match data to the caller.
+        await tx.$queryRaw`SELECT "id" FROM "chess_match"
+          WHERE "ownerId" = ${userId} AND "credentialSource" = 'owner-openrouter'
+            AND "status" IN ('queued', 'running')
+          ORDER BY "id" FOR UPDATE`;
         // Revoked before the row goes: a run that loaded the key before the delete
         // commits finds it on this list. Without the list nothing is deleted.
         const recorded = await within(
@@ -284,12 +293,22 @@ export const openrouterRouter = {
           where: { userId },
           select: { keyHash: true },
         });
-        // Queued own-key matches would load a key when they start: cancel them unless
-        // another key is connected for them to run on.
+        // Disconnect is an owner withdrawal, including running starts. Clear the
+        // claim now so a late provider reply cannot replace the durable withdrawal.
+        // Key-use leases below still determine when the stop can be confirmed.
         if (!after)
           await tx.chessMatch.updateMany({
-            where: { ownerId: userId, credentialSource: "owner-openrouter", status: "queued" },
-            data: { status: "error", runToken: null, ending: CREDENTIAL_REVOKED_ENDING },
+            where: {
+              ownerId: userId,
+              credentialSource: "owner-openrouter",
+              status: { in: ["queued", "running"] },
+            },
+            data: {
+              status: "error",
+              runToken: null,
+              ending: CREDENTIAL_REVOKED_ENDING,
+              terminalCause: "owner-disconnect",
+            },
           });
         return { found, revoked: recorded, connected: after?.keyHash ?? null };
       },

@@ -417,3 +417,28 @@ it("hides publish for queued private matches but keeps live publish and unpublis
   expect(render()).toContain(`>${enChess.studio.unpublish}</button>`);
   fixture.items = [];
 });
+
+it("keeps published practice outside official results and displays permanent official commitment without a toggle", () => {
+  const previous = fixture.items;
+  fixture.items = [false, true].map((official) => ({
+    id: String(official),
+    slug: String(official),
+    title: `Published ${official}`,
+    status: "completed",
+    published: true,
+    official,
+    whiteName: "White model",
+    blackName: "Black model",
+  }));
+  try {
+    const html = render();
+    expect(html).toContain(enChess.studio.publicationHint);
+    expect(html).toContain(enChess.studio.practiceRecord);
+    expect(html).toContain(enChess.studio.officialRecord);
+    expect(html).toContain(`>${enChess.studio.unpublish}</button>`);
+    expect(html).not.toContain('role="switch"');
+    expect(html).not.toContain("Counts on the leaderboard");
+  } finally {
+    fixture.items = previous;
+  }
+});

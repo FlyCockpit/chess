@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 import {
   analyzeContract,
@@ -8,6 +9,7 @@ import {
   CONTRACT_FILE,
   catalogFromSql,
   checkWrapper,
+  chessOfficialLedger,
   classifyEnumRebuild,
   enumColumns,
   enumDefaultNamesRemoved,
@@ -1489,5 +1491,150 @@ describe("findNameReuse", () => {
       findNameReuse([dropper, later]).map((m) => m.key),
       names.map((n) => `table:public.${n}`),
     );
+  });
+});
+
+describe("fixed official ledger template", () => {
+  const header = "-- cockpit-chess:official-ledger v1";
+  const block = chessOfficialLedger();
+  const rejected = (sql) => {
+    const result = analyzeMigration(sql);
+    assert.ok(
+      result.notAnalyzed.some((entry) => entry.reviewed === null),
+      "an altered template must fail",
+    );
+    assert.equal(
+      result.templates.filter((template) => template.kind === "official-ledger").length,
+      0,
+    );
+  };
+
+  test("generates one exact, parameter-free known block and recognizes all five statements", () => {
+    assert.deepEqual(parseTemplateHeader(header), { kind: "official-ledger", version: "v1" });
+    const result = analyzeMigration(block);
+    assert.deepEqual(result.notAnalyzed, []);
+    assert.deepEqual(result.incompatible, []);
+    assert.equal(result.statements, 5);
+    assert.equal(
+      result.templates.filter((template) => template.kind === "official-ledger").length,
+      1,
+    );
+  });
+
+  test("the committed migration contains the generated launch block exactly once", () => {
+    const directory = new URL("../../../packages/db/prisma/migrations/", import.meta.url);
+    const folders = readdirSync(directory).filter((name) =>
+      name.endsWith("_chess_official_entries"),
+    );
+    assert.equal(folders.length, 1);
+    const sql = readFileSync(new URL(`${folders[0]}/migration.sql`, directory), "utf8");
+    assert.equal(sql.split(block).length, 2);
+    assert.deepEqual(analyzeMigration(sql).notAnalyzed, []);
+  });
+
+  test("refuses changed names, body, whitespace, omitted statements and injected SQL", () => {
+    for (const sql of [
+      block.replaceAll("chess_official_settle", "foreign_settle"),
+      block.replace("category := 'scored'", "category := 'withdrawal'"),
+      block.replace("RETURNS trigger", "RETURNS  trigger"),
+      block.replace(
+        "CREATE TRIGGER chess_official_delete",
+        "-- removed trigger\nCREATE TRIGGER chess_official_delete",
+      ),
+      block.replace(
+        "-- end cockpit-chess:official-ledger",
+        "SELECT current_user;\n-- end cockpit-chess:official-ledger",
+      ),
+      block.replace("END;\n$$;", "END;\n$$;\nSELECT current_user;"),
+    ])
+      rejected(sql);
+  });
+
+  test("refuses duplicate blocks or headers, unknown versions and malformed headers", () => {
+    for (const sql of [
+      block + block,
+      block.replace(
+        header,
+        `${header}
+${header}`,
+      ),
+      block.replace(header, "-- cockpit-chess:official-ledger v999"),
+      block.replace(header, `${header} extra`),
+      block.replace(header, "-- cockpit-chess:official-ledger"),
+    ])
+      rejected(sql);
+  });
+
+  test("cannot annotate another statement or place the block in contract.sql", () => {
+    rejected(`${header}
+SELECT 1;
+${block.slice(header.length + 1)}`);
+    assert.ok(analyzeContract(block).findings.length > 0);
+  });
+
+  test("does not authorize ordinary triggers, dynamic execution or changes outside the exact block", () => {
+    const [ordinary] = analyzeMigration(`${REVIEWED_MARKER} unrelated trigger
+CREATE TRIGGER other AFTER UPDATE ON "chess_match" FOR EACH ROW EXECUTE FUNCTION other();`).notAnalyzed;
+    assert.equal(ordinary.reviewed, null);
+    assert.equal(ordinary.reviewIgnored, true);
+    const result = analyzeMigration(
+      block + "\n-- cockpit-chess:reviewed unrelated\nEXECUTE other_statement;",
+    );
+    assert.ok(result.notAnalyzed.some((entry) => entry.reviewed === null && entry.reviewIgnored));
+  });
+});
+
+describe("official ledger lexical header placement", () => {
+  const header = "-- cockpit-chess:official-ledger v1";
+  const block = chessOfficialLedger();
+  test("rejects duplicate, unknown and malformed trailing or empty-statement headers", () => {
+    for (const suffix of [
+      header,
+      "-- cockpit-chess:official-ledger v999",
+      "-- cockpit-chess:official-ledger",
+    ]) {
+      for (const tail of [
+        `
+${suffix}`,
+        `
+${suffix}
+;`,
+        `
+SELECT 1 ${suffix}
+;`,
+      ]) {
+        const sql = wrapTransactional(block) + tail;
+        const result = analyzeMigration(sql);
+        assert.ok(result.notAnalyzed.some((entry) => entry.reviewed === null));
+        assert.equal(
+          result.templates.filter((template) => template.kind === "official-ledger").length,
+          0,
+        );
+        assert.equal(rollbackSafety(sql).safe, false);
+      }
+      assert.ok(analyzeMigration(suffix).notAnalyzed.length > 0);
+      assert.ok(analyzeContract(suffix).findings.length > 0);
+    }
+  });
+  test("only actual lexical line comments count as headers", () => {
+    const comments = [];
+    splitStatements(
+      `SELECT '${header}'; SELECT $body$${header}$body$; /* ${header} */
+${header}`,
+      {
+        onLineComment: (text) => comments.push(text),
+      },
+    );
+    assert.deepEqual(comments, [header]);
+    for (const inert of [
+      `
+/* ${header} */
+`,
+      `
+-- ordinary documentation mentions ${header}
+`,
+    ]) {
+      assert.deepEqual(analyzeMigration(block + inert).notAnalyzed, []);
+    }
   });
 });

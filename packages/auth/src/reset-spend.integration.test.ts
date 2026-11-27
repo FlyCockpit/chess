@@ -83,6 +83,7 @@ const fixture = vi.hoisted(() => {
     verification: delegate("verification"),
     session: delegate("session"),
     runnerMachine: delegate("runnerMachine"),
+    chessMatch: delegate("chessMatch"),
     apiKey: delegate("apikey"),
     deviceCode: delegate("deviceCode"),
     $executeRaw: async (_sql: TemplateStringsArray, key: string) => {

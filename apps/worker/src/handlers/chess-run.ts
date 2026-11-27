@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { chessStatsColumns, INTERRUPTED_ENDING } from "@cockpit-chess/api/lib/chess-stats";
+import {
+  chessStatsColumns,
+  chessUsageColumns,
+  INTERRUPTED_ENDING,
+} from "@cockpit-chess/api/lib/chess-stats";
 import {
   loadOwnerOpenRouterKey,
   markOpenRouterKeyInvalid,
@@ -119,7 +123,12 @@ export async function handleChessReconcileJob(
       }
       const result = await prisma.chessMatch.updateMany({
         where: { id: row.id, status: row.status, heartbeatAt: row.heartbeatAt },
-        data: { status: "error", runToken: null, ending: INTERRUPTED_ENDING },
+        data: {
+          status: "error",
+          runToken: null,
+          ending: INTERRUPTED_ENDING,
+          terminalCause: row.status === "running" ? "worker-lost" : "queue-lost",
+        },
       });
       errored += result.count;
     } catch (error) {
@@ -189,14 +198,14 @@ async function playerKey(row: {
   Owner: { role: string | null };
 }): Promise<{ apiKey: string; ownerKey?: { userId: string; keyHash: string } }> {
   if (!env.CHESS_HOSTED_ENABLED)
-    throw new RunRefusedError("Hosted chess inference is disabled", "provider-error");
+    throw new RunRefusedError("Hosted chess inference is disabled", "interrupted");
   if (row.credentialSource === "operator") {
     // Re-check queued authority: demotion between create and claim must not spend
     // the operator's funds. Own-key matches never reach this branch.
     if (!isAdminRole(row.Owner.role ?? undefined))
       throw new RunRefusedError("Operator billing requires an admin owner", "interrupted");
     if (!env.OPENROUTER_API_KEY)
-      throw new RunRefusedError("Hosted chess inference is disabled", "provider-error");
+      throw new RunRefusedError("Hosted chess inference is disabled", "interrupted");
     return { apiKey: env.OPENROUTER_API_KEY };
   }
   if (row.credentialSource !== "owner-openrouter")
@@ -219,7 +228,7 @@ export async function handleChessRunJob(
   const matchId = data.matchId;
   const runToken = crypto.randomUUID();
   const claimed = await prisma.chessMatch.updateMany({
-    where: { id: matchId, status: "queued" },
+    where: { id: matchId, status: "queued", source: "hosted" },
     data: { status: "running", runToken, heartbeatAt: new Date() },
   });
   if (claimed.count !== 1) return;
@@ -227,6 +236,7 @@ export async function handleChessRunJob(
     where: { id: matchId },
     select: {
       archive: true,
+      source: true,
       spectatorEvaluations: true,
       ownerId: true,
       credentialSource: true,
@@ -237,6 +247,8 @@ export async function handleChessRunJob(
   let match: MatchArchive;
   try {
     match = validateArchive(row.archive);
+    if (row.source !== "hosted" || match.source !== "hosted")
+      throw new Error("Only hosted archives may run in the hosted worker");
   } catch (error) {
     // Release the claim now instead of leaving the row `running` until the
     // stale-heartbeat reconcile. Status only: like reconcile, the unparseable
@@ -247,7 +259,12 @@ export async function handleChessRunJob(
     });
     await prisma.chessMatch.updateMany({
       where: { id: matchId, status: "running", runToken },
-      data: { status: "error", runToken: null, ending: INTERRUPTED_ENDING },
+      data: {
+        status: "error",
+        runToken: null,
+        ending: INTERRUPTED_ENDING,
+        terminalCause: "archive-invalid",
+      },
     });
     return;
   }
@@ -300,6 +317,7 @@ export async function handleChessRunJob(
         where: { id: matchId, status: "running", runToken },
         data: {
           archive,
+          ...chessUsageColumns(archive),
           heartbeatAt: new Date(),
           ...(archive.status !== "running"
             ? { status: archive.status, runToken: null, ...chessStatsColumns(archive) }

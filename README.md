@@ -19,7 +19,7 @@ Cockpit Chess runs chess games between language models and records every decisio
 
 - **Hosted matches.** LLM-vs-LLM games through OpenRouter, run by a background worker, with the server as the authoritative referee (chess.js).
 - **Live arena and replay.** Watch games live or replay them, with every illegal or unparseable attempt recorded.
-- **Leaderboard.** Model standings from published, rated hosted games, grouped by exact rules and wire protocol.
+- **Official results.** Every accepted official hosted start counts, grouped by model/protocol, prompt version/hash, exact rules, starting position, billing cohort and opponent type.
 - **Studio.** An admin area to create, stop, publish and import matches, and to export PGN, JSON and result images.
 - **Video export.** Any replay can be exported as an MP4 (H.264, square or landscape) for posting on X, rendered in the browser.
 - **Configurable rules.** Memory, identity disclosure, board representation, legal-move help, time, token and cost budgets, and optional Stockfish assistance.
@@ -176,7 +176,17 @@ Environment variables are validated at startup by `packages/env` using [t3-env](
 ### Hosted matches
 
 Configure `ADMIN_EMAILS`, sign in through the normal verified-account flow, and use Studio.
-Create starts a private match in the worker; publish makes it visible in the arena.
+Create defaults to practice for every billing option. Choose official before submission
+to permanently commit an accepted queued start to a minimal public model, prompt,
+settings and result record. Only hosted model-vs-model or model-vs-random matches
+can be official. Replay transcripts start private; publish shares them in the arena
+without changing official participation. There is no post-start promotion or demotion.
+
+Official score is (wins + ½ draws) / all starts. Withdrawals, stops and errors
+earn no points and are shown separately from W/D/L; pending starts are provisional.
+Unpublish, moderation and deletion cannot remove official participation. Comparison
+groups use the full stated scope and paginate by a stable key, not a global rank.
+Configurable settings make these exploratory results, not an unbiased benchmark.
 Stopping a match preserves its last durable events. Imports are private, explicitly
 local experiments; they do not count toward official model standings.
 
@@ -194,8 +204,9 @@ any verified user can run hosted matches billed to their own OpenRouter credits:
 3. In Studio, create a match. It is billed to your key; each side's budget is capped
    at half of what the key has left. You can have one match queued or running at a
    time, and a daily number of matches set by the operator.
-4. Your matches are private until you publish them. Only an admin can make a published
-   game count on the leaderboard.
+4. Replay transcripts are private until you publish them. Practice is the default;
+   official participation must be chosen before starting and permanently makes the
+   minimal commitment record public, independently of replay publication.
 5. Disconnect in Settings removes the key from this server and stops your queued or
    running match; it tells you if it could not confirm the stop yet. Revoke the key on
    OpenRouter as well. If the key runs out or is revoked during a match, the match ends unscored

@@ -14,6 +14,7 @@ import {
   FIELD_SECTION,
   keyExhausted,
   maxBudgetUsd,
+  officialEligible,
   resolveProtocol,
   searchModels,
   summaryParts,
@@ -70,6 +71,31 @@ const issuesFor = (value: Partial<CreateMatchValues>, server = limits) => {
 };
 const errorsFor = (value: Partial<CreateMatchValues>, server = limits) =>
   issuesFor(value, server).map((issue) => String(issue.path[0]));
+
+describe("official participation", () => {
+  it("defaults to practice regardless of hosted budget limits", () => {
+    expect(DEFAULT_VALUES.official).toBe(false);
+    expect(defaultValuesFor(limits).official).toBe(false);
+    expect(defaultValuesFor({ maxCostMicros: 100_000, maxTokens: 512 }).official).toBe(false);
+  });
+
+  it.each([
+    ["openai-chat", "anthropic", true],
+    ["openai-responses", "random", true],
+    ["random", "openai-chat", true],
+    ["random", "random", false],
+    ["human", "openai-chat", false],
+    ["anthropic", "human", false],
+    ["human", "random", false],
+  ] as const)("%s vs %s official eligibility is %s", (white, black, eligible) => {
+    expect(
+      officialEligible({
+        white: { name: "White", model: "white", protocol: white },
+        black: { name: "Black", model: "black", protocol: black },
+      }),
+    ).toBe(eligible);
+  });
+});
 
 /** An uneven clock: White minutes, Black minutes, optional Black seconds. */
 const uneven = (white: string, black: string, blackSeconds = "0") => ({

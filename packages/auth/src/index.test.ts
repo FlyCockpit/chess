@@ -80,6 +80,7 @@ const prismaStub = vi.hoisted(() => {
     table("verification").find((row) => matches(row, where)) ?? null;
   const tx = {
     runnerMachine: { updateMany: async () => ({ count: 0 }) },
+    chessMatch: { updateMany: async () => ({ count: 0 }) },
     $executeRaw: async (..._sql: unknown[]) => 1,
     // The password-write lock's `pg_try_advisory_xact_lock` and its probe.
     $queryRaw: vi.fn(async (..._sql: unknown[]) => [{ locked: true }]),
@@ -144,6 +145,7 @@ const prismaStub = vi.hoisted(() => {
     tx,
     runTransaction,
     runnerMachine: { updateMany: vi.fn(() => "runners") },
+    chessMatch: { updateMany: vi.fn(() => "matches") },
     apiKey: { deleteMany: vi.fn(() => "keys") },
     deviceCode: { deleteMany: vi.fn(() => "codes") },
     session: {

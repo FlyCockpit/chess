@@ -123,6 +123,22 @@ const db = vi.hoisted(() => {
       }
     },
     runnerMachine: { updateMany: () => statement(async () => ({ count: 0 })) },
+    chessMatch: {
+      updateMany: (args: unknown) =>
+        statement(async (ctx) => {
+          expect(args).toEqual({
+            where: { ownerId: USER, source: "hosted", status: { in: ["queued", "running"] } },
+            data: {
+              status: "stopped",
+              runToken: null,
+              terminalCause: "owner-reset",
+              ending: { kind: "cancelled" },
+            },
+          });
+          expect(ctx.held).toContain(`cli-credentials:${USER}`);
+          return { count: 0 };
+        }),
+    },
     deviceCode: {
       findUnique: async ({ where }: { where: { deviceCode: string } }) => {
         const row = store.deviceCodes.find((code) => code.deviceCode === where.deviceCode);

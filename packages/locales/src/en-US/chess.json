@@ -40,8 +40,8 @@
     "loading": "Loading arena",
     "all": "All matches",
     "unpublished": "Private draft",
-    "official": "Controlled run",
-    "local": "Local experiment",
+    "official": "Official start",
+    "local": "Practice / local experiment",
     "status": {
       "running": "Live",
       "queued": "Queued",
@@ -188,16 +188,45 @@
     "cacheUnknown": "Reported cache reads: {{tokens}} tokens; cache share unavailable."
   },
   "leaderboard": {
-    "title": "Earned on the board.",
-    "description": "Results from controlled owner-run matches. Each ruleset and protocol is measured separately.",
-    "empty": "A leaderboard needs evidence.",
-    "emptyDescription": "No eligible published games yet. Demonstrations and community imports never enter the official standings.",
+    "title": "Every official start counts.",
+    "description": "Exploratory results from all accepted official starts, including queued, withdrawn and failed matches. Configurable settings vary; this is not an unbiased benchmark or a global model ranking.",
+    "empty": "No official starts yet.",
+    "emptyDescription": "Choose official before a hosted model match starts. Practice, human games, local runs and imports do not enter these results. Replay publication is independent.",
     "model": "Model / protocol",
     "ruleset": "Ruleset",
-    "note": "Provisional score = wins + half of draws, divided by games. Latest {{limit}} eligible matches; {{count}} included. These are not human Elo ratings.",
-    "window": "Results window",
+    "note": "Scope: all {{count}} accepted official matches. Earned points = wins + ½ draws; score = points / all starts. Withdrawals, stops and errors stay in the denominator with no points and are shown separately from losses. Pending starts make scores provisional. These are not Elo ratings.",
     "truncated_one": "{{count}} ran out of space",
-    "truncated_other": "{{count}} ran out of space"
+    "truncated_other": "{{count}} ran out of space",
+    "scope": "Comparison scope",
+    "starts": "All starts",
+    "allStartScore": "Points / all starts",
+    "outcomes": "Outcomes",
+    "points": "{{points}} earned points",
+    "provisional": "Provisional · starts pending",
+    "costUnknown": "Not fully reported",
+    "promptVersion": "Prompt version {{version}}",
+    "promptHash": "Prompt hash",
+    "initialPosition": "Starting position hash",
+    "billing": {
+      "operator": "Billed to operator",
+      "openrouter": "Billed to owner's OpenRouter key"
+    },
+    "opponents": {
+      "model": "Model vs model",
+      "random": "Model vs random baseline"
+    },
+    "categories": {
+      "wins": "Wins",
+      "draws": "Draws",
+      "losses": "Losses",
+      "withdrawals": "Owner withdrawals / stops",
+      "pending": "Pending starts",
+      "providerErrors": "Provider errors",
+      "accountErrors": "Account / key errors",
+      "infrastructureErrors": "Infrastructure errors"
+    },
+    "paginationNote": "Groups are paginated by a stable comparison key, not ranked across pages. Compare only matching prompt version/hash, rules, starting position, billing cohort and opponent type; protocol and move format are shown for each group. Results cover the full stated scope, not a recent-game sample.",
+    "loadMore": "Load more comparison groups"
   },
   "methodology": {
     "title": "The rules are part of the result.",
@@ -210,8 +239,8 @@
     "identityBody": "Anonymous games omit the opponent’s configured model identity. Commentary can be enabled independently, so it may reveal identity clues. Revealed games name the opponent; neither mode guarantees that a model cannot guess identity.",
     "budgetTitle": "Bounded, accountable inference",
     "budgetBody": "Every dispatch reserves a conservative token and cost allowance, including transport retries, before inference. There is no fixed reply cap: each reply may use the model’s own maximum output, limited by what the side’s budgets can still pay, unless the ruleset sets one for an experiment. Reported usage and price-based cost estimates are separate from reservations. Missing provider usage is not proof of zero cost.",
-    "rankTitle": "Comparable experiments",
-    "rankBody": "Standings separate exact rulesets and wire protocols. Imported games are local experiments, never automatic evidence of model identity. Small samples remain provisional. Chess performance is not a general intelligence score.",
+    "rankTitle": "Every start, with its scope",
+    "rankBody": "Practice is the default. Official participation is chosen before acceptance and permanently counts every queued start, whether its replay is published, hidden or deleted. Points are wins + ½ draws, divided by all starts. Withdrawals, stops and errors earn no points and are listed separately from W/D/L; pending starts are provisional. Groups separate model/protocol, prompt version/hash, rules, starting position, billing cohort and opponent type. Pages follow comparison keys, not a global rank. Settings are configurable: these are exploratory results, not an unbiased benchmark. Humans, random-only games, local runs and imports are never official.",
     "privacyTitle": "Your keys stay with you",
     "privacyBody": "Local inference credentials stay in your local process. Portable game archives contain game data, not provider credentials. Public viewers trigger no inference calls."
   },
@@ -245,8 +274,8 @@
     "disabled": "Hosted inference is off. An operator must enable CHESS_HOSTED_ENABLED and configure a provider key before paid games can run.",
     "create": "Create match",
     "import": "Import local archive",
-    "publish": "Publish",
-    "unpublish": "Unpublish",
+    "publish": "Publish replay",
+    "unpublish": "Unpublish replay",
     "stop": "Stop match",
     "drafts": "Your matches",
     "empty": "Your first experiment belongs here.",
@@ -287,7 +316,7 @@
     "importSubmit": "Import",
     "imported": "Imported as a private draft. Preview it below, then publish it.",
     "shareIllegal": "Outline the last illegal attempt",
-    "userIntro": "Run hosted matches billed to your own OpenRouter key. New matches are private; publish the ones you want to share.",
+    "userIntro": "Run hosted matches billed to your own OpenRouter key. Replays start private. Choose official before starting to commit a permanent minimal public result record.",
     "connectTitle": "Connect OpenRouter to create matches",
     "connectBody": "Hosted matches here are billed to your own OpenRouter key. Connect it once in Settings; it takes about a minute.",
     "connectAction": "Connect OpenRouter",
@@ -300,13 +329,12 @@
     "rules_other": "One match at a time · up to {{count}} matches a day",
     "statusLoadFailed": "Couldn't check your OpenRouter connection.",
     "queuePosition": "Queued · position {{position}}",
-    "officialLabel": "Counts on the leaderboard",
-    "officialHint": "Admins choose which published hosted games count.",
-    "officialOn": "Now counts on the leaderboard",
-    "officialOff": "No longer counts on the leaderboard",
     "signInUser": "Sign in to run hosted matches on your own OpenRouter key.",
     "signInAction": "Sign in",
-    "openSettings": "Open OpenRouter settings"
+    "openSettings": "Open OpenRouter settings",
+    "publicationHint": "Publishing shares the replay transcript; it does not make a practice match official. Unpublishing does not remove an official start or change its points.",
+    "officialRecord": "Official start · permanent public record",
+    "practiceRecord": "Practice · outside official results"
   },
   "footer": "Built for the moves that make you look twice.",
   "aiDisclosure": "AI players can make mistakes. Inspect the rules and replay before drawing conclusions.",
@@ -438,7 +466,7 @@
   },
   "create": {
     "title": "New match",
-    "description": "Pick two models and start. Everything else has a sensible default you can change under Advanced settings.",
+    "description": "Pick two models, choose practice or official, and start. You can change the defaults under Advanced settings.",
     "modelLabel": "{{side}} model",
     "modelPlaceholder": "Choose a model",
     "search": "Search by name, id or provider",
@@ -560,7 +588,7 @@
     },
     "autoTitle": "{{white}} vs {{black}}",
     "catalogStale": "The model list could not be refreshed; prices are from {{time}}. Retrying automatically.",
-    "started": "Match started. It plays in the background and stays a private draft until you publish it from its card.",
+    "started": "Match accepted. The replay plays in the background and stays private until you publish it. Official commitments are already public.",
     "units": {
       "usd": "USD",
       "thousand": "k",
@@ -575,11 +603,19 @@
       "openrouter": "My OpenRouter key"
     },
     "billingHint": {
-      "operator": "The server's OpenRouter key pays. The match can count on the leaderboard.",
-      "openrouter": "Your connected OpenRouter key pays. The match starts unofficial; an admin can promote it."
+      "operator": "The server's OpenRouter key pays. Practice is the default; billing does not choose official participation.",
+      "openrouter": "Your connected OpenRouter key pays. Practice is the default; choose official separately before starting."
     },
     "remainingCap": "Your OpenRouter key has {{remaining}} left and both players bill it, so each budget stops at {{max}}.",
-    "keyExhausted": "Your OpenRouter key has almost nothing left ({{remaining}}). Raise its limit or add credits on OpenRouter first."
+    "keyExhausted": "Your OpenRouter key has almost nothing left ({{remaining}}). Raise its limit or add credits on OpenRouter first.",
+    "participationLabel": "Participation",
+    "practice": "Practice (default)",
+    "official": "Official",
+    "participationHint": "Choose before starting. Only hosted model vs model or model vs random matches can be official; human and random vs random games cannot.",
+    "officialCommitment": "Starting official is a permanent public commitment as soon as the queued start is accepted. A minimal model, prompt, settings and result record stays public, even if you stop, withdraw, unpublish or delete the match. Every start counts; withdrawals and errors earn no points. Publishing the replay transcript is a separate choice.",
+    "practiceCommitment": "Practice does not count toward official results and cannot become official later. The replay starts private; publishing it does not make it official.",
+    "officialSubmitHint": "Official starts count permanently in public results; replay publication is separate.",
+    "practiceSubmitHint": "Practice stays outside official results, even if you publish the replay."
   },
   "motion": {
     "illegal": "{{side}} tried {{move}}: not a legal move",

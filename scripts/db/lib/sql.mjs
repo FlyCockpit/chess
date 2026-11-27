@@ -63,6 +63,7 @@ class SqlLexError extends Error {}
 /**
  * Split SQL into statements.
  * @param {string} sql
+ * @param {{ onLineComment?: (text: string, offset: number) => void }} [options]
  * @returns {Array<{ tokens: string[], positions: number[], ends: number[], start: number,
  *   end: number, line: number, comments: string[], opaque: boolean, text: string }>}
  *   `positions`/`ends` are each token's [start, end) offsets in `sql` (a
@@ -71,7 +72,7 @@ class SqlLexError extends Error {}
  *   one (the "comment immediately above"); `opaque` marks dollar-quoted or
  *   Unicode-escape content the analyzer cannot see through.
  */
-export function splitStatements(sql) {
+export function splitStatements(sql, { onLineComment } = {}) {
   if (sql.includes("\0")) throw new SqlLexError("NUL byte in SQL");
   const out = [];
   let offset = 0;
@@ -95,7 +96,9 @@ export function splitStatements(sql) {
       } else if (sql.startsWith("--", offset)) {
         const eol = sql.slice(offset).search(/[\r\n]/);
         const endAt = eol < 0 ? sql.length : offset + eol;
-        if (start === undefined) pendingComments.push(sql.slice(offset, endAt).trim());
+        const comment = sql.slice(offset, endAt).trim();
+        onLineComment?.(comment, offset);
+        if (start === undefined) pendingComments.push(comment);
         offset = endAt;
       } else if (sql.startsWith("/*", offset)) {
         offset += 2;
@@ -572,6 +575,8 @@ export function analyzeMigration(sql, options = {}) {
   }
   const recognized = recognizeTemplates(sql, parsed, { folder: options.folder, file: "migration" });
   result.templates = recognized.templates;
+  for (const problem of recognized.fileProblems)
+    result.notAnalyzed.push({ ...problem, reviewed: null, template: true });
   const notAnalyzed = (statement, reason, extra = {}) => {
     const entry = { line: statement.line, reason, ...reviewedAnnotation(statement), ...extra };
     if (extra.template) {
@@ -865,6 +870,7 @@ export function summarizeEffects(sql, options = {}) {
     return effects;
   }
   const recognized = recognizeTemplates(sql, parsed, { folder: options.folder, file: "any" });
+  if (recognized.fileProblems.length) effects.opaque = true;
   for (const template of recognized.templates) {
     if (template.kind === "recover")
       effects.updatedColumns.add(`public.${template.header.table}.${template.header.to}`);
@@ -1089,7 +1095,7 @@ function headerTokens(text) {
 }
 
 /**
- * Parse a `-- cockpit-chess:enum-remove|recover|relax <vN> …` header comment.
+ * Parse a versioned enum-remove, recover, relax or fixed official-ledger header.
  * Returns null for any other comment; `malformed: true` when the shape is
  * wrong; `version: null` when the version token is missing.
  */
@@ -1099,6 +1105,7 @@ export function parseTemplateHeader(line) {
     ["enum-remove", ENUM_REMOVE_PREFIX],
     ["recover", RECOVER_PREFIX],
     ["relax", RELAX_PREFIX],
+    ["official-ledger", "-- cockpit-chess:official-ledger"],
   ];
   const match = kinds.find(([, prefix]) => text === prefix || text.startsWith(`${prefix} `));
   if (!match) return null;
@@ -1107,6 +1114,7 @@ export function parseTemplateHeader(line) {
   const version = typeof tokens?.[0] === "string" && /^v\d+$/.test(tokens[0]) ? tokens[0] : null;
   const malformed = { kind, version, malformed: true };
   if (!tokens || !version) return malformed;
+  if (kind === "official-ledger") return tokens.length === 1 ? { kind, version } : malformed;
   let i = 1;
   const id = () => {
     const token = tokens[i];
@@ -1424,6 +1432,114 @@ function relaxV1({ table, column, sentinel = null }) {
 }
 
 /**
+ * Launch ledger functions/triggers, fixed and parameter-free. The only dynamic
+ * writes are pending settlement fields on the new ledger; existing match rows
+ * are never changed by these hooks. Preserve this exact version forever.
+ */
+function chessOfficialLedgerV1() {
+  return `-- cockpit-chess:official-ledger v1
+-- server-only enrollment guard binds immutable minimal fields to a hosted acceptance; no archive/free text is copied
+CREATE FUNCTION chess_official_enrollment_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE m "chess_match"%ROWTYPE;
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    SELECT * INTO m FROM "chess_match" WHERE id = NEW."matchId";
+    IF NOT FOUND OR m.source <> 'hosted' OR m.status <> 'queued'
+      OR m.archive->>'source' IS DISTINCT FROM 'hosted'
+      OR m."promptVersion" IS NULL OR m."promptHash" IS NULL
+      OR NEW."promptVersion" IS DISTINCT FROM m."promptVersion"
+      OR NEW."promptHash" IS DISTINCT FROM m."promptHash"
+      OR NEW."promptVersion" IS DISTINCT FROM m.archive#>>'{config,prompt,version}'
+      OR NEW."promptHash" IS DISTINCT FROM m.archive#>>'{config,prompt,hash}'
+      OR m.archive#>'{config,prompt,promptApplied}' IS DISTINCT FROM 'true'::jsonb
+      OR NEW."rulesKey" IS DISTINCT FROM m."rulesKey"
+      OR NEW.rules IS DISTINCT FROM m.archive#>'{config,rules}'
+      OR NEW."initialFen" IS DISTINCT FROM m.archive#>>'{config,initialFen}'
+      OR NEW."whiteModel" IS DISTINCT FROM m.archive#>>'{config,white,model}'
+      OR NEW."blackModel" IS DISTINCT FROM m.archive#>>'{config,black,model}'
+      OR NEW."whiteProtocol" IS DISTINCT FROM m.archive#>>'{config,white,protocol}'
+      OR NEW."blackProtocol" IS DISTINCT FROM m.archive#>>'{config,black,protocol}'
+      OR NEW."whiteProtocol" NOT IN ('openai-chat','openai-responses','anthropic','random')
+      OR NEW."blackProtocol" NOT IN ('openai-chat','openai-responses','anthropic','random')
+      OR (NEW."whiteProtocol" = 'random' AND NEW."blackProtocol" = 'random')
+      OR NEW."billingCohort" NOT IN ('operator','owner-openrouter')
+      OR NEW."billingCohort" IS DISTINCT FROM m."credentialSource"
+      OR NEW."moveFormat" IS DISTINCT FROM m.archive#>>'{config,rules,moveFormat}'
+      OR NEW."opponentType" IS DISTINCT FROM
+        (CASE WHEN 'random' IN (NEW."whiteProtocol",NEW."blackProtocol") THEN 'model-v-random' ELSE 'model-v-model' END)
+      OR NEW.state <> 'pending' OR NEW."settledAt" IS NOT NULL
+      OR NEW.result IS NOT NULL OR NEW.cause IS NOT NULL OR NEW."finalFen" IS NOT NULL
+    THEN RAISE EXCEPTION 'Invalid official acceptance'; END IF;
+  ELSE
+    IF (to_jsonb(NEW) - ARRAY['matchId','state','cause','settledAt','result','finalFen','whiteIllegal','blackIllegal','whiteTruncated','blackTruncated','whiteCostMicros','blackCostMicros'])
+      IS DISTINCT FROM
+      (to_jsonb(OLD) - ARRAY['matchId','state','cause','settledAt','result','finalFen','whiteIllegal','blackIllegal','whiteTruncated','blackTruncated','whiteCostMicros','blackCostMicros'])
+      OR (NEW."matchId" IS DISTINCT FROM OLD."matchId" AND NEW."matchId" IS NOT NULL)
+      OR (OLD.state <> 'pending' AND (to_jsonb(NEW) - 'matchId') IS DISTINCT FROM (to_jsonb(OLD) - 'matchId'))
+    THEN RAISE EXCEPTION 'Official commitment is immutable'; END IF;
+    IF NEW.state NOT IN ('pending','scored','withdrawal','provider-error','account-error','infrastructure-error')
+    THEN RAISE EXCEPTION 'Invalid official settlement'; END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- guards only the new minimal ledger, without changing authentication or existing match writes
+CREATE TRIGGER chess_official_enrollment_guard BEFORE INSERT OR UPDATE ON "chess_official_entry"
+  FOR EACH ROW EXECUTE FUNCTION chess_official_enrollment_guard();
+
+-- settles once in the existing match CAS transaction; deletion keeps the ledger and only detaches its match FK
+CREATE FUNCTION chess_official_settle() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE m "chess_match"%ROWTYPE; category text; why text; position text;
+BEGIN
+  IF TG_OP = 'DELETE' THEN m := OLD; ELSE m := NEW; END IF;
+  IF TG_OP <> 'DELETE' AND m.status IN ('queued','running','draft') THEN RETURN NEW; END IF;
+  IF NOT EXISTS (SELECT FROM "chess_official_entry" WHERE "matchId" = m.id AND state = 'pending')
+    THEN IF TG_OP = 'DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF; END IF;
+
+  why := coalesce(m."terminalCause", m.ending->>'kind', 'unknown-terminal');
+  IF TG_OP = 'DELETE' AND m.status IN ('queued','running','draft') THEN why := 'owner-delete'; END IF;
+  IF m.status = 'completed' AND m.result IN ('1-0','0-1','1/2-1/2')
+    AND m.ending->>'kind' IN ('checkmate','draw','illegal-forfeit','timeout','move-timeout','token-budget','cost-budget','resignation')
+  THEN category := 'scored';
+  ELSIF why IN ('owner-stop','owner-disconnect','owner-reset','owner-delete','cancelled') THEN category := 'withdrawal';
+  ELSIF why = 'provider-error' THEN category := 'provider-error';
+  ELSIF why IN ('account-limit','credential-revoked') THEN category := 'account-error';
+  ELSE category := 'infrastructure-error';
+  END IF;
+  -- Only bounded server cause codes, never provider text or arbitrary archive content.
+  IF why NOT IN ('checkmate','draw','illegal-forfeit','timeout','move-timeout','token-budget','cost-budget','resignation',
+    'owner-stop','owner-disconnect','owner-reset','owner-delete','cancelled','provider-error','account-limit',
+    'credential-revoked','interrupted','engine-error','event-limit','worker-lost','queue-lost','archive-invalid','enqueue-failed')
+    THEN why := 'unknown-terminal'; END IF;
+
+  SELECT e.value->>'fen' INTO position
+    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(m.archive->'events') = 'array' THEN m.archive->'events' ELSE '[]'::jsonb END)
+      WITH ORDINALITY e(value, seq)
+    WHERE e.value->>'type' = 'attempt' AND e.value->'accepted' = 'true'::jsonb
+      AND length(e.value->>'fen') BETWEEN 1 AND 160
+    ORDER BY e.seq DESC LIMIT 1;
+  UPDATE "chess_official_entry" SET
+    state = category, cause = why, "settledAt" = CURRENT_TIMESTAMP,
+    result = CASE WHEN category = 'scored' THEN m.result ELSE NULL END,
+    "finalFen" = coalesce(position, "initialFen"),
+    "whiteIllegal" = m."whiteIllegal", "blackIllegal" = m."blackIllegal",
+    "whiteTruncated" = m."whiteTruncated", "blackTruncated" = m."blackTruncated",
+    "whiteCostMicros" = m."whiteCostMicros", "blackCostMicros" = m."blackCostMicros"
+    WHERE "matchId" = m.id AND state = 'pending';
+  IF TG_OP = 'DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
+END;
+$$;
+-- terminal updates inherit status/runToken/heartbeat CAS ownership from the guarded match write
+CREATE TRIGGER chess_official_terminal AFTER UPDATE OF status ON "chess_match"
+  FOR EACH ROW EXECUTE FUNCTION chess_official_settle();
+-- account cascade or explicit match deletion records pending withdrawal before SET NULL detaches the public entry
+CREATE TRIGGER chess_official_delete BEFORE DELETE ON "chess_match"
+  FOR EACH ROW EXECUTE FUNCTION chess_official_settle();
+-- end cockpit-chess:official-ledger
+`;
+}
+
+/**
  * Every released template version. Generators always write
  * LATEST_TEMPLATE_VERSION; recognizers dispatch on the header's token, so a
  * migration generated with v1 stays recognized after a v2 exists. Any change
@@ -1435,6 +1551,7 @@ export const TEMPLATES = Object.freeze({
     enumRemoveContract: enumRemoveContractV1,
     recoverBlock: recoverBlockV1,
     relax: relaxV1,
+    chessOfficialLedger: chessOfficialLedgerV1,
   }),
 });
 
@@ -1455,6 +1572,11 @@ export function relax(spec) {
   return TEMPLATES[LATEST_TEMPLATE_VERSION].relax(spec);
 }
 
+/** Generate the one fixed launch ledger block; no identifiers or SQL are caller supplied. */
+export function chessOfficialLedger() {
+  return TEMPLATES[LATEST_TEMPLATE_VERSION].chessOfficialLedger();
+}
+
 /**
  * Find the generated templates in a file and verify each byte for byte.
  * `covered`: statement indexes inside a verified template; `relaxed`: verified
@@ -1470,11 +1592,41 @@ function recognizeTemplates(sql, parsed, { folder, file }) {
   const relaxed = new Set();
   const problems = new Map();
   const templates = [];
+  // Statement-leading comments alone omit EOF/empty-statement/internal headers.
+  // Reuse the SQL lexer so inert text in strings/dollar bodies/block comments
+  // never becomes a marker, while every actual line comment is checked.
+  const lexicalHeaders = [];
+  splitStatements(sql, {
+    onLineComment: (text, offset) => {
+      if (parseTemplateHeader(text)?.kind === "official-ledger")
+        lexicalHeaders.push({ text, line: sql.slice(0, offset).split("\n").length });
+    },
+  });
+  const attachedHeaders = parsed.flatMap((statement) =>
+    statement.comments.filter(
+      (comment) => parseTemplateHeader(comment)?.kind === "official-ledger",
+    ),
+  ).length;
+  const officialHeaders = lexicalHeaders.length;
+  const fileProblems =
+    attachedHeaders !== officialHeaders
+      ? [
+          {
+            line: lexicalHeaders.at(-1)?.line ?? 1,
+            reason:
+              "official-ledger headers must precede a statement; detached/trailing headers are not allowed",
+          },
+        ]
+      : [];
   for (const [index, statement] of parsed.entries()) {
     for (const comment of statement.comments) {
       const header = parseTemplateHeader(comment);
       if (!header) continue;
       const set = header.version ? TEMPLATES[header.version] : undefined;
+      if (header.kind === "official-ledger" && (officialHeaders !== 1 || file === "contract")) {
+        problems.set(index, "official-ledger requires exactly one header in migration.sql only");
+        continue;
+      }
       if (header.malformed) {
         problems.set(index, `malformed cockpit-chess:${header.kind} template header`);
         continue;
@@ -1506,7 +1658,17 @@ function recognizeTemplates(sql, parsed, { folder, file }) {
       }
       const at = sql.lastIndexOf(comment, statement.start);
       const candidates = [];
-      if (header.kind === "recover") candidates.push(["migration", set.recoverBlock(header)]);
+      if (header.kind === "official-ledger") {
+        if (typeof set.chessOfficialLedger !== "function") {
+          problems.set(
+            index,
+            `template ${header.version} not known to this image (official-ledger)`,
+          );
+          continue;
+        }
+        candidates.push(["migration", set.chessOfficialLedger()]);
+      } else if (header.kind === "recover")
+        candidates.push(["migration", set.recoverBlock(header)]);
       else {
         const full = { ...header, folder };
         try {
@@ -1538,7 +1700,7 @@ function recognizeTemplates(sql, parsed, { folder, file }) {
       });
     }
   }
-  return { covered, relaxed, problems, templates };
+  return { covered, relaxed, problems, templates, fileProblems };
 }
 
 /** `-- cockpit-chess:reviewed <reason>` above this statement, honoured unless the annotation regex ignores it. */
@@ -2980,6 +3142,7 @@ export function analyzeContract(sql, options = {}) {
   }
   const recognized = recognizeTemplates(sql, parsed, { folder: options.folder, file: "contract" });
   const reject = (statement, message) => result.findings.push({ line: statement.line, message });
+  for (const problem of recognized.fileProblems) reject(problem, problem.reason);
   for (const [index, statement] of parsed.entries()) {
     if (
       statement.comments.some((c) => c === REVIEWED_MARKER || c.startsWith(`${REVIEWED_MARKER} `))
@@ -3066,6 +3229,8 @@ export function rollbackSafety(sql, options = {}) {
     return { safe: false, reasons: [`the file could not be lexed (${error.message})`] };
   }
   const recognized = recognizeTemplates(sql, parsed, { folder: options.folder, file: "migration" });
+  for (const problem of recognized.fileProblems)
+    reasons.push(`line ${problem.line}: ${problem.reason}`);
   const createdTables = new Set();
   const createdColumns = new Map();
   const prior = (table) =>

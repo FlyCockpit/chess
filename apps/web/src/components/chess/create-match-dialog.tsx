@@ -1,4 +1,4 @@
-import { FALLBACK_MAX_OUTPUT_TOKENS } from "@cockpit-chess/chess";
+import { FALLBACK_MAX_OUTPUT_TOKENS, type MatchConfig } from "@cockpit-chess/chess";
 import { Button } from "@cockpit-chess/ui/components/button";
 import { RangeField } from "@cockpit-chess/ui/components/range-field";
 import {
@@ -15,7 +15,7 @@ import { fieldErrorMessages, TextField } from "@cockpit-chess/ui/components/text
 import { useForm, useStore } from "@tanstack/react-form";
 import { useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SegmentedControl } from "@/components/segmented-control";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
@@ -46,6 +46,7 @@ import {
   LIMITS,
   MOVE_FORMATS,
   maxBudgetUsd,
+  officialEligible,
   PROTOCOL_CHOICES,
   REMARK_TONES,
   replyCapTokens,
@@ -95,6 +96,10 @@ export function CreateMatchDialog({
 }) {
   const { t, i18n } = useTranslation("chess");
   const [billing, setBilling] = useState<Billing>(billingOptions[0]);
+  // Keep the exact accepted intent for a retry, including catalog-derived names.
+  const submission = useRef<
+    (MatchConfig & { billing: Billing; official: boolean; creationKey: string }) | null
+  >(null);
   const limits = useMemo(
     () =>
       billing === "openrouter"
@@ -155,6 +160,7 @@ export function CreateMatchDialog({
     {
       ...orpc.chess.create.mutationOptions({
         onSuccess: (result) => {
+          submission.current = null;
           setOpen(false);
           onCreated(result.slug);
         },
@@ -167,6 +173,11 @@ export function CreateMatchDialog({
   );
   const form = useForm({
     defaultValues: defaultValuesFor(limits),
+    listeners: {
+      onChange: () => {
+        submission.current = null;
+      },
+    },
     validators: { onChange: schema, onSubmit: schema },
     onSubmitInvalid: ({ formApi }) => {
       setInvalid(true);
@@ -180,9 +191,22 @@ export function CreateMatchDialog({
       if (toOpen.length) setSections((current) => new Set([...current, ...toOpen]));
     },
     onSubmit: ({ value }) => {
+      if (submission.current) {
+        mutation.mutate(submission.current);
+        return;
+      }
       const config = toMatchConfig(value, catalog, t);
-      setInvalid(!config.success);
-      if (config.success) mutation.mutate({ ...config.data, billing });
+      const valid = config.success && (!value.official || officialEligible(config.data));
+      setInvalid(!valid);
+      if (config.success && valid) {
+        submission.current = {
+          ...config.data,
+          billing,
+          official: value.official,
+          creationKey: crypto.randomUUID(),
+        };
+        mutation.mutate(submission.current);
+      }
     },
   });
   const values = useStore(form.store, (state) => state.values);
@@ -225,6 +249,7 @@ export function CreateMatchDialog({
       : t(`create.protocols.${choice}`);
   const refusal = createRefusal(mutation.error);
   const chooseBilling = (next: Billing) => {
+    submission.current = null;
     setBilling(next);
     // A smaller allowance (the user's own key) pulls a budget above it down to fit.
     const nextMax = maxBudgetUsd(
@@ -233,6 +258,7 @@ export function CreateMatchDialog({
     if (form.getFieldValue("budget") > nextMax) form.setFieldValue("budget", nextMax);
   };
   const reset = () => {
+    submission.current = null;
     setBilling(billingOptions[0]);
     form.reset(defaultValuesFor(limits));
     setInvalid(false);
@@ -246,6 +272,7 @@ export function CreateMatchDialog({
         if (mutation.isPending) return;
         // Opening starts from defaults within the limits the server reports now.
         if (next) {
+          submission.current = null;
           setBilling(billingOptions[0]);
           form.reset(
             defaultValuesFor(
@@ -336,6 +363,30 @@ export function CreateMatchDialog({
                 )}
             </div>
             <div className="cc-create-quick">
+              <form.Field name="official">
+                {(field) => (
+                  <div className="cc-choice">
+                    <span className="cc-field-label">{t("create.participationLabel")}</span>
+                    <SegmentedControl
+                      ariaLabel={t("create.participationLabel")}
+                      value={field.state.value ? "official" : "practice"}
+                      onChange={(next) => field.handleChange(next === "official")}
+                      items={[
+                        { value: "practice", label: t("create.practice") },
+                        { value: "official", label: t("create.official") },
+                      ]}
+                    />
+                    <p className="cc-field-hint">{t("create.participationHint")}</p>
+                    <p className="cc-field-hint" role="note">
+                      {t(
+                        field.state.value
+                          ? "create.officialCommitment"
+                          : "create.practiceCommitment",
+                      )}
+                    </p>
+                  </div>
+                )}
+              </form.Field>
               <div className="cc-create-players">
                 {(["white", "black"] as const).map((name) => (
                   <form.Field key={name} name={name}>
@@ -646,6 +697,9 @@ export function CreateMatchDialog({
             </div>
           </SheetBody>
           <SheetFooter className="cc-create-footer">
+            <p className="cc-field-hint w-full" role="note">
+              {t(values.official ? "create.officialSubmitHint" : "create.practiceSubmitHint")}
+            </p>
             {(invalid || mutation.isError) && (
               <p role="alert" className="cc-error cc-create-error">
                 {/* Offline the start fails at once (the offline mutation policy, router.tsx)

@@ -1,18 +1,19 @@
 /// A complete replay archive. Public readers always filter published=true.
 model ChessMatch {
-  id                   String    @id @default(cuid(2))
-  slug                 String    @unique
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @default(now()) @updatedAt
+  id                   String              @id @default(cuid(2))
+  slug                 String              @unique
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @default(now()) @updatedAt
   ownerId              String
-  Owner                User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  Owner                User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   title                String
   whiteName            String
   blackName            String
-  status               String    @default("draft")
-  published            Boolean   @default(false)
-  official             Boolean   @default(false)
-  source               String    @default("hosted")
+  status               String              @default("draft")
+  published            Boolean             @default(false)
+  OfficialEntry        ChessOfficialEntry?
+  Creation             ChessCreation?
+  source               String              @default("hosted")
   rulesKey             String
   /// Current archives use cockpit-v1. Unsupported versions have no replay.
   rulesVersion         String?
@@ -25,7 +26,7 @@ model ChessMatch {
   heartbeatAt          DateTime?
   /// Internal turn state: idle | model (claimed) | human (parked) | human-move (ready).
   /// Human waits/ready inputs have no runToken and consume no worker slot.
-  turnType             String    @default("idle")
+  turnType             String              @default("idle")
   turnId               String?
   turnSide             String?
   turnExpectedSeq      Int?
@@ -56,6 +57,8 @@ model ChessMatch {
   /// (`endingSummarySchema` in packages/chess/src/ending.ts). Written with the stats
   /// columns on the terminal write; null while running.
   ending               Json?
+  /// Server-owned terminal cause; never supplied by clients or imported archives.
+  terminalCause        String?
   /// Spectator-only engine scores of the game's positions, keyed by ply
   /// (`spectatorEvaluationsSchema` in packages/chess/src/spectator.ts). Written in the
   /// background, merged key by key; never part of the archive or the players' context.
@@ -63,7 +66,7 @@ model ChessMatch {
   /// Whose OpenRouter key pays for the players: "operator" (the server's
   /// OPENROUTER_API_KEY, admin matches only) or "owner-openrouter" (the match
   /// owner's connected key, loaded by owner at claim time; never the operator key).
-  credentialSource     String    @default("operator")
+  credentialSource     String              @default("operator")
 
   @@index([published, createdAt(sort: Desc), id(sort: Desc)])
   @@index([ownerId, createdAt(sort: Desc)])
@@ -72,6 +75,56 @@ model ChessMatch {
   @@index([turnType, turnDeadline, id])
   @@index([status, createdAt])
   @@map("chess_match")
+}
+
+/// Private idempotency receipt. Its id hashes owner + random creation key; no raw owner,
+/// title, slug or configuration is retained here. Deletion cannot reuse an accepted key.
+model ChessCreation {
+  id           String      @id
+  configDigest String
+  matchId      String?     @unique
+  Match        ChessMatch? @relation(fields: [matchId], references: [id], onDelete: SetNull)
+
+  @@map("chess_creation")
+}
+
+/// Permanent minimal public official commitment. Never copy owner/title/name/reply text.
+/// Enrollment is immutable; only pending -> terminal settlement may update outcome fields.
+model ChessOfficialEntry {
+  id                  String      @id @default(cuid(2))
+  matchId             String?     @unique
+  Match               ChessMatch? @relation(fields: [matchId], references: [id], onDelete: SetNull)
+  startedAt           DateTime    @default(now())
+  promptVersion       String
+  promptHash          String
+  rulesKey            String
+  rules               Json
+  initialFen          String
+  initialPositionHash String
+  scopeKey            String
+  billingCohort       String
+  opponentType        String
+  whiteModel          String
+  whiteProtocol       String
+  blackModel          String
+  blackProtocol       String
+  moveFormat          String
+  state               String      @default("pending")
+  cause               String?
+  settledAt           DateTime?
+  result              String?
+  finalFen            String?
+  whiteIllegal        Int?
+  blackIllegal        Int?
+  whiteTruncated      Int?
+  blackTruncated      Int?
+  whiteCostMicros     BigInt?
+  blackCostMicros     BigInt?
+
+  @@index([startedAt(sort: Desc), id(sort: Desc)])
+  @@index([promptVersion, rulesKey, initialPositionHash, billingCohort, opponentType])
+  @@index([scopeKey])
+  @@map("chess_official_entry")
 }
 
 /// A user's own OpenRouter key, from OpenRouter's OAuth PKCE flow

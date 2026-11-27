@@ -129,6 +129,7 @@ export function budgetStops(min: number, max: number) {
 }
 
 export type CreateMatchValues = {
+  official: boolean;
   title: string;
   white: string;
   black: string;
@@ -157,6 +158,7 @@ export type CreateMatchValues = {
 
 /** The same defaults the form always started from; only the protocol is now derived. */
 export const DEFAULT_VALUES: CreateMatchValues = {
+  official: false,
   title: "",
   white: "openai/gpt-4.1-nano",
   black: "openai/gpt-4.1-mini",
@@ -246,6 +248,7 @@ export function createMatchSchema(t: TFunction<"chess">, limits: HostedLimits = 
     .max(LIMITS.model, { message: t("create.errors.modelLength", { max: LIMITS.model }) });
   return z
     .object({
+      official: z.boolean(),
       title: z.string().max(LIMITS.title, {
         message: t("create.errors.title", { max: LIMITS.title }),
       }),
@@ -322,6 +325,16 @@ export function resolveProtocol(
 ): ModelProtocol {
   if (choice !== "auto") return choice;
   return findModel(catalog, id)?.protocol ?? protocolForModel(id);
+}
+
+/** Only hosted model/model and model/random pairings can commit official starts. */
+export function officialEligible(config: Pick<MatchConfig, "white" | "black">) {
+  const protocols = [config.white.protocol, config.black.protocol];
+  return (
+    protocols.every(
+      (protocol) => protocol === "random" || MODEL_PROTOCOLS.some((model) => model === protocol),
+    ) && protocols.some((protocol) => protocol !== "random")
+  );
 }
 
 /** The display name a player carries: the catalog's name, else the id itself. */

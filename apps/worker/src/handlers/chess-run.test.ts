@@ -141,6 +141,7 @@ function row() {
     blackCostMicros: null,
     moveFormat: null,
     ending: null,
+    terminalCause: null,
     spectatorEvaluations: null,
     credentialSource: "operator",
     Owner: { role: "admin" },
@@ -195,7 +196,7 @@ describe("durable chess worker", () => {
     await handleChessRunJob({ data: { matchId: "match-id" } });
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "match-id", status: "queued" },
+        where: { id: "match-id", status: "queued", source: "hosted" },
         data: expect.objectContaining({ status: "running", runToken: expect.any(String) }),
       }),
     );
@@ -396,31 +397,111 @@ describe("durable chess worker", () => {
     const claim = db.chessMatch.updateMany.mock.calls[0]?.[0];
     expect(db.chessMatch.updateMany).toHaveBeenLastCalledWith({
       where: { id: "match-id", status: "running", runToken: claim?.data.runToken },
-      data: { status: "error", runToken: null, ending: { kind: "interrupted" } },
+      data: {
+        status: "error",
+        runToken: null,
+        ending: { kind: "interrupted" },
+        terminalCause: "archive-invalid",
+      },
     });
   });
-  it("ends model runs with provider-error if hosted inference is disabled", async () => {
+  it("rejects a forged prompt pin before hosted work", async () => {
     const record = row();
-    record.archive = createMatch(
-      {
-        white: { name: "Model", model: "test-model", protocol: "openai-chat" },
-        black: player,
-        rules: {},
-      },
-      "hosted",
-    );
+    record.archive.config.prompt.hash = "0".repeat(64);
     db.chessMatch.findUnique.mockResolvedValue(record);
+    const run = vi.fn();
+    runner.override = run;
     await handleChessRunJob({ data: { matchId: "match-id" } });
-    expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          status: "error",
-          runToken: null,
-          archive: expect.objectContaining({ termination: "provider-error", result: "*" }),
-        }),
-      }),
-    );
+    const claim = db.chessMatch.updateMany.mock.calls[0]?.[0];
+    expect(db.chessMatch.updateMany).toHaveBeenLastCalledWith({
+      where: { id: "match-id", status: "running", runToken: claim?.data.runToken },
+      data: {
+        status: "error",
+        runToken: null,
+        ending: { kind: "interrupted" },
+        terminalCause: "archive-invalid",
+      },
+    });
+    expect(run).not.toHaveBeenCalled();
+    expect(providerKey.load).not.toHaveBeenCalled();
+    expect(evaluatePosition).not.toHaveBeenCalled();
   });
+  it.each([
+    { source: "local", archiveSource: "hosted" },
+    { source: "runner", archiveSource: "hosted" },
+    { source: "hosted", archiveSource: "local" },
+    { source: "hosted", archiveSource: "demo" },
+  ] as const)(
+    "refuses $source rows with $archiveSource archives before hosted work",
+    async ({ source, archiveSource }) => {
+      const record = row();
+      record.source = source;
+      record.archive.source = archiveSource;
+      db.chessMatch.findUnique.mockResolvedValue(record);
+      const fetch = vi.spyOn(globalThis, "fetch");
+      const run = vi.fn();
+      runner.override = run;
+      try {
+        await expect(handleChessRunJob({ data: { matchId: "match-id" } })).resolves.toBeUndefined();
+        expect(db.chessMatch.findUnique).toHaveBeenCalledWith({
+          where: { id: "match-id" },
+          select: {
+            archive: true,
+            source: true,
+            spectatorEvaluations: true,
+            ownerId: true,
+            credentialSource: true,
+            Owner: { select: { role: true } },
+          },
+        });
+        const claim = db.chessMatch.updateMany.mock.calls[0]?.[0];
+        expect(db.chessMatch.updateMany).toHaveBeenLastCalledWith({
+          where: { id: "match-id", status: "running", runToken: claim?.data.runToken },
+          data: {
+            status: "error",
+            runToken: null,
+            ending: { kind: "interrupted" },
+            terminalCause: "archive-invalid",
+          },
+        });
+        expect(run).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(providerKey.load).not.toHaveBeenCalled();
+        expect(evaluatePosition).not.toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    },
+  );
+  it.each(["hosting-disabled", "operator-key-missing"])(
+    "classifies %s as infrastructure interruption",
+    async (cause) => {
+      env.CHESS_HOSTED_ENABLED = cause === "operator-key-missing";
+      env.OPENROUTER_API_KEY = undefined;
+      const record = row();
+      record.archive = createMatch(
+        {
+          white: { name: "Model", model: "test-model", protocol: "openai-chat" },
+          black: player,
+          rules: {},
+        },
+        "hosted",
+      );
+      db.chessMatch.findUnique.mockResolvedValue(record);
+      await handleChessRunJob({ data: { matchId: "match-id" } });
+      expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: "error",
+            runToken: null,
+            terminalCause: "interrupted",
+            ending: { kind: "interrupted" },
+            archive: expect.objectContaining({ termination: "interrupted", result: "*" }),
+          }),
+        }),
+      );
+    },
+  );
   it("hands the runner each model's own output limits from the catalog", async () => {
     env.CHESS_HOSTED_ENABLED = true;
     env.OPENROUTER_API_KEY = "test-only";
@@ -730,7 +811,12 @@ describe("chess reconcile sweep", () => {
     );
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
       where: { id: row.id, status: "running", heartbeatAt: row.heartbeatAt },
-      data: { status: "error", runToken: null, ending: { kind: "interrupted" } },
+      data: {
+        status: "error",
+        runToken: null,
+        ending: { kind: "interrupted" },
+        terminalCause: "worker-lost",
+      },
     });
     expect(getJob).not.toHaveBeenCalled();
   });
@@ -742,6 +828,28 @@ describe("chess reconcile sweep", () => {
     expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
     expect(result).toEqual({ scanned: 1, errored: 0 });
   });
+  it.each(["queued", "running"] as const)(
+    "does not count or retry a stale %s row when its compare-and-set loses",
+    async (status) => {
+      const row = stale(status);
+      rows(status === "running" ? [row] : [], status === "queued" ? [row] : []);
+      getJob.mockResolvedValue(null);
+      db.chessMatch.updateMany.mockResolvedValue({ count: 0 });
+      await expect(handleChessReconcileJob({ data: { reason: "cron" } })).resolves.toEqual({
+        scanned: 1,
+        errored: 0,
+      });
+      expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
+        where: { id: row.id, status, heartbeatAt: row.heartbeatAt },
+        data: {
+          status: "error",
+          runToken: null,
+          ending: { kind: "interrupted" },
+          terminalCause: status === "running" ? "worker-lost" : "queue-lost",
+        },
+      });
+    },
+  );
   it.each([
     ["missing", null],
     ["failed", { getState: async () => "failed" }],
@@ -753,7 +861,12 @@ describe("chess reconcile sweep", () => {
     await handleChessReconcileJob({ data: { reason: "cron" } });
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
       where: { id: row.id, status: "queued", heartbeatAt: row.heartbeatAt },
-      data: { status: "error", runToken: null, ending: { kind: "interrupted" } },
+      data: {
+        status: "error",
+        runToken: null,
+        ending: { kind: "interrupted" },
+        terminalCause: "queue-lost",
+      },
     });
   });
   it.each([false, true])(
@@ -797,7 +910,12 @@ describe("chess reconcile sweep", () => {
       });
       expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
         where: { id: orphan.id, status: "queued", heartbeatAt },
-        data: { status: "error", runToken: null, ending: { kind: "interrupted" } },
+        data: {
+          status: "error",
+          runToken: null,
+          ending: { kind: "interrupted" },
+          terminalCause: "queue-lost",
+        },
       });
       await sweep();
       expect(db.chessMatch.findMany.mock.calls[5]?.[0]?.where?.OR).toBeUndefined();

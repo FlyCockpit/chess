@@ -15,10 +15,19 @@ import type { Prisma } from "@cockpit-chess/db";
  */
 export function chessStatsColumns(match: MatchArchive) {
   if (match.status === "running") return null;
+  return {
+    ...chessUsageColumns(match),
+    result: match.result,
+    ending: endingSummary(matchEnding(match)),
+    terminalCause: match.termination === "cancelled" ? "owner-stop" : match.termination,
+  } satisfies Prisma.ChessMatchUncheckedUpdateManyInput;
+}
+
+/** Persist current safe statistics with each snapshot; status-only CAS retains them. */
+export function chessUsageColumns(match: MatchArchive) {
   const white = matchStats(match, "w");
   const black = matchStats(match, "b");
   return {
-    result: match.result,
     whiteModel: match.config.white.model,
     whiteProtocol: match.config.white.protocol,
     blackModel: match.config.black.model,
@@ -30,7 +39,6 @@ export function chessStatsColumns(match: MatchArchive) {
     whiteCostMicros: white.costMicros === null ? null : BigInt(white.costMicros),
     blackCostMicros: black.costMicros === null ? null : BigInt(black.costMicros),
     moveFormat: match.config.rules.moveFormat,
-    ending: endingSummary(matchEnding(match)),
   } satisfies Prisma.ChessMatchUncheckedUpdateManyInput;
 }
 

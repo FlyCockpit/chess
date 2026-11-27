@@ -19,7 +19,6 @@ import { QueryBoundary } from "@/components/query-boundary";
 import { WideContent } from "@/components/wide-content";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { isQueryAccessError } from "@/lib/query-access-error";
-import { sessionHintQueryOptions } from "@/lib/session-hint";
 import { orpc } from "@/utils/orpc";
 import { endingHeadlineLabel } from "./ending-label";
 import { replayRefetch } from "./evaluation";
@@ -31,10 +30,6 @@ import { MatchReplay } from "./replay";
 // out of the public landing chunk. The fallback mirrors Studio's pending skeleton.
 const Studio = lazy(() => import("./studio").then((module) => ({ default: module.Studio })));
 const studioFallback = <Skeleton className="mt-12 h-96" />;
-// Admin-only leaderboard curation; lazy for the same reason as Studio (auth client).
-const OfficialToggle = lazy(() =>
-  import("./official-toggle").then((module) => ({ default: module.OfficialToggle })),
-);
 export type ArenaTab = "arena" | "leaderboard" | "lab" | "methodology" | "studio";
 
 function demoGame(white: string, black: string, model: string, title: string) {
@@ -150,8 +145,6 @@ function Arena({
   const online = useNetworkStatus();
   const listPaused = isPending && listFetchStatus === "paused";
   const selected = isQueryAccessError(selectedError) ? undefined : selectedData;
-  // Only a probably-signed-in visitor loads the admin toggle (and its auth client).
-  const { data: signedInHint } = useQuery(sessionHintQueryOptions());
   const games = isQueryAccessError(listError)
     ? []
     : (list?.pages.flatMap((page) => page.items) ?? []);
@@ -197,13 +190,6 @@ function Arena({
           live={current.status === "running"}
           spectator={selected ? { evaluations: selected.spectatorEvaluations } : undefined}
         />
-      )}
-      {selected?.source === "hosted" && signedInHint === true && (
-        <ClientOnly fallback={null}>
-          <Suspense fallback={null}>
-            <OfficialToggle slug={selected.slug} official={selected.official} />
-          </Suspense>
-        </ClientOnly>
       )}
     </>
   );
@@ -324,18 +310,38 @@ function Arena({
   );
 }
 function Leaderboard() {
-  const { t } = useTranslation("chess");
-  const { data, error, isPending, isError, fetchStatus, refetch } = useQuery({
-    ...orpc.chess.leaderboard.queryOptions({ input: { limit: 100 } }),
-    meta: { skipGlobalErrorToast: true },
+  const { t, i18n } = useTranslation("chess");
+  const {
+    data,
+    error,
+    isPending,
+    isError,
+    fetchStatus,
+    refetch,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery(
+    orpc.chess.leaderboard.infiniteOptions({
+      input: (cursor: string | undefined) => ({ cursor, limit: 25 }),
+      initialPageParam: undefined,
+      getNextPageParam: (page) => page.nextCursor,
+      meta: { skipGlobalErrorToast: true },
+    }),
+  );
+  const number = new Intl.NumberFormat(i18n.language, { maximumFractionDigits: 1 });
+  const percent = new Intl.NumberFormat(i18n.language, {
+    style: "percent",
+    maximumFractionDigits: 1,
   });
+  const money = new Intl.NumberFormat(i18n.language, { style: "currency", currency: "USD" });
   return (
     <>
       <Intro title={t("leaderboard.title")} description={t("leaderboard.description")} />
       <QueryBoundary
         query={{ data, error, isPending, isError, fetchStatus, refetch }}
         skeleton={<Skeleton className="h-64" />}
-        isEmpty={(result) => result.items.length === 0}
+        isEmpty={(result) => !result.pages.some((page) => page.items.length)}
         empty={
           <div className="cc-empty">
             <Trophy size={32} className="mx-auto mb-4 opacity-50" />
@@ -346,20 +352,22 @@ function Leaderboard() {
       >
         {(data) => (
           <>
-            <WideContent>
-              <table className="cc-table">
+            <WideContent tabIndex={0} role="region" aria-label={t("leaderboard.title")}>
+              <table className="cc-table min-w-[48rem]">
                 <thead>
                   <tr>
                     {[
                       "leaderboard.model",
-                      "leaderboard.ruleset",
-                      "stats.games",
-                      "stats.score",
+                      "leaderboard.scope",
+                      "leaderboard.starts",
+                      "leaderboard.allStartScore",
+                      "leaderboard.outcomes",
                       "stats.rejected",
+                      "stats.cost",
                     ].map((key) => (
                       <th
                         key={key}
-                        className={key === "leaderboard.ruleset" ? "cc-lb-rules" : undefined}
+                        className={key === "leaderboard.scope" ? "cc-lb-rules" : undefined}
                       >
                         {t(key)}
                       </th>
@@ -367,62 +375,152 @@ function Leaderboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.items.map((row) => (
-                    <tr key={`${row.model}:${row.protocol}:${row.rulesKey}`}>
-                      <td>
-                        <strong>{row.model}</strong>
-                        <p className="cc-muted">
-                          {row.protocol === "openai-chat" ||
-                          row.protocol === "openai-responses" ||
-                          row.protocol === "anthropic"
-                            ? t(`create.protocols.${row.protocol}`)
-                            : row.protocol}
-                        </p>
-                        {/* Phones show the ruleset here instead of in its own column. */}
-                        <div className="cc-lb-rules-inline">
-                          <RulesetLabel rulesKey={row.rulesKey} moveFormat={row.moveFormat} />
-                        </div>
-                      </td>
-                      <td className="cc-lb-rules">
-                        <RulesetLabel rulesKey={row.rulesKey} moveFormat={row.moveFormat} />
-                      </td>
-                      <td>{row.games}</td>
-                      <td>{Math.round((100 * (row.wins + row.draws / 2)) / row.games)}%</td>
-                      <td>
-                        {row.illegalAttempts}
-                        {row.truncatedAttempts > 0 && (
+                  {data.pages
+                    .flatMap((page) => page.items)
+                    .map((row) => (
+                      <tr key={row.scopeKey}>
+                        <td>
+                          <strong>{row.model}</strong>
                           <p className="cc-muted">
-                            {t("leaderboard.truncated", { count: row.truncatedAttempts })}
+                            {row.protocol === "openai-chat" ||
+                            row.protocol === "openai-responses" ||
+                            row.protocol === "anthropic"
+                              ? t(`create.protocols.${row.protocol}`)
+                              : row.protocol}
                           </p>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                          {/* Phones show the comparison scope here instead of in its own column. */}
+                          <div className="cc-lb-rules-inline">
+                            <ComparisonScopeLabel scope={row} />
+                          </div>
+                        </td>
+                        <td className="cc-lb-rules">
+                          <ComparisonScopeLabel scope={row} />
+                        </td>
+                        <td>{number.format(row.games)}</td>
+                        <td>
+                          {percent.format(row.score)}
+                          <p className="cc-muted">
+                            {t("leaderboard.points", { points: number.format(row.points) })}
+                          </p>
+                          {row.pending > 0 && (
+                            <p className="cc-muted">{t("leaderboard.provisional")}</p>
+                          )}
+                        </td>
+                        <td>
+                          <dl>
+                            {(
+                              [
+                                ["wins", row.wins],
+                                ["draws", row.draws],
+                                ["losses", row.losses],
+                                ["withdrawals", row.withdrawals],
+                                ["pending", row.pending],
+                                ["providerErrors", row.providerErrors],
+                                ["accountErrors", row.accountErrors],
+                                ["infrastructureErrors", row.infrastructureErrors],
+                              ] as const
+                            ).map(([category, count]) => (
+                              <div key={category} className="flex justify-between gap-4">
+                                <dt>{t(`leaderboard.categories.${category}`)}</dt>
+                                <dd>{number.format(count)}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        </td>
+                        <td>
+                          {row.illegalAttempts}
+                          {row.truncatedAttempts > 0 && (
+                            <p className="cc-muted">
+                              {t("leaderboard.truncated", { count: row.truncatedAttempts })}
+                            </p>
+                          )}
+                        </td>
+                        <td>
+                          {row.estimatedCostMicros === null
+                            ? t("leaderboard.costUnknown")
+                            : money.format(row.estimatedCostMicros / 1_000_000)}
+                        </td>
+                      </tr>
+                    ))}
                 </tbody>
               </table>
             </WideContent>
             <p className="cc-muted mt-6">
-              {t("leaderboard.note", { limit: data.windowLimit, count: data.sampleSize })}
+              {t("leaderboard.note", { count: data.pages[0]?.sampleSize ?? 0 })}
             </p>
+            <p className="cc-muted mt-3">{t("leaderboard.paginationNote")}</p>
           </>
         )}
       </QueryBoundary>
+      <LoadMore
+        onLoadMore={() => void fetchNextPage()}
+        hasNextPage={!isQueryAccessError(error) && Boolean(hasNextPage)}
+        isFetchingNextPage={isFetchingNextPage}
+        label={t("leaderboard.loadMore")}
+      />
     </>
   );
 }
-/**
- * A ruleset is identified by a 16-hex hash of its rules (no name in the data): the
- * first 8 characters on screen, the whole key in the title (on hover) and, for a
- * screen reader, in the text itself.
- */
+function ComparisonScopeLabel({
+  scope,
+}: {
+  scope: {
+    rulesKey: string;
+    moveFormat: string | null;
+    initialPositionHash: string;
+    promptVersion: string;
+    promptHash: string;
+    billingCohort: string;
+    opponentType: string;
+  };
+}) {
+  const { t } = useTranslation("chess");
+  return (
+    <div className="cc-muted">
+      <div>
+        {t("leaderboard.ruleset")}:{" "}
+        <RulesetLabel rulesKey={scope.rulesKey} moveFormat={scope.moveFormat} />
+      </div>
+      <p>{t("leaderboard.promptVersion", { version: scope.promptVersion })}</p>
+      <div>
+        <p>{t("leaderboard.promptHash")}</p>
+        <CopyField
+          className="max-w-56"
+          value={scope.promptHash}
+          copyLabel={t("leaderboard.promptHash")}
+        />
+      </div>
+      <div>
+        <p>{t("leaderboard.initialPosition")}</p>
+        <CopyField
+          className="max-w-56"
+          value={scope.initialPositionHash}
+          copyLabel={t("leaderboard.initialPosition")}
+        />
+      </div>
+      <p>
+        {t(
+          scope.billingCohort === "operator"
+            ? "leaderboard.billing.operator"
+            : "leaderboard.billing.openrouter",
+        )}
+      </p>
+      <p>
+        {t(
+          scope.opponentType === "model-v-random"
+            ? "leaderboard.opponents.random"
+            : "leaderboard.opponents.model",
+        )}
+      </p>
+    </div>
+  );
+}
+/** A copyable rules identity and its human-readable move format. */
 function RulesetLabel({ rulesKey, moveFormat }: { rulesKey: string; moveFormat: string | null }) {
   const { t } = useTranslation("chess");
   return (
     <>
-      <abbr className="cc-lb-key" title={rulesKey}>
-        <span aria-hidden="true">{rulesKey.slice(0, 8)}</span>
-        <span className="sr-only">{rulesKey}</span>
-      </abbr>
+      <CopyField className="max-w-56" value={rulesKey} copyLabel={t("leaderboard.ruleset")} />
       {(moveFormat === "strict" || moveFormat === "lenient") && (
         <p className="cc-muted">{t(`moveFormats.${moveFormat}`)}</p>
       )}

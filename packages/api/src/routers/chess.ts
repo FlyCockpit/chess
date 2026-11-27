@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import {
+  lockCliCredentials,
+  withCliCredentialLockSlot,
+} from "@cockpit-chess/auth/device-redemption-lock";
+import {
   createMatch,
   finishMatch,
   isOldRulesVersion,
@@ -29,8 +33,15 @@ import {
   publicProcedure,
 } from "../index";
 import { sourceCodeUrl } from "../lib/build-commit";
-import { admitHostedMatch } from "../lib/chess-locks";
+import { admitHostedMatch, CHESS_CREATE_LOCK } from "../lib/chess-locks";
 import { getModelCatalog } from "../lib/chess-models";
+import {
+  chessDigest,
+  officialCommitment,
+  officialFilter,
+  officialFilterInput,
+  officialLeaderboard,
+} from "../lib/chess-official";
 import { spectatorEvaluationsFor } from "../lib/chess-spectator";
 import { chessStatsColumns, INTERRUPTED_ENDING, STOPPED_ENDING } from "../lib/chess-stats";
 import {
@@ -54,7 +65,7 @@ const summary = {
   blackName: true,
   status: true,
   published: true,
-  official: true,
+  OfficialEntry: { select: { id: true } },
   source: true,
   rulesKey: true,
   rulesVersion: true,
@@ -71,12 +82,17 @@ const cardEnding = endingSummarySchema.nullable().catch(null);
  * ruleset this build no longer reads (it lists, but has no replay).
  */
 const withEnding = <
-  Row extends ChessTurnColumns & { ending: Prisma.JsonValue; rulesVersion: string | null },
+  Row extends ChessTurnColumns & {
+    ending: Prisma.JsonValue;
+    rulesVersion: string | null;
+    OfficialEntry: { id: string } | null;
+  },
 >(
   input: Row,
 ) => {
   const {
     rulesVersion,
+    OfficialEntry,
     turnType: _turnType,
     turnId: _turnId,
     turnSide: _turnSide,
@@ -88,6 +104,7 @@ const withEnding = <
   } = input;
   return {
     ...row,
+    official: OfficialEntry !== null,
     ending: cardEnding.parse(row.ending),
     oldRules: isOldRulesVersion(rulesVersion),
     turn: chessTurnMetadata(chessTurnFromColumns(input)),
@@ -173,7 +190,7 @@ const ownInspectSelect = {
   ending: true,
   rulesVersion: true,
   spectatorEvaluations: true,
-  official: true,
+  OfficialEntry: { select: { id: true } },
   createdAt: true,
   credentialSource: true,
 } satisfies Prisma.ChessMatchSelect;
@@ -186,21 +203,6 @@ async function ownDraft<
   if (!row) throw new ORPCError("NOT_FOUND");
   return row;
 }
-const leaderboardSelect = {
-  rulesKey: true,
-  result: true,
-  whiteModel: true,
-  whiteProtocol: true,
-  blackModel: true,
-  blackProtocol: true,
-  whiteIllegal: true,
-  blackIllegal: true,
-  whiteTruncated: true,
-  blackTruncated: true,
-  whiteCostMicros: true,
-  blackCostMicros: true,
-  moveFormat: true,
-} satisfies Prisma.ChessMatchSelect;
 /** The operator's per-side limits for a hosted match (server config). */
 function hostedLimits() {
   return {
@@ -240,6 +242,8 @@ const createInput = matchConfigSchema.extend({
    * (the caller's connected key). Omitted: operator for admins, openrouter otherwise.
    */
   billing: z.enum(["operator", "openrouter"]).optional(),
+  official: z.boolean().default(false),
+  creationKey: z.uuid(),
 });
 async function isAdminCaller(context: Pick<Context, "session" | "credential">) {
   return (await checkAdminAuthority(context.session, context.credential)).ok;
@@ -272,7 +276,7 @@ async function inspectOwnMatch(slug: string, ownerId: string) {
     turn: chessTurnMetadata(archive.turn),
     status: row.status,
     published: row.published,
-    official: row.official,
+    official: row.OfficialEntry !== null,
     credentialSource: row.credentialSource === "owner-openrouter" ? "openrouter" : "operator",
     queuePosition,
     spectatorEvaluations: spectatorEvaluationsFor({ ...row, archive }),
@@ -364,14 +368,53 @@ export const chessRouter = {
     .input(slugInput)
     .handler(({ input, context }) => inspectOwnMatch(input.slug, context.session.user.id)),
   create: hostedPlayerProcedure.input(createInput).handler(async ({ input: request, context }) => {
-    const { billing: requested, ...input } = request;
+    const { billing: requested, official, creationKey, ...input } = request;
     const ownerId = context.session.user.id;
+    const admin = await isAdminCaller(context);
+    const billing = requested ?? (admin ? "operator" : "openrouter");
+    // The receipt binds the normalized accepted configuration, including consent.
+    // Resolve before IO so a lost response can be replayed after disconnect/flag changes.
+    const archive = createMatch(input, "hosted");
+    const requestedConfig = {
+      title: archive.config.title,
+      white: archive.config.white,
+      black: archive.config.black,
+      rules: archive.config.rules,
+      initialFen: archive.config.initialFen,
+    };
+    const configDigest = chessDigest({
+      config: requestedConfig,
+      promptVersion: input.promptVersion ?? null,
+      billing: requested ?? null,
+      official,
+    });
+    const creationId = chessDigest([ownerId, creationKey]);
+    const receiptSelect = {
+      configDigest: true,
+      Match: { select: { slug: true, id: true } },
+    } satisfies Prisma.ChessCreationSelect;
+    const receiptResult = (
+      receipt: Prisma.ChessCreationGetPayload<{ select: typeof receiptSelect }>,
+    ) => {
+      if (receipt.configDigest !== configDigest)
+        throw new ORPCError("CONFLICT", {
+          message: "Creation key was already used with different settings",
+        });
+      if (!receipt.Match)
+        throw new ORPCError("NOT_FOUND", {
+          message: "This accepted match was deleted; the creation key cannot be reused",
+        });
+      return receipt.Match;
+    };
+    const accepted = await prisma.chessCreation.findUnique({
+      where: { id: creationId },
+      select: receiptSelect,
+    });
+    if (accepted) return { slug: receiptResult(accepted).slug };
     if (!env.CHESS_HOSTED_ENABLED)
       throw refuse("SERVICE_UNAVAILABLE", "hosted-disabled", "Hosted inference is disabled");
-    const admin = await isAdminCaller(context);
     if (!admin && !env.CHESS_USER_MATCHES_ENABLED)
       throw refuse("FORBIDDEN", "user-matches-disabled", "Hosted matches are admin-only here");
-    const billing = requested ?? (admin ? "operator" : "openrouter");
     if (billing === "operator" && !admin)
       throw refuse(
         "FORBIDDEN",
@@ -421,37 +464,75 @@ export const chessRouter = {
       if ((await openOwnerOpenRouterKey(ownerId)).state !== "ok")
         throw refuse("PRECONDITION_FAILED", "reconnect", "Reconnect OpenRouter first");
     }
+    // Untrusted display names never become trusted opponent instructions, for practice
+    // or official play. Requested model IDs must resolve in the server catalog.
+    const players = [archive.config.white, archive.config.black];
+    if (players.some((player) => player.protocol !== "random")) {
+      const catalog = await getModelCatalog().catch(() => {
+        throw new ORPCError("SERVICE_UNAVAILABLE", { message: "Model catalog unavailable" });
+      });
+      for (const player of players) {
+        if (player.protocol === "random") continue;
+        const model = catalog.models.find((item) => item.id === player.model);
+        if (!model) throw new ORPCError("BAD_REQUEST", { message: "Unknown hosted model" });
+        player.name = model.id.slice(0, 80);
+      }
+    }
+    for (const player of players)
+      if (player.protocol === "random") {
+        player.name = "Random baseline";
+        player.model = "random";
+      }
+    const credentialSource = billing === "operator" ? "operator" : "owner-openrouter";
+    const commitment = official ? officialCommitment(archive, credentialSource) : null;
     await spendBudget(ownerId);
-    const archive = createMatch(input, "hosted");
     const slug = `${slugify(input.title).slice(0, 110) || "match"}-${archive.id.slice(0, 8)}`;
     // Matches billed to the caller's own key carry the per-user caps; admin matches on
     // the operator key only the queue cap. One lock serializes every create, so the
     // counts below cannot be raced past (creation is rare: 12 per user per hour).
     const capped = billing === "openrouter";
-    const row = await prisma.$transaction(async (tx) => {
-      await admitHostedMatch(tx, {
-        ownerId,
-        ownKey: capped,
-        queueMax: env.CHESS_QUEUE_MAX,
-        dailyMax: env.CHESS_USER_DAILY_MATCHES,
-      });
-      return tx.chessMatch.create({
-        data: {
-          ...metadata(archive),
+    const row = await withCliCredentialLockSlot(() =>
+      prisma.$transaction(async (tx) => {
+        // Reset/delete holds this same per-user lock. A request authorized before
+        // revocation must not create new spending after its cancellation sweep.
+        await lockCliCredentials(ownerId, tx);
+        const live = await tx.session.findFirst({
+          where: { id: context.session.session.id, userId: ownerId, expiresAt: { gt: new Date() } },
+          select: { id: true },
+        });
+        if (!live) throw new ORPCError("UNAUTHORIZED");
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CHESS_CREATE_LOCK}))::text AS locked`;
+        const previous = await tx.chessCreation.findUnique({
+          where: { id: creationId },
+          select: receiptSelect,
+        });
+        if (previous) return { ...receiptResult(previous), duplicate: true };
+        await admitHostedMatch(tx, {
           ownerId,
-          slug,
-          status: "queued",
-          // Only the operator's curated runs count on the leaderboard by default; an
-          // admin promotes others with `setOfficial`.
-          official: billing === "operator",
-          published: false,
-          credentialSource: billing === "operator" ? "operator" : "owner-openrouter",
-          heartbeatAt: new Date(),
-          archive,
-        },
-        select: { id: true },
-      });
-    });
+          ownKey: capped,
+          queueMax: env.CHESS_QUEUE_MAX,
+          dailyMax: env.CHESS_USER_DAILY_MATCHES,
+        });
+        const created = await tx.chessMatch.create({
+          data: {
+            ...metadata(archive),
+            ownerId,
+            slug,
+            status: "queued",
+            published: false,
+            credentialSource,
+            ...(commitment ? { OfficialEntry: { create: commitment } } : {}),
+            Creation: { create: { id: creationId, configDigest } },
+            heartbeatAt: new Date(),
+            archive,
+          },
+          select: { id: true, slug: true },
+        });
+        return { ...created, duplicate: false };
+      }),
+    );
+    // A retry never resurrects or re-enqueues an accepted terminal/withdrawn start.
+    if (row.duplicate) return { slug: row.slug };
     try {
       await ensureRunnableJob(chessRunQueue, "chess-run", { matchId: row.id }, `chess-${row.id}`);
     } catch (error) {
@@ -461,7 +542,12 @@ export const chessRouter = {
       });
       await prisma.chessMatch.updateMany({
         where: { id: row.id, status: "queued" },
-        data: { status: "error", ending: INTERRUPTED_ENDING },
+        data: {
+          status: "error",
+          runToken: null,
+          ending: INTERRUPTED_ENDING,
+          terminalCause: "enqueue-failed",
+        },
       });
       throw new ORPCError("SERVICE_UNAVAILABLE");
     }
@@ -509,7 +595,6 @@ export const chessRouter = {
             status: archive.status,
             archive,
             published: false,
-            official: false,
           },
           select: { id: true },
         });
@@ -527,17 +612,6 @@ export const chessRouter = {
     .handler(({ input, context }) =>
       publishOwnMatch(input.slug, context.session.user.id, input.published),
     ),
-  /** Admin curation of the leaderboard: whether a published hosted game counts. */
-  setOfficial: adminOr404Procedure
-    .input(slugInput.extend({ official: z.boolean() }))
-    .handler(async ({ input }) => {
-      const result = await prisma.chessMatch.updateMany({
-        where: { slug: input.slug, published: true, source: "hosted" },
-        data: { official: input.official },
-      });
-      if (result.count !== 1) throw new ORPCError("NOT_FOUND");
-      return { official: input.official };
-    }),
   /**
    * Admin view of hosted capacity: matches running against the worker limit, the queue
    * against its cap, and the engine pool. Counts plus a bounded list of titles and
@@ -581,117 +655,47 @@ export const chessRouter = {
       where: { id: row.id, status: { in: ["queued", "running"] } },
       // Leave the last durable event snapshot intact: a read-modify-write here
       // could erase a move persisted between the lookup and cancellation.
-      data: { status: "stopped", runToken: null, ending: STOPPED_ENDING },
+      data: {
+        status: "stopped",
+        runToken: null,
+        ending: STOPPED_ENDING,
+        terminalCause: "owner-stop",
+      },
     });
     return { stopped: true };
   }),
+  officialEntries: publicProcedure.input(officialFilterInput).handler(async ({ input }) => {
+    const rows = await prisma.chessOfficialEntry.findMany({
+      where: withCursor(officialFilter(input), "startedAt", input.cursor, "desc"),
+      select: {
+        id: true,
+        startedAt: true,
+        promptVersion: true,
+        promptHash: true,
+        rulesKey: true,
+        rules: true,
+        initialFen: true,
+        initialPositionHash: true,
+        billingCohort: true,
+        opponentType: true,
+        whiteModel: true,
+        whiteProtocol: true,
+        blackModel: true,
+        blackProtocol: true,
+        state: true,
+        cause: true,
+        settledAt: true,
+        result: true,
+        finalFen: true,
+      },
+      orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+      take: pageTake(input.limit),
+    });
+    return cursorPage(rows, input.limit, "startedAt");
+  }),
   leaderboard: publicProcedure
-    .input(cursorPageInput.extend({ rulesKey: z.string().max(32).optional() }))
-    .handler(async ({ input }) => {
-      const rows = await prisma.chessMatch.findMany({
-        where: {
-          published: true,
-          official: true,
-          source: "hosted",
-          status: "completed",
-          // Rows finished before stats columns existed carry none; skip them.
-          result: { not: null },
-          ...(input.rulesKey ? { rulesKey: input.rulesKey } : {}),
-        },
-        select: leaderboardSelect,
-        take: 500,
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      });
-      const table = new Map<
-        string,
-        {
-          model: string;
-          protocol: string;
-          rulesKey: string;
-          /** Constant per rulesKey (it is part of the rules); null only for unlabeled rows. */
-          moveFormat: string | null;
-          games: number;
-          wins: number;
-          draws: number;
-          losses: number;
-          illegalAttempts: number;
-          /** Of those, replies cut off before a move (rows from before the column count 0). */
-          truncatedAttempts: number;
-          estimatedCostMicros: number | null;
-        }
-      >();
-      let sampleSize = 0;
-      for (const row of rows) {
-        const { result, whiteModel, whiteProtocol, blackModel, blackProtocol } = row;
-        const { whiteIllegal, blackIllegal } = row;
-        if (
-          result === null ||
-          whiteModel === null ||
-          whiteProtocol === null ||
-          blackModel === null ||
-          blackProtocol === null ||
-          whiteIllegal === null ||
-          blackIllegal === null
-        )
-          continue;
-        sampleSize += 1;
-        const sides = [
-          {
-            win: "1-0",
-            model: whiteModel,
-            protocol: whiteProtocol,
-            illegal: whiteIllegal,
-            truncated: row.whiteTruncated ?? 0,
-            cost: row.whiteCostMicros,
-          },
-          {
-            win: "0-1",
-            model: blackModel,
-            protocol: blackProtocol,
-            illegal: blackIllegal,
-            truncated: row.blackTruncated ?? 0,
-            cost: row.blackCostMicros,
-          },
-        ];
-        for (const side of sides) {
-          // Random baselines are opponents, not leaderboard entrants.
-          if (side.protocol === "random") continue;
-          const key = `${row.rulesKey}:${side.protocol}:${side.model}`;
-          const record = table.get(key) ?? {
-            model: side.model,
-            protocol: side.protocol,
-            rulesKey: row.rulesKey,
-            moveFormat: row.moveFormat,
-            games: 0,
-            wins: 0,
-            draws: 0,
-            losses: 0,
-            illegalAttempts: 0,
-            truncatedAttempts: 0,
-            estimatedCostMicros: 0,
-          };
-          record.games += 1;
-          if (result === "1/2-1/2") record.draws += 1;
-          else if (result === side.win) record.wins += 1;
-          else record.losses += 1;
-          record.illegalAttempts += side.illegal;
-          record.truncatedAttempts += side.truncated;
-          record.estimatedCostMicros =
-            record.estimatedCostMicros === null || side.cost === null
-              ? null
-              : record.estimatedCostMicros + Number(side.cost);
-          table.set(key, record);
-        }
-      }
-      return {
-        items: [...table.values()]
-          .sort((a, b) => (b.wins + b.draws / 2) / b.games - (a.wins + a.draws / 2) / a.games)
-          .slice(0, input.limit),
-        nextCursor: undefined,
-        sampleSize,
-        windowLimit: 500,
-      };
-    }),
+    .input(officialFilterInput)
+    .handler(({ input }) => officialLeaderboard(input)),
 };
 
 /**

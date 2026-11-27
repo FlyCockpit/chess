@@ -46,9 +46,27 @@ function cliCredentialRevocationWrites(userId: string, revokeAllSessions = false
     }),
     prisma.deviceCode.deleteMany({ where: { userId } }),
     // Recovery/reset revokes machine authority. An ordinary signed-in
-    // password change deliberately retains paired runners (owner policy).
-    ...(revokeAllSessions ? runnerMachineRevocationWrites(userId) : []),
+    // password change deliberately retains paired runners and hosted matches.
+    ...(revokeAllSessions
+      ? [...runnerMachineRevocationWrites(userId), cancelActiveHostedMatchesWrite(userId)]
+      : []),
   ] as const;
+}
+
+/** Fences worker claims and settles pending official entries in this credential transaction. */
+function cancelActiveHostedMatchesWrite(
+  userId: string,
+  db: Pick<Prisma.TransactionClient, "chessMatch"> = prisma,
+) {
+  return db.chessMatch.updateMany({
+    where: { ownerId: userId, source: "hosted", status: { in: ["queued", "running"] } },
+    data: {
+      status: "stopped",
+      runToken: null,
+      terminalCause: "owner-reset",
+      ending: { kind: "cancelled" },
+    },
+  });
 }
 
 /**
@@ -355,6 +373,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Reuse the activation/reset transaction; its credential lock is already held. */
 export async function revokeCredentialsInTransaction(tx: Prisma.TransactionClient, userId: string) {
   for (const write of runnerMachineRevocationWrites(userId, tx)) await write;
+  await cancelActiveHostedMatchesWrite(userId, tx);
   await tx.apiKey.deleteMany({ where: { referenceId: userId } });
   await tx.deviceCode.deleteMany({ where: { userId } });
   await tx.session.deleteMany({ where: { OR: [{ userId }, { impersonatedBy: userId }] } });

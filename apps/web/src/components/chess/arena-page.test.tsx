@@ -16,6 +16,23 @@ const fixture = vi.hoisted(() => ({
     refetch: vi.fn(),
   },
   online: true,
+  leaderboardOptions: undefined as
+    | undefined
+    | {
+        input: (cursor: string | undefined) => { cursor?: string; limit: number };
+        getNextPageParam: (page: { nextCursor: string | null }) => string | null;
+      },
+  leaderboard: {
+    data: undefined as unknown,
+    error: undefined as unknown,
+    isPending: false,
+    isError: false,
+    fetchStatus: "idle" as "fetching" | "paused" | "idle",
+    refetch: vi.fn(),
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetchingNextPage: false,
+  },
   list: {
     data: { pages: [{ items: [] as Record<string, unknown>[] }] },
     isPending: false,
@@ -30,14 +47,20 @@ const fixture = vi.hoisted(() => ({
 vi.mock("@tanstack/react-query", () => ({
   queryOptions: (options: unknown) => options,
   useQuery: () => fixture.query,
-  useInfiniteQuery: () => fixture.list,
+  useInfiniteQuery: ({ surface }: { surface?: string }) =>
+    surface === "leaderboard" ? fixture.leaderboard : fixture.list,
 }));
 vi.mock("@/utils/orpc", () => ({
   orpc: {
     chess: {
       list: { infiniteOptions: () => ({}) },
       get: { queryOptions: () => ({}) },
-      leaderboard: { queryOptions: () => ({}) },
+      leaderboard: {
+        infiniteOptions: (options: typeof fixture.leaderboardOptions) => {
+          fixture.leaderboardOptions = options;
+          return { ...options, surface: "leaderboard" };
+        },
+      },
       info: { queryOptions: () => ({}) },
     },
   },
@@ -75,6 +98,16 @@ beforeEach(() => {
     fetchStatus: "idle",
   };
   fixture.online = true;
+  fixture.leaderboard = {
+    ...fixture.leaderboard,
+    data: undefined,
+    error: undefined,
+    isPending: false,
+    isError: false,
+    fetchStatus: "idle",
+    hasNextPage: false,
+    isFetchingNextPage: false,
+  };
 });
 function render(tab: "arena" | "leaderboard", slug?: string) {
   return renderToStaticMarkup(
@@ -114,28 +147,131 @@ it("hides a selected replay on not-found or access loss and says the game is not
   expect(html).toContain(enChess.arena.gameNotFoundDescription);
   expect(html).toContain(`>${enChess.arena.all}</button>`);
 });
-it("retains a leaderboard table during transient refetch errors", () => {
-  fixture.query.data = {
-    items: [
-      {
-        model: "Loaded model",
-        protocol: "openai-chat",
-        rulesKey: "rules",
-        games: 1,
-        wins: 1,
-        draws: 0,
-        illegalAttempts: 0,
-      },
-    ],
-    windowLimit: 100,
-    sampleSize: 1,
+function officialRow(overrides = {}) {
+  return {
+    scopeKey: "group-a",
+    model: "Loaded model",
+    protocol: "openai-chat",
+    rulesKey: "a".repeat(16),
+    initialPositionHash: "b".repeat(64),
+    promptVersion: "1",
+    promptHash: "c".repeat(64),
+    billingCohort: "operator",
+    opponentType: "model-v-model",
+    moveFormat: "strict",
+    games: 8,
+    wins: 1,
+    draws: 1,
+    losses: 1,
+    withdrawals: 1,
+    pending: 1,
+    providerErrors: 1,
+    accountErrors: 1,
+    infrastructureErrors: 1,
+    points: 1.5,
+    score: 1.5 / 8,
+    illegalAttempts: 2,
+    truncatedAttempts: 1,
+    estimatedCostMicros: null,
+    ...overrides,
   };
-  fixture.query.isError = true;
-  fixture.query.error = new Error("offline");
+}
+function loadedLeaderboard() {
+  fixture.leaderboard.data = {
+    pages: [{ items: [officialRow()], sampleSize: 8, nextCursor: null }],
+  };
+}
+it("retains a leaderboard table during transient refetch errors", () => {
+  loadedLeaderboard();
+  fixture.leaderboard.isError = true;
+  fixture.leaderboard.error = new Error("offline");
   const html = render("leaderboard");
   expect(html).toContain("Loaded model");
   expect(html).toContain("Try again");
 });
+it("uses all starts for points and shows withdrawals, pending starts and every error category", () => {
+  loadedLeaderboard();
+  const html = render("leaderboard");
+  expect(html).toContain("18.8%"); // 1.5 points / 8 starts, not the scored-only 50%.
+  expect(html).not.toContain("50%");
+  expect(html).toContain("1.5 earned points");
+  expect(html).toContain(enChess.leaderboard.provisional);
+  for (const label of Object.values(enChess.leaderboard.categories)) {
+    expect(html).toContain(`<dt>${label}</dt><dd>1</dd>`);
+  }
+  expect(html).toContain(enChess.leaderboard.costUnknown);
+  expect(html).toContain(enChess.leaderboard.paginationNote);
+  expect(html).not.toMatch(/latest 500|recent 500|windowLimit/i);
+});
+it("labels prompt, rules, starting position, payer and opponent type for each comparison group", () => {
+  fixture.leaderboard.data = {
+    pages: [
+      {
+        items: [officialRow({ billingCohort: "owner-openrouter", opponentType: "model-v-random" })],
+        sampleSize: 8,
+        nextCursor: null,
+      },
+    ],
+  };
+  const html = render("leaderboard").replaceAll("&#x27;", "'");
+  expect(html).toContain("Prompt version 1");
+  for (const hash of ["a".repeat(16), "b".repeat(64), "c".repeat(64)]) {
+    expect(html).toContain(hash);
+  }
+  expect(html).toContain(enChess.leaderboard.billing.openrouter);
+  expect(html).toContain(enChess.leaderboard.opponents.random);
+  expect(html).toContain(enChess.moveFormats.strict);
+});
+it("loads bounded cursor pages of groups without treating later groups as lower ranks", () => {
+  fixture.leaderboard.data = {
+    pages: [
+      { items: [officialRow()], sampleSize: 40, nextCursor: "next" },
+      {
+        items: [officialRow({ scopeKey: "group-b", model: "Second model", score: 0.9 })],
+        sampleSize: 40,
+        nextCursor: "more",
+      },
+    ],
+  };
+  fixture.leaderboard.hasNextPage = true;
+  const html = render("leaderboard");
+  expect(html).toContain("Loaded model");
+  expect(html).toContain("Second model");
+  expect(html.indexOf("Loaded model")).toBeLessThan(html.indexOf("Second model"));
+  expect(html).toContain(enChess.leaderboard.loadMore);
+  expect(html).toContain("all 40 accepted official matches");
+  expect(fixture.leaderboardOptions?.input("next")).toEqual({ cursor: "next", limit: 25 });
+  expect(fixture.leaderboardOptions?.getNextPageParam({ nextCursor: "more" })).toBe("more");
+  expect(fixture.leaderboardOptions?.getNextPageParam({ nextCursor: null })).toBeNull();
+});
+it("hides cached official groups and pagination on access loss", () => {
+  loadedLeaderboard();
+  fixture.leaderboard.hasNextPage = true;
+  fixture.leaderboard.isError = true;
+  fixture.leaderboard.error = { code: "FORBIDDEN" };
+  const html = render("leaderboard");
+  expect(html).not.toContain("Loaded model");
+  expect(html).not.toContain(enChess.leaderboard.loadMore);
+});
+it.each([false, true])(
+  "offers no post-result official switch for a published hosted match (official=%s)",
+  (official) => {
+    loadedReplay();
+    fixture.query.isError = false;
+    fixture.query.error = undefined;
+    fixture.query.data = {
+      ...(fixture.query.data as object),
+      source: "hosted",
+      slug: "finished",
+      official,
+    };
+    const html = render("arena", "finished");
+    expect(html).toContain("Loaded replay");
+    expect(html).not.toContain('role="switch"');
+    expect(html).not.toContain("cc-official-toggle");
+    expect(html).not.toContain("Counts on the leaderboard");
+  },
+);
 function listWith(...slugs: string[]) {
   fixture.list = {
     ...fixture.list,

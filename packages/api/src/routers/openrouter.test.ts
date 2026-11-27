@@ -2,7 +2,7 @@ import type { Session } from "@cockpit-chess/auth";
 import type prismaInstance from "@cockpit-chess/db";
 import { createRouterClient } from "@orpc/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DeepMockProxy } from "vitest-mock-extended";
+import { type DeepMockProxy, mockReset } from "vitest-mock-extended";
 import type { Context } from "../context";
 
 vi.mock("@cockpit-chess/db", async () => {
@@ -94,6 +94,7 @@ const keyResponse = (status = 200) =>
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
+  mockReset(db);
   resetOpenRouterStatusCache();
   invalidateForceTwoFactorSettingsCache();
   db.appSetting.findMany.mockResolvedValue([]);
@@ -266,12 +267,38 @@ describe("openrouter.disconnect", () => {
     expect(JSON.stringify(fake.valkey.published)).not.toContain("CANARY");
   });
 
-  it("cancels queued own-key matches as credential-revoked in the delete's transaction", async () => {
+  it("waits for the active match row lock before exposing key revocation to a worker", async () => {
+    let release: (rows: never[]) => void = () => undefined;
+    const blocked = new Promise<never[]>((resolve) => {
+      release = resolve;
+    });
+    db.$queryRaw.mockResolvedValueOnce([]).mockImplementationOnce(() => blocked);
+    const pending = client("user-c").disconnect();
+    await vi.waitFor(() => expect(db.$queryRaw).toHaveBeenCalledTimes(2));
+    const lock = db.$queryRaw.mock.calls[1]?.[0];
+    expect(String(lock)).toContain("FOR UPDATE");
+    expect(fake.valkey.sets.get(`${REVOKED}user-c`)).toBeUndefined();
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+    release([]);
+    await expect(pending).resolves.toMatchObject({ disconnected: true });
+    expect(fake.valkey.sets.get(`${REVOKED}user-c`)?.has(HASH)).toBe(true);
+  });
+
+  it("fences queued and running own-key matches as owner withdrawals in the delete's transaction", async () => {
     await client("user-c").disconnect();
     expect(db.$transaction).toHaveBeenCalledTimes(1);
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
-      where: { ownerId: "user-c", credentialSource: "owner-openrouter", status: "queued" },
-      data: { status: "error", runToken: null, ending: { kind: "credential-revoked" } },
+      where: {
+        ownerId: "user-c",
+        credentialSource: "owner-openrouter",
+        status: { in: ["queued", "running"] },
+      },
+      data: {
+        status: "error",
+        runToken: null,
+        ending: { kind: "credential-revoked" },
+        terminalCause: "owner-disconnect",
+      },
     });
     expect(db.openRouterConnection.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
       db.chessMatch.updateMany.mock.invocationCallOrder[0] ?? 0,

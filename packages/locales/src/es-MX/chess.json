@@ -23,8 +23,8 @@
     "loading": "Cargando arena",
     "all": "Todas las partidas",
     "unpublished": "Borrador privado",
-    "official": "Ejecución controlada",
-    "local": "Experimento local",
+    "official": "Inicio oficial",
+    "local": "Práctica / experimento local",
     "status": {
       "running": "En vivo",
       "queued": "En cola",
@@ -141,16 +141,45 @@
     "localOnly": "Baseline local · sin cargos de inferencia"
   },
   "leaderboard": {
-    "title": "Ganado en la tabla.",
-    "description": "Resultados de partidas controladas y gestionadas por el propietario. Cada conjunto de reglas y protocolo se mide por separado.",
-    "empty": "Se necesita evidencia para una tabla de clasificación.",
-    "emptyDescription": "Aún no hay partidas publicadas elegibles. Las demostraciones y las importaciones comunitarias nunca entran en las clasificaciones oficiales.",
+    "title": "Cada inicio oficial cuenta.",
+    "description": "Resultados exploratorios de todos los inicios oficiales aceptados, incluidas las partidas en cola, retiradas y fallidas. La configuración puede variar; esto no es una evaluación imparcial ni una clasificación global de modelos.",
+    "empty": "Todavía no hay inicios oficiales.",
+    "emptyDescription": "Elige la participación oficial antes de iniciar una partida alojada entre modelos. Las partidas de práctica, con humanos, locales y las importaciones no entran en estos resultados. La publicación de la repetición es independiente.",
     "model": "Modelo / protocolo",
     "ruleset": "Conjunto de reglas",
-    "note": "Puntuación provisional = victorias + la mitad de los empates, dividida por partidas. Últimas {{limit}} partidas elegibles; {{count}} incluidas. Estas no son calificaciones Elo humanas.",
-    "window": "Ventana de resultados",
+    "note": "Ámbito: las {{count}} partidas oficiales aceptadas. Puntos obtenidos = victorias + ½ tablas; puntuación = puntos / todos los inicios. Los retiros, las detenciones y los errores permanecen en el denominador sin puntos y se muestran por separado de las derrotas. Los inicios pendientes hacen que las puntuaciones sean provisionales. No son puntuaciones Elo.",
     "truncated_one": "{{count}} sin espacio",
-    "truncated_other": "{{count}} sin espacio"
+    "truncated_other": "{{count}} sin espacio",
+    "scope": "Ámbito de comparación",
+    "starts": "Todos los inicios",
+    "allStartScore": "Puntos / todos los inicios",
+    "outcomes": "Resultados",
+    "points": "{{points}} puntos obtenidos",
+    "provisional": "Provisional · inicios pendientes",
+    "costUnknown": "Sin reporte completo",
+    "promptVersion": "Versión del prompt {{version}}",
+    "promptHash": "Hash del prompt",
+    "initialPosition": "Hash de la posición inicial",
+    "billing": {
+      "operator": "Con cargo al operador",
+      "openrouter": "Con cargo a la clave de OpenRouter del propietario"
+    },
+    "opponents": {
+      "model": "Modelo contra modelo",
+      "random": "Modelo contra referencia aleatoria"
+    },
+    "categories": {
+      "wins": "Victorias",
+      "draws": "Tablas",
+      "losses": "Derrotas",
+      "withdrawals": "Retiros / detenciones del propietario",
+      "pending": "Inicios pendientes",
+      "providerErrors": "Errores del proveedor",
+      "accountErrors": "Errores de cuenta / clave",
+      "infrastructureErrors": "Errores de infraestructura"
+    },
+    "paginationNote": "Los grupos se paginan por una clave de comparación estable, no por una clasificación entre páginas. Compara solo grupos con la misma versión y hash del prompt, reglas, posición inicial, grupo de facturación y tipo de oponente; cada grupo muestra su protocolo y formato de movimiento. Los resultados cubren todo el ámbito indicado, no una muestra de partidas recientes.",
+    "loadMore": "Cargar más grupos de comparación"
   },
   "local": {
     "private": "Proceso local",
@@ -192,8 +221,8 @@
     "identityBody": "Las partidas anónimas omiten la identidad configurada del rival. Los comentarios se habilitan por separado y pueden dar pistas. Las partidas con identidad revelada nombran al rival; ningún modo garantiza que un modelo no pueda adivinarlo.",
     "budgetTitle": "Inferencia limitada y responsable",
     "budgetBody": "Cada despacho reserva una cantidad conservadora de tokens y costos, incluyendo reintentos de transporte, antes de la inferencia. No hay un límite fijo de respuesta: cada respuesta puede usar la salida máxima del propio modelo, limitada por lo que los presupuestos del lado aún pueden pagar, salvo que las reglas fijen uno para un experimento. El uso reportado y las estimaciones de costos basadas en precios son independientes de las reservas. La falta de uso del proveedor no prueba costo cero.",
-    "rankTitle": "Experimentos comparables",
-    "rankBody": "Las clasificaciones separan conjuntos de reglas exactas y protocolos de comunicación. Los juegos importados son experimentos locales, nunca evidencia automática de la identidad del modelo. Las muestras pequeñas siguen siendo provisionales. El rendimiento en ajedrez no es una puntuación de inteligencia general.",
+    "rankTitle": "Cada inicio, con su ámbito",
+    "rankBody": "La opción predeterminada es práctica. La participación oficial se elige antes de la aceptación y cada inicio en cola cuenta permanentemente, sin importar si su repetición se publica, se oculta o se elimina. Los puntos son victorias + ½ tablas, divididos entre todos los inicios. Los retiros, las detenciones y los errores no otorgan puntos y se muestran por separado de las victorias, tablas y derrotas; los inicios pendientes son provisionales. Los grupos separan modelo/protocolo, versión y hash del prompt, reglas, posición inicial, grupo de facturación y tipo de oponente. Las páginas siguen las claves de comparación, no una clasificación global. La configuración puede variar: estos resultados son exploratorios, no una evaluación imparcial. Las partidas con humanos, entre jugadores aleatorios, locales y las importaciones nunca son oficiales.",
     "privacyTitle": "Tus claves permanecen contigo",
     "privacyBody": "Las credenciales de inferencia local permanecen en tu proceso local. Los archivos de partidas portátiles contienen datos de juego, no credenciales del proveedor. Los espectadores públicos no generan llamadas de inferencia."
   },
@@ -316,8 +345,8 @@
     "disabled": "La inferencia alojada está desactivada. Un operador debe habilitar CHESS_HOSTED_ENABLED y configurar una clave de proveedor antes de que puedan ejecutarse partidas pagadas.",
     "create": "Crear partida",
     "import": "Importar archivo local",
-    "publish": "Publicar",
-    "unpublish": "Despublicar",
+    "publish": "Publicar repetición",
+    "unpublish": "Dejar de publicar repetición",
     "stop": "Detener partida",
     "drafts": "Tus partidas",
     "empty": "Tu primer experimento pertenece aquí.",
@@ -358,7 +387,7 @@
     "importSubmit": "Importar",
     "imported": "Importada como borrador privado. Revísala abajo y luego publícala.",
     "shareIllegal": "Marcar el último intento ilegal",
-    "userIntro": "Juega partidas alojadas que se cobran a tu propia clave de OpenRouter. Las partidas nuevas son privadas; publica las que quieras compartir.",
+    "userIntro": "Juega partidas alojadas con cargo a tu propia clave de OpenRouter. Las repeticiones empiezan como privadas. Elige la participación oficial antes de iniciar para comprometer un registro público mínimo y permanente del resultado.",
     "connectTitle": "Conecta OpenRouter para crear partidas",
     "connectBody": "Aquí las partidas alojadas se cobran a tu propia clave de OpenRouter. Conéctala una vez en Configuración; toma alrededor de un minuto.",
     "connectAction": "Conectar OpenRouter",
@@ -371,13 +400,12 @@
     "rules_other": "Una partida a la vez · hasta {{count}} partidas al día",
     "statusLoadFailed": "No se pudo revisar tu conexión con OpenRouter.",
     "queuePosition": "En cola · posición {{position}}",
-    "officialLabel": "Cuenta en la clasificación",
-    "officialHint": "Los administradores eligen qué partidas alojadas publicadas cuentan.",
-    "officialOn": "Ahora cuenta en la clasificación",
-    "officialOff": "Ya no cuenta en la clasificación",
     "signInUser": "Inicia sesión para jugar partidas alojadas con tu propia clave de OpenRouter.",
     "signInAction": "Iniciar sesión",
-    "openSettings": "Abrir configuración de OpenRouter"
+    "openSettings": "Abrir configuración de OpenRouter",
+    "publicationHint": "Publicar comparte la transcripción de la partida; no convierte una partida de práctica en oficial. Dejar de publicarla no elimina un inicio oficial ni cambia sus puntos.",
+    "officialRecord": "Inicio oficial · registro público permanente",
+    "practiceRecord": "Práctica · fuera de los resultados oficiales"
   },
   "tagline": "La arena de ajedrez del agente",
   "termination": {
@@ -438,7 +466,7 @@
   },
   "create": {
     "title": "Nueva partida",
-    "description": "Elige dos modelos y empieza. Todo lo demás tiene un valor predeterminado sensato que puedes cambiar en Configuración avanzada.",
+    "description": "Elige dos modelos, decide si la partida será de práctica u oficial e inicia. Puedes cambiar los valores predeterminados en Configuración avanzada.",
     "modelLabel": "Modelo de {{side}}",
     "modelPlaceholder": "Elige un modelo",
     "search": "Busca por nombre, id o proveedor",
@@ -560,7 +588,7 @@
     },
     "autoTitle": "{{white}} vs. {{black}}",
     "catalogStale": "No se pudo actualizar la lista de modelos; los precios son del {{time}}. Se reintenta automáticamente.",
-    "started": "Partida iniciada. Se juega en segundo plano y queda como borrador privado hasta que la publiques desde su tarjeta.",
+    "started": "Partida aceptada. Se juega en segundo plano y su repetición sigue siendo privada hasta que la publiques. Los compromisos oficiales ya son públicos.",
     "units": {
       "usd": "USD",
       "thousand": "k",
@@ -575,11 +603,19 @@
       "openrouter": "Mi clave de OpenRouter"
     },
     "billingHint": {
-      "operator": "Paga la clave de OpenRouter del servidor. La partida puede contar en la clasificación.",
-      "openrouter": "Paga tu clave de OpenRouter conectada. La partida empieza como no oficial; un administrador puede promoverla."
+      "operator": "Paga la clave de OpenRouter del servidor. La opción predeterminada es práctica; quién paga no determina la participación oficial.",
+      "openrouter": "Paga tu clave de OpenRouter conectada. La opción predeterminada es práctica; elige la participación oficial por separado antes de iniciar."
     },
     "remainingCap": "A tu clave de OpenRouter le quedan {{remaining}} y ambos jugadores la usan, así que cada presupuesto se detiene en {{max}}.",
-    "keyExhausted": "A tu clave de OpenRouter casi no le queda nada ({{remaining}}). Primero sube su límite o agrega saldo en OpenRouter."
+    "keyExhausted": "A tu clave de OpenRouter casi no le queda nada ({{remaining}}). Primero sube su límite o agrega saldo en OpenRouter.",
+    "participationLabel": "Participación",
+    "practice": "Práctica (predeterminada)",
+    "official": "Oficial",
+    "participationHint": "Decide antes de iniciar. Solo las partidas alojadas de modelo contra modelo o modelo contra movimientos aleatorios pueden ser oficiales; las partidas con humanos o entre dos jugadores aleatorios no pueden serlo.",
+    "officialCommitment": "Iniciar una partida oficial es un compromiso público permanente en cuanto se acepta el inicio en la cola. Un registro mínimo del modelo, prompt, configuración y resultado sigue siendo público, incluso si detienes, retiras, dejas de publicar o eliminas la partida. Cada inicio cuenta; los retiros y errores no otorgan puntos. Publicar la transcripción de la partida es una decisión independiente.",
+    "practiceCommitment": "Las partidas de práctica no cuentan en los resultados oficiales y no pueden convertirse en oficiales después. La repetición empieza como privada; publicarla no la hace oficial.",
+    "officialSubmitHint": "Los inicios oficiales cuentan permanentemente en los resultados públicos; publicar la repetición es una decisión independiente.",
+    "practiceSubmitHint": "Las partidas de práctica quedan fuera de los resultados oficiales, aunque publiques la repetición."
   },
   "motion": {
     "illegal": "{{side}} intentó {{move}}: no es una jugada legal",

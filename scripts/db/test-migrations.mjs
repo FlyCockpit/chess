@@ -1363,6 +1363,7 @@ async function main() {
     await step(
       "expand/contract 1: removing a NOT NULL field relaxes it now and deletes it later; CI passes",
       async () => {
+        const scheduledBefore = readMigrationsFolder(migrations).filter((m) => m.contract).length;
         editSchema((s) => s.replace(/^\s+name\s+String\n/m, "\n"));
         const r = node("migrate.mjs", ["drop_project_name"]);
         assert.equal(r.code, 0, r.out);
@@ -1380,9 +1381,14 @@ async function main() {
         );
         const a = node("apply.mjs");
         assert.equal(a.code, 0, a.out);
-        assert.match(
+        assert.ok(
+          a.out
+            .split(/\r?\n/)
+            .includes(
+              String(scheduledBefore + 1) +
+                " scheduled deletion(s) are not applied locally; `pnpm db:reset:local` applies them.",
+            ),
           a.out,
-          /1 scheduled deletion\(s\) are not applied locally; `pnpm db:reset:local` applies them/,
         );
         merge("drop project name");
       },

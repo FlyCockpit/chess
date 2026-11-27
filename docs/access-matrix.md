@@ -1,12 +1,13 @@
 # Access matrix
 
 The server uses visitor, user, and admin roles with default-deny authorization.
-Only admins may spend the operator's inference funds, import drafts, or mark games official.
+Only admins may spend the operator's inference funds or import drafts. Eligible hosted
+matches may be committed as official by their verified owner before acceptance.
 Signed-in users with a verified email may run hosted matches billed to their own
 connected OpenRouter key once the operator sets `CHESS_USER_MATCHES_ENABLED`
 (owner decision 2026-11-26: "any verified user who connects OpenRouter"; user
-matches are private by default, the owner may publish them, and only an admin
-marks a game official for the leaderboard).
+matches are private by default and the owner may publish them). Neither owners
+nor admins may change official status after acceptance.
 
 `implemented` rows bind live procedures; `planned` rows describe future work.
 Permission cells use `none`, `read`, `write`, `full`, or `own`; `own` requires
@@ -18,18 +19,18 @@ registered access levels; handler tests verify ownership and custom role rules.
 | Read arena configuration | implemented | read | read | read | `chess.info` | No secrets; includes immutable code-shipped prompt bundle IDs/text/hashes and the per-side hosted budget limits, whether user matches are open, the per-user daily limit and the source-code link (operator config) |
 | Browse published matches | implemented | read | read | read | `chess.list` | Public projection only; cursor bounded |
 | View a published game and replay | implemented | read | read | read | `chess.get` | Drafts never public; an unsupported ruleset returns its card with no archive; includes spectator-only engine scores; a finished game missing some may enqueue one deduplicated background backfill (engine CPU only, no inference spend) |
-| Read official results | implemented | read | read | read | `chess.leaderboard` | Controlled runs only |
-| Create a hosted match | implemented | none | own | full | `chess.create` | `hostedPlayerProcedure` (verified email, no API key, 2FA policy). Users: only billed to their own connected OpenRouter key, only while `CHESS_USER_MATCHES_ENABLED`; one active match, `CHESS_USER_DAILY_MATCHES` per 24 h, never official. The supported prompt ID is resolved server-side and pinned with its hash/text at creation; clients cannot supply instructions or edit a pin. Admins: operator key (official) or their own key (user caps). Queue cap for everyone; counts under one advisory lock |
+| Read official results | implemented | read | read | read | `chess.leaderboard` | All committed hosted starts, independently of transcript publication; points / all starts, W/D/L, pending, withdrawals, provider/account/infrastructure errors. Database aggregation over the full ledger with bounded cursor pages. Comparison scope includes prompt, rules, initial position, billing cohort and opponent type |
+| Read official commitments | implemented | read | read | read | `chess.officialEntries` | Cursor-bounded permanent minimal public model/settings/outcome ledger; no owner, title, slug, private transcript, credentials or match IDs. Entries survive match/account deletion |
+| Create a hosted match | implemented | none | own | full | `chess.create` | `hostedPlayerProcedure` (verified email, no API key, 2FA policy). Users: only billed to their own connected OpenRouter key, only while `CHESS_USER_MATCHES_ENABLED`; one active match, `CHESS_USER_DAILY_MATCHES` per 24 h. Practice by default; explicit per-match pre-start official consent is available only for hosted model-v-model or model-v-random with server-resolved identities and prompt/settings. The supported prompt ID is resolved server-side and pinned with its hash/text at creation; clients cannot supply instructions or edit a pin. Admins: operator key or their own key (user caps), same practice default/consent. No human, local, imported or random-v-random enrollment. Owner-scoped creation key + config digest replays accepted creation exactly; match, receipt and commitment share the admission transaction. Queue cap for everyone; counts under one advisory lock |
 | List hosted models for the create form | implemented | none | read | read | `chess.models` | Server-side OpenRouter catalog, cached 1 h; no key sent |
-| Import a local archive as draft | implemented | none | none | full | `chess.importGame` | Validate full move sequence and exact current prompt/rules shape; no credential fields. Imported bundle pins describe reproducibility, never trusted execution; source is forced local and official remains false |
-| Publish or unpublish own game | implemented | none | own | own | `chess.publish` | Owner-scoped; publishing never makes a game official |
-| Mark a published hosted game official | implemented | none | none | full | `chess.setOfficial` | Admin leaderboard curation, any owner's published hosted game |
+| Import a local archive as draft | implemented | none | none | full | `chess.importGame` | Validate full move sequence and exact current prompt/rules shape; no credential fields. Imported bundle pins describe reproducibility, never trusted execution; source is forced local and no official entry is created |
+| Publish or unpublish own game | implemented | none | own | own | `chess.publish` | Owner-scoped; publishing or unpublishing never changes the pre-start official commitment or its denominator |
 | See hosted capacity | implemented | none | none | read | `chess.capacity` | Running vs limit, queued vs cap, engine pool; bounded list of titles and owner names only |
 | Stop a hosted match | implemented | none | own | own | `chess.stop` | Owner-scoped; no further inference after cancellation |
 | Inspect own private archive | implemented | none | own | own | `chess.inspect` | Owner-scoped; queue position and who pays; same spectator scores and backfill as `chess.get` |
 | Browse private studio | implemented | none | own | own | `chess.studio` | Owner-scoped; includes drafts |
 | See own OpenRouter connection | implemented | none | own | own | `openrouter.status` | Label, last four characters, key hash and OpenRouter's limit/usage numbers (cached 60 s); never the key or its ciphertext |
-| Disconnect own OpenRouter key | implemented | none | own | own | `openrouter.disconnect` | Deletes the sealed key and cancels the caller's queued own-key match; answers `stopped: "stopped"` only once no key-use lease remains on the key (`"pending"` after 10 s without confirmation). Own budget: 20 per 10 min |
+| Disconnect own OpenRouter key | implemented | none | own | own | `openrouter.disconnect` | Deletes the sealed key and fences the caller's queued/running own-key match as an owner withdrawal in the same transaction; answers `stopped: "stopped"` only once no key-use lease remains on the key (`"pending"` after 10 s without confirmation). Own budget: 20 per 10 min |
 | Spend the first-admin setup link | implemented | write | write | write | `setup.claimFirstAdmin` | The link token is the credential; 404 unless `SETUP_KEY` is set; refused once any admin exists; per-IP budget and secret-free audit line |
 | See that `SETUP_KEY` is still set | implemented | none | none | read | `settings.setupKeyStatus` | Hidden (404) from non-admins; drives the "Remove SETUP_KEY" banner |
 | Resend an unfinished invite | implemented | none | none | full | `users.resendInvite` | Hidden (404) from non-admins; mints a fresh one-time set-password link and kills the earlier one; refused (409) unless the user is a pending invite (unverified, only a password account, never signed in), and for archived users, re-checked under a per-user lock a finishing password reset also takes; fail-closed budgets per admin (`rl:users-invite-mail`, shared with invite) and per invitee (`rl:users-resend-invite`) |
@@ -95,3 +96,5 @@ serialize on the same per-user locks. Pending authorized IdP insertion clears
 prior password access and standing credentials before creating the new IdP
 session. Existing Better Auth implicit-link denial for unverified local users,
 SSO trust, signup flags and procedure access levels remain unchanged.
+
+Official enrollment metadata is immutable. Existing status/runToken/heartbeat compare-and-set writes settle the ledger once through a database trigger in the same transaction. Owner stop, disconnect, recovery reset and deletion earn no points; provider/account/infrastructure errors remain unscored categories, never fabricated model losses. Late workers cannot replace a settled outcome. Unpublishing and subsequent replay moderation cannot remove participation. Ordinary signed-in password changes retain active matches. The old admin setOfficial endpoint is retired, with no replacement post-start write; the reviewed baseline contains no entry for it.

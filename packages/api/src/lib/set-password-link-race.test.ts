@@ -122,8 +122,22 @@ const db = vi.hoisted(() => {
     return { count };
   };
   const none = () => statement(async () => ({ count: 0 }));
+  const cancelMatches = async (args: unknown, ctx: TxContext) => {
+    expect(args).toEqual({
+      where: { ownerId: store.user.id, source: "hosted", status: { in: ["queued", "running"] } },
+      data: {
+        status: "stopped",
+        runToken: null,
+        terminalCause: "owner-reset",
+        ending: { kind: "cancelled" },
+      },
+    });
+    expect(ctx.keys.has(`cli-credentials:${store.user.id}`)).toBe(true);
+    return { count: 0 };
+  };
   const interactive = (ctx: TxContext) => ({
     runnerMachine: { updateMany: async () => ({ count: 0 }) },
+    chessMatch: { updateMany: (args: unknown) => cancelMatches(args, ctx) },
     $executeRaw: (strings: TemplateStringsArray, ...values: unknown[]) =>
       execute(strings, values, ctx),
     user: {
@@ -170,6 +184,7 @@ const db = vi.hoisted(() => {
       }
     },
     apiKey: { deleteMany: none },
+    chessMatch: { updateMany: (args: unknown) => statement((ctx) => cancelMatches(args, ctx)) },
     runnerMachine: { updateMany: none },
     session: { deleteMany: none },
     deviceCode: { deleteMany: none },

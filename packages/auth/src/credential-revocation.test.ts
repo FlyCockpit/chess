@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // assertions can see exactly which statements were batched together.
 const db = vi.hoisted(() => ({
   runnerMachine: { updateMany: vi.fn() },
+  chessMatch: { updateMany: vi.fn() },
   apiKey: { deleteMany: vi.fn() },
   session: { deleteMany: vi.fn() },
   deviceCode: { deleteMany: vi.fn() },
@@ -32,6 +33,7 @@ const { cliCredentialLockKey } = await import("./device-redemption-lock");
 beforeEach(() => {
   vi.clearAllMocks();
   db.runnerMachine.updateMany.mockReturnValue("runnerMachine.updateMany");
+  db.chessMatch.updateMany.mockReturnValue("chessMatch.updateMany");
   db.apiKey.deleteMany.mockReturnValue("apiKey.deleteMany");
   db.session.deleteMany.mockReturnValue("session.deleteMany");
   db.deviceCode.deleteMany.mockReturnValue("deviceCode.deleteMany");
@@ -59,6 +61,7 @@ describe("CLI credential revocation writes", () => {
       where: { OR: [{ userId: "u1", origin: "device-flow" }, { impersonatedBy: "u1" }] },
     });
     expect(db.deviceCode.deleteMany).toHaveBeenCalledWith({ where: { userId: "u1" } });
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
   });
 });
 
@@ -131,6 +134,7 @@ describe("revokeCredentialsBeforePasswordReset", () => {
       "deviceCode.deleteMany",
       "runnerMachine.updateMany",
       "runnerMachine.notify",
+      "chessMatch.updateMany",
       "twoFactor.deleteMany",
     ]);
     expect(db.user.updateMany).not.toHaveBeenCalled();
@@ -148,6 +152,7 @@ describe("revokeCredentialsAfterPasswordReset", () => {
       "deviceCode.deleteMany",
       "runnerMachine.updateMany",
       "runnerMachine.notify",
+      "chessMatch.updateMany",
       "twoFactor.deleteMany",
     ]);
     expect(db.$transaction).toHaveBeenNthCalledWith(2, ["setupLock", "verification.deleteMany"]);
@@ -175,6 +180,7 @@ describe("revokeCredentialsAfterPasswordReset", () => {
     expect(sleeps).toEqual([100, 400]);
     // Each sweep gets fresh promises. Finalization runs once, after the retries.
     expect(db.apiKey.deleteMany).toHaveBeenCalledTimes(3);
+    expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(3);
     expect(db.user.updateMany).not.toHaveBeenCalled();
     expect(db.verification.deleteMany).toHaveBeenCalledExactlyOnceWith({
       where: { value: "u1", identifier: { startsWith: "reset-password:" } },
@@ -427,6 +433,7 @@ describe("activation revocation on the bound client", () => {
   it("uses only the existing transaction for all Chess standing credentials and 2FA", async () => {
     const tx = {
       runnerMachine: { updateMany: vi.fn() },
+      chessMatch: { updateMany: vi.fn() },
       apiKey: { deleteMany: vi.fn() },
       deviceCode: { deleteMany: vi.fn() },
       session: { deleteMany: vi.fn() },
@@ -449,6 +456,15 @@ describe("activation revocation on the bound client", () => {
       where: { userId: "invitee", revokedAt: null },
       data: { revokedAt: expect.any(Date), connectionGeneration: { increment: 1 } },
     });
+    expect(tx.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: { ownerId: "invitee", source: "hosted", status: { in: ["queued", "running"] } },
+      data: {
+        status: "stopped",
+        runToken: null,
+        terminalCause: "owner-reset",
+        ending: { kind: "cancelled" },
+      },
+    });
     expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
     expect(tx.$executeRaw.mock.calls[1]?.slice(1)).toEqual(["invitee", "invitee"]);
     expect(db.$executeRaw).not.toHaveBeenCalled();
@@ -456,6 +472,7 @@ describe("activation revocation on the bound client", () => {
     expect(db.apiKey.deleteMany).not.toHaveBeenCalled();
     expect(db.deviceCode.deleteMany).not.toHaveBeenCalled();
     expect(db.session.deleteMany).not.toHaveBeenCalled();
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
   });
 });
 
@@ -487,6 +504,7 @@ describe("runner machine recovery policy", () => {
       keepSessionToken: "new-session",
     });
     expect(db.runnerMachine.updateMany).not.toHaveBeenCalled();
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
     expect(db.apiKey.deleteMany).toHaveBeenCalled();
     expect(db.deviceCode.deleteMany).toHaveBeenCalled();
   });
@@ -502,4 +520,74 @@ describe("runner machine recovery policy", () => {
       log.mockRestore();
     }
   });
+});
+
+describe("hosted match recovery cancellation", () => {
+  it.each(["missing", "expired"])(
+    "does not cancel matches or revoke credentials for a %s recovery token",
+    async (kind) => {
+      await revokeCredentialsBeforePasswordReset({
+        path: "/reset-password",
+        body: { token: "reset-token" },
+        context: {
+          internalAdapter: {
+            findVerificationValue: async () =>
+              kind === "missing"
+                ? null
+                : { value: "owner", expiresAt: new Date(Date.now() - 1000) },
+          },
+        },
+      });
+      expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+      expect(db.$transaction).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["pre-reset", "post-reset", "admin", "quarantine"])(
+    "%s cancels all own active hosted matches in the locked credential batch",
+    async (kind) => {
+      if (kind === "pre-reset")
+        await revokeCredentialsBeforePasswordReset({
+          path: "/reset-password",
+          body: { token: "reset-token" },
+          context: {
+            internalAdapter: {
+              findVerificationValue: async () => ({
+                value: "owner",
+                expiresAt: new Date(Date.now() + 60_000),
+              }),
+            },
+          },
+        });
+      else if (kind === "post-reset") await revokeCredentialsAfterPasswordReset("owner");
+      else if (kind === "admin") await revokeCredentialsBeforeAdminPasswordReset("owner");
+      else
+        await quarantineUntrustedPasswordWrite("owner", {
+          hash: async () => "unusable",
+          sleep: async () => {},
+        });
+      // No billing filter: operator-billed admin matches must be fenced too.
+      expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
+        where: { ownerId: "owner", source: "hosted", status: { in: ["queued", "running"] } },
+        data: {
+          status: "stopped",
+          runToken: null,
+          terminalCause: "owner-reset",
+          ending: { kind: "cancelled" },
+        },
+      });
+      const batches = db.$transaction.mock.calls.map(([writes]) => writes as string[]);
+      const cancellationBatch = batches.find((writes) => writes.includes("chessMatch.updateMany"));
+      expect(cancellationBatch).toEqual([
+        "advisoryLock",
+        "apiKey.deleteMany",
+        "session.deleteMany",
+        "deviceCode.deleteMany",
+        "runnerMachine.updateMany",
+        "runnerMachine.notify",
+        "chessMatch.updateMany",
+        ...(kind === "quarantine" ? ["session.deleteMany"] : []),
+        "twoFactor.deleteMany",
+      ]);
+    },
+  );
 });

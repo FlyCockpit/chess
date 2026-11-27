@@ -1,16 +1,30 @@
+import type { MatchConfig } from "@cockpit-chess/chess";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
 import enErrors from "@cockpit-chess/locales/src/en-US/errors.json";
+import { useForm } from "@tanstack/react-form";
 import { createInstance } from "i18next";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider } from "react-i18next";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mutation = vi.hoisted(() => ({
   meta: undefined as unknown,
   state: { isError: false, error: null as unknown },
+  mutate:
+    vi.fn<
+      (input: MatchConfig & { billing: string; official: boolean; creationKey: string }) => void
+    >(),
+  success: undefined as undefined | ((result: { slug: string }) => void),
 }));
+const sheet = vi.hoisted(() => ({
+  changeOpen: undefined as undefined | ((open: boolean) => void),
+}));
+vi.mock("@tanstack/react-form", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-form")>();
+  return { ...actual, useForm: vi.fn(actual.useForm) };
+});
 const catalog = vi.hoisted(() => ({
   options: undefined as
     | undefined
@@ -36,14 +50,19 @@ vi.mock("@/utils/orpc", () => ({
     chess: {
       key: () => ["chess"],
       models: { queryOptions: () => ({}) },
-      create: { mutationOptions: () => ({}) },
+      create: {
+        mutationOptions: (options: { onSuccess: typeof mutation.success }) => {
+          mutation.success = options.onSuccess;
+          return options;
+        },
+      },
     },
   },
 }));
 vi.mock("@/hooks/use-entity-mutation", () => ({
   useEntityMutation: (options: { meta?: unknown }) => {
     mutation.meta = options.meta;
-    return { isPending: false, mutate: vi.fn(), reset: vi.fn(), ...mutation.state };
+    return { isPending: false, mutate: mutation.mutate, reset: vi.fn(), ...mutation.state };
   },
 }));
 // Render the dialog as if open: the static renderer cannot open a portal.
@@ -52,7 +71,16 @@ vi.mock("@cockpit-chess/ui/components/sheet", () => {
     <div className={className}>{children}</div>
   );
   return {
-    Sheet: ({ children }: { children: ReactNode }) => <>{children}</>,
+    Sheet: ({
+      children,
+      onOpenChange,
+    }: {
+      children: ReactNode;
+      onOpenChange: (open: boolean) => void;
+    }) => {
+      sheet.changeOpen = onOpenChange;
+      return <>{children}</>;
+    },
     SheetTrigger: () => null,
     SheetContent: Pass,
     SheetBody: Pass,
@@ -64,6 +92,7 @@ vi.mock("@cockpit-chess/ui/components/sheet", () => {
 });
 
 import { CreateMatchDialog } from "./create-match-dialog";
+import { type CreateMatchValues, DEFAULT_VALUES } from "./create-match-form";
 
 const i18n = createInstance();
 beforeAll(async () => {
@@ -74,12 +103,24 @@ beforeAll(async () => {
     react: { useSuspense: false },
   });
 });
+beforeEach(() => {
+  mutation.mutate.mockReset();
+  mutation.state = { isError: false, error: null };
+});
 const render = (limits?: { maxCostMicros: number; maxTokens: number }) =>
   renderToStaticMarkup(
     <I18nextProvider i18n={i18n}>
       <CreateMatchDialog disabled={false} limits={limits} onCreated={vi.fn()} />
     </I18nextProvider>,
   );
+function formOptions() {
+  const options = vi.mocked(useForm).mock.calls.at(-1)?.[0];
+  if (!options) throw new Error("No create form rendered");
+  return options as {
+    onSubmit: (props: { value: CreateMatchValues }) => void;
+    listeners: { onChange: () => void };
+  };
+}
 const models = [
   {
     id: "openai/gpt-4.1-nano",
@@ -118,6 +159,83 @@ describe("CreateMatchDialog", () => {
     // A default not in the catalog stays usable as a typed id.
     expect(html).toContain("openai/gpt-4.1-mini (typed id)");
     expect(html).toContain("Left blank, the title is “GPT-4.1 Nano vs openai/gpt-4.1-mini”.");
+  });
+  it.each(["operator", "openrouter"] as const)(
+    "defaults %s billing to practice and explains publication independently",
+    (billing) => {
+      const html = renderToStaticMarkup(
+        <I18nextProvider i18n={i18n}>
+          <CreateMatchDialog disabled={false} billingOptions={[billing]} onCreated={vi.fn()} />
+        </I18nextProvider>,
+      );
+      expect(html).toMatch(/aria-pressed="true"[^>]*>Practice \(default\)</);
+      expect(html).toContain(enChess.create.practiceCommitment);
+      expect(html).toContain(enChess.create.practiceSubmitHint);
+      expect(html.indexOf(enChess.create.practiceCommitment)).toBeLessThan(
+        html.indexOf(">Start match<"),
+      );
+      const { onSubmit } = formOptions();
+      onSubmit({ value: { ...DEFAULT_VALUES } });
+      expect(mutation.mutate).toHaveBeenLastCalledWith(
+        expect.objectContaining({ official: false, billing }),
+      );
+    },
+  );
+  it("puts the permanent accepted-queue commitment beside the official submit action", () => {
+    const previous = DEFAULT_VALUES.official;
+    DEFAULT_VALUES.official = true;
+    try {
+      const html = render();
+      expect(html).toMatch(/aria-pressed="true"[^>]*>Official</);
+      expect(html).toContain(enChess.create.officialCommitment);
+      expect(html).toContain(enChess.create.officialSubmitHint);
+      expect(html.indexOf(enChess.create.officialSubmitHint)).toBeGreaterThan(
+        html.indexOf("cc-create-footer"),
+      );
+      expect(html.indexOf(enChess.create.officialCommitment)).toBeLessThan(
+        html.indexOf(">Start match<"),
+      );
+      expect(html).not.toContain(enChess.create.practiceCommitment);
+      formOptions().onSubmit({ value: { ...DEFAULT_VALUES } });
+      expect(mutation.mutate).toHaveBeenLastCalledWith(expect.objectContaining({ official: true }));
+    } finally {
+      DEFAULT_VALUES.official = previous;
+    }
+  });
+  it("reuses the exact UUID and payload after failed or lost responses, and clears it on edits", () => {
+    render();
+    const options = formOptions();
+    options.onSubmit({ value: { ...DEFAULT_VALUES, official: true } });
+    const first = mutation.mutate.mock.calls[0]?.[0];
+    expect(first?.creationKey).toMatch(
+      /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+    );
+    mutation.state = { isError: true, error: new TypeError("Failed to fetch") };
+    options.onSubmit({ value: { ...DEFAULT_VALUES, official: true } });
+    expect(mutation.mutate.mock.calls[1]?.[0]).toBe(first);
+    options.listeners.onChange();
+    options.onSubmit({ value: { ...DEFAULT_VALUES, official: true, budget: 2 } });
+    const edited = mutation.mutate.mock.calls[2]?.[0];
+    expect(edited?.creationKey).not.toBe(first?.creationKey);
+    expect(edited?.rules.costBudgetMicros).toBe(2_000_000);
+    // Even returning to the earlier configuration represents a new intent after editing.
+    options.listeners.onChange();
+    options.onSubmit({ value: { ...DEFAULT_VALUES, official: true } });
+    expect(mutation.mutate.mock.calls[3]?.[0].creationKey).not.toBe(first?.creationKey);
+  });
+  it("uses a fresh UUID after closing/reopening or a successful acceptance", () => {
+    render();
+    const { onSubmit } = formOptions();
+    onSubmit({ value: { ...DEFAULT_VALUES } });
+    const first = mutation.mutate.mock.calls[0]?.[0].creationKey;
+    sheet.changeOpen?.(false);
+    sheet.changeOpen?.(true);
+    onSubmit({ value: { ...DEFAULT_VALUES } });
+    const second = mutation.mutate.mock.calls[1]?.[0].creationKey;
+    expect(second).not.toBe(first);
+    mutation.success?.({ slug: "accepted" });
+    onSubmit({ value: { ...DEFAULT_VALUES } });
+    expect(mutation.mutate.mock.calls[2]?.[0].creationKey).not.toBe(second);
   });
   it("groups advanced settings into collapsed, labelled sections with explanations", () => {
     const html = render();
