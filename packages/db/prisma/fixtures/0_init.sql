@@ -57,20 +57,23 @@ INSERT INTO "chess_match" ("id", "slug", "ownerId", "title", "whiteName", "black
   ('fx_match_draft', 'fixture-draft', 'fx_user_admin', '', 'White', 'black', 'draft', false, false, 'hosted', 'standard', 'full', 'named', NULL, NULL, '{"moves":[],"label":"Zoë 😀"}', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
   ('fx_match_public', 'fixture-published', 'fx_user_plain', 'Fixture match', 'White', 'Black', 'complete', true, true, 'imported', 'standard', 'last', 'anonymous', 'fx-run', '2030-01-01 00:00:00', '{"moves":["e2e4"],"nested":{"text":"quotes and Unicode Å"}}', '1-0', '', 'openai', 'Fixture Model', 'anthropic', 0, 2147483647, 0, 9223372036854775807, 'strict');
 
--- Archives the chess_match.ending backfill (20261125231606) must summarize: an operator
--- stop and a server error over still-running snapshots, and a finished illegal forfeit.
-INSERT INTO "chess_match" ("id", "slug", "ownerId", "title", "whiteName", "blackName", "status", "published", "official", "source", "rulesKey", "contextMode", "identityMode", "archive", "result") VALUES
-  ('fx_ending_stopped', 'fixture-ending-stopped', 'fx_user_admin', 'Stopped', 'White', 'Black', 'stopped', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"status":"running","termination":"playing","result":"*"}', NULL),
-  ('fx_ending_error', 'fixture-ending-error', 'fx_user_admin', 'Errored', 'White', 'Black', 'error', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"status":"running","termination":"playing","result":"*"}', NULL),
-  ('fx_ending_forfeit', 'fixture-ending-forfeit', 'fx_user_admin', 'Simple Test', 'White', 'Black', 'completed', true, true, 'hosted', 'standard', 'fresh', 'hidden', '{"status":"completed","termination":"illegal-forfeit","result":"0-1","config":{"rules":{"maxAttempts":3}}}', '0-1');
+-- Terminal summaries are stored explicitly on a fresh baseline: operator stop,
+-- interrupted snapshot, and a finished illegal forfeit.
+INSERT INTO "chess_match" ("id", "slug", "ownerId", "title", "whiteName", "blackName", "status", "published", "official", "source", "rulesKey", "contextMode", "identityMode", "archive", "result", "ending") VALUES
+  ('fx_ending_stopped', 'fixture-ending-stopped', 'fx_user_admin', 'Stopped', 'White', 'Black', 'stopped', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"status":"running","termination":"playing","result":"*"}', NULL, '{"kind":"cancelled"}'),
+  ('fx_ending_error', 'fixture-ending-error', 'fx_user_admin', 'Errored', 'White', 'Black', 'error', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"status":"running","termination":"playing","result":"*"}', NULL, '{"kind":"interrupted"}'),
+  ('fx_ending_forfeit', 'fixture-ending-forfeit', 'fx_user_admin', 'Simple Test', 'White', 'Black', 'completed', true, true, 'hosted', 'standard', 'fresh', 'hidden', '{"status":"completed","termination":"illegal-forfeit","result":"0-1","config":{"rules":{"maxAttempts":3}}}', '0-1', '{"kind":"illegal-forfeit","side":"w","illegal":3}');
 
--- Archives the chess_match.rulesVersion backfill (20261126220000) must read: one per
--- ruleset version; the rows above without config.rules stay NULL.
-INSERT INTO "chess_match" ("id", "slug", "ownerId", "title", "whiteName", "blackName", "status", "published", "official", "source", "rulesKey", "contextMode", "identityMode", "archive", "result") VALUES
-  ('fx_rules_v1', 'fixture-rules-v1', 'fx_user_admin', 'Rules v1', 'White', 'Black', 'draft', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"config":{"rules":{"version":"cockpit-v1"}}}', NULL),
-  ('fx_rules_v2', 'fixture-rules-v2', 'fx_user_admin', 'Rules v2', 'White', 'Black', 'draft', true, false, 'hosted', 'standard', 'fresh', 'hidden', '{"config":{"rules":{"version":"cockpit-v2"}}}', NULL),
-  ('fx_rules_v3', 'fixture-rules-v3', 'fx_user_admin', 'Rules v3', 'White', 'Black', 'draft', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"config":{"rules":{"version":"cockpit-v3"}}}', NULL);
+-- Stored ruleset versions survive later migrations; unknown versions stay NULL.
+INSERT INTO "chess_match" ("id", "slug", "ownerId", "title", "whiteName", "blackName", "status", "published", "official", "source", "rulesKey", "contextMode", "identityMode", "archive", "result", "rulesVersion") VALUES
+  ('fx_rules_v1', 'fixture-rules-v1', 'fx_user_admin', 'Rules v1', 'White', 'Black', 'draft', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"config":{"rules":{"version":"cockpit-v1"}}}', NULL, 'cockpit-v1'),
+  ('fx_rules_v2', 'fixture-rules-v2', 'fx_user_admin', 'Rules v2', 'White', 'Black', 'draft', true, false, 'hosted', 'standard', 'fresh', 'hidden', '{"config":{"rules":{"version":"cockpit-v2"}}}', NULL, 'cockpit-v2'),
+  ('fx_rules_v3', 'fixture-rules-v3', 'fx_user_admin', 'Rules v3', 'White', 'Black', 'draft', false, false, 'hosted', 'standard', 'fresh', 'hidden', '{"config":{"rules":{"version":"cockpit-v3"}}}', NULL, 'cockpit-v3');
 
 -- Exact expiry boundary: equal timestamps survive predicates using strict <.
 INSERT INTO "verification" ("id", "createdAt", "updatedAt", "identifier", "value", "expiresAt") VALUES
   ('fx_verification_boundary', '2026-01-01 00:00:00', '2026-01-01 00:00:00', '', '', '2026-01-01 00:00:00');
+
+-- Synthetic sealed bytes only; omit status/timestamps to exercise DB defaults.
+INSERT INTO "openrouter_connection" ("id", "userId", "keyCiphertext", "keyNonce", "keySecretId", "keyHash", "keyHint", "label", "limitMicros", "expiresAt") VALUES
+  ('fx_connection_1', 'fx_user_plain', '\x0001', '\x000000000000000000000000', 'fixture-secret-id', 'fixture-hash', 'test', NULL, 9223372036854775807, NULL);

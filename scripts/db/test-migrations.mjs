@@ -558,7 +558,7 @@ async function main() {
 
   try {
     await step(
-      "current Chess baseline and fixtures cover exactly nine tables and a live trigger catalog",
+      "current Chess baseline and fixtures cover exactly ten tables and a live trigger catalog",
       async () => {
         const url = await freshDb("baseline");
         const client = new pg.Client({ connectionString: url });
@@ -590,6 +590,7 @@ async function main() {
             "app_setting",
             "chess_match",
             "device_code",
+            "openrouter_connection",
             "session",
             "two_factor",
             "user",

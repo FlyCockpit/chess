@@ -135,6 +135,12 @@ CREATE TABLE "chess_match" (
     "whiteCostMicros" BIGINT,
     "blackCostMicros" BIGINT,
     "moveFormat" TEXT,
+    "ending" JSONB,
+    "spectatorEvaluations" JSONB,
+    "blackTruncated" INTEGER,
+    "whiteTruncated" INTEGER,
+    "credentialSource" TEXT NOT NULL DEFAULT 'operator',
+    "rulesVersion" TEXT,
 
     CONSTRAINT "chess_match_pkey" PRIMARY KEY ("id")
 );
@@ -181,6 +187,26 @@ CREATE TABLE "apikey" (
     "metadata" TEXT,
 
     CONSTRAINT "apikey_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "openrouter_connection" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "keyCiphertext" BYTEA NOT NULL,
+    "keyNonce" BYTEA NOT NULL,
+    "keySecretId" TEXT NOT NULL,
+    "keyHash" TEXT NOT NULL,
+    "keyHint" TEXT NOT NULL,
+    "label" TEXT,
+    "limitMicros" BIGINT,
+    "expiresAt" TIMESTAMP(3),
+    "status" TEXT NOT NULL DEFAULT 'active',
+    "lastCheckedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "openrouter_connection_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
@@ -255,6 +281,12 @@ CREATE INDEX "apikey_referenceId_idx" ON "apikey"("referenceId");
 -- CreateIndex
 CREATE INDEX "apikey_expiresAt_idx" ON "apikey"("expiresAt");
 
+-- CreateIndex
+CREATE UNIQUE INDEX "openrouter_connection_userId_key" ON "openrouter_connection"("userId");
+
+-- CreateIndex
+CREATE INDEX "chess_match_status_createdAt_idx" ON "chess_match"("status", "createdAt");
+
 -- AddForeignKey
 ALTER TABLE "session" ADD CONSTRAINT "session_userId_fkey" FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
@@ -272,6 +304,9 @@ ALTER TABLE "device_code" ADD CONSTRAINT "device_code_userId_fkey" FOREIGN KEY (
 
 -- AddForeignKey
 ALTER TABLE "apikey" ADD CONSTRAINT "apikey_referenceId_fkey" FOREIGN KEY ("referenceId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "openrouter_connection" ADD CONSTRAINT "openrouter_connection_userId_fkey" FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- cockpit-chess:commit-marker (lets the runner prove this transaction committed; keep it last)
 DO $cockpit_chess$ DECLARE history text := current_setting('cockpit_chess.history', true); BEGIN IF history <> '' THEN EXECUTE format('UPDATE %s SET "logs" = %L WHERE "id" = (SELECT "id" FROM %s WHERE "finished_at" IS NULL AND "rolled_back_at" IS NULL ORDER BY "started_at" DESC LIMIT 1)', history::oid::regclass, 'cockpit-chess:committed', history::oid::regclass); END IF; END $cockpit_chess$;
