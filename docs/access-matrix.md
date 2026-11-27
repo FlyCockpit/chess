@@ -39,7 +39,7 @@ registered access levels; handler tests verify ownership and custom role rules.
 | CLI identity and release metadata | implemented | none | read | read | `cli.whoami`, `cli.latestRelease` | Requires a CLI credential |
 | End a CLI session | implemented | none | own | own | `cli.logout` | Scoped to the current session |
 | Import an archive from the CLI | implemented | none | none | full | `cli.chess.importGame` | Same admin gate as the hosted procedure |
-| Inspect an archive from the CLI | implemented | none | none | full | `cli.chess.inspect` | Same owner scope; the CLI copy keeps the admin gate |
+| Inspect an archive from the CLI | implemented | none | none | full | `cli.chess.inspect` | Same owner scope; the CLI copy keeps the admin gate. API procedure for CLI clients; the companion CLI has no `inspect` command |
 | Publish a draft from the CLI | implemented | none | none | full | `cli.chess.publish` | Explicit admin action; API keys cannot pass the admin gate |
 
 Route visibility never substitutes for procedure authorization. Public records

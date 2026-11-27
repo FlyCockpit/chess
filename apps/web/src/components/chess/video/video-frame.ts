@@ -134,6 +134,20 @@ function fitLine(ctx: Canvas2D, text: string, maxWidth: number): string {
   return wrapText((s) => ctx.measureText(s).width, text, maxWidth, 1)[0] ?? "";
 }
 
+function wrapComplete(
+  measure: (text: string) => number,
+  text: string,
+  width: number,
+  maxLines: number,
+) {
+  const all = wrapText(measure, text, width, Number.MAX_SAFE_INTEGER);
+  return {
+    lines: all.length <= maxLines ? all : wrapText(measure, text, width, maxLines),
+    complete:
+      all.length <= maxLines && all.join("").replaceAll(" ", "") === text.replaceAll(" ", ""),
+  };
+}
+
 function drawEvalBar(ctx: Canvas2D, bar: Rect, evaluation: FrameState["evaluation"]) {
   if (!evaluation) {
     // Unknown, not even: a neutral grey bar with no fill and no number.
@@ -260,16 +274,24 @@ function drawIllegal(
   const { bubble } = layout;
   const pad = 22;
   const headerSize = Math.round(bubble.size * 0.62);
-  const lineHeight = bubble.size * 1.2;
   const top = bubble.y + 12 + headerSize * 1.3;
-  ctx.font = `bold ${bubble.size}px ${SANS}`;
-  const room = Math.max(1, Math.floor((bubble.y + bubble.height - 12 - top) / lineHeight));
-  const lines = wrapText(
-    (s) => ctx.measureText(s).width,
-    illegal.caption,
-    bubble.width - pad * 2,
-    Math.min(bubble.lines, room),
-  );
+  let size = bubble.size;
+  let lineHeight = size * 1.2;
+  let lines: string[] = [];
+  for (const scale of [1, 0.92, 0.84, 0.8]) {
+    size = Math.round(bubble.size * scale);
+    lineHeight = size * 1.2;
+    const room = Math.max(1, Math.floor((bubble.y + bubble.height - 12 - top) / lineHeight));
+    ctx.font = `bold ${size}px ${SANS}`;
+    const wrapped = wrapComplete(
+      (s) => ctx.measureText(s).width,
+      illegal.caption,
+      bubble.width - pad * 2,
+      Math.min(bubble.lines, room),
+    );
+    lines = wrapped.lines;
+    if (wrapped.complete) break;
+  }
   const height = Math.min(bubble.height, top - bubble.y + lines.length * lineHeight + 12);
   ctx.fillStyle = "#3a0d10";
   roundRect(ctx, { ...bubble, height }, 18);
@@ -285,7 +307,7 @@ function drawIllegal(
     bubble.x + pad,
     bubble.y + 12,
   );
-  ctx.font = `bold ${bubble.size}px ${SANS}`;
+  ctx.font = `bold ${size}px ${SANS}`;
   ctx.fillStyle = PAPER;
   clipped(ctx, { ...bubble, height }, () => {
     lines.forEach((text, i) => {
@@ -314,17 +336,26 @@ export function motionGhosts(motion: SceneMotion, frame: number): CanvasGhost[] 
 function drawBanner(ctx: Canvas2D, layout: FrameLayout, banner: NonNullable<FrameState["banner"]>) {
   const rect = layout.bubble;
   const pad = 22;
-  const headlineSize = Math.round(rect.size * 1.4);
-  const detailSize = Math.round(rect.size * 0.85);
+  let headlineSize = 0;
+  let detailSize = 0;
   const width = rect.width - pad * 2;
   const measure = (s: string) => ctx.measureText(s).width;
-  ctx.font = `bold ${headlineSize}px ${SANS}`;
-  let headline = wrapText(measure, banner.headline, width, 2);
-  ctx.font = `${detailSize}px ${SANS}`;
-  let detail = wrapText(measure, banner.detail, width, 2);
+  let headline: string[] = [];
+  let detail: string[] = [];
   const height = () =>
     headline.length * headlineSize * 1.15 + 8 + detail.length * detailSize * 1.25;
   const room = rect.height - 24;
+  for (const scale of [1, 0.92, 0.84, 0.76, 0.7]) {
+    headlineSize = Math.round(rect.size * 1.4 * scale);
+    detailSize = Math.round(rect.size * 0.85 * Math.max(scale, 0.8));
+    ctx.font = `bold ${headlineSize}px ${SANS}`;
+    const wrappedHeadline = wrapComplete(measure, banner.headline, width, 2);
+    ctx.font = `${detailSize}px ${SANS}`;
+    const wrappedDetail = wrapComplete(measure, banner.detail, width, 2);
+    headline = wrappedHeadline.lines;
+    detail = wrappedDetail.lines;
+    if (wrappedHeadline.complete && wrappedDetail.complete && height() <= room) break;
+  }
   if (height() > room) {
     ctx.font = `${detailSize}px ${SANS}`;
     detail = wrapText(measure, banner.detail, width, 1);

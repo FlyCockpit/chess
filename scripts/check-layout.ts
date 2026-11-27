@@ -45,8 +45,8 @@
  * the account link) in every shipped locale (packages/locales/src/*) at
  * HEADER_WIDTHS from 320 to 3840px, signed out and (with `--login`) signed
  * in: every control lies inside the viewport, the signed-in account link is
- * there, the header row itself does not overflow (the tabs scroll inside
- * `.cc-nav` instead), and no tab label runs out of its tab or into the next
+ * there, from 390px the controls share the brand's row, the header row
+ * itself does not overflow (the tabs scroll inside `.cc-nav` instead), and no tab label runs out of its tab or into the next
  * one (a squeezed strip must scroll, not overlap its labels).
  *
  * Classic (non-overlay) scrollbars are what expose a reserved gutter; headless
@@ -160,10 +160,19 @@ export function judgeLayout(page: string, probe: Probe, expect: Expect): string[
 /** What the arena-header probe reports. Pure data, so `judgeHeader` is testable. */
 export interface HeaderProbe {
   vw: number;
+  /** The `.cc-brand` link's vertical extent, or null when the header has none. */
+  brand: { top: number; bottom: number } | null;
   /** The `[data-header-controls]` group's box, or null when the header has none. */
-  controls: { left: number; right: number } | null;
+  controls: { left: number; right: number; top: number; bottom: number } | null;
   /** Each control in the group, by name (`account` is the signed-in account link). */
-  items: { name: string; left: number; right: number; width: number }[];
+  items: {
+    name: string;
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    width: number;
+  }[];
   /** How far the header row's content runs past its box (scrollWidth − clientWidth). */
   rowOverflow: number;
   /** How far the tab strip scrolls sideways (reported, not judged: it may). */
@@ -184,6 +193,22 @@ export interface HeaderProbe {
 export function judgeHeader(page: string, probe: HeaderProbe, signedIn: boolean): string[] {
   if (!probe.controls) return [`${page}: no [data-header-controls] in the arena header`];
   const bad: string[] = [];
+  // Every control, not just the group's centre: a group that wraps inside
+  // itself can stay centred on the brand with a control on another line.
+  if (probe.vw >= 390) {
+    const brand = probe.brand;
+    const boxes = probe.items.length > 0 ? probe.items : [probe.controls];
+    if (!brand) bad.push(`${page}: no .cc-brand in the arena header`);
+    else if (
+      boxes.some(({ top, bottom }) => {
+        const centre = (top + bottom) / 2;
+        return centre < brand.top - 1 || centre > brand.bottom + 1;
+      })
+    )
+      bad.push(
+        `${page}: the header controls wrapped below the brand at ${probe.vw}px; from 390px they share its row`,
+      );
+  }
   if (probe.controls.left < -1 || probe.controls.right > probe.vw + 1)
     bad.push(
       `${page}: the header controls span ${probe.controls.left}…${probe.controls.right}px, outside the ${probe.vw}px viewport`,
@@ -234,9 +259,10 @@ const HEADER_PROBE = `(async () => {
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   const vw = document.documentElement.clientWidth;
   const group = document.querySelector("header [data-header-controls]");
+  const brand = document.querySelector("header .cc-brand");
   const row = group ? group.parentElement : null;
   const nav = row ? row.querySelector("nav") : null;
-  const box = (el) => { const r = el.getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width) }; };
+  const box = (el) => { const r = el.getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), width: Math.round(r.width) }; };
   const name = (el) => el.hasAttribute("data-account-link") ? "account" : el.classList.contains("cc-signin") ? "studio" : el.dataset.slot === "select-trigger" ? "language" : (el.getAttribute("aria-label") || el.tagName.toLowerCase());
   const items = group ? [...group.children].map((el) => ({ name: name(el), ...box(el) })) : [];
   const tabs = nav ? [...nav.querySelectorAll("a")].map((el) => {
@@ -248,7 +274,8 @@ const HEADER_PROBE = `(async () => {
   }) : [];
   return JSON.stringify({
     vw,
-    controls: group ? (({ left, right }) => ({ left, right }))(box(group)) : null,
+    brand: brand ? (({ top, bottom }) => ({ top, bottom }))(box(brand)) : null,
+    controls: group ? (({ left, right, top, bottom }) => ({ left, right, top, bottom }))(box(group)) : null,
     items,
     rowOverflow: row ? row.scrollWidth - row.clientWidth : 0,
     navOverflow: nav ? nav.scrollWidth - nav.clientWidth : 0,

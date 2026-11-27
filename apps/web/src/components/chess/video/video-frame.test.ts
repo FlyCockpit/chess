@@ -49,10 +49,102 @@ function recordingContext() {
   return { ctx, texts, rects };
 }
 
+function fontRecordingContext() {
+  const { ctx } = recordingContext();
+  const drawn: { text: string; font: string; x: number; y: number }[] = [];
+  const spy = new Proxy(ctx as object, {
+    get(target, key: string) {
+      if (key === "fillText")
+        return (text: string, x: number, y: number) =>
+          drawn.push({ text, font: String(Reflect.get(target, "font")), x, y });
+      if (key === "measureText")
+        return (text: string) => ({
+          width:
+            text.length *
+            Number(/(\d+)px/.exec(String(Reflect.get(target, "font")))?.[1] ?? 0) *
+            0.5,
+          actualBoundingBoxLeft: 0,
+          actualBoundingBoxRight: 10,
+          actualBoundingBoxAscent: 10,
+          actualBoundingBoxDescent: 0,
+        });
+      return Reflect.get(target, key);
+    },
+    set(target, key, value) {
+      return Reflect.set(target, key, value);
+    },
+  }) as Canvas2D;
+  return { ctx: spy, drawn };
+}
+
 const plan = buildVideoPlan(videoFixtureGame(), defaultVideoOptions(videoFixtureGame()), t);
 const scene = (i: number) => plan.scenes[i]?.state as FrameState;
 
 describe("drawFrame", () => {
+  const banner = {
+    headline: "White forfeited: 3 rejected moves (2 ran out of space)",
+    detail: "d4; not a move in UCI notation",
+  };
+  const final = () => scene(plan.scenes.length - 1);
+
+  it("shrinks the square result banner to show the complete text", () => {
+    const { ctx, drawn } = fontRecordingContext();
+    drawFrame(ctx, frameLayout("square"), { ...final(), banner });
+    const text = drawn.filter((item) => item.x === 70 && item.y >= 948);
+    const headline = text.filter((item) => item.font.startsWith("bold"));
+    expect(text.every((item) => !item.text.endsWith("…"))).toBe(true);
+    expect(headline.map((item) => item.text).join(" ")).toBe(banner.headline);
+    // At 0.5em per character the headline first fits one line at scale 0.84
+    // (33px, detail 20px): 39 and 36px need two lines, too tall with the detail.
+    expect(headline.map((item) => item.font)).toEqual([expect.stringMatching(/^bold 33px /)]);
+    expect(text.filter((item) => !item.font.startsWith("bold"))).toEqual([
+      expect.objectContaining({ text: banner.detail, font: expect.stringMatching(/^20px /) }),
+    ]);
+  });
+
+  it("keeps the landscape headline at its original size", () => {
+    const { ctx, drawn } = fontRecordingContext();
+    drawFrame(ctx, frameLayout("landscape"), { ...final(), banner });
+    const headline = drawn.filter((item) => item.x === 1162 && item.font.startsWith("bold"));
+    expect(headline.map((item) => item.text).join(" ")).toBe(banner.headline);
+    expect(headline.every((item) => item.font.includes("48px"))).toBe(true);
+  });
+
+  it("ellipsizes an impossible square banner inside its box", () => {
+    const { ctx, drawn } = fontRecordingContext();
+    const layout = frameLayout("square");
+    drawFrame(ctx, layout, {
+      ...final(),
+      banner: { headline: "headline ".repeat(100), detail: "detail ".repeat(100) },
+    });
+    const text = drawn.filter((item) => item.x === 70 && item.y >= layout.bubble.y);
+    expect(text.some((item) => item.text.endsWith("…"))).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(4);
+    expect(text.every((item) => item.y < layout.bubble.y + layout.bubble.height)).toBe(true);
+  });
+
+  it("shrinks rejected captions before falling back to an ellipsis", () => {
+    const caption = "rejected ".repeat(15).trim();
+    const illegal = { caption, speaker: "White", squares: [], flash: null } satisfies NonNullable<
+      FrameState["illegal"]
+    >;
+    const { ctx, drawn } = fontRecordingContext();
+    drawFrame(ctx, frameLayout("square"), { ...final(), banner: null, illegal });
+    const text = drawn.filter((item) => item.x === 70 && item.y > 980);
+    expect(text.map((item) => item.text).join(" ")).toBe(caption);
+    // Three lines at 28px; two at 26px (scale 0.92), the first size that fits.
+    expect(text.map((item) => item.font)).toEqual([
+      expect.stringMatching(/^bold 26px /),
+      expect.stringMatching(/^bold 26px /),
+    ]);
+    const impossible = fontRecordingContext();
+    drawFrame(impossible.ctx, frameLayout("square"), {
+      ...final(),
+      banner: null,
+      illegal: { ...illegal, caption: "rejected ".repeat(100) },
+    });
+    expect(impossible.drawn.some((item) => item.x === 70 && item.text.endsWith("…"))).toBe(true);
+  });
   it("clips every wrapped text block to its box", () => {
     const { ctx } = recordingContext();
     const calls: string[] = [];

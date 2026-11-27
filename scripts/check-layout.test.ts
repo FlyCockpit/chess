@@ -224,12 +224,13 @@ describe("judgeHeader", () => {
   // es-MX, 768px, signed in: the 24px row padding puts the controls' end at 744.
   const header: HeaderProbe = {
     vw: 768,
-    controls: { left: 473, right: 744 },
+    brand: { top: 10, bottom: 54 },
+    controls: { left: 473, right: 744, top: 10, bottom: 54 },
     items: [
-      { name: "language", left: 473, right: 539, width: 66 },
-      { name: "theme", left: 547, right: 591, width: 44 },
-      { name: "studio", left: 599, right: 692, width: 93 },
-      { name: "account", left: 700, right: 744, width: 44 },
+      { name: "language", left: 473, right: 539, width: 66, top: 10, bottom: 54 },
+      { name: "theme", left: 547, right: 591, width: 44, top: 10, bottom: 54 },
+      { name: "studio", left: 599, right: 692, width: 93, top: 10, bottom: 54 },
+      { name: "account", left: 700, right: 744, width: 44, top: 10, bottom: 54 },
     ],
     rowOverflow: 0,
     navOverflow: 0,
@@ -248,10 +249,41 @@ describe("judgeHeader", () => {
     assert.deepEqual(judgeHeader("header", { ...header, rowOverflow: 1 }, true), []);
   });
 
+  it("requires the controls to share the brand row from 390px", () => {
+    const wrapped = {
+      ...header,
+      vw: 390,
+      controls: { left: 16, right: 265, top: 60, bottom: 104 },
+      items: [],
+      tabs: [],
+    };
+    assert.deepEqual(judgeHeader("header", wrapped, false), [
+      "header: the header controls wrapped below the brand at 390px; from 390px they share its row",
+    ]);
+    assert.deepEqual(judgeHeader("header", { ...wrapped, vw: 320 }, false), []);
+  });
+
+  it("catches one control wrapped inside a group still centred on the brand", () => {
+    const items = header.items.map((item) =>
+      item.name === "account" ? { ...item, top: 58, bottom: 102 } : item,
+    );
+    assert.deepEqual(judgeHeader("header", { ...header, items }, true), [
+      "header: the header controls wrapped below the brand at 768px; from 390px they share its row",
+    ]);
+  });
+
+  it("reports a header without the brand from 390px", () => {
+    assert.deepEqual(judgeHeader("header", { ...header, brand: null }, true), [
+      "header: no .cc-brand in the arena header",
+    ]);
+    const narrow = judgeHeader("header", { ...header, vw: 320, brand: null }, true);
+    assert.ok(!narrow.some((message) => message.includes(".cc-brand")));
+  });
+
   it("reports the account link pushed off-screen by the tabs (Codex round 2)", () => {
     const pushed: HeaderProbe = {
       ...header,
-      controls: { left: 600, right: 871 },
+      controls: { left: 600, right: 871, top: 10, bottom: 54 },
       items: header.items.map((item) => ({
         ...item,
         left: item.left + 127,
@@ -311,7 +343,10 @@ describe("judgeHeader", () => {
     assert.deepEqual(judgeHeader("x", { ...header, controls: null }, false), [
       "x: no [data-header-controls] in the arena header",
     ]);
-    const collapsed = { ...header, items: [{ name: "theme", left: 0, right: 0, width: 0 }] };
+    const collapsed = {
+      ...header,
+      items: [{ name: "theme", left: 0, right: 0, top: 10, bottom: 54, width: 0 }],
+    };
     assert.match(judgeHeader("x", collapsed, false)[0] ?? "", /theme control has no width/);
   });
 

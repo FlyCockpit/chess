@@ -148,11 +148,14 @@ function PublicHeader() {
             brand's 88px floor, the gaps and this group. Worst case, signed
             in, es-MX: language icon-only below `xl` 66 (with "Español
             (México)" about 190), theme 44, "Estudio" about 93, account 44,
-            three 8px gaps: 271px below 1280 (395 from 1280), against 288px at
-            320 (on its own line under the brand), 603 at 651 and 1200 at
-            1280. `max-w-full flex-wrap` is the backstop: a longer future
-            label wraps inside the group instead of overflowing it. Pinned in
-            public-shell.test.tsx, measured by `pnpm check:layout`. */}
+            three 8px gaps: 271px below 1280 (395 from 1280), 603 at 651 and
+            1200 at 1280. Below 651 (index.css) the gaps are 6px and Studio's
+            padding 12px: about 249px, so with the brand's floor and the 8px
+            row gap the group shares the brand's row from about 377px (390
+            and up is checked); narrower, it takes its own line. `max-w-full
+            flex-wrap` is the backstop: a longer future label wraps inside the
+            group instead of overflowing it. Pinned in public-shell.test.tsx,
+            measured by `pnpm check:layout`. */}
         <div
           data-header-controls=""
           className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2"
