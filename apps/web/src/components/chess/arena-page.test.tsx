@@ -23,6 +23,7 @@ const fixture = vi.hoisted(() => ({
     beforeExport: vi.fn(async () => true),
     retry: vi.fn(),
   },
+  executionSource: undefined as string | undefined,
   beforeExport: undefined as (() => Promise<boolean>) | undefined,
   leaderboardOptions: undefined as
     | undefined
@@ -77,10 +78,13 @@ vi.mock("./replay", () => ({
   MatchReplay: ({
     match,
     beforeExport,
+    executionSource,
   }: {
     match: { config: { title: string } };
     beforeExport?: () => Promise<boolean>;
+    executionSource?: string;
   }) => {
+    fixture.executionSource = executionSource;
     fixture.beforeExport = beforeExport;
     return <div data-testid="match-replay">{match.config.title}</div>;
   },
@@ -427,4 +431,14 @@ it("shows an old-rules deep link without a replay", () => {
   expect(html).toContain(enChess.arena.oldRulesDescription);
   expect(html).toContain(`>${enChess.arena.all}</button>`);
   expect(html).not.toContain('data-testid="match-replay"');
+});
+
+it("passes the server runner source to a public replay independently of its local archive source", () => {
+  loadedReplay();
+  fixture.query.data = { ...(fixture.query.data as object), source: "runner" };
+  render("arena", "published");
+  expect(fixture.executionSource).toBe("runner");
+  fixture.query.data = { ...(fixture.query.data as object), source: "local" };
+  render("arena", "published");
+  expect(fixture.executionSource).toBe("local");
 });

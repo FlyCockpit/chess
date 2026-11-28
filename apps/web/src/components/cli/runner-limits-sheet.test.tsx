@@ -24,6 +24,7 @@ const fixture = vi.hoisted(() => ({
   sent: [] as unknown[],
   failProof: false,
   queryError: undefined as unknown,
+  queryReads: 0,
 }));
 vi.mock("@cockpit-chess/ui/components/sheet", () => {
   const Box = ({ children }: { children: ReactNode }) => <div>{children}</div>;
@@ -69,13 +70,16 @@ vi.mock("@tanstack/react-form", () => ({
   },
 }));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({
-    data: fixture.state,
-    isPending: false,
-    isError: !!fixture.queryError,
-    error: fixture.queryError,
-    refetch: vi.fn(),
-  }),
+  useQuery: () => {
+    fixture.queryReads++;
+    return {
+      data: fixture.state,
+      isPending: false,
+      isError: !!fixture.queryError,
+      error: fixture.queryError,
+      refetch: vi.fn(),
+    };
+  },
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
   useMutation: (options: { kind: string }) => ({
     isPending: false,
@@ -135,6 +139,7 @@ beforeEach(async () => {
   fixture.sent = [];
   fixture.failProof = false;
   fixture.queryError = undefined;
+  fixture.queryReads = 0;
 });
 const runner = {
   id: "machine",
@@ -232,5 +237,35 @@ describe("runner limit browser policy", () => {
     const html = render();
     expect(html).not.toContain("Topes locales:");
     expect(html).not.toContain("Contraseña actual");
+  });
+  it.each(["UNAUTHORIZED", "FORBIDDEN", "NOT_FOUND"])(
+    "removes the entire limits overlay and machine name after %s",
+    (code) => {
+      fixture.queryError = { code };
+      const html = render();
+      expect(html).toContain(enSettings.cli.runners.limits.loadFailed);
+      expect(html).toContain(enCommon.actions.tryAgain);
+      expect(html).not.toContain("Laptop");
+      expect(html).not.toContain(enSettings.cli.runners.limits.title);
+      expect(html).not.toContain("Confirmed revision");
+      expect(html).not.toContain(enSettings.cli.runners.limits.password);
+    },
+  );
+  it("retains confirmed values with inline retry on a transient cached-query failure", () => {
+    fixture.queryError = new Error("DO_NOT_RENDER");
+    const html = render();
+    expect(html).toContain("Laptop");
+    expect(html).toContain("Confirmed revision");
+    expect(html).toContain(enSettings.cli.runners.limits.loadFailed);
+    expect(html).not.toContain("DO_NOT_RENDER");
+  });
+  it("does not observe limits or retain form content when closed", () => {
+    const html = renderToStaticMarkup(
+      <I18nextProvider i18n={i18n}>
+        <RunnerLimitsSheet runner={null} onClose={() => {}} />
+      </I18nextProvider>,
+    );
+    expect(html).toBe("");
+    expect(fixture.queryReads).toBe(0);
   });
 });

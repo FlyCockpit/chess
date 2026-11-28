@@ -30,6 +30,7 @@ import { useDocumentAdmits } from "@/hooks/use-document-admits";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
 import { useHostedHumanTurn } from "@/hooks/use-hosted-human-turn";
 import { useNow } from "@/hooks/use-now";
+import { useRunnerControls } from "@/hooks/use-runner-controls";
 import { fileDropTargetRef } from "@/lib/file-drop-registry";
 import { networkFailureKind } from "@/lib/network-failure";
 import { openRouterMoney } from "@/lib/openrouter-connect";
@@ -65,7 +66,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
   );
   const signedIn = state.status === "authenticated" && admitted;
   const admin = signedIn && hasRole(state.session.user.role ?? "", "admin");
-  const { data: info } = useQuery(orpc.chess.info.queryOptions());
+  const { data: info, isPending: infoPending } = useQuery(orpc.chess.info.queryOptions());
   // Users run matches on their own OpenRouter key when the operator allows it.
   const userMatches = Boolean(info?.userMatchesEnabled);
   // A signed-in owner always reaches their own matches (replay, stop, unpublish), even
@@ -131,8 +132,23 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
     match: detailData?.archive,
     blocked: !studio || detailError,
   });
+  const runner = detailData?.credentialSource === "runner-local";
+  const runnerControls = useRunnerControls({
+    ownerId: signedIn ? state.session.user.id : undefined,
+    slug: selected,
+    enabled: studio && runner,
+    match: runner ? detailData?.archive : undefined,
+    blocked: !studio,
+  });
+  const playControls = runner
+    ? { ...runnerControls, disabled: runnerControls.disabled || detailError }
+    : humanTurn;
   const detail =
-    isQueryAccessError(detailFailure) || humanTurn.accessDenied ? undefined : detailData;
+    isQueryAccessError(detailFailure) ||
+    humanTurn.accessDenied ||
+    (runner && runnerControls.accessDenied)
+      ? undefined
+      : detailData;
   const publish = useEntityMutation(orpc.chess.publish.mutationOptions(), {
     invalidateKey: orpc.chess.key(),
     successMessage: t("studio.success"),
@@ -143,7 +159,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
   if (
     state.status === "pending" ||
     (state.status === "authenticated" && !admitted) ||
-    (signedIn && !info)
+    (signedIn && infoPending)
   )
     return <Skeleton className="mt-12 h-96" />;
   const settingsLink = (label: string) => (
@@ -243,10 +259,20 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
       ) : (
         <>
           {createArea}
+          <section className="mb-8 rounded-md border p-4" aria-label={t("runner.createTitle")}>
+            <h2>{t("runner.createTitle")}</h2>
+            <p className="cc-muted my-3">{t("runner.createHelp")}</p>
+            <div className="cc-hero-actions">
+              <CreateMatchDialog runner disabled={false} onCreated={setSelected} />
+              <Link className="cc-button" to="/$lang/settings/cli" params={{ lang: i18n.language }}>
+                {t("runner.machines")}
+              </Link>
+            </div>
+          </section>
           {/* The previewed game (also where Create and Import land) comes first, so choosing
               one shows it at once; the list follows. */}
-          {selected && (detailError || humanTurn.accessDenied) && (
-            <InlineRetry onRetry={() => void humanTurn.resync()} message={t("studio.error")} />
+          {selected && (detailError || playControls.accessDenied) && (
+            <InlineRetry onRetry={() => void playControls.resync()} message={t("studio.error")} />
           )}
           {selected && detailPending && <Skeleton className="h-96" />}
           {selected && detail && (
@@ -329,20 +355,24 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                   </Link>
                 </p>
               )}
-              {detail.archive.source === "hosted" && humanTurn.humanSide && (
+              {runner && <RunnerMatchPanel controls={runnerControls} />}
+              {(detail.archive.source === "hosted" || runner) && playControls.humanSide && (
                 <HostedHumanPlay
                   key={`play:${detail.archive.id}`}
                   match={detail.archive}
-                  controls={humanTurn}
+                  controls={playControls}
                   queued={detail.status === "queued"}
                   stale={detailError}
-                  stopPending={stop.isPending}
-                  onStop={() => stop.mutate({ slug: selected })}
+                  stopPending={
+                    runner ? runnerControls.pending || runnerControls.uncertain : stop.isPending
+                  }
+                  onStop={runner ? runnerControls.stop : () => stop.mutate({ slug: selected })}
                 />
               )}
               <MatchReplay
                 key={`replay:${detail.archive.id}`}
                 match={detail.archive}
+                executionSource={runner ? "runner" : detail.archive.source}
                 live={detail.archive.status === "running"}
                 spectator={{ evaluations: detail.spectatorEvaluations }}
               />
@@ -377,7 +407,13 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                             : t("arena.unpublished")}
                       </span>
                       <p className="cc-muted">
-                        {t(game.official ? "studio.officialRecord" : "studio.practiceRecord")}
+                        {t(
+                          game.source === "runner"
+                            ? "runner.selfRun"
+                            : game.official
+                              ? "studio.officialRecord"
+                              : "studio.practiceRecord",
+                        )}
                       </p>
                       <h3>{game.title}</h3>
                       <p>
@@ -445,15 +481,18 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                             {t(game.published ? "studio.unpublish" : "studio.publish")}
                           </button>
                         )}
-                        {["running", "queued"].includes(game.status) && (
-                          <button
-                            type="button"
-                            disabled={stop.isPending}
-                            onClick={() => stop.mutate({ slug: game.slug })}
-                          >
-                            {t("studio.stop")}
-                          </button>
-                        )}
+                        {["running", "queued"].includes(game.status) &&
+                          (game.source === "runner" ? (
+                            <RunnerCardStop slug={game.slug} ownerId={state.session.user.id} />
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={stop.isPending}
+                              onClick={() => stop.mutate({ slug: game.slug })}
+                            >
+                              {t("studio.stop")}
+                            </button>
+                          ))}
                         {game.published && !game.hiddenAt && !game.oldRules && (
                           <button type="button" onClick={() => onWatch(game.slug)}>
                             {t("studio.view")}
@@ -478,6 +517,124 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
         </>
       )}
     </>
+  );
+}
+
+function RunnerCardStop({ slug, ownerId }: { slug: string; ownerId: string }) {
+  const { t } = useTranslation("chess");
+  const controls = useRunnerControls({ ownerId, slug, enabled: false });
+  if (controls.accessDenied) return <p role="alert">{t("runner.denied")}</p>;
+  return (
+    <>
+      <button
+        type="button"
+        disabled={!controls.online || controls.pending || controls.uncertain}
+        onClick={controls.stop}
+      >
+        {t("studio.stop")}
+      </button>
+      {controls.uncertain && (
+        <button type="button" disabled={!controls.online} onClick={controls.retry}>
+          {t("runner.retryCommand")}
+        </button>
+      )}
+      {(controls.commandError || controls.query.isError) && (
+        <InlineRetry onRetry={() => void controls.resync()} message={t("runner.controlError")} />
+      )}
+    </>
+  );
+}
+
+function RunnerMatchPanel({ controls }: { controls: ReturnType<typeof useRunnerControls> }) {
+  const { t, i18n } = useTranslation("chess");
+  const now = useNow(true);
+  const state = controls.state;
+  const active = state && ["queued", "running"].includes(state.status);
+  const contact = state?.lastContactAt ? new Date(state.lastContactAt).getTime() : 0;
+  const grace = state?.resumeDeadline ? new Date(state.resumeDeadline).getTime() : null;
+  const waiting = Boolean(active && state.state !== "offered" && now - contact > 60_000);
+  return (
+    <section className="mb-6 rounded-md border p-4 space-y-3" aria-label={t("runner.controls")}>
+      <p className="cc-pill">{t("runner.selfRun")}</p>
+      <p className="cc-muted">{t("runner.localPayer")}</p>
+      {controls.query.isPending ? (
+        <Skeleton className="h-16 w-full" />
+      ) : controls.query.isError ? (
+        <InlineRetry onRetry={() => void controls.resync()} message={t("runner.controlError")} />
+      ) : null}
+      {state && (
+        <>
+          <p role="status" aria-live="polite">
+            {t(
+              !controls.online
+                ? "runner.browserOffline"
+                : waiting
+                  ? "runner.grace"
+                  : `runner.states.${state.state}`,
+              {
+                remaining: grace === null ? "" : formatClock(Math.max(0, grace - now)),
+              },
+            )}
+          </p>
+          {state.state === "declined" && <p>{t("runner.declinedHelp")}</p>}
+          {waiting && <p className="cc-muted">{t("runner.clocksContinue")}</p>}
+          <div className="cc-hero-actions">
+            {active && state.state === "accepted" && (
+              <Button
+                type="button"
+                className="min-h-11"
+                onClick={controls.start}
+                disabled={
+                  !controls.online ||
+                  controls.pending ||
+                  controls.uncertain ||
+                  controls.query.isError ||
+                  waiting
+                }
+              >
+                {t("runner.start")}
+              </Button>
+            )}
+            {active && (
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11"
+                onClick={controls.stop}
+                disabled={!controls.online || controls.pending || controls.uncertain}
+              >
+                {t("studio.stop")}
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              className="min-h-11"
+              onClick={() => void controls.resync()}
+            >
+              {t("human.resync")}
+            </Button>
+            {controls.uncertain && (
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11"
+                onClick={controls.retry}
+                disabled={!controls.online}
+              >
+                {t("runner.retryCommand")}
+              </Button>
+            )}
+            <Link className="cc-button" to="/$lang/settings/cli" params={{ lang: i18n.language }}>
+              {t("runner.machines")}
+            </Link>
+          </div>
+        </>
+      )}
+      {controls.pending && <p role="status">{t("runner.sending")}</p>}
+      {controls.uncertain && <p role="status">{t("runner.uncertain")}</p>}
+      {controls.commandError && <p role="alert">{t("runner.controlError")}</p>}
+    </section>
   );
 }
 /** One owner-only play surface; public replay remains read-only. */
@@ -518,9 +675,11 @@ function HostedHumanPlay({
                 ? "expired"
                 : queued
                   ? "queued"
-                  : controls.playable
-                    ? "yourTurn"
-                    : "modelTurn";
+                  : turn.type === "human" && controls.disabled
+                    ? "stale"
+                    : controls.playable
+                      ? "yourTurn"
+                      : "modelTurn";
   return (
     <section className="cc-baseline-layout mb-8" aria-label={t("human.playTitle")}>
       <div className="cc-board-panel">

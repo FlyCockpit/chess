@@ -18,6 +18,34 @@ const mutation = vi.hoisted(() => ({
     >(),
   success: undefined as undefined | ((result: { slug: string }) => void),
 }));
+const runnerFixture = vi.hoisted(() => ({
+  mutate: vi.fn<(input: { machineId: string; creationKey: string; config: MatchConfig }) => void>(),
+  success: undefined as undefined | ((result: { slug: string; state: "offered" }) => void),
+  failure: undefined as undefined | ((error: unknown) => void),
+  successMessage: undefined as string | undefined,
+  pending: false,
+  error: null as unknown,
+  machines: [] as {
+    id: string;
+    displayName: string;
+    status: "active" | "expired" | "revoked";
+    expiresAt: Date;
+    lastSeenAt: Date | null;
+  }[],
+  listPending: false,
+  listError: false,
+  listFailure: undefined as unknown,
+  limitsFailure: undefined as unknown,
+  limitsPending: false,
+  limitsError: false,
+  limits: undefined as unknown,
+  listOptions: undefined as
+    | undefined
+    | { enabled: boolean; input: (cursor: string | undefined) => unknown },
+  limitsOptions: undefined as undefined | { enabled: boolean; input: { id: string } },
+  hasNextPage: false,
+  fetchNextPage: vi.fn(),
+}));
 const sheet = vi.hoisted(() => ({
   changeOpen: undefined as undefined | ((open: boolean) => void),
 }));
@@ -40,16 +68,67 @@ const catalog = vi.hoisted(() => ({
   },
 }));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: (options: NonNullable<typeof catalog.options>) => {
+  useQuery: (
+    options: NonNullable<typeof catalog.options> & {
+      surface?: string;
+      input: { id: string };
+      enabled: boolean;
+    },
+  ) => {
+    if (options.surface === "limits") {
+      runnerFixture.limitsOptions = options;
+      return {
+        data: runnerFixture.limits,
+        isPending: runnerFixture.limitsPending,
+        isError: runnerFixture.limitsError,
+        error: runnerFixture.limitsFailure,
+        refetch: vi.fn(),
+      };
+    }
     catalog.options = options;
     return catalog.state;
+  },
+  useInfiniteQuery: (options: NonNullable<typeof runnerFixture.listOptions>) => {
+    runnerFixture.listOptions = options;
+    return {
+      data: {
+        pages: [
+          { items: runnerFixture.machines, nextCursor: runnerFixture.hasNextPage ? "next" : null },
+        ],
+      },
+      isPending: runnerFixture.listPending,
+      isError: runnerFixture.listError,
+      error: runnerFixture.listFailure,
+      refetch: vi.fn(),
+      fetchNextPage: runnerFixture.fetchNextPage,
+      hasNextPage: runnerFixture.hasNextPage,
+      isFetchingNextPage: false,
+    };
   },
 }));
 vi.mock("@/utils/orpc", () => ({
   orpc: {
+    cliAccess: {
+      runners: {
+        list: { infiniteOptions: (options: unknown) => options },
+        getLimits: {
+          queryOptions: (options: { input: { id: string } }) => ({ ...options, surface: "limits" }),
+        },
+      },
+    },
     chess: {
       key: () => ["chess"],
       models: { queryOptions: () => ({}) },
+      createRunner: {
+        mutationOptions: (options: {
+          onSuccess: typeof runnerFixture.success;
+          onError: typeof runnerFixture.failure;
+        }) => {
+          runnerFixture.success = options.onSuccess;
+          runnerFixture.failure = options.onError;
+          return { ...options, surface: "runner" };
+        },
+      },
       create: {
         mutationOptions: (options: { onSuccess: typeof mutation.success }) => {
           mutation.success = options.onSuccess;
@@ -60,10 +139,26 @@ vi.mock("@/utils/orpc", () => ({
   },
 }));
 vi.mock("@/hooks/use-entity-mutation", () => ({
-  useEntityMutation: (options: { meta?: unknown }) => {
+  useEntityMutation: (
+    options: { meta?: unknown; surface?: string },
+    extras: { successMessage?: string },
+  ) => {
+    if (options.surface === "runner") {
+      runnerFixture.successMessage = extras.successMessage;
+      return {
+        isPending: runnerFixture.pending,
+        isError: !!runnerFixture.error,
+        error: runnerFixture.error,
+        mutate: runnerFixture.mutate,
+        reset: vi.fn(),
+      };
+    }
     mutation.meta = options.meta;
     return { isPending: false, mutate: mutation.mutate, reset: vi.fn(), ...mutation.state };
   },
+}));
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children }: { children: ReactNode }) => <a href="/en-US/settings/cli">{children}</a>,
 }));
 // Render the dialog as if open: the static renderer cannot open a portal.
 vi.mock("@cockpit-chess/ui/components/sheet", () => {
@@ -94,11 +189,17 @@ vi.mock("@cockpit-chess/ui/components/sheet", () => {
 import { CreateMatchDialog } from "./create-match-dialog";
 import { type CreateMatchValues, DEFAULT_VALUES } from "./create-match-form";
 
+const runnerCopy = enChess.create.runner;
 const i18n = createInstance();
 beforeAll(async () => {
   await i18n.init({
     lng: "en-US",
-    resources: { "en-US": { chess: enChess, common: enCommon } },
+    resources: {
+      "en-US": {
+        chess: enChess,
+        common: enCommon,
+      },
+    },
     defaultNS: "chess",
     react: { useSuspense: false },
   });
@@ -106,6 +207,32 @@ beforeAll(async () => {
 beforeEach(() => {
   mutation.mutate.mockReset();
   mutation.state = { isError: false, error: null };
+  runnerFixture.mutate.mockReset();
+  runnerFixture.pending = false;
+  runnerFixture.error = null;
+  runnerFixture.machines = [
+    {
+      id: "machine-a",
+      displayName: "My laptop",
+      status: "active",
+      expiresAt: new Date(Date.now() + 3_600_000),
+      lastSeenAt: new Date(),
+    },
+  ];
+  runnerFixture.listPending = false;
+  runnerFixture.listError = false;
+  runnerFixture.listFailure = undefined;
+  runnerFixture.limitsFailure = undefined;
+  runnerFixture.limitsPending = false;
+  runnerFixture.limitsError = false;
+  runnerFixture.hasNextPage = false;
+  runnerFixture.limits = {
+    available: true,
+    operatingLimits: { matchMicros: 1_000_000, dayMicros: 10_000_000, concurrency: 2, revision: 3 },
+    hardLimits: { matchMicros: 25_000_000, dayMicros: 100_000_000, concurrency: 8 },
+    pending: { revision: 4, matchMicros: 5_000_000 },
+    lastResult: { revision: 2, reason: "applied" },
+  };
 });
 const render = (limits?: { maxCostMicros: number; maxTokens: number }) =>
   renderToStaticMarkup(
@@ -461,4 +588,219 @@ describe("CreateMatchDialog", () => {
     expect(html).toMatch(/aria-pressed="true"[^>]*>Server key</);
     expect(html).toContain(enChess.create.billingHint.operator);
   });
+});
+
+const renderRunner = (onCreated = vi.fn()) =>
+  renderToStaticMarkup(
+    <I18nextProvider i18n={i18n}>
+      <CreateMatchDialog
+        disabled={false}
+        runner
+        limits={{ maxCostMicros: 10_000, maxTokens: 256 }}
+        billingOptions={["openrouter"]}
+        ownKeyRemainingMicros={0}
+        onCreated={onCreated}
+      />
+    </I18nextProvider>,
+  );
+
+describe("runner creation", () => {
+  it("keeps runner billing independent, removes official choice and sends only the strict runner shape", () => {
+    const html = renderRunner();
+    expect(html).toContain(runnerCopy.title);
+    expect(html).toContain(runnerCopy.catalogHint);
+    expect(html).toContain(runnerCopy.practice);
+    expect(html).not.toContain(enChess.create.officialCommitment);
+    expect(html).not.toContain(enChess.create.billingHint.operator);
+    expect(html).not.toContain("Billed to your OpenRouter");
+    expect(html).not.toContain(`>${enChess.create.official}</button>`);
+    // Even a stale official field cannot enroll a runner match.
+    formOptions().onSubmit({ value: { ...DEFAULT_VALUES, official: true, budget: 0.5 } });
+    expect(mutation.mutate).not.toHaveBeenCalled();
+    const input = runnerFixture.mutate.mock.calls[0]?.[0];
+    expect(input && Object.keys(input).sort()).toEqual(["config", "creationKey", "machineId"]);
+    expect(input).toMatchObject({
+      machineId: "machine-a",
+      config: { rules: { costBudgetMicros: 500_000 } },
+    });
+    expect(input?.creationKey).toMatch(/^[a-f0-9-]{36}$/);
+  });
+
+  it("uses confirmed combined caps for defaults and fields, shows active values and ACK guidance", () => {
+    const html = renderRunner();
+    expect(html).toContain('value="0.5 USD"');
+    expect(html).toContain("in US dollars ($0.01 to $0.50)");
+    expect(html).toContain("(256 to 1,000,000)");
+    expect(html).toContain(
+      "Confirmed operating limits (revision 3): $1.00 per match, $10.00 per day, 2 concurrent matches.",
+    );
+    expect(html).toContain(
+      "Local hard ceilings: $25.00 per match, $100.00 per day, 8 concurrent matches.",
+    );
+    expect(html).toContain("Operating-limit change revision ");
+    expect(html).toContain("The CLI returned an acknowledgement for limit revision ");
+    expect(html).toContain('href="/en-US/settings/cli"');
+    formOptions().onSubmit({ value: { ...DEFAULT_VALUES, budget: 0.51 } });
+    expect(runnerFixture.mutate).not.toHaveBeenCalled();
+    formOptions().onSubmit({ value: { ...DEFAULT_VALUES, budget: 0.5 } });
+    expect(runnerFixture.mutate).toHaveBeenCalledOnce();
+  });
+
+  it.each(["white", "black"] as const)(
+    "preserves the %s human and model rules in the offer",
+    (playAs) => {
+      renderRunner();
+      formOptions().onSubmit({
+        value: {
+          ...DEFAULT_VALUES,
+          playAs,
+          [playAs]: "",
+          budget: 0.5,
+          engineEvaluation: "both",
+          replyCap: "1024",
+        },
+      });
+      expect(runnerFixture.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            [playAs]: expect.objectContaining({ model: "human", protocol: "human" }),
+            [playAs === "white" ? "black" : "white"]: expect.objectContaining({
+              protocol: "openai-chat",
+            }),
+            rules: expect.objectContaining({
+              context: "fresh",
+              engineEvaluation: "both",
+              maxOutputTokens: 1024,
+            }),
+          }),
+        }),
+      );
+    },
+  );
+
+  it.each([
+    "empty",
+    "offline",
+    "expired",
+    "revoked",
+    "missing-limits",
+    "unavailable-limits",
+    "limits-error",
+    "list-error",
+    "limits-pending",
+    "list-pending",
+    "tiny-cap",
+  ])("blocks an offer with %s", (failure) => {
+    if (failure === "empty") runnerFixture.machines = [];
+    if (failure === "offline")
+      runnerFixture.machines[0]!.lastSeenAt = new Date(Date.now() - 61_000);
+    if (failure === "expired") runnerFixture.machines[0]!.expiresAt = new Date(Date.now() - 1);
+    if (failure === "revoked") runnerFixture.machines[0]!.status = "revoked";
+    if (failure === "missing-limits") runnerFixture.limits = undefined;
+    if (failure === "unavailable-limits")
+      runnerFixture.limits = { available: false, operatingLimits: null, hardLimits: null };
+    if (failure === "limits-error") runnerFixture.limitsError = true;
+    if (failure === "list-error") runnerFixture.listError = true;
+    if (failure === "limits-pending") {
+      runnerFixture.limitsPending = true;
+      runnerFixture.limits = undefined;
+    }
+    if (failure === "list-pending") {
+      runnerFixture.listPending = true;
+      runnerFixture.machines = [];
+    }
+    if (failure === "tiny-cap")
+      runnerFixture.limits = {
+        available: true,
+        operatingLimits: {
+          matchMicros: 10_000,
+          dayMicros: 10_000_000,
+          concurrency: 2,
+          revision: 3,
+        },
+        hardLimits: { matchMicros: 25_000_000, dayMicros: 100_000_000, concurrency: 8 },
+      };
+    const html = renderRunner();
+    formOptions().onSubmit({ value: { ...DEFAULT_VALUES, budget: 0.01 } });
+    expect(runnerFixture.mutate).not.toHaveBeenCalled();
+    expect(html).toMatch(/type="submit"[^>]*disabled/);
+    if (["empty", "offline", "expired", "revoked"].includes(failure))
+      expect(html).toContain(runnerCopy.empty);
+    if (failure === "limits-error") expect(html).toContain(runnerCopy.limitsFailed);
+    if (failure === "list-error") expect(html).toContain(runnerCopy.machinesFailed);
+  });
+
+  it("bounds list pages, exposes LoadMore, and disables machine hooks in the closed hosted dialog", () => {
+    runnerFixture.hasNextPage = true;
+    expect(renderRunner()).toContain(enCommon.actions.loadMore);
+    expect(runnerFixture.listOptions?.input("cursor-a")).toEqual({ cursor: "cursor-a", limit: 20 });
+    expect(runnerFixture.limitsOptions?.input).toEqual({ id: "machine-a" });
+    render();
+    expect(runnerFixture.listOptions?.enabled).toBe(false);
+    expect(runnerFixture.limitsOptions?.enabled).toBe(false);
+  });
+
+  it("keeps the exact machine, UUID and config through an uncertain response, edits, close and repeat clicks", () => {
+    renderRunner();
+    const options = formOptions();
+    options.onSubmit({ value: { ...DEFAULT_VALUES, budget: 0.5 } });
+    const first = runnerFixture.mutate.mock.calls[0]?.[0];
+    // Immediate duplicate submits are blocked, before React renders pending state.
+    options.onSubmit({ value: { ...DEFAULT_VALUES, budget: 0.5 } });
+    expect(runnerFixture.mutate).toHaveBeenCalledOnce();
+    runnerFixture.failure?.(new TypeError("Failed to fetch"));
+    options.listeners.onChange();
+    sheet.changeOpen?.(false);
+    sheet.changeOpen?.(true);
+    runnerFixture.machines = [{ ...runnerFixture.machines[0]!, id: "machine-b" }];
+    options.onSubmit({ value: { ...DEFAULT_VALUES, budget: 0.01, white: "different/model" } });
+    expect(runnerFixture.mutate.mock.calls[1]?.[0]).toBe(first);
+    expect(first?.machineId).toBe("machine-a");
+    expect(first?.config.rules.costBudgetMicros).toBe(500_000);
+  });
+
+  it("allows a corrected intent after a definite refusal and announces only offer delivery on success", () => {
+    const onCreated = vi.fn();
+    renderRunner(onCreated);
+    const options = formOptions();
+    options.onSubmit({ value: { ...DEFAULT_VALUES, budget: 0.5 } });
+    const first = runnerFixture.mutate.mock.calls[0]?.[0];
+    runnerFixture.failure?.({ code: "NOT_FOUND" });
+    options.onSubmit({ value: { ...DEFAULT_VALUES, budget: 0.1 } });
+    expect(runnerFixture.mutate.mock.calls[1]?.[0].creationKey).not.toBe(first?.creationKey);
+    runnerFixture.success?.({ slug: "offer-123", state: "offered" });
+    expect(onCreated).toHaveBeenCalledWith("offer-123");
+    expect(runnerFixture.successMessage).toBe(runnerCopy.offered);
+    expect(mutation.mutate).not.toHaveBeenCalled();
+  });
+
+  it("locks the form during pending offers and shows offline failures inline", () => {
+    runnerFixture.pending = true;
+    expect(renderRunner()).toContain('<fieldset disabled=""');
+    formOptions().onSubmit({ value: { ...DEFAULT_VALUES, budget: 0.5 } });
+    expect(runnerFixture.mutate).not.toHaveBeenCalled();
+    runnerFixture.pending = false;
+    runnerFixture.error = new TypeError("Failed to fetch");
+    vi.stubGlobal("navigator", { onLine: false });
+    try {
+      expect(renderRunner().replaceAll("&#x27;", "'")).toContain(enErrors.offline);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+it("keeps loaded runner limits during a transient failure and masks them after access denial", () => {
+  runnerFixture.limitsError = true;
+  runnerFixture.limitsFailure = new Error("temporary");
+  expect(renderRunner()).toContain("Confirmed operating limits");
+  runnerFixture.limitsFailure = { code: "FORBIDDEN" };
+  expect(renderRunner()).not.toContain("Confirmed operating limits");
+  runnerFixture.limitsError = false;
+  runnerFixture.limitsFailure = undefined;
+  runnerFixture.listError = true;
+  runnerFixture.listFailure = { code: "NOT_FOUND" };
+  const hidden = renderRunner();
+  expect(hidden).not.toContain("My laptop");
+  expect(hidden).not.toContain("Confirmed operating limits");
 });

@@ -364,6 +364,7 @@ export function MatchReplay({
   live = false,
   spectator,
   beforeExport,
+  executionSource,
 }: {
   match: MatchArchive;
   anonymized?: boolean;
@@ -375,8 +376,11 @@ export function MatchReplay({
   spectator?: { evaluations: SpectatorEvaluations | null; available?: boolean };
   /** Hosted public replays revalidate visibility before creating a downloadable copy. */
   beforeExport?: () => Promise<boolean>;
+  /** Server execution source distinguishes paired runners from imported local archives. */
+  executionSource?: MatchArchive["source"] | "runner";
 }) {
   const { t, i18n } = useTranslation("chess");
+  const selfRun = executionSource === "runner";
   const [exportPending, setExportPending] = useState(false);
   const [exportError, setExportError] = useState(false);
   const exportLifetime = useRef(true);
@@ -486,6 +490,20 @@ export function MatchReplay({
         ["b", matchStats(match, "b")],
       ] as const,
     [match],
+  );
+  const reportedCostSides = useMemo(
+    () =>
+      new Set(
+        match.events.flatMap((event) =>
+          event.type === "usage" && event.costMicros !== null ? [event.side] : [],
+        ),
+      ),
+    [match],
+  );
+  const missingRunnerCost = sideStats.some(
+    ([side, spent]) =>
+      isModelPlayer(side === "w" ? match.config.white : match.config.black) &&
+      (spent.costMicros === null || !reportedCostSides.has(side)),
   );
   const rulesJson = useMemo(
     () =>
@@ -755,6 +773,10 @@ export function MatchReplay({
           <span className="cc-pill">{match.result}</span>
         </div>
         <h2>{match.config.title}</h2>
+        {selfRun && <p className="cc-muted text-sm">{t("runner.unverifiedReplay")}</p>}
+        {!selfRun && match.source === "local" && (
+          <p className="cc-muted text-sm">{t("runner.localReplay")}</p>
+        )}
         {anonymized && <p className="text-muted-foreground text-sm">{t("replay.anonymized")}</p>}
         <p className="cc-muted cc-ending-text">{ending}</p>
         <div className="cc-rule-tags">
@@ -800,13 +822,22 @@ export function MatchReplay({
           .filter(([side]) => isModelPlayer(side === "w" ? match.config.white : match.config.black))
           .map(([side, spent]) => (
             <p key={side} className="cc-muted mb-2 text-xs cc-side-spend">
-              {sideSpendLabel(t, i18n.language, match, side, spent)}
+              {selfRun
+                ? t("runner.sideSpend", {
+                    side: t(`colors.${side}`),
+                    cost:
+                      spent.costMicros === null || !reportedCostSides.has(side)
+                        ? t("replay.unknownCost")
+                        : currency.format(spent.costMicros / 1_000_000),
+                    budget: currency.format(match.config.rules.costBudgetMicros / 1_000_000),
+                  })
+                : sideSpendLabel(t, i18n.language, match, side, spent)}
             </p>
           ))}
         <p className="cc-muted mb-4 text-xs">
-          {t("replay.spend", {
+          {t(selfRun ? "runner.spend" : "replay.spend", {
             cost:
-              stats.costMicros === null
+              stats.costMicros === null || (selfRun && missingRunnerCost)
                 ? t("replay.unknownCost")
                 : currency.format(stats.costMicros / 1000000),
             reserved: count.format(stats.peakReservedTokens),

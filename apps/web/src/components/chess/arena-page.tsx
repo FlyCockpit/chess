@@ -199,6 +199,7 @@ function Arena({
         <MatchReplay
           key={selected?.id ?? "demonstration"}
           match={current}
+          executionSource={selected?.source === "runner" ? "runner" : current.source}
           anonymized={selected?.anonymized}
           live={current.status === "running"}
           spectator={selected ? { evaluations: selected.spectatorEvaluations } : undefined}

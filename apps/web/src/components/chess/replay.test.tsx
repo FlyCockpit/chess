@@ -30,10 +30,11 @@ beforeAll(async () => {
 const render = (
   match: MatchArchive,
   spectator?: { evaluations: SpectatorEvaluations | null; available?: boolean },
+  executionSource?: MatchArchive["source"] | "runner",
 ) =>
   renderToStaticMarkup(
     <I18nextProvider i18n={i18n}>
-      <MatchReplay match={match} spectator={spectator} />
+      <MatchReplay match={match} spectator={spectator} executionSource={executionSource} />
     </I18nextProvider>,
   );
 /** A spectator score of every position of the game, White ahead by `cp` centipawns. */
@@ -54,6 +55,18 @@ const scored = (match: MatchArchive, cp: number): SpectatorEvaluations =>
   );
 
 describe("MatchReplay", () => {
+  it("labels local replay evidence unverified and leaves spectators without runner commands", () => {
+    const match = fixtureGame();
+    match.source = "local";
+    const html = render(match, undefined, "runner");
+    expect(html).toContain(i18n.t("runner.unverifiedReplay"));
+    expect(render(match)).not.toContain(i18n.t("runner.unverifiedReplay"));
+    expect(render(match)).toContain(i18n.t("runner.localReplay"));
+    expect(html).not.toContain(`>${i18n.t("studio.stop")}<`);
+    expect(html).not.toContain(`>${i18n.t("runner.start")}<`);
+    match.source = "hosted";
+    expect(render(match)).not.toContain(i18n.t("runner.unverifiedReplay"));
+  });
   it("labels reply provenance events in both supported locales", async () => {
     const player = { name: "Model", model: "vendor/test", protocol: "openai-chat" as const };
     const match = createMatch({ white: player, black: player, rules: {} });
@@ -526,4 +539,111 @@ it("localizes retained replay identity and explains removed personal text in bot
     expect(html).not.toContain("replay.deletedUser");
   }
   await i18n.changeLanguage("en-US");
+});
+
+it.each(["en-US", "es-MX"])(
+  "keeps played runner model costs unknown without reports and preserves the budget in %s",
+  async (language) => {
+    await i18n.changeLanguage(language);
+    try {
+      const player = { name: "Model", model: "test/model", protocol: "openai-chat" as const };
+      const match = createMatch(
+        { white: player, black: player, rules: { costBudgetMicros: 1000 } },
+        "local",
+      );
+      for (const move of ["f2f3", "e7e5", "g2g4", "d8h4"]) submitMove(match, boardAt(match), move);
+      expect(match.events.filter((event) => event.type === "attempt")).toHaveLength(4);
+      expect(
+        match.events.some((event) => event.type === "usage" || event.type === "reservation"),
+      ).toBe(false);
+      const html = render(match, { evaluations: scored(match, 20) }, "runner");
+      expect(html).toContain(i18n.t("runner.unverifiedReplay"));
+      expect(html).toContain("cc-eval-graph");
+      expect(html).toContain(i18n.t("replay.unknownCost"));
+      const money = new Intl.NumberFormat(language, {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: 6,
+      });
+      expect(html).toContain(money.format(0.001));
+      for (const side of ["w", "b"] as const)
+        expect(html).toContain(
+          i18n.t("runner.sideSpend", {
+            side: i18n.t(`colors.${side}`),
+            cost: i18n.t("replay.unknownCost"),
+            budget: money.format(0.001),
+          }),
+        );
+      expect(html).toContain(i18n.t("runner.spend", { cost: i18n.t("replay.unknownCost") }));
+      expect(html).not.toContain(i18n.t("runner.spend", { cost: money.format(0) }));
+      expect(html).not.toContain(i18n.t("replay.spend", { cost: money.format(0), reserved: "0" }));
+      expect(html).not.toContain(
+        i18n.t("replay.sideSpend", {
+          side: i18n.t("colors.w"),
+          spent: money.format(0),
+          budget: money.format(0.001),
+        }),
+      );
+    } finally {
+      await i18n.changeLanguage("en-US");
+    }
+  },
+);
+it("retains genuine zero for no-model runners and explicit zero reports, with correct source labels", () => {
+  const random = { name: "Random", model: "random", protocol: "random" as const };
+  const noModel = createMatch({ white: random, black: random, rules: {} }, "local");
+  const zero = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(0);
+  expect(render(noModel, undefined, "runner")).toContain(i18n.t("runner.spend", { cost: zero }));
+  expect(render(noModel, undefined, "runner")).not.toContain(i18n.t("replay.unknownCost"));
+  const player = { name: "Model", model: "test/model", protocol: "openai-chat" as const };
+  const model = createMatch({ white: player, black: random, rules: {} }, "local");
+  model.events.push({
+    type: "usage",
+    seq: 0,
+    at: model.createdAt,
+    side: "w",
+    ply: 0,
+    dispatch: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    costMicros: 0,
+    resolvedModel: null,
+    resolvedProvider: null,
+  });
+  expect(render(model, undefined, "runner")).toContain(i18n.t("runner.spend", { cost: zero }));
+  expect(render(model, undefined, "runner")).not.toContain(i18n.t("replay.unknownCost"));
+  expect(render(model)).toContain(i18n.t("runner.localReplay"));
+  expect(render(model)).not.toContain(i18n.t("runner.unverifiedReplay"));
+  model.source = "hosted";
+  expect(render(model)).not.toContain(i18n.t("runner.localReplay"));
+});
+
+it("does not use one model's reported cost to imply complete accounting for the other", () => {
+  const player = { name: "Model", model: "test/model", protocol: "openai-chat" as const };
+  const match = createMatch({ white: player, black: player, rules: {} }, "local");
+  match.events.push({
+    type: "usage",
+    seq: 0,
+    at: match.createdAt,
+    side: "w",
+    ply: 0,
+    dispatch: 0,
+    inputTokens: 10,
+    outputTokens: 10,
+    costMicros: 125_000,
+    resolvedModel: null,
+    resolvedProvider: null,
+  });
+  const html = render(match, undefined, "runner");
+  expect(html).toContain(
+    i18n.t("runner.sideSpend", { side: i18n.t("colors.w"), cost: "$0.125", budget: "$1.00" }),
+  );
+  expect(html).toContain(
+    i18n.t("runner.sideSpend", {
+      side: i18n.t("colors.b"),
+      cost: i18n.t("replay.unknownCost"),
+      budget: "$1.00",
+    }),
+  );
+  expect(html).toContain(i18n.t("runner.spend", { cost: i18n.t("replay.unknownCost") }));
 });

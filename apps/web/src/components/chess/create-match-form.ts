@@ -68,6 +68,30 @@ export const LIMITS = {
 
 /** The server's per-side operator limits (`chess.info`, from `CHESS_MAX_*`). */
 export type HostedLimits = { maxCostMicros: number; maxTokens: number };
+/** Runner spend is one combined match cap; the server reserves half for each side. */
+export function runnerFormLimits(
+  operating: { matchMicros: number },
+  hard: { matchMicros: number },
+): HostedLimits {
+  return {
+    maxCostMicros: Math.floor(Math.min(operating.matchMicros, hard.matchMicros) / 2),
+    // The machine API does not advertise a token ceiling. Use the shared form bound.
+    maxTokens: LIMITS.tokens.max,
+  };
+}
+
+/** Same freshness window as runner creation admission; availability is advisory. */
+export function runnerRecentlySeen(
+  machine: { status: string; lastSeenAt: Date | string | null; expiresAt: Date | string },
+  now = Date.now(),
+) {
+  return (
+    machine.status === "active" &&
+    new Date(machine.expiresAt).getTime() > now &&
+    machine.lastSeenAt !== null &&
+    new Date(machine.lastSeenAt).getTime() > now - 60_000
+  );
+}
 /** Used only until `chess.info` answers (the create button stays disabled until then). */
 export const FALLBACK_LIMITS: HostedLimits = { maxCostMicros: 25_000_000, maxTokens: 10_000_000 };
 /** The hosted per-side budget maximum in US dollars, never below the field's minimum. */

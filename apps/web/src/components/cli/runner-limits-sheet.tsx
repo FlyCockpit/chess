@@ -16,8 +16,10 @@ import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
+import { InlineRetry } from "@/components/inline-retry";
 import { QueryBoundary } from "@/components/query-boundary";
 import { SegmentedControl } from "@/components/segmented-control";
+import { isQueryAccessError } from "@/lib/query-access-error";
 import {
   exceedsRunnerCeiling,
   raisesRunnerLimits,
@@ -36,10 +38,31 @@ export function RunnerLimitsSheet({
   runner: RunnerRow | null;
   onClose: () => void;
 }) {
+  return runner ? <RunnerLimitsContent key={runner.id} runner={runner} onClose={onClose} /> : null;
+}
+
+function RunnerLimitsContent({ runner, onClose }: { runner: RunnerRow; onClose: () => void }) {
   const { t } = useTranslation("settings");
+  const { id } = runner;
+  const query = useQuery({
+    ...orpc.cliAccess.runners.getLimits.queryOptions({ input: { id } }),
+    staleTime: 0,
+    gcTime: 0,
+    refetchInterval: 3000,
+  });
+  // Drop the entire overlay and its form state, including step-up input, on
+  // an access failure. A later successful retry mounts a fresh form.
+  if (isQueryAccessError(query.error)) {
+    return (
+      <InlineRetry
+        message={t("cli.runners.limits.loadFailed")}
+        onRetry={() => void query.refetch()}
+      />
+    );
+  }
   return (
     <Sheet
-      open={runner !== null}
+      open
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
@@ -48,43 +71,34 @@ export function RunnerLimitsSheet({
         <SheetHeader>
           <SheetTitle>{t("cli.runners.limits.title")}</SheetTitle>
           <SheetDescription>
-            {t("cli.runners.limits.description", { name: runner?.displayName ?? "" })}
+            {t("cli.runners.limits.description", { name: runner.displayName })}
           </SheetDescription>
         </SheetHeader>
-        <SheetBody>{runner && <RunnerLimitsContent key={runner.id} id={runner.id} />}</SheetBody>
+        <SheetBody>
+          <QueryBoundary
+            query={query}
+            errorMessage={t("cli.runners.limits.loadFailed")}
+            skeleton={
+              <div className="space-y-5">
+                {[0, 1, 2].map((item) => (
+                  <Skeleton key={item} className="h-16 w-full" />
+                ))}
+              </div>
+            }
+          >
+            {(state) =>
+              state.available && state.operatingLimits && state.hardLimits ? (
+                <RunnerLimitsForm key={state.operatingLimits.revision} id={id} state={state} />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  {t("cli.runners.limits.connectFirst")}
+                </p>
+              )
+            }
+          </QueryBoundary>
+        </SheetBody>
       </SheetContent>
     </Sheet>
-  );
-}
-
-function RunnerLimitsContent({ id }: { id: string }) {
-  const { t } = useTranslation("settings");
-  const query = useQuery({
-    ...orpc.cliAccess.runners.getLimits.queryOptions({ input: { id } }),
-    staleTime: 0,
-    gcTime: 0,
-    refetchInterval: 3000,
-  });
-  return (
-    <QueryBoundary
-      query={query}
-      errorMessage={t("cli.runners.limits.loadFailed")}
-      skeleton={
-        <div className="space-y-5">
-          {[0, 1, 2].map((item) => (
-            <Skeleton key={item} className="h-16 w-full" />
-          ))}
-        </div>
-      }
-    >
-      {(state) =>
-        state.available && state.operatingLimits && state.hardLimits ? (
-          <RunnerLimitsForm key={state.operatingLimits.revision} id={id} state={state} />
-        ) : (
-          <p className="text-sm text-muted-foreground">{t("cli.runners.limits.connectFirst")}</p>
-        )
-      }
-    </QueryBoundary>
   );
 }
 

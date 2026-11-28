@@ -16,6 +16,8 @@ import {
   maxBudgetUsd,
   officialEligible,
   resolveProtocol,
+  runnerFormLimits,
+  runnerRecentlySeen,
   searchModels,
   summaryParts,
   toMatchConfig,
@@ -406,5 +408,36 @@ describe("billing the user's own OpenRouter key", () => {
     expect(createRefusal({ code: "CONFLICT", data: { reason: "nope" } })).toBeNull();
     expect(createRefusal({ code: "BAD_REQUEST" })).toBeNull();
     expect(createRefusal(null)).toBeNull();
+  });
+});
+
+describe("runner form limits and availability", () => {
+  it("splits the lower confirmed combined cap without using pending or hosted values", () => {
+    const limits = runnerFormLimits({ matchMicros: 1_000_001 }, { matchMicros: 25_000_000 });
+    expect(limits).toEqual({ maxCostMicros: 500_000, maxTokens: 1_000_000 });
+    expect(defaultValuesFor(limits).budget).toBe(0.5);
+    expect(maxBudgetUsd(limits)).toBe(0.5);
+    expect(
+      runnerFormLimits({ matchMicros: 25_000_000 }, { matchMicros: 3_000_001 }).maxCostMicros,
+    ).toBe(1_500_000);
+    expect(
+      createMatchSchema(t, limits).safeParse({ ...DEFAULT_VALUES, budget: 0.51 }).success,
+    ).toBe(false);
+    expect(createMatchSchema(t, limits).safeParse({ ...DEFAULT_VALUES, budget: 0.5 }).success).toBe(
+      true,
+    );
+  });
+  it("matches the server's strict 60-second admission window and active expiry", () => {
+    const now = Date.now();
+    const machine = {
+      status: "active",
+      expiresAt: new Date(now + 60_000),
+      lastSeenAt: new Date(now - 59_999),
+    };
+    expect(runnerRecentlySeen(machine, now)).toBe(true);
+    expect(runnerRecentlySeen({ ...machine, lastSeenAt: new Date(now - 60_000) }, now)).toBe(false);
+    expect(runnerRecentlySeen({ ...machine, lastSeenAt: null }, now)).toBe(false);
+    expect(runnerRecentlySeen({ ...machine, status: "revoked" }, now)).toBe(false);
+    expect(runnerRecentlySeen({ ...machine, expiresAt: new Date(now) }, now)).toBe(false);
   });
 });

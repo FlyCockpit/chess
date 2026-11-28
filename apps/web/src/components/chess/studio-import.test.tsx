@@ -10,6 +10,9 @@ const seen = vi.hoisted(() => ({
   importOptions: undefined as { meta?: Record<string, unknown> } | undefined,
 }));
 
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
+}));
 vi.mock("@tanstack/react-query", () => ({
   useQuery: () => ({ data: { hostedEnabled: true } }),
   useInfiniteQuery: () => ({
@@ -45,6 +48,9 @@ vi.mock("@/hooks/use-auth-session", () => ({
   }),
 }));
 vi.mock("@/hooks/use-document-admits", () => ({ useDocumentAdmits: () => true }));
+vi.mock("@/hooks/use-runner-controls", () => ({
+  useRunnerControls: () => ({ accessDenied: false }),
+}));
 vi.mock("@/hooks/use-hosted-human-turn", () => ({
   useHostedHumanTurn: () => ({ accessDenied: false }),
 }));

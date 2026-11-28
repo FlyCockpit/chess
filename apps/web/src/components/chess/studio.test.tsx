@@ -9,6 +9,8 @@ import { beforeAll, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
   moveDenied: false,
+  runnerDenied: false,
+  executionSource: undefined as string | undefined,
   humanBlocked: false,
   humanPhase: undefined as "pending" | "uncertain" | undefined,
   admitted: true,
@@ -75,6 +77,18 @@ vi.mock("@/utils/orpc", () => ({
 }));
 vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => fixture.auth }));
 vi.mock("@/hooks/use-document-admits", () => ({ useDocumentAdmits: () => fixture.admitted }));
+vi.mock("@/hooks/use-runner-controls", () => ({
+  useRunnerControls: ({ enabled }: { enabled: boolean }) => {
+    fixture.enabled.push(enabled);
+    return {
+      state: undefined,
+      query: {},
+      accessDenied: fixture.runnerDenied,
+      online: true,
+      resync: vi.fn(),
+    };
+  },
+}));
 vi.mock("@/hooks/use-now", () => ({ useNow: () => Date.now() }));
 vi.mock("@/hooks/use-hosted-human-turn", () => ({
   useHostedHumanTurn: ({
@@ -122,22 +136,31 @@ vi.mock("./create-match-dialog", () => ({
     billingOptions,
     ownKeyRemainingMicros,
     disabled,
+    runner,
   }: {
+    runner?: boolean;
     billingOptions?: string[];
     ownKeyRemainingMicros?: number | null;
     disabled: boolean;
   }) => (
     <div
-      data-create={(billingOptions ?? ["operator"]).join(",")}
+      data-create={runner ? "runner" : (billingOptions ?? ["operator"]).join(",")}
       data-remaining={String(ownKeyRemainingMicros)}
       data-disabled={String(disabled)}
     />
   ),
 }));
 vi.mock("./replay", () => ({
-  MatchReplay: ({ match }: { match: { config: { title: string } } }) => (
-    <div>{match.config.title}</div>
-  ),
+  MatchReplay: ({
+    match,
+    executionSource,
+  }: {
+    match: { config: { title: string } };
+    executionSource?: string;
+  }) => {
+    fixture.executionSource = executionSource;
+    return <div>{match.config.title}</div>;
+  },
 }));
 
 import { Studio } from "./studio";
@@ -367,7 +390,8 @@ it("sends a user without a connection to Settings instead of the form", () => {
     const html = render();
     expect(html).toContain(enChess.studio.connectTitle);
     expect(html).toContain('data-to="/$lang/settings/openrouter"');
-    expect(html).not.toContain("data-create");
+    expect(html).not.toContain('data-create="openrouter"');
+    expect(html).toContain('data-create="runner"');
     expect(html).not.toContain(enChess.studio.userMatchesOff.replaceAll("'", "&#x27;"));
   });
 });
@@ -380,7 +404,8 @@ it("asks a user whose key OpenRouter refused to reconnect, and explains an unrea
     const rejected = render();
     expect(rejected).toContain(enChess.studio.reconnectTitle);
     expect(rejected).toContain(enChess.studio.reconnectBody);
-    expect(rejected).not.toContain("data-create");
+    expect(rejected).not.toContain('data-create="openrouter"');
+    expect(rejected).toContain('data-create="runner"');
 
     fixture.key = {
       ...fixture.key,
@@ -428,7 +453,8 @@ it("keeps a user's own matches reachable but offers no create while user matches
       fixture.enabled = [];
       const html = render();
       expect(html).toContain(enChess.studio.userMatchesOff.replaceAll("'", "&#x27;"));
-      expect(html).not.toContain("data-create");
+      expect(html).not.toContain('data-create="openrouter"');
+      expect(html).toContain('data-create="runner"');
       // The owner's list still loads, so earlier matches can be stopped or unpublished.
       expect(fixture.enabled).toContain(true);
     },
@@ -675,3 +701,33 @@ it.each(["white", "black"] as const)(
     }
   },
 );
+
+it("hides an own runner preview on authoritative control denial and offers runner creation without a hosted key", () => {
+  const archive = createMatch(
+    {
+      title: "Own runner secret",
+      rules: {},
+      white: { name: "Human", model: "human", protocol: "human" },
+      black: { name: "Model", model: "test/model", protocol: "openai-chat" },
+    },
+    "local",
+  );
+  fixture.detail = {
+    ...fixture.detail,
+    data: { archive, credentialSource: "runner-local", queuePosition: null },
+    isError: false,
+    isPending: false,
+    error: undefined,
+  };
+  try {
+    expect(render()).toContain("Own runner secret");
+    expect(fixture.executionSource).toBe("runner");
+    fixture.runnerDenied = true;
+    expect(render()).not.toContain("Own runner secret");
+    expect(render()).not.toContain("data-play-board");
+    expect(render()).toContain('data-create="runner"');
+    expect(render()).toContain('data-to="/$lang/settings/cli"');
+  } finally {
+    fixture.runnerDenied = false;
+  }
+});

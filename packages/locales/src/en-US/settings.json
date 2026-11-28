@@ -175,6 +175,31 @@
           "missing": "This runner is no longer available. Close this panel and refresh the runner list.",
           "failed": "The change could not be confirmed. Refresh the limits before retrying; check the terminal for any pending change."
         }
+      },
+      "guide": {
+        "start": "Start the runner in a terminal on the machine that will play:",
+        "copyCommand": "Copy runner startup command",
+        "claim": "Open the link printed in that terminal and claim it once with the account that should own this run. Check the claimed account in the terminal.",
+        "studio": "Keep the terminal running, then return to Studio to offer a self-run match and follow acceptance before requesting start.",
+        "localAuthority": "Your provider key stays in the terminal. The terminal validates allowed models, protocols and engine support, and may decline an offer. The browser cannot change provider keys, endpoints, allowed models or local hard ceilings.",
+        "practice": "Self-run matches are practice only and never official.",
+        "limits": "For an active machine, open Operating limits to see its terminal-confirmed values and local hard ceilings. Increases require fresh password or authenticator verification; a submitted change applies only after terminal acknowledgement. Change hard ceilings locally at startup.",
+        "empty": "No machines are paired yet. Run the command above, claim the printed link once, and keep the terminal open. This list refreshes while you are here.",
+        "openStudio": "Open Studio",
+        "status": {
+          "online": "Online · seen within 60 seconds",
+          "offline": "Offline · no recent contact",
+          "connecting": "Connecting · awaiting first contact",
+          "expired": "Expired",
+          "revoked": "Revoked"
+        },
+        "next": {
+          "online": "Open Studio to offer a match. Recent contact is advisory; the terminal must accept before you request start.",
+          "offline": "Keep or reconnect the terminal for this machine and wait for recent contact before offering a match in Studio.",
+          "connecting": "This credential is active, but the terminal has not checked in yet. Keep the terminal running and wait for it to connect.",
+          "expired": "This credential has expired. Start a new runner and claim its printed link once to pair again.",
+          "revoked": "This machine cannot reconnect. Start a new runner and claim its printed link once if you want to pair again."
+        }
       }
     }
   },

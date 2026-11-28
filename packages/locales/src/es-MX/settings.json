@@ -175,6 +175,31 @@
           "missing": "Este ejecutor ya no está disponible. Cierra este panel y actualiza la lista de ejecutores.",
           "failed": "No se pudo confirmar el cambio. Actualiza los límites antes de reintentar y revisa si hay cambios pendientes en la terminal."
         }
+      },
+      "guide": {
+        "start": "Inicia el ejecutor en una terminal de la máquina que jugará:",
+        "copyCommand": "Copiar comando de inicio del ejecutor",
+        "claim": "Abre el enlace que aparece en esa terminal y reclámalo una sola vez con la cuenta que será propietaria de esta ejecución. Revisa la cuenta vinculada en la terminal.",
+        "studio": "Mantén la terminal abierta y vuelve a Studio para ofrecer una partida local. Espera la aceptación antes de solicitar el inicio.",
+        "localAuthority": "Tu clave del proveedor permanece en la terminal. La terminal valida los modelos, protocolos y funciones del motor permitidos y puede rechazar una oferta. El navegador no puede cambiar claves, destinos, modelos permitidos ni topes locales.",
+        "practice": "Las partidas locales son solo de práctica y nunca son oficiales.",
+        "limits": "En una máquina activa, abre Límites operativos para ver los valores confirmados por la terminal y los topes locales. Los aumentos requieren una nueva verificación con contraseña o autenticador; un cambio enviado solo se aplica tras la confirmación de la terminal. Cambia los topes locales al iniciar la terminal.",
+        "empty": "Todavía no hay máquinas vinculadas. Ejecuta el comando anterior, reclama el enlace impreso una sola vez y mantén la terminal abierta. Esta lista se actualiza mientras estás aquí.",
+        "openStudio": "Abrir Studio",
+        "status": {
+          "online": "En línea · contacto en los últimos 60 segundos",
+          "offline": "Sin conexión · sin contacto reciente",
+          "connecting": "Conectando · esperando el primer contacto",
+          "expired": "Vencida",
+          "revoked": "Revocada"
+        },
+        "next": {
+          "online": "Abre Studio para ofrecer una partida. El contacto reciente es orientativo; la terminal debe aceptar antes de que solicites el inicio.",
+          "offline": "Mantén abierta o reconecta la terminal de esta máquina y espera contacto reciente antes de ofrecer una partida en Studio.",
+          "connecting": "Esta credencial está activa, pero la terminal aún no se ha comunicado. Mantén la terminal abierta y espera la conexión.",
+          "expired": "Esta credencial venció. Inicia un ejecutor nuevo y reclama su enlace impreso una sola vez para volver a vincularlo.",
+          "revoked": "Esta máquina no puede reconectarse. Inicia un ejecutor nuevo y reclama su enlace impreso una sola vez si quieres volver a vincularla."
+        }
       }
     }
   },

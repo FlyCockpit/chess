@@ -1,5 +1,7 @@
+import type { AppRouterClient } from "@cockpit-chess/api/routers/index";
 import {
   beginHostedTurn,
+  boardAt,
   createMatch,
   finishMatch,
   type MatchArchive,
@@ -15,9 +17,15 @@ import { createRoot } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
 import { expect, it, vi } from "vitest";
 
+type RunnerState = Awaited<ReturnType<AppRouterClient["chess"]["runnerStatus"]>>;
 const fixture = vi.hoisted(() => ({
   archives: new Map<string, MatchArchive>(),
   move: vi.fn(),
+  runners: new Map<string, RunnerState>(),
+  runnerMove: vi.fn(),
+  runnerStart: vi.fn(),
+  runnerStop: vi.fn(),
+  hostedStop: vi.fn(),
 }));
 vi.mock("@/hooks/use-auth-session", () => ({
   useAuthSession: () => ({
@@ -42,11 +50,12 @@ vi.mock("@/utils/orpc", () => ({
           getNextPageParam: () => undefined,
           queryKey: ["studio"],
           queryFn: async () => ({
-            items: ["first", "second", "model"].map((slug) => ({
+            items: [...fixture.archives.keys()].map((slug) => ({
               id: slug,
               slug,
               title: slug,
-              status: "running",
+              status: fixture.runners.get(slug)?.status ?? "running",
+              source: fixture.runners.has(slug) ? "runner" : "hosted",
               whiteName: "White",
               blackName: "Black",
             })),
@@ -59,7 +68,8 @@ vi.mock("@/utils/orpc", () => ({
           queryKey: ["inspect", input.slug],
           queryFn: async () => ({
             archive: structuredClone(fixture.archives.get(input.slug)),
-            status: "running",
+            status: fixture.runners.get(input.slug)?.status ?? "running",
+            credentialSource: fixture.runners.has(input.slug) ? "runner-local" : "operator",
             queuePosition: null,
             published: false,
             spectatorEvaluations: null,
@@ -77,7 +87,16 @@ vi.mock("@/utils/orpc", () => ({
       get: { queryOptions: () => ({ queryKey: ["public-game"], queryFn: async () => null }) },
       move: { mutationOptions: () => ({ mutationFn: fixture.move }) },
       publish: { mutationOptions: () => ({}) },
-      stop: { mutationOptions: () => ({}) },
+      stop: { mutationOptions: () => ({ mutationFn: fixture.hostedStop }) },
+      runnerStatus: {
+        queryOptions: ({ input }: { input: { slug: string } }) => ({
+          queryKey: ["runner", input.slug],
+          queryFn: async () => structuredClone(fixture.runners.get(input.slug)),
+        }),
+      },
+      startRunner: { mutationOptions: () => ({ mutationFn: fixture.runnerStart }) },
+      stopRunner: { mutationOptions: () => ({ mutationFn: fixture.runnerStop }) },
+      moveRunner: { mutationOptions: () => ({ mutationFn: fixture.runnerMove }) },
     },
     chessModeration: {
       visibility: {
@@ -336,7 +355,10 @@ it("keeps one owner surface and one read-only replay through polls, moves and ta
   });
   const human = { name: "Human", model: "human", protocol: "human" as const };
   const model = { name: "Model", model: "test/model", protocol: "openai-chat" as const };
-  for (const slug of ["first", "second", "model"]) {
+  fixture.archives.clear();
+  fixture.runners.clear();
+  fixture.hostedStop.mockReset();
+  for (const slug of ["first", "second", "model", "runner", "runner-offered"]) {
     const archive = createMatch(
       {
         title: slug,
@@ -344,10 +366,27 @@ it("keeps one owner surface and one read-only replay through polls, moves and ta
         black: model,
         rules: { turnTimeoutMs: 20_000 },
       },
-      "hosted",
+      slug.startsWith("runner") ? "local" : "hosted",
     );
-    beginHostedTurn(archive);
+    if (!slug.startsWith("runner")) beginHostedTurn(archive);
     fixture.archives.set(slug, archive);
+    if (slug.startsWith("runner"))
+      fixture.runners.set(slug, {
+        id: archive.id,
+        slug,
+        status: "queued",
+        state: slug === "runner" ? "accepted" : "offered",
+        revision: 2,
+        acceptedSeq: 0,
+        ply: 0,
+        fen: boardAt(archive).fen(),
+        lastContactAt: new Date(),
+        resumeDeadline: new Date(Date.now() + 120_000),
+        turn: archive.turn,
+        result: "*",
+        termination: "playing",
+        verification: "self-run",
+      });
   }
   fixture.move.mockReset();
   fixture.move.mockImplementation(async ({ slug, move }: { slug: string; move: string }) => {
@@ -355,6 +394,52 @@ it("keeps one owner surface and one read-only replay through polls, moves and ta
     if (!archive) throw new Error("Missing test archive");
     playHostedHumanTurn(archive, new Date(), move);
     beginHostedTurn(archive);
+  });
+  function runnerFixture(slug: string) {
+    const state = fixture.runners.get(slug);
+    const archive = fixture.archives.get(slug);
+    if (!state || !archive) throw new Error("Missing runner fixture");
+    return { state, archive };
+  }
+  fixture.runnerStart.mockReset().mockImplementation(async ({ slug }: { slug: string }) => {
+    const { state, archive } = runnerFixture(slug);
+    beginHostedTurn(archive);
+    Object.assign(state, {
+      status: "running",
+      state: "running",
+      revision: state.revision + 2,
+      turn: archive.turn,
+      lastContactAt: new Date(),
+    });
+    return structuredClone(state);
+  });
+  fixture.runnerMove
+    .mockReset()
+    .mockImplementation(async ({ slug, move }: { slug: string; move: string }) => {
+      const { state, archive } = runnerFixture(slug);
+      playHostedHumanTurn(archive, new Date(), move);
+      beginHostedTurn(archive);
+      Object.assign(state, {
+        revision: state.revision + 1,
+        acceptedSeq: state.acceptedSeq + 1,
+        ply: state.ply + 1,
+        fen: boardAt(archive).fen(),
+        turn: archive.turn,
+        lastContactAt: new Date(),
+      });
+      return structuredClone(state);
+    });
+  fixture.runnerStop.mockReset().mockImplementation(async ({ slug }: { slug: string }) => {
+    const { state, archive } = runnerFixture(slug);
+    finishMatch(archive, "*", "cancelled", "stopped");
+    Object.assign(state, {
+      status: "stopped",
+      state: "stopped",
+      revision: state.revision + 1,
+      turn: archive.turn,
+      termination: archive.termination,
+    });
+    return structuredClone(state);
   });
   async function flush() {
     await act(async () => {
@@ -461,6 +546,78 @@ it("keeps one owner surface and one read-only replay through polls, moves and ta
     await select("model");
     counts(0, 1);
     expect(secondOwner?.parentNode).toBeNull();
+    // Actual Studio controls with the real runner hook. Offered games must
+    // stop through the runner API even before acceptance (followup07).
+    const offeredCard = all().find(
+      (node) =>
+        node.localName === "article" &&
+        elements(node).some(
+          (child) => child.localName === "h3" && child.textContent === "runner-offered",
+        ),
+    );
+    await act(async () =>
+      click(
+        offeredCard &&
+          elements(offeredCard).find(
+            (node) => node.localName === "button" && node.textContent === i18n.t("studio.stop"),
+          ),
+      ),
+    );
+    await flush();
+    expect(fixture.runnerStop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: "runner-offered",
+        commandId: expect.any(String),
+        expectedRevision: 2,
+      }),
+      expect.anything(),
+    );
+    expect(fixture.runners.get("runner-offered")?.state).toBe("stopped");
+    expect(fixture.hostedStop).not.toHaveBeenCalled();
+    await select("runner");
+    counts();
+    expect(boards("owner")[0]?.hasAttribute("disabled")).toBe(true);
+    await act(async () =>
+      click(
+        all().find(
+          (node) => node.localName === "button" && node.textContent === i18n.t("runner.start"),
+        ),
+      ),
+    );
+    await flush();
+    expect(fixture.runnerStart).toHaveBeenCalledOnce();
+    expect(boards("owner")[0]?.hasAttribute("disabled")).toBe(false);
+    await act(async () => click(boards("owner")[0]));
+    await flush();
+    expect(fixture.runnerMove).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: "runner",
+        move: "e2e4",
+        commandId: expect.any(String),
+        expectedSeq: 0,
+        expectedRevision: 4,
+      }),
+      expect.anything(),
+    );
+    expect(fixture.move).toHaveBeenCalledTimes(1);
+    const runnerPanel = all().find(
+      (node) => node.getAttribute("aria-label") === i18n.t("runner.controls"),
+    );
+    await act(async () =>
+      click(
+        runnerPanel &&
+          elements(runnerPanel).find(
+            (node) => node.localName === "button" && node.textContent === i18n.t("studio.stop"),
+          ),
+      ),
+    );
+    await flush();
+    expect(fixture.runnerStop).toHaveBeenLastCalledWith(
+      expect.objectContaining({ slug: "runner", expectedRevision: 5 }),
+      expect.anything(),
+    );
+    expect(fixture.runners.get("runner")?.state).toBe("stopped");
+    expect(fixture.hostedStop).not.toHaveBeenCalled();
     await select("second");
     counts();
     const leavingOwner = owners()[0];
