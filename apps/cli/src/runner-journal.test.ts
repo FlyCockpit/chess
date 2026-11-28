@@ -202,6 +202,27 @@ afterEach(async () => {
 });
 
 describe("durable runner game journal", () => {
+  it("inspection retains bounded phase/ID metadata for actual large terminal history", async () => {
+    const { journal } = await fixture();
+    const value = recordOfSize(1_850_000);
+    finishMatch(value.archive, "*", "interrupted", "error");
+    value.phase = "terminal";
+    for (let i = 0; i < 8; i++) await journal.save(`history-${i}`, value);
+    const inventory = await journal.inspect?.();
+    expect(inventory).toHaveLength(8);
+    expect(inventory?.every((row) => Object.keys(row).sort().join(",") === "matchId,phase")).toBe(
+      true,
+    );
+    expect(Buffer.byteLength(JSON.stringify(inventory))).toBeLessThan(1024);
+    // Inspection does not retire archives or their digest/tombstone replay fences.
+    expect(await journal.load("history-0")).toMatchObject({
+      phase: "terminal",
+      digest: value.digest,
+    });
+    await expect(journal.save("history-0", { ...value, phase: "ready" })).rejects.toThrow(
+      "INVALID",
+    );
+  });
   it("persists an exact cancellation tombstone across reopen and refuses a later offered game", async () => {
     const { root, journal, file } = await fixture();
     await journal.save("match-1", { phase: "cancelled" });
@@ -290,13 +311,14 @@ describe("durable runner game journal", () => {
     expect(await readdir(join(root, "runner-games"))).toEqual(names);
   });
 
-  it("refuses a second handle and process, and retains a crashed process's lock", async () => {
+  it("refuses live handles and processes, then reclaims an exactly identified dead owner", async () => {
     const { root, journal } = await fixture();
     await expect(openRunnerJournal(origin, machine, root)).rejects.toThrow("RUNNER_JOURNAL_LOCKED");
     expect((await child(root, true)).stdout).toBe("RUNNER_JOURNAL_LOCKED");
     await journal.close();
     expect((await child(root, false)).stdout).toBe("opened");
-    await expect(openRunnerJournal(origin, machine, root)).rejects.toThrow("RUNNER_JOURNAL_LOCKED");
+    const restored = track(await openRunnerJournal(origin, machine, root));
+    await restored.close();
   });
 
   it("serializes detached snapshots and waits for queued saves before closing", async () => {
@@ -500,7 +522,7 @@ describe("durable runner game journal", () => {
     await journal.close();
   });
 
-  it("retains a lock when startup cannot durably sync it", async () => {
+  it("failed initialization never publishes partial ownership or strands an acquisition guard", async () => {
     const { root, journal, directory, lock } = await fixture();
     await journal.close();
     faults.sync = true;
@@ -509,18 +531,19 @@ describe("durable runner game journal", () => {
     );
     faults.sync = false;
     expect((await lstat(lock)).isFile()).toBe(true);
-    expect(await readdir(directory)).toEqual(["journal.lock"]);
-    await expect(openRunnerJournal(origin, machine, root)).rejects.toThrow("RUNNER_JOURNAL_LOCKED");
+    expect(await readdir(directory)).toEqual(["journal.lock", "journal.lock.released"]);
+    const restored = track(await openRunnerJournal(origin, machine, root));
+    await restored.close();
   });
 
-  it("re-establishes a lock when closing cannot sync its removal", async () => {
-    if (process.platform === "win32") return;
+  it("release is immutable and cannot unlink an active successor", async () => {
     const { root, journal, lock } = await fixture();
-    faults.directorySync = true;
-    await expect(journal.close()).rejects.toThrow("RUNNER_JOURNAL_STORAGE");
-    faults.directorySync = false;
+    await journal.close();
+    const restored = track(await openRunnerJournal(origin, machine, root));
+    await journal.close();
     expect((await lstat(lock)).isFile()).toBe(true);
     await expect(openRunnerJournal(origin, machine, root)).rejects.toThrow("RUNNER_JOURNAL_LOCKED");
+    await restored.close();
   });
 
   it("only releases its own lock", async () => {

@@ -60,7 +60,9 @@ type ActualRequest = {
 
 /** Fixed safe copy: never surface provider errors, URLs, headers, paths or keys. */
 export class RunnerPolicyError extends Error {
-  constructor(readonly code: "config" | "model" | "request" | "limits" | "offline" | "storage") {
+  constructor(
+    readonly code: "config" | "model" | "request" | "limits" | "offline" | "storage" | "uncertain",
+  ) {
     super(t(`cli:runner${code[0]?.toUpperCase()}${code.slice(1)}`));
     this.name = "RunnerPolicyError";
   }
@@ -93,6 +95,19 @@ export async function readLocalRunnerOptions(
   const overrides = localOptionsSchema.safeParse(flags);
   if (!parsed.success || !overrides.success) throw new RunnerPolicyError("config");
   return { ...parsed.data, ...overrides.data };
+}
+
+/** Local identity only: no catalog/network/engine initialization. */
+export function localRunnerAuthority(
+  options: LocalRunnerOptions,
+  env?: Record<string, string | undefined>,
+): string {
+  const selected = endpoint(options.baseUrl);
+  const apiKey =
+    resolveApiKey(new URL(selected.url), "openai-chat", env) ??
+    (selected.local ? "local-inference" : undefined);
+  if (!apiKey) throw new RunnerPolicyError("config");
+  return spendingAuthorityId(apiKey);
 }
 
 function endpoint(input = "https://openrouter.ai/api/v1") {
@@ -214,77 +229,6 @@ function reserveMicros(quote: RunnerRouteQuote, output: number): number {
 
 const usageRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? { ...value } : undefined;
-const usageCount = (value: unknown): number | undefined =>
-  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-
-/** A reported complete charge wins; incomplete category counts never imply zero cost. */
-function settlementMicros(
-  raw: unknown,
-  protocol: Player["protocol"],
-  quote: RunnerRouteQuote,
-): number | undefined {
-  const usage = usageRecord(raw);
-  if (!usage) return undefined;
-  if ("cost" in usage) {
-    const value = usage.cost;
-    if (typeof value !== "string" && typeof value !== "number") return undefined;
-    const text = String(value);
-    if (text.length > 64) return undefined;
-    const parts = /^(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d{1,3}))?$/.exec(text);
-    if (!parts) return undefined;
-    const fraction = parts[2] ?? "";
-    const shift = 6 + Number(parts[3] ?? 0) - fraction.length;
-    if (Math.abs(shift) > 100) return undefined;
-    const digits = BigInt(`${parts[1]}${fraction}`);
-    const amount =
-      shift >= 0
-        ? digits * 10n ** BigInt(shift)
-        : (digits + 10n ** BigInt(-shift) - 1n) / 10n ** BigInt(-shift);
-    return amount <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(amount) : undefined;
-  }
-  const price = quote.exactPrices;
-  if (!price) return undefined;
-  const anthropic = protocol === "anthropic";
-  const details = usageRecord(usage.prompt_tokens_details ?? usage.input_tokens_details);
-  const input = usageCount(
-    anthropic ? usage.input_tokens : (usage.prompt_tokens ?? usage.input_tokens),
-  );
-  const output = usageCount(
-    anthropic ? usage.output_tokens : (usage.completion_tokens ?? usage.output_tokens),
-  );
-  const read = usageCount(anthropic ? usage.cache_read_input_tokens : details?.cached_tokens);
-  const write = usageCount(
-    anthropic ? usage.cache_creation_input_tokens : details?.cache_write_tokens,
-  );
-  if (input === undefined || output === undefined || read === undefined || write === undefined)
-    return undefined;
-  if (
-    (read > 0 && price.cacheReadMicrosPerMillion === undefined) ||
-    (write > 0 && price.cacheWriteMicrosPerMillion === undefined)
-  )
-    return undefined;
-  // Gemini cache reads and writes may overlap. Only its reported complete cost can
-  // prove the bill; subtracting those categories would invent an uncached count.
-  if (!anthropic && quote.model.startsWith("google/gemini-") && write > 0) return undefined;
-  const uncached = anthropic ? input : input - read - write;
-  if (!Number.isSafeInteger(uncached) || uncached < 0) return undefined;
-  if ((price.reasoningMicrosPerMillion ?? 0) > 0) {
-    const reasoning = usageCount(
-      usageRecord(usage.completion_tokens_details ?? usage.output_tokens_details)?.reasoning_tokens,
-    );
-    // A separate nonzero reasoning tariff has route-specific additive/replacement
-    // semantics. Require provider-reported cost unless explicitly zero reasoning.
-    if (reasoning !== 0) return undefined;
-  }
-  const sum =
-    BigInt(uncached) * BigInt(price.promptMicrosPerMillion) +
-    BigInt(read) * BigInt(price.cacheReadMicrosPerMillion ?? 0) +
-    BigInt(write) * BigInt(price.cacheWriteMicrosPerMillion ?? 0) +
-    BigInt(output) * BigInt(price.completionMicrosPerMillion);
-  const amount = (sum + 999_999n) / 1_000_000n + BigInt(price.requestMicros);
-  return amount <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(amount) : undefined;
-}
-
 /** Local capabilities are frozen at startup; remote operating updates have a separate bounded seam. */
 export class RunnerPolicy {
   private operating: Readonly<Limits>;
@@ -335,24 +279,27 @@ export class RunnerPolicy {
       dayMicros: usd(options.maxDayUsd, DEFAULT_HARD.dayMicros),
       concurrency: options.maxConcurrent ?? DEFAULT_HARD.concurrency,
     });
-    const catalog = io.catalog ?? new RunnerCatalog({ allowModels: options.allowModels });
-    let models: readonly string[] | undefined;
-    try {
-      models = selected.local ? options.allowModels : await catalog.models(io.signal);
-    } catch {
-      throw new RunnerPolicyError("model");
-    }
-    if (!models?.length) throw new RunnerPolicyError("model");
-    // Local model identities still come from the operator, never the website.
-    const allowed = options.allowModels
-      ? models.filter((model) => options.allowModels?.includes(model))
-      : models;
-    if (!allowed.length) throw new RunnerPolicyError("model");
     let spend: RunnerSpend;
     try {
       spend = io.spend ?? (await openRunnerSpend({ authorityId: spendingAuthorityId(apiKey) }));
-    } catch {
+    } catch (error) {
+      if (error instanceof RunnerSpendError && error.code === "UNCERTAIN")
+        throw new RunnerPolicyError("uncertain");
       throw new RunnerPolicyError("storage");
+    }
+    let catalog: RunnerCatalog;
+    let allowed: readonly string[];
+    try {
+      catalog = io.catalog ?? new RunnerCatalog({ allowModels: options.allowModels });
+      const models = selected.local ? options.allowModels : await catalog.models(io.signal);
+      if (!models?.length) throw new RunnerPolicyError("model");
+      allowed = options.allowModels
+        ? models.filter((model) => options.allowModels?.includes(model))
+        : models;
+      if (!allowed.length) throw new RunnerPolicyError("model");
+    } catch {
+      if (!io.spend) await spend.close();
+      throw new RunnerPolicyError("model");
     }
     return new RunnerPolicy(
       { baseUrl: selected.url, local: selected.local, apiKey },
@@ -549,6 +496,13 @@ export class RunnerPolicy {
             matchId: authority.matchId,
             requestId,
             micros: amount,
+            context: quote
+              ? {
+                  kind: "usage",
+                  protocol: player.protocol,
+                  tariff: { model: quote.model, exactPrices: quote.exactPrices },
+                }
+              : { kind: "free" },
             matchLimitMicros: Math.min(this.hard.matchMicros, this.operating.matchMicros),
             dayLimitMicros: Math.min(this.hard.dayMicros, this.operating.dayMicros),
           });
@@ -592,10 +546,8 @@ export class RunnerPolicy {
           body: JSON.stringify(body),
           beforeSend: assertFresh,
           onUsage: async (usage: unknown) => {
-            const actual = quote ? settlementMicros(usage, player.protocol, quote) : 0;
-            if (actual === undefined) return;
             try {
-              await this.spend.settle({ requestId, micros: actual });
+              await this.spend.captureUsage({ requestId, usage });
             } catch {
               // An inconsistent bill or uncertain persistence invalidates local authority.
               this.stopped = true;
@@ -611,6 +563,11 @@ export class RunnerPolicy {
   assertAuthority(authority: RunnerMatchAuthority): void {
     if (this.stopped || this.matches.get(authority.matchId) !== authority)
       throw new RunnerPolicyError("offline");
+    try {
+      this.spend.assertDispatchable();
+    } catch {
+      throw new RunnerPolicyError("storage");
+    }
   }
 
   private async quote(

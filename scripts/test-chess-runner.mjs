@@ -1756,11 +1756,12 @@ export async function chessRunnerCheck() {
         {
           env: {},
           spend: {
+            assertDispatchable: () => {},
             reserve: async () => {
               ++spendRequests;
               throw new Error("handshake never authorizes spend");
             },
-            settle: async () => {
+            captureUsage: async () => {
               ++spendRequests;
               throw new Error("handshake never incurs spend");
             },

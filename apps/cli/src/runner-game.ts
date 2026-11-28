@@ -584,7 +584,8 @@ export class RunnerGameLoop {
     game = {
       record: stored ?? {
         digest: configDigest,
-        phase: "offered",
+        // No external effect may precede this resumable durable state.
+        phase: "ready",
         archive: createMatch(config),
         confirmedPly: 0,
       },
@@ -606,8 +607,7 @@ export class RunnerGameLoop {
         )
       )
         return;
-      // A loaded match must be explicitly reconciled, even if its last send succeeded.
-      if (!stored) game.record.phase = "ready";
+      // Ready is durable before accept; loaded matches still require reconciliation.
       if (game.record.archive.status !== "running")
         await this.terminal(message.matchId, game, "completed");
     } catch {

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { createMatch } from "@cockpit-chess/chess";
@@ -10,6 +10,7 @@ import { responseJsonUsage } from "../../../packages/agent-runtime/src/response-
 import { t } from "./chess-i18n";
 import { localCredentials } from "./chess-provider";
 import { RunnerCatalog } from "./runner-catalog";
+import { RunnerLock } from "./runner-lock";
 import { RunnerPolicy, RunnerPolicyError, readLocalRunnerOptions } from "./runner-policy";
 import { openRunnerSpend, spendingAuthorityId } from "./runner-spend";
 
@@ -117,6 +118,107 @@ afterEach(async () => {
 });
 
 describe("local hard runner authority", () => {
+  it("revokes delayed wire tickets during known-invalid spend publication", async () => {
+    const { policy, spend, file } = await fixture();
+    const first = policy.beginMatch("first", new AbortController().signal);
+    const second = policy.beginMatch("second", new AbortController().signal);
+    const one = await first.credentials({ model, protocol: "openai-chat" });
+    const two = await second.credentials({ model, protocol: "openai-chat" });
+    const admittedOne = await one.authorizeRequest?.(request());
+    const admittedTwo = await two.authorizeRequest?.(request());
+    expect(admittedOne?.onUsage).toBeTypeOf("function");
+    expect(admittedTwo?.beforeSend).toBeTypeOf("function");
+    const wire = vi.fn();
+    const send = () => {
+      two.beforeDispatch?.();
+      admittedTwo?.beforeSend?.();
+      wire();
+    };
+    send();
+    expect(wire).toHaveBeenCalledOnce();
+    let release = () => {};
+    let reached = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const original = RunnerLock.prototype.fence;
+    const fence = vi.spyOn(RunnerLock.prototype, "fence").mockImplementation(async function (
+      this: RunnerLock,
+    ) {
+      reached();
+      await gate;
+      return original.call(this);
+    });
+    try {
+      const settling = admittedOne?.onUsage?.({ cost: "1" }).catch((error: unknown) => error);
+      await entered;
+      expect(() => spend.snapshot()).toThrow("STORAGE");
+      expect(send).toThrow(RunnerPolicyError);
+      // Test the issued final ticket independently of the outer guard.
+      expect(() => admittedTwo?.beforeSend?.()).toThrow(RunnerPolicyError);
+      expect(wire).toHaveBeenCalledOnce();
+      release();
+      expect(await settling).toBeInstanceOf(RunnerPolicyError);
+      const blocked = JSON.parse(await readFile(file, "utf8"));
+      expect(blocked.blocked).toBe(true);
+      expect(blocked.records).toHaveLength(2);
+      for (const record of blocked.records) {
+        expect(record.micros).toBe(record.reservedMicros);
+        expect(record.settled).toBe(false);
+      }
+    } finally {
+      release();
+      fence.mockRestore();
+    }
+  });
+
+  it("keeps delayed wire tickets usable after safe settlement and revokes them at spend close", async () => {
+    const { policy, spend } = await fixture();
+    const first = policy.beginMatch("first", new AbortController().signal);
+    const second = policy.beginMatch("second", new AbortController().signal);
+    const one = await first.credentials({ model, protocol: "openai-chat" });
+    const two = await second.credentials({ model, protocol: "openai-chat" });
+    const admittedOne = await one.authorizeRequest?.(request());
+    const admittedTwo = await two.authorizeRequest?.(request());
+    await admittedOne?.onUsage?.({ cost: "0.001" });
+    expect(spend.snapshot().matches.get("first")).toBe(1000);
+    expect(() => admittedTwo?.beforeSend?.()).not.toThrow();
+    const closing = spend.close();
+    expect(() => admittedTwo?.beforeSend?.()).toThrow(RunnerPolicyError);
+    await closing;
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "revokes issued tickets after an ordinary spend persistence failure",
+    async () => {
+      const { policy, spend, directory } = await fixture();
+      const authority = policy.beginMatch("ticket", new AbortController().signal);
+      const credentials = await authority.credentials({ model, protocol: "openai-chat" });
+      const admitted = await credentials.authorizeRequest?.(request());
+      expect(admitted?.beforeSend).toBeTypeOf("function");
+      await chmod(directory, 0o500);
+      try {
+        await expect(
+          spend.reserve({
+            matchId: "other",
+            requestId: "failed-write",
+            micros: 1,
+            matchLimitMicros: 1_000_000,
+            dayLimitMicros: 10_000_000,
+          }),
+        ).rejects.toThrow("STORAGE");
+        expect(() => spend.snapshot()).toThrow("STORAGE");
+        expect(() => credentials.beforeDispatch?.()).toThrow(RunnerPolicyError);
+        expect(() => admitted?.beforeSend?.()).toThrow(RunnerPolicyError);
+      } finally {
+        await chmod(directory, 0o700);
+      }
+    },
+  );
+
   it("uses confirmed hard and operating defaults and prints a safe startup policy", async () => {
     const { policy } = await fixture();
     expect(policy.capabilities()).toEqual({

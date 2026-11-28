@@ -4,10 +4,12 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { recoverRunner } from "./runner-recovery";
 import { openRunnerSpend, RunnerSpendError, spendingAuthorityId } from "./runner-spend";
 
 const faults = vi.hoisted(() => ({
   rename: false,
+  fenceLink: false,
   directorySync: false,
   wrongOwner: false,
   defaultFile: undefined as string | undefined,
@@ -25,6 +27,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    link: async (...args: Parameters<typeof actual.link>) => {
+      if (faults.fenceLink && String(args[1]).endsWith(".blocked"))
+        throw new Error("fence unavailable");
+      return actual.link(...args);
+    },
     lstat: async (...args: Parameters<typeof actual.lstat>) => {
       const stat = await actual.lstat(...args);
       if (faults.wrongOwner) Object.defineProperty(stat, "uid", { value: Number(stat.uid) + 1 });
@@ -45,7 +52,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       return handle;
     },
     rename: async (...args: Parameters<typeof actual.rename>) => {
-      if (faults.rename) throw new Error("deliberate test failure with private path");
+      if (faults.rename && !String(args[1]).endsWith(".receipt"))
+        throw new Error("deliberate test failure with private path");
       return actual.rename(...args);
     },
   };
@@ -65,6 +73,18 @@ async function fixture(now: () => number = () => 1_000_000, monotonicNow: () => 
   return { directory, file, ledger };
 }
 
+async function resolveBeforeReopen(file: string) {
+  await expect(openRunnerSpend({ authorityId, file })).rejects.toMatchObject({ code: "UNCERTAIN" });
+  const clockMs: number = JSON.parse(await readFile(file, "utf8")).clockMs;
+  await recoverRunner({
+    authorityId,
+    spendFile: file,
+    journalRoot: join(file, ".."),
+    resolve: true,
+    now: () => clockMs,
+  });
+}
+
 function reservation(requestId = "local-request-1", overrides = {}) {
   return {
     matchId: "local-match-1",
@@ -78,6 +98,7 @@ function reservation(requestId = "local-request-1", overrides = {}) {
 
 afterEach(async () => {
   faults.rename = false;
+  faults.fenceLink = false;
   faults.directorySync = false;
   faults.wrongOwner = false;
   faults.defaultFile = undefined;
@@ -128,6 +149,7 @@ describe("durable runner spending authority", () => {
     const { ledger, file } = await fixture();
     await ledger.reserve(reservation("locally-generated-unknown-attempt", { micros: 70 }));
     await ledger.close();
+    await resolveBeforeReopen(file);
     const restored = await openRunnerSpend({
       authorityId,
       file,
@@ -162,6 +184,7 @@ describe("durable runner spending authority", () => {
     await ledger.reserve(reservation("next-white-or-black-request", { micros: 70 }));
     expect(ledger.snapshot().dayMicros).toBe(100);
     await ledger.close();
+    await resolveBeforeReopen(file);
     const restored = await openRunnerSpend({ authorityId, file, now: () => 1_000_100 });
     cleanup.push(() => restored.close());
     expect(restored.snapshot().dayMicros).toBe(100);
@@ -260,9 +283,33 @@ describe("durable runner spending authority", () => {
       ledger.reserve(reservation("after-settlement-write-failure")),
     ).rejects.toMatchObject({ code: "STORAGE" });
     await ledger.close();
+    await resolveBeforeReopen(file);
     const restored = await openRunnerSpend({ authorityId, file, now: () => 1_000_100 });
     cleanup.push(() => restored.close());
     expect(restored.snapshot().dayMicros).toBe(100);
+  });
+
+  it("still durably blocks overbilling if the independent permanent-fence publication fails", async () => {
+    const { ledger, file } = await fixture();
+    await ledger.reserve(reservation("overbilling", { micros: 100 }));
+    faults.fenceLink = true;
+    await expect(ledger.settle({ requestId: "overbilling", micros: 101 })).rejects.toMatchObject({
+      code: "SETTLEMENT",
+    });
+    await ledger.close();
+    await expect(openRunnerSpend({ authorityId, file })).rejects.toMatchObject({
+      code: "SETTLEMENT",
+    });
+    const inspected = await recoverRunner({
+      authorityId,
+      spendFile: file,
+      journalRoot: join(file, ".."),
+      resolve: false,
+    });
+    expect(inspected.blocked).toBe(true);
+    await expect(
+      recoverRunner({ authorityId, spendFile: file, journalRoot: join(file, ".."), resolve: true }),
+    ).rejects.toThrow("BLOCKED");
   });
 
   it.each([
@@ -316,6 +363,7 @@ describe("durable runner spending authority", () => {
       ledger.reserve(reservation("too-soon", { matchId: "match-2", micros: 1 })),
     ).rejects.toMatchObject({ code: "DAY_LIMIT" });
     await ledger.close();
+    await resolveBeforeReopen(file);
     const restored = await openRunnerSpend({
       authorityId,
       file,
@@ -340,11 +388,11 @@ describe("durable runner spending authority", () => {
     expect(result.stderr).toBe("");
   });
 
-  it("refuses a stale crash lock rather than guessing whether its owner can dispatch", async () => {
+  it("rejects a PID-only legacy record without guessing owner identity", async () => {
     const { ledger, file } = await fixture();
     await ledger.close();
     await writeFile(`${file}.lock`, "999999999\n", { mode: 0o600 });
-    await expect(openRunnerSpend({ authorityId, file })).rejects.toMatchObject({ code: "LOCKED" });
+    await expect(openRunnerSpend({ authorityId, file })).rejects.toMatchObject({ code: "STORAGE" });
   });
 
   it("refuses an existing shared ledger directory without chmodding it", async () => {
@@ -424,7 +472,13 @@ describe("durable runner spending authority", () => {
     faults.failSyncPath = undefined;
     const restored = await openRunnerSpend({ authorityId, now: () => 1_000_000 });
     cleanup.push(() => restored.close());
-    expect(faults.syncedDirectories).toEqual([directory, root, spendDirectory, spendDirectory]);
+    expect(faults.syncedDirectories).toEqual([
+      directory,
+      root,
+      spendDirectory,
+      spendDirectory,
+      spendDirectory,
+    ]);
     await restored.reserve(reservation("first-request-after-durable-ancestors"));
     expect(faults.syncedDirectories.at(-1)).toBe(spendDirectory);
     expect(restored.snapshot().dayMicros).toBe(10);
@@ -462,6 +516,7 @@ describe("durable runner spending authority", () => {
       code: "STORAGE",
     });
     await ledger.close();
+    await resolveBeforeReopen(file);
     const restored = await openRunnerSpend({ authorityId, file, now: () => 1_000_100 });
     cleanup.push(() => restored.close());
     expect(restored.snapshot().dayMicros).toBe(70);
@@ -476,6 +531,7 @@ describe("durable runner spending authority", () => {
     ).rejects.toMatchObject({ code: "STORAGE" });
     faults.directorySync = false;
     await ledger.close();
+    await resolveBeforeReopen(file);
     const restored = await openRunnerSpend({ authorityId, file, now: () => 1_000_100 });
     cleanup.push(() => restored.close());
     expect(restored.snapshot().dayMicros).toBe(90);

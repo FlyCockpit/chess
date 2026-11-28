@@ -609,7 +609,26 @@ export async function initializeRunnerExecution(
   const options = await readLocalRunnerOptions(localRunnerOverrides(flags));
   signal.throwIfAborted();
   const policy = await RunnerPolicy.open(options, { signal });
-  let journal: RunnerJournal | undefined;
+  let startupJournal: RunnerJournal | undefined;
+  try {
+    startupJournal = await openRunnerJournal(
+      "local-spending-authority",
+      policy.journalScope(),
+      join(homedir(), ".cockpit-chess"),
+    );
+    if (!startupJournal.inspect) throw new RunnerPolicyError("storage");
+    const inventory = await startupJournal.inspect();
+    if (inventory.some(({ phase }) => phase === "uncertain"))
+      throw new RunnerPolicyError("uncertain");
+  } catch (error) {
+    try {
+      await startupJournal?.close();
+    } finally {
+      await policy.close();
+    }
+    throw error;
+  }
+  let journal: RunnerJournal | undefined = startupJournal;
   let game: RunnerGameLoop | undefined;
   let closing: Promise<void> | undefined;
   let settlement: Promise<void> = Promise.resolve();
@@ -645,7 +664,7 @@ export async function initializeRunnerExecution(
     open: async (_origin, _machineId, send, sessionSignal) => {
       sessionSignal.throwIfAborted();
       // New claims, websites and config directories cannot erase a prior uncertain turn.
-      journal = await openRunnerJournal(
+      journal ??= await openRunnerJournal(
         "local-spending-authority",
         policy.journalScope(),
         join(homedir(), ".cockpit-chess"),

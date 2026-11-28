@@ -38,8 +38,12 @@ events include bounded accepted-board and rejected-attempt evidence. Local resul
 The journal follows the selected local spending authority under the OS user's
 `~/.cockpit-chess/runner-games/` directory. New machine claims, website origins and
 CLI config overrides do not reset it; its local scope fingerprint never goes on
-the wire. The private journal records `offered`, `ready`, `uncertain` or `terminal`, the
-archive, config digest and confirmed move count. A stop received before any offer
+the wire. Before sending an offer acceptance, the private journal durably records
+`ready` with the archive, config digest and confirmed move count. A crash after
+acceptance but before any execution can therefore resume a fresh-context game,
+after exact board/config reconciliation, without inference replay. The other
+execution phases are `uncertain` and `terminal`; prior draft `offered` records are
+refused rather than guessed safe. A stop received before any offer
 stores an exact `cancelled` tombstone without inventing config or an archive;
 later offers for that match are refused. An existing saved game is terminalized
 without acquiring new execution authority. Before automatic execution it
@@ -67,9 +71,25 @@ in-flight authorization is aborted and unknown reservations remain held. Failed
 outbound sends abort that match. Local stop, credential expiry, permanent
 transport failure and exhausted reconnect budgets close execution and wait for
 local tasks before releasing authority. Corrupt or unsafe journal files and
-uncertain persistence fail closed; a crash leaves an exclusive lock for explicit
-local operator recovery. Never remove the JSON journal or spending ledger to
-recover a connection.
+uncertain persistence fail closed. The shared immutable ownership chain reclaims
+only an exactly identified dead process across spend, journal and operating limits;
+a live owner is never stolen and published ownership slots are never deleted.
+A ready fresh-context journal with no unsettled spend resumes through normal exact
+board reconciliation after a crash, without repeating prior inference. Server-side
+credential/grace checks still apply.
+
+Unsettled spend or an `uncertain` journal refuses startup with a translated action.
+Inspect locally with `cockpit-chess runner-recover --json`, then explicitly confirm
+`cockpit-chess runner-recover --resolve-as-spent --json`. Select the same local
+provider/key, using `--provider-url` for loopback when needed. Inspection makes no
+network/catalog/engine calls. Confirmation durably abandons affected unfinished games
+before settling the original full reservation as spent; it never reruns inference.
+This also handles a journal marked uncertain before any paid request was reserved.
+A crash during recovery can be handled by repeating the same command; replay IDs,
+match totals and rolling-day timestamps are retained. True settlement-violation blocks
+are never cleared. Never remove JSON state or ownership history to recover a
+connection. See [Crash ownership and local recovery](./runner-local-authority.md#crash-ownership-and-local-recovery)
+for the immutable-chain proof, storage bounds and native platform limitations.
 
 Terminal events carry only bounded `result` and `termination` enums alongside the
 kind. They do not carry raw provider errors, headers, private model replies or

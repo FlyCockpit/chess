@@ -32,8 +32,31 @@ void instance.init({
           "The local runner limit was reached. Lower the request budget or change limits within the local ceiling.",
         runnerOffline:
           "The runner is stopped or disconnected. Reconnect before starting another request.",
+        runnerUncertain:
+          "A previous request or game has an uncertain outcome. No paid work was replayed. Run cockpit-chess runner-recover to inspect, then runner-recover --resolve-as-spent to count the full reservation as spent and abandon affected games.",
+        runnerRecoveryFailed:
+          "Local recovery refused: another runner is active, storage or process identity is unavailable, or a settlement violation remains blocked. Legacy PID-only locks cannot be reclaimed. Stop the other runner and inspect local storage; never delete the ledger or locks.",
+        runnerRecoveryHelp: "Inspect uncertain local runner work; no network requests",
+        runnerRecoveryConfirm:
+          "Count full uncertain reservations as spent and abandon affected games",
+        runnerRecoverySummary:
+          "Unsettled requests: {{requests}}; uncertain games: {{games}}; settlement blocked: {{blocked}}; resolved: {{resolved}}",
+        runnerRecoveryJson: "Print JSON",
+        runnerRecoveryRootJson: "Print JSON for commands that support it",
+        runnerRecoveryRequest:
+          "Request {{requestId}} / match {{matchId}}: reserved {{reserved}} micros; charged {{micros}} micros; timestamp {{atMs}}",
+        runnerRecoveryGame: "Match {{matchId}}: {{phase}}",
+        runnerRecoveryYes: "yes",
+        runnerRecoveryNo: "no",
+        runnerRecoveryPhase: {
+          offered: "offered",
+          ready: "ready",
+          uncertain: "uncertain",
+          terminal: "terminal",
+          cancelled: "cancelled",
+        },
         runnerStorage:
-          "The local spend ledger is unavailable or locked by another runner. Stop the other runner and check local storage before retrying.",
+          "Local authority is locked or its storage/process identity is unavailable. Stop any other runner, then inspect with cockpit-chess runner-recover. Legacy PID-only locks, unsupported local formats or corrupt records require local investigation; never delete state.",
         runnerPolicy:
           "Local price-checked ceilings: USD {{match}} per match, USD {{day}} per rolling 24 hours, {{concurrency}} concurrent. Operating limits: USD {{operatingMatch}} per match, USD {{operatingDay}} per rolling 24 hours, {{operatingConcurrency}} concurrent. Limits use prices checked right before each request. A provider price change in that window can exceed a limit once, after which the runner stops. Set a spend limit on the OpenRouter key for an absolute cap. Known final charges settle locally; calls without complete usage keep their full reservation.",
       },
@@ -63,8 +86,31 @@ void instance.init({
           "Se alcanzó el límite local del ejecutor. Reduce el presupuesto de la solicitud o cambia los límites dentro del máximo local.",
         runnerOffline:
           "El ejecutor está detenido o desconectado. Vuelve a conectarlo antes de iniciar otra solicitud.",
+        runnerUncertain:
+          "Una solicitud o partida anterior tiene un resultado incierto. No se repitió ningún trabajo de pago. Ejecuta cockpit-chess runner-recover para inspeccionar y luego runner-recover --resolve-as-spent para contabilizar la reserva completa como gasto y abandonar las partidas afectadas.",
+        runnerRecoveryFailed:
+          "Se rechazó la recuperación local: otro ejecutor está activo, el almacenamiento o la identidad del proceso no está disponible, o sigue bloqueada una infracción de liquidación. No se pueden recuperar bloqueos antiguos que solo contienen un PID. Detén el otro ejecutor y revisa el almacenamiento local; nunca borres el registro ni los bloqueos.",
+        runnerRecoveryHelp: "Inspeccionar trabajo local incierto sin solicitudes de red",
+        runnerRecoveryConfirm:
+          "Contabilizar las reservas inciertas completas como gasto y abandonar las partidas afectadas",
+        runnerRecoverySummary:
+          "Solicitudes sin liquidar: {{requests}}; partidas inciertas: {{games}}; liquidación bloqueada: {{blocked}}; resuelto: {{resolved}}",
+        runnerRecoveryJson: "Mostrar JSON",
+        runnerRecoveryRootJson: "Mostrar JSON para los comandos compatibles",
+        runnerRecoveryRequest:
+          "Solicitud {{requestId}} / partida {{matchId}}: reserva de {{reserved}} micros; cargo de {{micros}} micros; fecha {{atMs}}",
+        runnerRecoveryGame: "Partida {{matchId}}: {{phase}}",
+        runnerRecoveryYes: "sí",
+        runnerRecoveryNo: "no",
+        runnerRecoveryPhase: {
+          offered: "ofrecida",
+          ready: "lista",
+          uncertain: "incierta",
+          terminal: "finalizada",
+          cancelled: "cancelada",
+        },
         runnerStorage:
-          "El registro local de gastos no está disponible o está bloqueado por otro ejecutor. Detén el otro ejecutor y revisa el almacenamiento local antes de reintentar.",
+          "La autoridad local está bloqueada o su almacenamiento o identidad de proceso no está disponible. Detén los otros ejecutores e inspecciona con cockpit-chess runner-recover. Los bloqueos antiguos que solo contienen un PID, los formatos locales no compatibles o los registros dañados requieren investigación local; nunca borres el estado.",
         runnerPolicy:
           "Máximos locales con precios verificados: USD {{match}} por partida, USD {{day}} por 24 horas continuas, {{concurrency}} simultáneas. Límites operativos: USD {{operatingMatch}} por partida, USD {{operatingDay}} por 24 horas continuas, {{operatingConcurrency}} simultáneas. Los límites usan precios verificados justo antes de cada solicitud. Un cambio de precio del proveedor en ese intervalo puede superar un límite una vez; después, el ejecutor se detiene. Establece un límite de gasto en la clave de OpenRouter para un tope absoluto. Los cargos finales conocidos se liquidan localmente; las llamadas sin datos completos conservan su reserva total.",
       },

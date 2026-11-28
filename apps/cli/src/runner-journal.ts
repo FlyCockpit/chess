@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, opendir, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
   archiveByteLength,
@@ -12,6 +12,7 @@ import {
 import { z } from "zod";
 
 import { configDir } from "./paths";
+import { RunnerLock, RunnerLockError } from "./runner-lock";
 
 export interface RunnerGameRecord {
   digest: string;
@@ -30,6 +31,8 @@ export interface RunnerJournal {
   load(matchId: string): Promise<RunnerJournalRecord | undefined>;
   save(matchId: string, record: RunnerJournalRecord): Promise<void>;
   close(): Promise<void>;
+  /** Bounded local recovery inventory; no server-supplied paths. */
+  inspect?(): Promise<{ matchId: string; phase: RunnerJournalRecord["phase"] }[]>;
 }
 
 // The archive has its own canonical byte limit; only this fixed envelope is extra.
@@ -131,16 +134,12 @@ class FileRunnerJournal implements RunnerJournal {
   constructor(
     private readonly directories: string[],
     private readonly directory: string,
-    private readonly lock: string,
-    private readonly lockStat: Stats,
+    private readonly lock: RunnerLock,
   ) {}
 
   private async checkStorage(): Promise<void> {
     for (const directory of this.directories) privateStat(await lstat(directory), true);
-    const stat = await lstat(this.lock);
-    privateStat(stat, false);
-    if (stat.dev !== this.lockStat.dev || stat.ino !== this.lockStat.ino)
-      throw new JournalError("STORAGE");
+    await this.lock.check();
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -257,33 +256,34 @@ class FileRunnerJournal implements RunnerJournal {
     });
   }
 
+  inspect(): Promise<{ matchId: string; phase: RunnerJournalRecord["phase"] }[]> {
+    return this.enqueue(async () => {
+      // Retain only bounded metadata; read/validate one archive at a time. Keeping
+      // 32,768 complete archives here would exceed a usable startup heap bound.
+      const records: { matchId: string; phase: RunnerJournalRecord["phase"] }[] = [];
+      const entries = await opendir(this.directory);
+      let count = 0;
+      for await (const entry of entries) {
+        if (++count > 200_000) throw new JournalError("STORAGE");
+        if (!entry.name.endsWith(".json")) continue;
+        if (records.length >= 32_768) throw new JournalError("STORAGE");
+        const matchId = entry.name.slice(0, -5);
+        const record = await this.read(matchId);
+        if (!record) throw new JournalError("STORAGE");
+        records.push({ matchId, phase: record.phase });
+      }
+      return records;
+    });
+  }
+
   close(): Promise<void> {
     this.closing ??= this.tail.then(async () => {
       if (this.poisoned) throw new JournalError("STORAGE");
-      let released = false;
       try {
         await this.checkStorage();
-        await unlink(this.lock);
-        released = true;
-        await syncDirectory(this.directory);
+        await this.lock.release();
       } catch {
         this.poisoned = true;
-        if (released) {
-          // The removal's durability is unknown. Re-establish a fence if possible;
-          // exclusive creation can never replace a new process's intervening lock.
-          try {
-            const handle = await open(this.lock, "wx", 0o600);
-            try {
-              await handle.writeFile(`${process.pid}\n`, "utf8");
-              await handle.sync();
-            } finally {
-              await handle.close();
-            }
-            await syncDirectory(this.directory);
-          } catch {
-            // Keep any created/intervening lock and report only the fixed error.
-          }
-        }
         throw new JournalError("STORAGE");
       }
     });
@@ -291,7 +291,7 @@ class FileRunnerJournal implements RunnerJournal {
   }
 }
 
-/** A crash deliberately leaves the exclusive lock for explicit local recovery. */
+/** Exact dead process owners can be reclaimed without deleting any generation. */
 export async function openRunnerJournal(
   origin: string,
   machineId: string,
@@ -317,28 +317,11 @@ export async function openRunnerJournal(
     const directory = join(games, scope);
     for (const path of [base, games, directory]) await prepareDirectory(path, true);
     const lock = join(directory, "journal.lock");
-    let handle: Awaited<ReturnType<typeof open>>;
-    try {
-      handle = await open(lock, "wx", 0o600);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new JournalError("LOCKED");
-      throw error;
-    }
-    // From this point on, every failure retains the lock. Startup never guesses
-    // whether an earlier write or directory creation reached durable storage.
-    let lockStat: Stats;
-    try {
-      lockStat = await handle.stat();
-      privateStat(lockStat, false);
-      await handle.writeFile(`${process.pid}\n`, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await syncDirectory(directory);
-    return new FileRunnerJournal([base, games, directory], directory, lock, lockStat);
+    const ownership = await RunnerLock.acquire(lock);
+    return new FileRunnerJournal([base, games, directory], directory, ownership);
   } catch (error) {
     if (error instanceof JournalError) throw error;
+    if (error instanceof RunnerLockError) throw new JournalError(error.code);
     throw new JournalError("STORAGE");
   }
 }

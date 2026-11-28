@@ -123,8 +123,9 @@ async function fixture(
   };
   // Skip the ledger constructor's filesystem IO; policy calls these injected methods only.
   const spend = Object.assign(Object.create(RunnerSpend.prototype) as RunnerSpend, {
+    assertDispatchable: vi.fn<RunnerSpend["assertDispatchable"]>(() => {}),
     reserve: vi.fn<RunnerSpend["reserve"]>(async () => {}),
-    settle: vi.fn<RunnerSpend["settle"]>(async () => {}),
+    captureUsage: vi.fn<RunnerSpend["captureUsage"]>(async () => {}),
     close: vi.fn<RunnerSpend["close"]>(async () => {}),
   });
   const policy = await RunnerPolicy.open(
@@ -226,8 +227,8 @@ describe("paired runner game loop", () => {
     expect(f.record().archive.config.prompt.version).toBe("1");
     expect(JSON.stringify(f.sent)).not.toContain(baseUrl);
     expect(JSON.stringify(f.loop.hello)).not.toContain("local-inference");
-    // Save must detach synchronously: later in-memory phase changes cannot rewrite history.
-    expect(f.saves[0]?.phase).toBe("offered");
+    // Accept is sent only after the initial resumable state is durably saved.
+    expect(f.saves[0]?.phase).toBe("ready");
   });
 
   it("keeps a large locally allowed catalog within the complete transport frame bound", async () => {
@@ -299,7 +300,7 @@ describe("paired runner game loop", () => {
     await f.handle(offer());
     await f.handle(start());
     await entered.promise;
-    expect(f.saves.map((item) => item.phase)).toEqual(["offered", "uncertain"]);
+    expect(f.saves.map((item) => item.phase)).toEqual(["ready", "uncertain"]);
     expect(credentials).toHaveBeenCalledTimes(2);
     await f.handle(start(0, "other_start"));
     expect(f.sent.at(-1)).toEqual({ type: "error", payload: { code: "BUSY" } });
@@ -970,7 +971,7 @@ describe("paired runner game loop", () => {
     await f.handle(start());
     expect(credentials).not.toHaveBeenCalled();
     expect(f.advance).not.toHaveBeenCalled();
-    expect(f.record().phase).toBe("offered");
+    expect(f.record().phase).toBe("ready");
     const count = f.sent.length;
     await f.handle(start());
     await f.handle(offer(config(), "another_game"));

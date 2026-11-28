@@ -5,6 +5,7 @@ import { registerAuth } from "./commands/auth";
 import { registerChess } from "./commands/chess";
 import { registerConfig } from "./commands/config";
 import { registerRunner } from "./commands/runner";
+import { registerRunnerRecover } from "./commands/runner-recover";
 import { registerUpdate } from "./commands/update";
 import { VERSION } from "./version";
 
@@ -20,6 +21,10 @@ export function buildProgram(): Command {
     )
     .version(VERSION, "-V, --version")
     .option("--server <url>", "app server to talk to (overrides config and COCKPIT_CHESS_SERVER)")
+    .option(
+      "--json",
+      t("cli:runnerRecoveryRootJson", { defaultValue: "Print JSON for commands that support it" }),
+    )
     .showHelpAfterError()
     .exitOverride();
   registerChess(program);
@@ -27,5 +32,16 @@ export function buildProgram(): Command {
   registerAuth(program);
   registerUpdate(program);
   registerRunner(program);
+  registerRunnerRecover(program);
+  // Commander may consume a root option after the subcommand too. Forward it
+  // to existing JSON-capable commands so their established output stays JSON.
+  program.hook("preAction", (_root, command) => {
+    if (
+      program.opts<{ json?: boolean }>().json &&
+      command.options.some((option) => option.long === "--json") &&
+      command.getOptionValueSource("json") !== "cli"
+    )
+      command.setOptionValueWithSource("json", true, "cli");
+  });
   return program;
 }

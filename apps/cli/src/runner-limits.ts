@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fsyncSync, openSync, unlinkSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, openSync, readSync, writeSync } from "node:fs";
 import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
@@ -11,6 +11,7 @@ import {
 import { z } from "zod";
 import { t } from "./chess-i18n";
 import { configDir } from "./paths";
+import { RunnerLock } from "./runner-lock";
 
 type RunnerHardLimits = z.infer<typeof runnerHardLimitsSchema>;
 type RunnerOperatingLimits = z.infer<typeof runnerOperatingLimitsSchema>;
@@ -36,6 +37,8 @@ export type RunnerLimitState = z.infer<typeof stateSchema>;
 export interface RunnerLimitStore {
   load(): Promise<unknown | undefined>;
   save(state: RunnerLimitState): Promise<void>;
+  /** File stores preallocate durable monotonic intent before exposing authority. */
+  stopIntent?(): void;
   /** No event-loop yield between the final guard, unlock and release callback. */
   close(beforeRelease?: () => void, afterRelease?: () => void): Promise<void>;
 }
@@ -307,6 +310,12 @@ export class RunnerLimitController {
     this.stopRequested = true;
     this.policy?.stopOperatingLimits();
     if (this.closed) return Promise.reject(new Error("RUNNER_LIMIT_CLOSED"));
+    try {
+      this.store.stopIntent?.();
+    } catch {
+      this.closed = true;
+      return Promise.reject(new Error("RUNNER_LIMIT_STORAGE"));
+    }
     const task = this.tail.then(async () => {
       if (this.closed) {
         // A preceding close observed our synchronous cancellation intent and
@@ -392,7 +401,7 @@ async function privateDirectory(path: string, recursive = false): Promise<void> 
   await syncDirectory(dirname(path));
 }
 
-/** Exclusive private state. A crashed lock requires explicit local operator recovery. */
+/** Exclusive private state, reclaimed only from an exactly identified dead process. */
 export async function runnerLimitFileStore(
   origin: string,
   machineId: string,
@@ -408,16 +417,66 @@ export async function runnerLimitFileStore(
     `${createHash("sha256").update(origin).update("\0").update(machineId).digest("hex")}.json`,
   );
   const lock = `${file}.lock`;
-  const handle = await open(lock, "wx", 0o600);
+  const ownership = await RunnerLock.acquire(lock);
+  // One fixed, monotonic cell per paired run: never reset, replaced or removed.
+  // An open writable FD survives directory chmod and new-name allocation failure.
+  let intent: number | undefined;
+  let stopped: boolean;
   try {
-    await handle.writeFile(`${process.pid}\n`);
-    await handle.sync();
-  } finally {
-    await handle.close();
+    // Controller.open saves JSON before exposing execution or installing stop().
+    // Only no-JSON initialization may complete an empty cell after owner death.
+    let hasState = true;
+    try {
+      await lstat(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      hasState = false;
+    }
+    const flags = constants.O_RDWR | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+    try {
+      intent = openSync(`${file}.stop`, flags);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      // Existing prerelease state without intent evidence is unsupported, not fresh.
+      if (hasState) throw new Error("RUNNER_LIMIT_STORAGE");
+      intent = openSync(`${file}.stop`, flags | constants.O_CREAT | constants.O_EXCL, 0o600);
+    }
+    const info = fstatSync(intent);
+    const data = Buffer.alloc(2);
+    if (
+      !info.isFile() ||
+      (process.platform !== "win32" &&
+        ((info.mode & 0o077) !== 0 || info.uid !== process.getuid?.()))
+    )
+      throw new Error("RUNNER_LIMIT_STORAGE");
+    if (info.size === 0 && !hasState) {
+      if (writeSync(intent, Buffer.from("0"), 0, 1, 0) !== 1) throw new Error();
+    } else if (info.size !== 1) throw new Error("RUNNER_LIMIT_STORAGE");
+    if (readSync(intent, data, 0, 2, 0) !== 1 || (data[0] !== 48 && data[0] !== 49))
+      throw new Error("RUNNER_LIMIT_STORAGE");
+    stopped = data[0] === 49;
+    // Also finish initialization left visible by a predecessor killed before sync.
+    fsyncSync(intent);
+    await syncDirectory(directory);
+  } catch {
+    if (intent !== undefined) closeSync(intent);
+    await ownership.release().catch(() => {});
+    throw new Error("RUNNER_LIMIT_STORAGE");
   }
-  await syncDirectory(directory);
+  const intentFd = intent;
+  let released = false;
+  const stopIntent = () => {
+    if (released) throw new Error("RUNNER_LIMIT_STORAGE");
+    if (stopped) return;
+    if (writeSync(intentFd, Buffer.from("1"), 0, 1, 0) !== 1)
+      throw new Error("RUNNER_LIMIT_STORAGE");
+    fsyncSync(intentFd);
+    stopped = true;
+  };
   return {
+    stopIntent,
     async load() {
+      await ownership.check();
       try {
         const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         try {
@@ -429,16 +488,19 @@ export async function runnerLimitFileStore(
               ((info.mode & 0o077) !== 0 || info.uid !== process.getuid?.()))
           )
             throw new Error("RUNNER_LIMIT_STORAGE");
-          return JSON.parse(await handle.readFile("utf8"));
+          const state = stateSchema.parse(JSON.parse(await handle.readFile("utf8")));
+          return stopped ? { ...state, stopped: true } : state;
         } finally {
           await handle.close();
         }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        if ((error as NodeJS.ErrnoException).code === "ENOENT" && !stopped) return undefined;
         throw new Error("RUNNER_LIMIT_STORAGE");
       }
     },
     async save(state) {
+      if (state.stopped) stopIntent();
+      await ownership.check();
       const data = `${JSON.stringify(stateSchema.parse(state))}\n`;
       if (Buffer.byteLength(data) > MAX_BYTES) throw new Error("RUNNER_LIMIT_STORAGE");
       const temporary = `${file}.${randomUUID()}.tmp`;
@@ -455,24 +517,16 @@ export async function runnerLimitFileStore(
       }
     },
     async close(beforeRelease = () => {}, afterRelease = () => {}) {
-      // Linearization point: this tiny synchronous guard/unlink/fsync section
-      // cannot interleave a JS cancellation callback. The caller detaches that
-      // callback only after successful unlink, never before a pending await.
-      const handle =
-        process.platform === "win32" ? undefined : openSync(directory, constants.O_RDONLY);
-      try {
-        beforeRelease();
-        unlinkSync(lock);
-        try {
-          if (handle !== undefined) fsyncSync(handle);
-        } finally {
-          // An unlink whose directory sync fails still released the live lock.
-          // Report that boundary so nobody writes again without owning it.
-          afterRelease();
-        }
-      } finally {
-        if (handle !== undefined) closeSync(handle);
-      }
+      ownership.releaseSync(beforeRelease, () => {
+        if (!released) {
+          released = true;
+          try {
+            closeSync(intentFd);
+          } finally {
+            afterRelease();
+          }
+        } else afterRelease();
+      });
     },
   };
 }

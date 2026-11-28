@@ -1303,6 +1303,7 @@ describe("local execution initialization", () => {
       load: vi.fn(async () => undefined),
       save: vi.fn(async () => {}),
       close: closeJournal,
+      inspect: vi.fn<NonNullable<journalModule.RunnerJournal["inspect"]>>(async () => []),
     };
     const openJournal = vi.spyOn(journalModule, "openRunnerJournal").mockResolvedValue(journal);
     const probe = vi.spyOn(engineModule, "probeRunnerEngine").mockResolvedValue(true);
@@ -1318,6 +1319,30 @@ describe("local execution initialization", () => {
     };
   }
 
+  it("refuses a journal without inventory before engine, execution or pairing authority", async () => {
+    const h = localIO();
+    const { inspect: _inspect, ...withoutInventory } = h.journal;
+    h.openJournal.mockResolvedValue(withoutInventory);
+    await expect(initializeRunnerExecution({}, new AbortController().signal)).rejects.toMatchObject(
+      { code: "storage" },
+    );
+    expect(h.probe).not.toHaveBeenCalled();
+    expect(h.closeJournal).toHaveBeenCalledOnce();
+    expect(h.closePolicy).toHaveBeenCalledOnce();
+  });
+
+  it("requires successful inventory and refuses uncertain metadata before engine activation", async () => {
+    const h = localIO();
+    h.journal.inspect.mockResolvedValue([{ matchId: "uncertain-match", phase: "uncertain" }]);
+    await expect(initializeRunnerExecution({}, new AbortController().signal)).rejects.toMatchObject(
+      { code: "uncertain" },
+    );
+    expect(h.journal.inspect).toHaveBeenCalledOnce();
+    expect(h.probe).not.toHaveBeenCalled();
+    expect(h.closeJournal).toHaveBeenCalledOnce();
+    expect(h.closePolicy).toHaveBeenCalledOnce();
+  });
+
   it("resolves file options once, opens policy with the signal and derives hello locally", async () => {
     const h = localIO();
     const signal = new AbortController().signal;
@@ -1330,8 +1355,9 @@ describe("local execution initialization", () => {
       allowModels: ["local/model"],
     });
     expect(h.openPolicy).toHaveBeenCalledExactlyOnceWith(h.localOptions, { signal });
+    expect(h.journal.inspect).toHaveBeenCalledOnce();
     expect(execution.startupNotice()).toBe("resolved policy notice");
-    expect(h.openJournal).not.toHaveBeenCalled();
+    expect(h.openJournal).toHaveBeenCalledOnce();
     const game = await execution.open(origin, "machine-1", () => true, signal);
     expect(h.openJournal).toHaveBeenCalledExactlyOnceWith(
       "local-spending-authority",
@@ -1388,6 +1414,12 @@ describe("local execution initialization", () => {
         });
       if (phase === "policy-close") h.closePolicy.mockRejectedValue(new Error("ledger path"));
       if (phase === "journal-close") h.closeJournal.mockRejectedValue(new Error("journal path"));
+      if (phase === "journal") {
+        await expect(initializeRunnerExecution({}, new AbortController().signal)).rejects.toThrow();
+        expect(h.closePolicy).toHaveBeenCalledOnce();
+        expect(h.closeJournal).not.toHaveBeenCalled();
+        return;
+      }
       const execution = await initializeRunnerExecution({}, new AbortController().signal);
       const opened = execution.open(origin, "machine-1", () => true, new AbortController().signal);
       if (phase === "policy-close" || phase === "journal-close") await opened;

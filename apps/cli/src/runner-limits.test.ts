@@ -1,6 +1,9 @@
+import { execFile } from "node:child_process";
 import { chmod, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RunnerLimitController,
@@ -10,6 +13,8 @@ import {
   type RunnerLimitUpdate,
   runnerLimitFileStore,
 } from "./runner-limits";
+import { RunnerPolicy } from "./runner-policy";
+import { openRunnerSpend, spendingAuthorityId } from "./runner-spend";
 
 const hard = { matchMicros: 25_000_000, dayMicros: 100_000_000, concurrency: 8 };
 const update: RunnerLimitUpdate = {
@@ -262,6 +267,25 @@ describe("local runner operating limits", () => {
     expect(storage.store.close).not.toHaveBeenCalled();
   });
 
+  it("rejects cancellation if the intent device fails and retains in-process stopped ownership", async () => {
+    const storage = memory();
+    const authority = policy();
+    storage.store.stopIntent = vi.fn(() => {
+      throw new Error("device unavailable");
+    });
+    const controls = await RunnerLimitController.open({
+      hard,
+      store: storage.store,
+      policy: authority,
+      terminal: vi.fn(),
+    });
+    await expect(controls.stop()).rejects.toThrow("RUNNER_LIMIT_STORAGE");
+    expect(authority.stopOperatingLimits).toHaveBeenCalledOnce();
+    await expect(controls.close()).rejects.toThrow("RUNNER_LIMIT_STORAGE");
+    expect(storage.store.close).not.toHaveBeenCalled();
+    expect(storage.state()?.stopped).toBe(false);
+  });
+
   it("does not revive a local stop that races a durable change", async () => {
     const storage = memory();
     const authority = policy();
@@ -493,6 +517,151 @@ describe("local runner operating limits", () => {
 });
 
 describe("private operating limit store", () => {
+  it
+    .skipIf(process.platform !== "linux")
+    .each(["failed-stop", "saved-stop", "clean-crash", "failed-update", "initialization-crash"])(
+    "preserves durable intent across actual %s and SIGKILL",
+    async (mode) => {
+      const root = await directory();
+      const script = `
+      import assert from 'node:assert/strict';
+      import {chmod} from 'node:fs/promises';
+      import {join} from 'node:path';
+      import {RunnerLimitController,runnerLimitFileStore} from ${JSON.stringify(new URL("./runner-limits.ts", import.meta.url).href)};
+      import {RunnerPolicy} from ${JSON.stringify(new URL("./runner-policy.ts", import.meta.url).href)};
+      import {openRunnerSpend,spendingAuthorityId} from ${JSON.stringify(new URL("./runner-spend.ts", import.meta.url).href)};
+      const root=${JSON.stringify(root)};
+      const spend=await openRunnerSpend({authorityId:spendingAuthorityId('synthetic-stop'),file:join(root,'spend.json')});
+      const policy=await RunnerPolicy.open({baseUrl:'http://127.0.0.1:8765/v1',allowModels:['local/model']},{spend,env:{}});
+      const mode=${JSON.stringify(mode)};
+      if(mode==='initialization-crash') {
+        const fs=(await import('node:fs')).default;
+        const write=fs.writeSync;
+        fs.writeSync=(...args)=>{
+          if(Buffer.isBuffer(args[1]) && args[1].equals(Buffer.from('0'))) {
+            console.log('REACHED_'+mode);
+            process.kill(process.pid,'SIGKILL');
+          }
+          return write(...args);
+        };
+        (await import('node:module')).syncBuiltinESMExports();
+      }
+      const controls=await RunnerLimitController.open({hard:policy.capabilities().hard,store:await runnerLimitFileStore('https://runner.example','crash',root),policy,terminal:()=>{}});
+      if(mode.startsWith('failed-')) await chmod(join(root,'runner-limits-v1'),0o500);
+      if(mode==='failed-stop') await assert.rejects(controls.stop(),/STORAGE/);
+      if(mode==='saved-stop') await controls.stop();
+      if(mode==='failed-update') assert.equal((await controls.apply(${JSON.stringify(update)})).reason,'storage');
+      console.log('REACHED_'+mode);
+      process.kill(process.pid,'SIGKILL');
+    `;
+      try {
+        await expect(
+          promisify(execFile)(
+            "prlimit",
+            [
+              "--as=4294967296",
+              "--",
+              process.execPath,
+              "--disable-wasm-trap-handler",
+              "--import",
+              createRequire(import.meta.url).resolve("tsx/esm"),
+              "--input-type=module",
+              "-e",
+              script,
+            ],
+            { timeout: 12_000, env: { HOME: root, LC_ALL: "C", TSX_DISABLE_CACHE: "1" } },
+          ),
+        ).rejects.toMatchObject({
+          signal: "SIGKILL",
+          stdout: expect.stringContaining(`REACHED_${mode}`),
+        });
+      } finally {
+        await chmod(join(root, "runner-limits-v1"), 0o700);
+      }
+      const folder = join(root, "runner-limits-v1");
+      const names = await readdir(folder);
+      const saved = names.find((name) => name.endsWith(".json"));
+      const cell = names.find((name) => name.endsWith(".stop"));
+      if (!cell) throw new Error("missing durable cell");
+      if (mode === "initialization-crash") {
+        expect(saved).toBeUndefined();
+        expect(await readFile(join(folder, cell), "utf8")).toBe("");
+      } else {
+        if (!saved) throw new Error("missing durable state");
+        expect(JSON.parse(await readFile(join(folder, saved), "utf8")).stopped).toBe(
+          mode === "saved-stop",
+        );
+      }
+      const spend = await openRunnerSpend({
+        authorityId: spendingAuthorityId("synthetic-stop"),
+        file: join(root, "spend.json"),
+      });
+      const authority = await RunnerPolicy.open(
+        { baseUrl: "http://127.0.0.1:8765/v1", allowModels: ["local/model"] },
+        { spend, env: {} },
+      );
+      const store = await runnerLimitFileStore("https://runner.example", "crash", root);
+      const controls = await RunnerLimitController.open({
+        hard: authority.capabilities().hard,
+        store,
+        policy: authority,
+        terminal: vi.fn(),
+      });
+      try {
+        if (mode === "clean-crash" || mode === "initialization-crash") {
+          const match = authority.beginMatch("after-crash", new AbortController().signal);
+          match.finish();
+          expect((await controls.apply(update)).reason).toBe("applied");
+        } else {
+          expect(() => authority.beginMatch("after-stop", new AbortController().signal)).toThrow();
+          expect((await controls.apply(update)).reason).toBe("stopped");
+        }
+        expect(await readFile(join(folder, cell), "utf8")).toBe(mode.endsWith("crash") ? "0" : "1");
+      } finally {
+        await controls.close();
+        await authority.close();
+      }
+    },
+    20_000,
+  );
+
+  it("never clears intent with an unstopped save and rejects marking after release", async () => {
+    const root = await directory();
+    const store = await runnerLimitFileStore("https://runner.example", "monotonic", root);
+    const controls = await RunnerLimitController.open({ hard, store, terminal: vi.fn() });
+    const before = await store.load();
+    store.stopIntent?.();
+    await store.save(before as RunnerLimitState);
+    expect(await store.load()).toMatchObject({ stopped: true });
+    await controls.close();
+    expect(() => store.stopIntent?.()).toThrow("STORAGE");
+    const resumed = await RunnerLimitController.open({
+      hard,
+      store: await runnerLimitFileStore("https://runner.example", "monotonic", root),
+      terminal: vi.fn(),
+    });
+    expect((await resumed.apply(update)).reason).toBe("stopped");
+    await resumed.close();
+  });
+
+  it.each(["", "2", "00", "missing"])(
+    "refuses malformed or missing existing stop cell %s",
+    async (value) => {
+      const root = await directory();
+      const store = await runnerLimitFileStore("https://runner.example", "bad-cell", root);
+      const controls = await RunnerLimitController.open({ hard, store, terminal: vi.fn() });
+      await controls.close();
+      const folder = join(root, "runner-limits-v1");
+      const cell = (await readdir(folder)).find((name) => name.endsWith(".stop"));
+      if (!cell) throw new Error("missing cell");
+      if (value === "missing") await rm(join(folder, cell));
+      else await writeFile(join(folder, cell), value);
+      await expect(
+        runnerLimitFileStore("https://runner.example", "bad-cell", root),
+      ).rejects.toThrow("STORAGE");
+    },
+  );
+
   it("persists receipts and holds one process lock per origin/machine", async () => {
     const root = await directory();
     const store = await runnerLimitFileStore("https://runner.example", "machine-1", root);
