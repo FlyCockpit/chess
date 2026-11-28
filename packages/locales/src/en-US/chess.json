@@ -967,6 +967,7 @@
     },
     "localReplay": "Local or imported replay. Local timing, evaluations and reported costs are unverified.",
     "sideSpend": "{{side}} · cost {{cost}} · budget ceiling {{budget}} (self-run, unverified)",
-    "spend": "Self-run usage cost: {{cost}} · unverified"
+    "spend": "Self-run usage cost: {{cost}} · unverified",
+    "evalMissing": "No evaluations were reported by the player's own CLI for this replay. Self-run scores come only from that CLI and are unverified. The player can check their CLI connection and local engine for score reports."
   }
 }

@@ -967,6 +967,7 @@
     },
     "localReplay": "Repetición local o importada. Los tiempos locales, las evaluaciones y los costos reportados no están verificados.",
     "sideSpend": "{{side}} · costo {{cost}} · tope de presupuesto {{budget}} (ejecución propia, sin verificar)",
-    "spend": "Costo de ejecución propia: {{cost}} · sin verificar"
+    "spend": "Costo de ejecución propia: {{cost}} · sin verificar",
+    "evalMissing": "La CLI del jugador no reportó evaluaciones para esta repetición. Las puntuaciones de ejecución propia provienen solo de esa CLI y no están verificadas. El jugador puede revisar la conexión y el motor local de su CLI para obtener reportes de puntuación."
   }
 }

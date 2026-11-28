@@ -763,7 +763,9 @@ export function MatchReplay({
             onSelect={(target) => selectEvent(target >= lastIndex ? null : target)}
           />
         ) : (
-          <p className="cc-muted cc-eval-note">{t(evaluationNote(match, spectator))}</p>
+          <p className="cc-muted cc-eval-note">
+            {t(selfRun ? "runner.evalMissing" : evaluationNote(match, spectator))}
+          </p>
         )}
       </section>
       <aside className="cc-match-sidebar">

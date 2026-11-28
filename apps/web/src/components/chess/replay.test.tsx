@@ -647,3 +647,38 @@ it("does not use one model's reported cost to imply complete accounting for the 
   );
   expect(html).toContain(i18n.t("runner.spend", { cost: i18n.t("replay.unknownCost") }));
 });
+
+it.each(["en-US", "es-MX"])(
+  "does not promise server evaluations for a fully scoreless runner in %s",
+  async (language) => {
+    await i18n.changeLanguage(language);
+    try {
+      const player = { name: "Model", model: "test/model", protocol: "openai-chat" as const };
+      const match = createMatch({ white: player, black: player, rules: {} }, "local");
+      const note = i18n.t("runner.evalMissing");
+      const escapedNote = note.replaceAll("'", "&#x27;");
+      for (const terminal of [false, true]) {
+        if (terminal)
+          for (const move of ["f2f3", "e7e5", "g2g4", "d8h4"])
+            submitMove(match, boardAt(match), move);
+        const html = render(match, { evaluations: {} }, "runner");
+        expect(html).toContain(escapedNote);
+        expect(html).not.toContain(i18n.t("replay.evalPending"));
+        expect(html).not.toContain(i18n.t("replay.evalWaiting"));
+        expect(html).not.toContain("cc-eval-graph");
+        const hosted = render({ ...match, source: "hosted" }, { evaluations: {} }, "hosted");
+        expect(hosted).toContain(i18n.t(terminal ? "replay.evalPending" : "replay.evalWaiting"));
+        expect(hosted).not.toContain(escapedNote);
+      }
+      const values = scored(match, 20);
+      const first = values["0"];
+      if (!first) throw new Error("Missing initial score fixture");
+      const partial = render(match, { evaluations: { "0": first } }, "runner");
+      expect(partial).toContain("cc-eval-graph");
+      expect(partial).not.toContain(escapedNote);
+      expect(partial).toContain(i18n.t("runner.unverifiedReplay"));
+    } finally {
+      await i18n.changeLanguage("en-US");
+    }
+  },
+);
