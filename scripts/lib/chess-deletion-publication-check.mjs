@@ -43,12 +43,21 @@ export async function chessDeletionPublicationCheck() {
 
   // A real retained BullMQ result, not a fabricated terminal-state mock.
   async function completeJob(queue, expectedId, resultMarker) {
+    // Full runtime checks leave a minute reconciliation scheduler on this same
+    // queue. Always exercise unrelated work without depending on when it fires.
+    const peerJobId = `d2b-peer-completion-${randomUUID()}`;
+    await queue.add("chess-reconcile", { reason: "cron" }, { jobId: peerJobId });
+    ownedJobs.push({ queue, jobId: peerJobId });
     const connection = queues.createRedisConnection();
-    const worker = new queues.Worker(queue.name, async () => resultMarker, {
-      connection,
-      concurrency: 1,
-      autorun: false,
-    });
+    const worker = new queues.Worker(
+      queue.name,
+      async (job) => (job.id === expectedId ? resultMarker : null),
+      {
+        connection,
+        concurrency: 1,
+        autorun: false,
+      },
+    );
     worker.on("error", () => {});
     const running = worker.run();
     // Observe rejection immediately, including during teardown after an assertion.
@@ -73,6 +82,24 @@ export async function chessDeletionPublicationCheck() {
     if (originalError) throw originalError;
     if (closeError) throw closeError;
     if (result instanceof Error) throw result;
+    // Unprioritized cron work runs before the prioritized spectator job. It
+    // must never borrow that job's synthetic private result, even in this stub.
+    const peer = await queue.getJob(peerJobId);
+    assert.equal(await peer.getState(), "completed");
+    assert.equal(peer.returnvalue, null);
+    const key = queue.toKey("events");
+    const rows = await redis.xrange(key, "-", "+", "COUNT", 10_000);
+    assert.ok(rows.length < 10_000, "Owned test event inventory must fit its explicit bound");
+    const completed = rows.find(([, fields]) => {
+      const event = Object.fromEntries(
+        Array.from({ length: fields.length / 2 }, (_, index) =>
+          fields.slice(index * 2, index * 2 + 2),
+        ),
+      );
+      return event.event === "completed" && event.jobId === peerJobId;
+    });
+    assert.ok(completed, "Real unrelated completion event must exist before erasure");
+    controlEvents.push({ key, id: completed[0], fields: completed[1] });
   }
 
   async function fixture(published, queued) {
@@ -222,18 +249,29 @@ export async function chessDeletionPublicationCheck() {
     const peerJobId = `d2b-peer-control-${randomUUID()}`;
     const peerKey = queue.toKey("events");
     const peerId = await redis.xadd(peerKey, "*", "event", "peer-control", "jobId", peerJobId);
-    controlEvents.push({ key: peerKey, id: peerId });
+    controlEvents.push({
+      key: peerKey,
+      id: peerId,
+      fields: ["event", "peer-control", "jobId", peerJobId],
+    });
     const assertEventsErased = async () => {
       for (const streamQueue of [queues.chessRunQueue, queues.chessReconcileQueue]) {
         const rows = await redis.xrange(streamQueue.toKey("events"), "-", "+", "COUNT", 10_000);
         assert.ok(rows.length < 10_000, "Owned test event inventory must fit its explicit bound");
         const serialized = JSON.stringify(rows);
-        assert.equal(serialized.includes(own.user.id), false, "No erased owner in queue events");
+        assert.equal(
+          serialized.includes(own.user.id),
+          false,
+          `No erased owner in queue events (${kind}/${targetCommand}, ${streamQueue.name}): ${JSON.stringify(rows.filter((row) => JSON.stringify(row).includes(own.user.id)))}`,
+        );
         assert.equal(serialized.includes(jobId), false, "No erased job reference in queue events");
       }
-      assert.deepEqual(await redis.xrange(peerKey, peerId, peerId), [
-        [peerId, ["event", "peer-control", "jobId", peerJobId]],
-      ]);
+      for (const { key, id, fields } of controlEvents)
+        assert.deepEqual(
+          await redis.xrange(key, id, id),
+          [[id, fields]],
+          "Erasure preserves unrelated control and completion events exactly",
+        );
     };
     await erase(own);
     await assertEventsErased();
