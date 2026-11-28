@@ -4,6 +4,7 @@ import { z } from "zod";
 import { matchEnding } from "./ending";
 import {
   archiveByteLength,
+  beginHostedTurn,
   boardAt,
   Chess,
   createMatch,
@@ -78,6 +79,60 @@ beforeEach(() => {
   }));
 });
 describe("bounded local and worker match runner", () => {
+  it("stops after one automatic turn while preserving retry and turn-end updates", async () => {
+    runAgentLoop.mockImplementationOnce(fixedPlayer("e2e5"));
+    runAgentLoop.mockImplementationOnce(fixedPlayer("e2e5"));
+    runAgentLoop.mockImplementationOnce(fixedPlayer("e2e4"));
+    const match = createMatch({ white: model, black: random, rules: {} });
+    const snapshots: MatchArchive[] = [];
+    await runMatch(match, {
+      credentials,
+      stopAfterTurn: true,
+      onUpdate: (current) => {
+        expect(current.turn).toEqual({ type: "idle" });
+        snapshots.push(validateArchive(structuredClone(current)));
+      },
+    });
+    expect(runAgentLoop).toHaveBeenCalledTimes(3);
+    expect(
+      match.events.filter((event) => event.type === "attempt").map((event) => event.accepted),
+    ).toEqual([false, false, true]);
+    expect(matchStats(match, "b").moves).toBe(0);
+    expect(matchStats(match, "w").moves).toBe(1);
+    expect(match.status).toBe("running");
+    expect(snapshots.at(-1)).toEqual(match);
+    expect(snapshots.some((snapshot) => matchStats(snapshot).illegalAttempts === 1)).toBe(true);
+    expect(snapshots.some((snapshot) => matchStats(snapshot).illegalAttempts === 2)).toBe(true);
+    expect(validateArchive(match)).toEqual(match);
+  });
+
+  it("stops after a baseline turn without opting local callers into durable state", async () => {
+    const match = createMatch({ white: random, black: random, rules: {} });
+    const onUpdate = vi.fn();
+    await runMatch(match, { stopAfterTurn: true, random: () => 0, onUpdate });
+    expect(matchStats(match).moves).toBe(1);
+    expect(match).toMatchObject({ status: "running", turn: { type: "idle" } });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(validateArchive(match)).toEqual(match);
+  });
+
+  it.each([true, false])(
+    "never dispatches or updates a hosted human wait (stopAfterTurn=%s)",
+    async (stopAfterTurn) => {
+      const human = { name: "Human", model: "human", protocol: "human" as const };
+      const match = createMatch({ white: human, black: model, rules: {} }, "hosted");
+      beginHostedTurn(match);
+      const snapshot = structuredClone(match);
+      const onUpdate = vi.fn();
+      await runMatch(match, { stopAfterTurn, onUpdate });
+      await advanceMatch(match, { onUpdate });
+      expect(runAgentLoop).not.toHaveBeenCalled();
+      expect(onUpdate).not.toHaveBeenCalled();
+      expect(match).toEqual(snapshot);
+      expect(validateArchive(match)).toEqual(match);
+    },
+  );
+
   it("runs unattended baseline games and validates their archive", async () => {
     const match = createMatch({
       white: random,
@@ -2168,5 +2223,36 @@ describe("cut-off replies and reply limits", () => {
     for (const ceiling of ceilings) expect(ceiling).toBeLessThan(20_000);
     expect(match).toMatchObject({ termination: "token-budget", result: "0-1" });
     expect(validateArchive(match)).toEqual(match);
+  });
+});
+
+describe("durable hosted model deadline", () => {
+  it("charges setup time and refuses inference after the persisted side clock expires", async () => {
+    const match = createMatch(
+      {
+        white: model,
+        black: { name: "Human", model: "human", protocol: "human" },
+        rules: {
+          clock: { w: 30_000, b: 30_000 },
+          turnTimeoutMs: 30_000,
+          context: "fresh",
+          engineEvaluation: "off",
+        },
+      },
+      "hosted",
+    );
+    match.events.push({
+      type: "timing",
+      seq: 0,
+      ply: 0,
+      side: "w",
+      at: new Date(Date.now() - 3000).toISOString(),
+      elapsedMs: 29_000,
+    });
+    beginHostedTurn(match, new Date(Date.now() - 2000));
+    await advanceMatch(match, { credentials, stopAfterTurn: true });
+    expect(match.termination).toBe("timeout");
+    expect(matchStats(match, "w").elapsedMs).toBeGreaterThanOrEqual(31_000);
+    expect(runAgentLoop).not.toHaveBeenCalled();
   });
 });

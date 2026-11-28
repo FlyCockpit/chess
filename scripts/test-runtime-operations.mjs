@@ -3,6 +3,7 @@
  * Full gate: node scripts/test-runtime-operations.mjs --disposable-services
  * E1 gate: append --runner-machines-only (includes shared device/password races).
  * B2 gate: append --chess-official-only (durable official starts and settlement).
+ * C1b gate: append --chess-human-only (durable human turns and worker release).
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -2059,6 +2060,8 @@ async function main() {
     else if (process.argv[3] === "chess-admission") await chessAdmissionCheck();
     else if (process.argv[3] === "chess-official")
       await (await import("./test-chess-official.mjs")).chessOfficialCheck();
+    else if (process.argv[3] === "chess-human")
+      await (await import("./test-chess-human.mjs")).chessHumanCheck();
     else if (process.argv[3] === "invite-race") await inviteRaceCheck();
     else if (process.argv[3] === "password-signin-race") await passwordSignInRaceCheck();
     else if (process.argv[3] === "runner-machines") await runnerMachinesCheck();
@@ -2076,6 +2079,7 @@ async function main() {
       undefined,
       "--chess-admission-only",
       "--chess-official-only",
+      "--chess-human-only",
       "--runner-machines-only",
       "--runner-transport-only",
     ].includes(process.argv[3]),
@@ -2240,9 +2244,22 @@ async function main() {
         },
       ],
       ["chess-admission", {}],
+      [
+        "chess-human",
+        {
+          ...inviteEnv,
+          DATABASE_POOL_MAX: "5",
+          CHESS_HOSTED_ENABLED: "true",
+          CHESS_USER_MATCHES_ENABLED: "true",
+          OPENROUTER_API_KEY: "synthetic-fixture-only",
+          OPENROUTER_ORIGIN: "https://openrouter.example.test",
+          CHESS_PROVIDER_KEY_SECRET: createHash("sha256").update(randomUUID()).digest("hex"),
+        },
+      ],
     ]) {
       if (process.argv[3] === "--chess-admission-only" && mode !== "chess-admission") continue;
       if (process.argv[3] === "--chess-official-only" && mode !== "chess-official") continue;
+      if (process.argv[3] === "--chess-human-only" && mode !== "chess-human") continue;
       if (process.argv[3] === "--runner-transport-only" && mode !== "runner-transport") continue;
       if (
         process.argv[3] === "--runner-machines-only" &&
@@ -2259,19 +2276,19 @@ async function main() {
             ...extra,
             RUNTIME_OPERATIONS_CHILD: "owned-disposable-services",
           },
-          timeout:
-            mode === "chess-official"
-              ? 120_000
-              : ["runner-machines", "password-signin-race"].includes(mode)
-                ? 60_000
-                : 45_000,
-          stdio: ["chess-admission", "chess-official"].includes(mode)
+          timeout: ["chess-official", "chess-human"].includes(mode)
+            ? 120_000
+            : ["runner-machines", "password-signin-race"].includes(mode)
+              ? 60_000
+              : 45_000,
+          stdio: ["chess-admission", "chess-official", "chess-human"].includes(mode)
             ? "inherit"
             : ["ignore", "pipe", "pipe"],
           encoding: "utf8",
         },
       );
-      if (!["chess-admission", "chess-official"].includes(mode)) process.stdout.write(result);
+      if (!["chess-admission", "chess-official", "chess-human"].includes(mode))
+        process.stdout.write(result);
     }
   } finally {
     const cleanupErrors = [];

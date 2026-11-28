@@ -3,6 +3,7 @@ import { DEVICE_FLOW_SESSION_ORIGIN } from "@cockpit-chess/config/cli";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { APIError } from "better-auth/api";
 import { hashPassword } from "better-auth/crypto";
+import { DbNull } from "../../db/prisma/generated/internal/prismaNamespace";
 import { lockCliCredentials, withCliCredentialLockSlot } from "./device-redemption-lock.js";
 import { runnerMachineRevocationWrites } from "./runner-machine-revocation.js";
 import { deleteResetLinks, lockSetPasswordLinks } from "./set-password-link-lock.js";
@@ -63,6 +64,13 @@ function cancelActiveHostedMatchesWrite(
     data: {
       status: "stopped",
       runToken: null,
+      turnType: "idle",
+      turnId: null,
+      turnSide: null,
+      turnExpectedSeq: null,
+      turnStartedAt: null,
+      turnDeadline: null,
+      pendingMove: DbNull,
       terminalCause: "owner-reset",
       ending: { kind: "cancelled" },
     },

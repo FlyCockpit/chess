@@ -379,6 +379,8 @@ export interface ProviderCredentials {
   headers?: Record<string, string>;
   /** Called right before every provider request; throwing refuses it (AgentModel). */
   beforeDispatch?: () => void;
+  /** OpenRouter providers must decline data retention/training for hosted calls. */
+  dataCollection?: "deny";
   /** Conservative price quotes, integer microdollars per million tokens. */
   inputMicrosPerMillion: number;
   outputMicrosPerMillion: number;
@@ -399,6 +401,8 @@ export type MatchRunnerOptions = {
   /** Most bytes (as JSON) one side's persistent conversation keeps; see trimConversation. */
   conversationMaxBytes?: number;
   random?: () => number;
+  /** Return after one automatic turn, retaining every retry within that turn. */
+  stopAfterTurn?: boolean;
 };
 
 const message = (content: string): AgentMessage => ({
@@ -498,13 +502,28 @@ export async function advanceMatch(
     anthropicAuth: credential.anthropicAuth,
     ...(credential.headers ? { headers: credential.headers } : {}),
     ...(credential.beforeDispatch ? { beforeDispatch: credential.beforeDispatch } : {}),
+    ...(credential.dataCollection ? { dataCollection: credential.dataCollection } : {}),
   };
   const bundle = assertPinnedPrompt(match.config);
   const systemPrompt = matchSystemPrompt(match);
   let messages = rules.context === "persistent" ? [...(options.memory?.[side] ?? [])] : [];
   const turnMessage = message(turnPrompt(match, side, chess));
   messages.push(turnMessage);
-  const turnStarted = Date.now();
+  const turnStarted = match.turn.type === "model" ? Date.parse(match.turn.startedAt) : Date.now();
+  // Hosted setup time belongs to the same authoritative turn clock as inference.
+  // Record it once; the attempt timing events below account for dispatch time.
+  if (match.turn.type === "model") {
+    const setupMs = Math.max(0, Date.now() - turnStarted);
+    if (setupMs > 0)
+      match.events.push({
+        type: "timing",
+        seq: match.events.length,
+        at: new Date().toISOString(),
+        side,
+        ply,
+        elapsedMs: setupMs,
+      });
+  }
   const eventBase = () => ({ seq: match.events.length, at: new Date().toISOString(), side, ply });
   const limitReached = archiveMeter(match);
   /**
@@ -1200,6 +1219,7 @@ export async function runMatch(match: MatchArchive, options: MatchRunnerOptions 
     const player = chess.turn() === "w" ? match.config.white : match.config.black;
     if (player.protocol === "human") break;
     await advanceMatch(match, options, chess);
+    if (options.stopAfterTurn) break;
   }
   return match;
 }

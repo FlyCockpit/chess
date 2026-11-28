@@ -271,3 +271,32 @@ describe("spectator evaluation of hosted games", () => {
     }
   });
 });
+
+it("finishes delayed spectator scoring during an unchanged unclaimed hosted human wait", async () => {
+  const { beginHostedTurn } = await import("@cockpit-chess/chess");
+  const archive = createMatch(
+    {
+      white: { name: "Human", model: "human", protocol: "human" },
+      black: { name: "Model", model: "fixture/model", protocol: "openai-chat" },
+      rules: {},
+    },
+    "hosted",
+  );
+  submitMove(archive, boardAt(archive), "e2e4");
+  submitMove(archive, boardAt(archive), "e7e5");
+  beginHostedTurn(archive);
+  const turn = structuredClone(archive.turn);
+  db.chessMatch.findUnique.mockResolvedValue(
+    row({ status: "running", source: "hosted", turnType: "human", runToken: null, archive }),
+  );
+  const pending = Promise.withResolvers<ReturnType<typeof score>>();
+  evaluatePosition.mockImplementationOnce(() => pending.promise);
+  const job = backfillSpectatorEvaluations("match-id", 0);
+  await vi.waitFor(() => expect(evaluatePosition).toHaveBeenCalledOnce());
+  expect(db.$executeRaw).not.toHaveBeenCalled();
+  pending.resolve(score(boardAt(archive, 0).fen()));
+  expect(await job).toEqual({ evaluated: true });
+  expect(writtenPlies()).toEqual([0, 1, 2]);
+  expect(archive.turn).toEqual(turn);
+  expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+});

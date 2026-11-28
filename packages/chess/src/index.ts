@@ -1,7 +1,7 @@
 import { Chess, DEFAULT_POSITION, type Square } from "chess.js";
 import { z } from "zod";
 import { assertPinnedPrompt, pinnedPromptSchema, pinPrompt, promptVersionSchema } from "./prompts";
-import { turnStateSchema } from "./turn";
+import { beginTurn, MAX_TURN_MS, turnStateSchema } from "./turn";
 
 export type { Color, PieceSymbol, Square } from "chess.js";
 export { Chess, DEFAULT_POSITION } from "chess.js";
@@ -511,6 +511,7 @@ export function submitMove(
   comment = "",
   normalizedFrom?: string,
   reply?: ReplyRecord,
+  now: Date = new Date(),
 ): AttemptEvent {
   if (match.status !== "running" || chess.isGameOver())
     throw new Error("Game is not accepting moves");
@@ -530,7 +531,7 @@ export function submitMove(
   const event: AttemptEvent = {
     type: "attempt",
     seq: match.events.length,
-    at: new Date().toISOString(),
+    at: now.toISOString(),
     side,
     ply,
     move: rawMove,
@@ -567,11 +568,10 @@ export function clockLeftMs(match: MatchArchive, side: Side): number | null {
   return clock === null ? null : Math.max(0, clock - matchStats(match, side).elapsedMs);
 }
 /**
- * A human's turn on the local companion (hosted games have no human players). Charges
- * the turn's wall time to the side's clock as a timing event, then forfeits on time
- * when the clock ran out, else submits `move`. Without a move it is the clock's expiry.
- * Humans have no per-move limit: that safety limit bounds inference, not people.
- * Returns the attempt, or null when the side lost on time.
+ * A local companion human turn: charges wall time to the optional side clock, then
+ * submits the move or resigns. Without a move it is the clock's expiry. Local humans
+ * have no per-move limit; hosted humans use playHostedHumanTurn's server deadline.
+ * Returns the attempt, or null on timeout/resignation.
  */
 export function playHumanTurn(
   match: MatchArchive,
@@ -579,24 +579,113 @@ export function playHumanTurn(
   elapsedMs: number,
   move?: string,
 ): AttemptEvent | null {
+  return applyHumanTurn(match, chess, elapsedMs, move);
+}
+
+/** Shared legality/clock handling; only hosted turns supply a per-move limit. */
+function applyHumanTurn(
+  match: MatchArchive,
+  chess: Chess,
+  elapsedMs: number,
+  move?: string,
+  perMoveLimitMs?: number,
+  now: Date = new Date(),
+): AttemptEvent | null {
+  if (match.status !== "running" || chess.isGameOver())
+    throw new Error("Game is not accepting moves");
   const side = chess.turn();
   const left = clockLeftMs(match, side);
-  if (left !== null) {
+  if (left !== null || perMoveLimitMs !== undefined) {
     match.events.push({
       type: "timing",
       seq: match.events.length,
-      at: new Date().toISOString(),
+      at: now.toISOString(),
       side,
       ply: match.events.filter((event) => event.type === "attempt" && event.accepted).length,
       elapsedMs: Math.max(0, Math.round(elapsedMs)),
     });
-    if (elapsedMs >= left || move === undefined) {
-      finishMatch(match, side === "w" ? "0-1" : "1-0", "timeout");
+    const clockLimit = left ?? Number.POSITIVE_INFINITY;
+    const moveLimit = perMoveLimitMs ?? Number.POSITIVE_INFINITY;
+    if (elapsedMs >= Math.min(clockLimit, moveLimit) || move === undefined) {
+      finishMatch(
+        match,
+        side === "w" ? "0-1" : "1-0",
+        clockLimit <= moveLimit ? "timeout" : "move-timeout",
+      );
       return null;
     }
   }
   if (move === undefined) throw new Error("An untimed human turn cannot expire");
-  return submitMove(match, chess, move);
+  if (move === "resign") {
+    finishMatch(match, side === "w" ? "0-1" : "1-0", "resignation");
+    return null;
+  }
+  return submitMove(match, chess, move, "", undefined, undefined, now);
+}
+
+/** Start one durable hosted turn from the authoritative board and recorded clocks. */
+export function beginHostedTurn(
+  match: MatchArchive,
+  now: Date = new Date(),
+  turnId: string = crypto.randomUUID(),
+): void {
+  if (match.status !== "running") throw new Error("Game is not accepting moves");
+  if (match.turn.type !== "idle") throw new Error("Chess turn already active");
+  const startedAt = now.toISOString();
+  const chess = boardAt(match);
+  settleBoard(match, chess);
+  if (match.status !== "running") return;
+  const side = chess.turn();
+  const left = clockLeftMs(match, side);
+  if (left === 0) {
+    finishMatch(match, side === "w" ? "0-1" : "1-0", "timeout");
+    return;
+  }
+  const duration = Math.min(
+    MAX_TURN_MS,
+    match.config.rules.turnTimeoutMs,
+    left ?? Number.POSITIVE_INFINITY,
+  );
+  match.turn = beginTurn(match.turn, {
+    type: match.config[side === "w" ? "white" : "black"].protocol === "human" ? "human" : "model",
+    turnId,
+    side,
+    expectedSeq: match.events.length,
+    startedAt,
+    deadline: new Date(now.getTime() + duration).toISOString(),
+  });
+}
+
+/**
+ * Apply or expire the current hosted human turn using server time. An early expiry
+ * probe leaves the turn untouched. Applied input clears the turn before events are
+ * appended; the caller must begin the next attempt/turn in its durable transaction.
+ * This validates game state only; callers own authorization and turn/sequence CAS.
+ */
+export function playHostedHumanTurn(
+  match: MatchArchive,
+  now: Date = new Date(),
+  move?: string,
+): AttemptEvent | null {
+  const turn = turnStateSchema.parse(match.turn);
+  if (match.status !== "running" || turn.type !== "human")
+    throw new Error("Chess turn is not awaiting a human");
+  const chess = boardAt(match);
+  if (
+    turn.side !== chess.turn() ||
+    turn.expectedSeq !== match.events.length ||
+    match.config[turn.side === "w" ? "white" : "black"].protocol !== "human"
+  )
+    throw new Error("Stale chess turn");
+  const at = now.toISOString();
+  const elapsed = Date.parse(at) - Date.parse(turn.startedAt);
+  const limit = Date.parse(turn.deadline) - Date.parse(turn.startedAt);
+  if (elapsed < 0 || limit > match.config.rules.turnTimeoutMs)
+    throw new Error("Invalid hosted turn time");
+  if (chess.isGameOver()) throw new Error("Game is not accepting moves");
+  if (move === undefined && elapsed < limit) return null;
+  match.turn = { type: "idle" };
+  return applyHumanTurn(match, chess, elapsed, move, limit, now);
 }
 export function matchStats(match: MatchArchive, side?: Side) {
   const events = match.events.filter((event) => !side || event.side === side);

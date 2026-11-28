@@ -150,6 +150,7 @@ export const RULES: readonly Rule[] = [
       "scripts/test-prisma-query-cast-policy.ts",
       "scripts/test-runtime-operations.mjs",
       "scripts/test-chess-official.mjs",
+      "scripts/test-chess-human.mjs",
       "scripts/translate-locale-bundles.ts",
       "scripts/trufflehog-pr-scan.sh",
       "scripts/verify-dokploy-deployment.mjs",

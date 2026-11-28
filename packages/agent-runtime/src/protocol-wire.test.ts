@@ -186,7 +186,7 @@ const captureHttp = (respond: (index: number) => Response | Promise<Response>) =
   vi.stubGlobal(
     "fetch",
     vi.fn(async (...[input, init]: Parameters<typeof fetch>) => {
-      const request = input instanceof Request ? input : new Request(input, init);
+      const request = new Request(input, init);
       requests.push({
         url: request.url,
         body: JSON.parse(await request.text()),
@@ -769,4 +769,73 @@ describe("message metadata round trip", () => {
     });
     expect(assistant[1]?.metadata).toMatchObject({ tanstack: { finishReason: "stop" } });
   });
+});
+
+describe("OpenRouter provider data policy", () => {
+  it("rechecks the lease after asynchronous body decoding before any HTTP", async () => {
+    let allowed = true;
+    const requests = captureHttp(() => chatResponse(false));
+    const base = options("openai-chat");
+    await expect(
+      runAgentLoop({
+        ...base,
+        model: {
+          ...base.model,
+          dataCollection: "deny",
+          beforeDispatch: () => {
+            if (!allowed) throw new Error("Key lease ended");
+            queueMicrotask(() => {
+              allowed = false;
+            });
+          },
+        },
+      }),
+    ).rejects.toThrow();
+    expect(requests).toEqual([]);
+  });
+  it.each<AgentModel["provider"]>(["openrouter", "openai-chat", "openai-responses", "anthropic"])(
+    "denies retention on every %s request while retaining cache routing and prefix bytes",
+    async (provider) => {
+      const protocol = provider === "openrouter" ? "openai-chat" : provider;
+      const base = options(protocol);
+      const model: AgentModel = {
+        ...base.model,
+        provider,
+        model: "anthropic/claude-haiku-4.5",
+        baseUrl: "https://openrouter.ai/api/v1",
+        dataCollection: "deny",
+      };
+      const requests = captureHttp((index) => responseFor(protocol, index === 0));
+      const result = await runAgentLoop({
+        ...base,
+        model,
+        cacheKey: "stable-session",
+        tools: [legalMovesTool],
+      });
+      expect(result.stopReason).toBe("completed");
+      expect(requests).toHaveLength(2);
+      for (const request of requests) {
+        expect(request.body.provider).toMatchObject({ data_collection: "deny" });
+        if (provider === "openrouter") {
+          expect(request.body.session_id).toBe("stable-session");
+          expect(countCacheControls(request.body)).toBeGreaterThan(0);
+        } else expect(request.headers.get("x-session-id")).toBe("stable-session");
+      }
+      const baseline = captureHttp(() => responseFor(protocol, false));
+      await runAgentLoop({
+        ...base,
+        model: { ...model, dataCollection: undefined },
+        cacheKey: "stable-session",
+        tools: [legalMovesTool],
+      });
+      const first = requests[0]?.body ?? {};
+      const original = baseline[0]?.body ?? {};
+      // Only routing policy changes: the cacheable system/tool prefix stays exact.
+      if (provider === "anthropic") expect(first.system).toEqual(original.system);
+      else if (provider === "openai-responses")
+        expect(first.instructions).toEqual(original.instructions);
+      else expect((first.messages as unknown[])[0]).toEqual((original.messages as unknown[])[0]);
+      expect(first.tools).toEqual(original.tools);
+    },
+  );
 });

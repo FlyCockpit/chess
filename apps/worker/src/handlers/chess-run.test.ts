@@ -1,4 +1,12 @@
-import { boardAt, createMatch, finishMatch, validateArchive } from "@cockpit-chess/chess";
+import { chessTurnData } from "@cockpit-chess/api/lib/chess-human";
+import {
+  beginHostedTurn,
+  boardAt,
+  createMatch,
+  finishMatch,
+  submitMove,
+  validateArchive,
+} from "@cockpit-chess/chess";
 import {
   advanceMatch,
   CREDENTIAL_REVOKED,
@@ -155,6 +163,7 @@ beforeEach(() => {
   vi.spyOn(console, "info").mockImplementation(() => {});
   db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
   db.chessMatch.findUnique.mockResolvedValue(row());
+  db.chessMatch.findMany.mockResolvedValue([]);
   db.$executeRaw.mockResolvedValue(1);
   ensureJob.mockResolvedValue({});
   evaluatePosition.mockImplementation(async (fen: string) => score(fen));
@@ -400,6 +409,7 @@ describe("durable chess worker", () => {
       data: {
         status: "error",
         runToken: null,
+        ...chessTurnData({ type: "idle" }),
         ending: { kind: "interrupted" },
         terminalCause: "archive-invalid",
       },
@@ -418,6 +428,7 @@ describe("durable chess worker", () => {
       data: {
         status: "error",
         runToken: null,
+        ...chessTurnData({ type: "idle" }),
         ending: { kind: "interrupted" },
         terminalCause: "archive-invalid",
       },
@@ -460,6 +471,7 @@ describe("durable chess worker", () => {
           data: {
             status: "error",
             runToken: null,
+            ...chessTurnData({ type: "idle" }),
             ending: { kind: "interrupted" },
             terminalCause: "archive-invalid",
           },
@@ -792,10 +804,15 @@ describe("chess reconcile sweep", () => {
     id,
     status,
     heartbeatAt: new Date(Date.now() - 600000),
+    archive: archive(),
   });
   function rows(running: ReturnType<typeof stale>[], queued: ReturnType<typeof stale>[]) {
-    db.chessMatch.findMany.mockImplementation(((args: { where: { status: string } }) =>
-      Promise.resolve(args.where.status === "running" ? running : queued)) as never);
+    db.chessMatch.findMany.mockImplementation(((args: {
+      where: { status: string; turnType?: string };
+    }) =>
+      Promise.resolve(
+        args.where.turnType === "human" ? [] : args.where.status === "running" ? running : queued,
+      )) as never);
   }
   it("errors stale running records with a bounded, ordered heartbeat compare-and-set", async () => {
     const row = stale("running");
@@ -805,8 +822,13 @@ describe("chess reconcile sweep", () => {
       expect.objectContaining({
         take: 50,
         orderBy: [{ heartbeatAt: "asc" }, { id: "asc" }],
-        where: { status: "running", heartbeatAt: { lt: expect.any(Date) } },
-        select: { id: true, status: true, heartbeatAt: true },
+        where: {
+          source: "hosted",
+          status: "running",
+          turnType: { notIn: ["human", "human-move"] },
+          heartbeatAt: { lt: expect.any(Date) },
+        },
+        select: { id: true, status: true, heartbeatAt: true, archive: true },
       }),
     );
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
@@ -814,6 +836,7 @@ describe("chess reconcile sweep", () => {
       data: {
         status: "error",
         runToken: null,
+        ...chessTurnData({ type: "idle" }),
         ending: { kind: "interrupted" },
         terminalCause: "worker-lost",
       },
@@ -844,6 +867,7 @@ describe("chess reconcile sweep", () => {
         data: {
           status: "error",
           runToken: null,
+          ...chessTurnData({ type: "idle" }),
           ending: { kind: "interrupted" },
           terminalCause: status === "running" ? "worker-lost" : "queue-lost",
         },
@@ -864,6 +888,7 @@ describe("chess reconcile sweep", () => {
       data: {
         status: "error",
         runToken: null,
+        ...chessTurnData({ type: "idle" }),
         ending: { kind: "interrupted" },
         terminalCause: "queue-lost",
       },
@@ -884,9 +909,14 @@ describe("chess reconcile sweep", () => {
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce(live)
         .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([orphan])
         .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce(live)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
@@ -899,7 +929,7 @@ describe("chess reconcile sweep", () => {
       const sweep = () => handleChessReconcileJob({ data: { reason: "cron" } });
       expect(await sweep()).toEqual({ scanned: 50, errored: 0 });
       expect(await sweep()).toEqual({ scanned: 1, errored: 1 });
-      expect(db.chessMatch.findMany.mock.calls[3]?.[0]).toMatchObject({
+      expect(db.chessMatch.findMany.mock.calls[4]?.[0]).toMatchObject({
         where: {
           status: "queued",
           heartbeatAt: { lt: expect.any(Date) },
@@ -913,17 +943,18 @@ describe("chess reconcile sweep", () => {
         data: {
           status: "error",
           runToken: null,
+          ...chessTurnData({ type: "idle" }),
           ending: { kind: "interrupted" },
           terminalCause: "queue-lost",
         },
       });
       await sweep();
-      expect(db.chessMatch.findMany.mock.calls[5]?.[0]?.where?.OR).toBeUndefined();
+      expect(db.chessMatch.findMany.mock.calls[7]?.[0]?.where?.OR).toBeUndefined();
       // An empty page at the end also wraps, without a second query in that sweep.
       expect(await sweep()).toEqual({ scanned: 0, errored: 0 });
       await sweep();
-      expect(db.chessMatch.findMany.mock.calls[9]?.[0]?.where?.OR).toBeUndefined();
-      expect(db.chessMatch.findMany).toHaveBeenCalledTimes(10);
+      expect(db.chessMatch.findMany.mock.calls[13]?.[0]?.where?.OR).toBeUndefined();
+      expect(db.chessMatch.findMany).toHaveBeenCalledTimes(15);
       for (const [query] of db.chessMatch.findMany.mock.calls) expect(query?.take).toBe(50);
     },
   );
@@ -1291,5 +1322,146 @@ describe("hosted matches billed to the owner's own OpenRouter key", () => {
     await handleChessRunJob({ data: { matchId: "match-id" } });
     expect(seen?.credentials?.w?.apiKey).toBe(OPERATOR);
     expect(providerKey.load).not.toHaveBeenCalled();
+  });
+});
+
+describe("hosted human worker parking and repair", () => {
+  function humanMatch(first: "w" | "b" = "w") {
+    const human = { name: "Human", model: "human", protocol: "human" as const };
+    const model = { name: "Model", model: "fixture/model", protocol: "openai-chat" as const };
+    return createMatch(
+      {
+        white: first === "w" ? human : model,
+        black: first === "b" ? human : model,
+        rules: { context: "fresh", engineEvaluation: "off" },
+      },
+      "hosted",
+    );
+  }
+  it("parks a human without loading any key, provider catalog, heartbeat or spectator engine", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch");
+    const match = humanMatch();
+    db.chessMatch.findUnique.mockResolvedValue({ ...row(), archive: match });
+    const result = await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(result).toMatchObject({ parked: true });
+    expect(providerKey.load).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(evaluatePosition).not.toHaveBeenCalled();
+    const parked = db.chessMatch.updateMany.mock.calls.at(-1)?.[0];
+    expect(parked?.data).toMatchObject({ turnType: "human", runToken: null });
+    const persisted = validateArchive(parked?.data.archive);
+    expect(persisted.turn.type).toBe("human");
+    expect(persisted.events).toEqual([]);
+    fetcher.mockRestore();
+  });
+  it("persists the model claim before dispatch and releases it after exactly one automatic turn", async () => {
+    env.CHESS_HOSTED_ENABLED = true;
+    env.OPENROUTER_API_KEY = "fixture-only";
+    // A spectator that never resolves cannot retain the parked gameplay slot.
+    evaluatePosition.mockImplementation(() => new Promise(() => {}));
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        data: [
+          {
+            id: "fixture/model",
+            pricing: { prompt: "0", completion: "0" },
+          },
+        ],
+      }),
+    );
+    const match = humanMatch("b");
+    db.chessMatch.findUnique.mockResolvedValue({ ...row(), archive: match });
+    runner.override = async (archive, options) => {
+      expect(options?.stopAfterTurn).toBe(true);
+      const claimed = db.chessMatch.updateMany.mock.calls.at(-1)?.[0]?.data;
+      expect(claimed).toMatchObject({ turnType: "model" });
+      expect(options?.credentials?.w).toBeDefined();
+      expect(options?.credentials?.b).toBeUndefined();
+      submitMove(archive, boardAt(archive), "e2e4");
+      await options?.onUpdate?.(archive);
+    };
+    expect(await handleChessRunJob({ data: { matchId: "match-id" } })).toMatchObject({
+      parked: true,
+    });
+    expect(evaluatePosition).toHaveBeenCalled();
+    expect(ensureJob).toHaveBeenCalledWith(
+      {},
+      "chess-spectator",
+      { reason: "spectator", matchId: "match-id", fromPly: 0 },
+      "chess-spectator-match-id-0",
+      { priority: 10 },
+    );
+    const parked = db.chessMatch.updateMany.mock.calls.find(
+      ([input]) => input.data.turnType === "human",
+    )?.[0];
+    expect(parked?.data.runToken).toBeNull();
+    expect(validateArchive(parked?.data.archive).turn).toMatchObject({
+      type: "human",
+      side: "b",
+      expectedSeq: 1,
+    });
+    fetcher.mockRestore();
+  });
+  it("repairs an accepted human continuation whose deterministic wake was lost", async () => {
+    const match = humanMatch();
+    beginHostedTurn(match);
+    // A successfully applied human input has become an idle queued model turn.
+    match.turn = { type: "idle" };
+    submitMove(match, boardAt(match), "e2e4");
+    const queued = {
+      ...row(),
+      archive: match,
+      id: "wake-lost",
+      status: "queued",
+      heartbeatAt: new Date(0),
+    };
+    db.chessMatch.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([queued])
+      .mockResolvedValueOnce([]);
+    getJob.mockResolvedValue(null);
+    expect(await handleChessReconcileJob({ data: { reason: "cron" } })).toEqual({
+      scanned: 1,
+      errored: 0,
+    });
+    expect(ensureJob).toHaveBeenCalledWith(
+      expect.anything(),
+      "chess-run",
+      { matchId: "wake-lost" },
+      "chess-wake-lost-turn-1",
+    );
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+  });
+  it("expires an unclaimed human wait with deadline/identity CAS and no provider work", async () => {
+    const match = humanMatch();
+    beginHostedTurn(match, new Date(Date.now() - 600_000));
+    const turn = match.turn;
+    if (turn.type !== "human") throw new Error("Expected human turn");
+    db.chessMatch.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          ...row(),
+          archive: match,
+          turnId: turn.turnId,
+          turnExpectedSeq: turn.expectedSeq,
+          turnDeadline: new Date(turn.deadline),
+        },
+      ]);
+    const result = await handleChessReconcileJob({ data: { reason: "cron" } });
+    expect(result).toEqual({ scanned: 1, errored: 0, expired: 1 });
+    const update = db.chessMatch.updateMany.mock.calls.at(-1)?.[0];
+    expect(update?.where).toMatchObject({
+      status: "running",
+      turnType: "human",
+      runToken: null,
+      turnId: turn.turnId,
+      turnExpectedSeq: turn.expectedSeq,
+      turnDeadline: { lte: expect.any(Date) },
+    });
+    const ended = validateArchive(update?.data.archive);
+    expect(ended.termination).toBe("move-timeout");
+    expect(ended.turn).toEqual({ type: "idle" });
   });
 });

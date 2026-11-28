@@ -131,6 +131,13 @@ const db = vi.hoisted(() => {
             data: {
               status: "stopped",
               runToken: null,
+              turnType: "idle",
+              turnId: null,
+              turnSide: null,
+              turnExpectedSeq: null,
+              turnStartedAt: null,
+              turnDeadline: null,
+              pendingMove: expect.anything(),
               terminalCause: "owner-reset",
               ending: { kind: "cancelled" },
             },

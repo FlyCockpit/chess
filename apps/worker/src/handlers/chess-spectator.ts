@@ -64,7 +64,7 @@ export function matchSpectatorFeed(
 }
 
 /** Queues a backfill chunk starting at `fromPly` (a retained finished job runs again). */
-function requestSpectatorBackfill(matchId: string, fromPly: number) {
+export function requestSpectatorBackfill(matchId: string, fromPly: number) {
   return ensureRunnableJob(
     chessReconcileQueue,
     "chess-spectator",
@@ -115,11 +115,29 @@ export async function backfillSpectatorEvaluations(
 ) {
   const row = await prisma.chessMatch.findUnique({
     where: { id: matchId },
-    select: { status: true, archive: true, spectatorEvaluations: true },
+    select: {
+      status: true,
+      source: true,
+      turnType: true,
+      runToken: true,
+      archive: true,
+      spectatorEvaluations: true,
+    },
   });
-  if (!row || row.status === "queued" || row.status === "running") return { evaluated: false };
+  if (!row || row.status === "queued") return { evaluated: false };
   const archive = archiveSchema.safeParse(row.archive);
   if (!archive.success) return { evaluated: false };
+  if (
+    row.status === "running" &&
+    !(
+      row.source === "hosted" &&
+      archive.data.source === "hosted" &&
+      row.turnType === "human" &&
+      row.runToken === null &&
+      archive.data.turn.type === "human"
+    )
+  )
+    return { evaluated: false };
   const known = storedSpectatorEvaluations.parse(row.spectatorEvaluations);
   const chunk = new AbortController();
   const timer = setTimeout(() => chunk.abort(), ms);

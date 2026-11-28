@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Session } from "@cockpit-chess/auth";
 import {
+  beginHostedTurn,
   boardAt,
   createMatch,
   finishMatch,
@@ -11,9 +12,10 @@ import {
   utf8ByteLength,
 } from "@cockpit-chess/chess";
 import type prismaInstance from "@cockpit-chess/db";
-import { createRouterClient } from "@orpc/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createRouterClient, ORPCError } from "@orpc/server";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type DeepMockProxy, mockReset } from "vitest-mock-extended";
+import { DbNull } from "../../../db/prisma/generated/internal/prismaNamespace";
 import type { Context } from "../context";
 import { chessTurnColumns } from "../lib/chess-turn";
 
@@ -21,10 +23,11 @@ vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
   return { default: mockDeep<typeof prismaInstance>() };
 });
-const { ensureRunnableJob, budget, env, reconcileAdd } = vi.hoisted(() => ({
+const { ensureRunnableJob, budget, budgetConfigs, env, reconcileAdd } = vi.hoisted(() => ({
   ensureRunnableJob: vi.fn(),
   reconcileAdd: vi.fn(),
   budget: vi.fn(),
+  budgetConfigs: [] as Record<string, unknown>[],
   env: {
     CHESS_HOSTED_ENABLED: true,
     OPENROUTER_API_KEY: "test-only" as string | undefined,
@@ -56,7 +59,12 @@ vi.mock("@cockpit-chess/queue", () => ({
   ensureRunnableJob,
 }));
 vi.mock("@cockpit-chess/env/shared", () => ({ env }));
-vi.mock("../lib/procedure-budget", () => ({ createProcedureBudget: () => budget }));
+vi.mock("../lib/procedure-budget", () => ({
+  createProcedureBudget: (options: Record<string, unknown>) => {
+    budgetConfigs.push(options);
+    return budget;
+  },
+}));
 const { default: prisma } = await import("@cockpit-chess/db");
 const db = prisma as DeepMockProxy<typeof prismaInstance>;
 const { chessRouter } = await import("./chess");
@@ -470,18 +478,8 @@ describe("chess public projection and operator boundaries", () => {
     db.chessMatch.create.mockResolvedValue(row() as never);
     ensureRunnableJob.mockRejectedValue(new Error("queue reply lost"));
     db.chessMatch.updateMany.mockResolvedValue({ count: 0 });
-    await expect(client().create(newConfig())).rejects.toMatchObject({
-      code: "SERVICE_UNAVAILABLE",
-    });
-    expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
-      where: { id: "id", status: "queued" },
-      data: {
-        status: "error",
-        runToken: null,
-        ending: { kind: "interrupted" },
-        terminalCause: "enqueue-failed",
-      },
-    });
+    await expect(client().create(newConfig())).resolves.toEqual({ slug: expect.any(String) });
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
     log.mockRestore();
   });
   it("imports a replay-validated private archive without granting official provenance", async () => {
@@ -623,6 +621,8 @@ describe("chess public projection and operator boundaries", () => {
     expect(args?.data).toEqual({
       status: "stopped",
       runToken: null,
+      ...chessTurnColumns({ type: "idle" }),
+      pendingMove: DbNull,
       ending: { kind: "cancelled" },
       terminalCause: "owner-stop",
     });
@@ -791,27 +791,18 @@ describe("chess public projection and operator boundaries", () => {
       code: "CONFLICT",
     });
   });
-  it("logs and errors the row when the hosted job cannot be enqueued", async () => {
+  it("retains the accepted queued row when the hosted wake is unavailable", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     db.chessMatch.create.mockResolvedValue(row() as never);
     db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
     ensureRunnableJob.mockRejectedValue(new Error("redis down"));
-    await expect(client().create(newConfig())).rejects.toMatchObject({
-      code: "SERVICE_UNAVAILABLE",
-    });
-    expect(log).toHaveBeenCalledWith("[chess] Failed to enqueue hosted match", {
+    await expect(client().create(newConfig())).resolves.toEqual({ slug: expect.any(String) });
+    expect(log).toHaveBeenCalledWith("[chess] Hosted wake unavailable", {
       matchId: "id",
-      error: "redis down",
+      jobId: "chess-id",
     });
-    expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
-      where: { id: "id", status: "queued" },
-      data: {
-        status: "error",
-        runToken: null,
-        ending: { kind: "interrupted" },
-        terminalCause: "enqueue-failed",
-      },
-    });
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+    log.mockRestore();
   });
 });
 
@@ -1136,6 +1127,9 @@ describe("hosted matches on the user's own OpenRouter key", () => {
       workers: 1,
     });
     const result = await client().capacity();
+    expect(db.chessMatch.count).toHaveBeenCalledWith({
+      where: { source: "hosted", status: "running", runToken: { not: null } },
+    });
     expect(result).toEqual({
       running: 7,
       concurrencyLimit: 512,
@@ -1559,6 +1553,471 @@ describe("pre-start official consent and creation receipts", () => {
     const second = db.chessCreation.findUnique.mock.calls[2]?.[0]?.where.id;
     expect(first).toMatch(/^[a-f0-9]{64}$/);
     expect(second).not.toBe(first);
+  });
+});
+
+describe("hosted human creation", () => {
+  const human = {
+    name: "Untrusted human label",
+    model: "not-in-catalog",
+    protocol: "human" as const,
+  };
+  beforeEach(async () => {
+    const { resetModelCatalogCache } = await import("../lib/chess-models");
+    resetModelCatalogCache();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [{ id: model.model, pricing: { prompt: "0", completion: "0" } }],
+        }),
+      ),
+    );
+    db.chessMatch.create.mockResolvedValue(row() as never);
+  });
+
+  it.each(["openai-chat", "anthropic", "openai-responses"] as const)(
+    "creates fresh practice with a canonical human outside the %s model catalog",
+    async (protocol) => {
+      await client().create({ ...newConfig(), white: human, black: { ...model, protocol } });
+      const data = db.chessMatch.create.mock.calls[0]?.[0]?.data;
+      expect(data).toMatchObject({
+        status: "queued",
+        credentialSource: "operator",
+        turnType: "idle",
+        pendingMove: DbNull,
+        whiteName: "Human",
+        blackName: model.model,
+        archive: {
+          source: "hosted",
+          turn: { type: "idle" },
+          config: {
+            white: { name: "Human", model: "human", protocol: "human" },
+            black: { name: model.model, model: model.model, protocol },
+            rules: { context: "fresh" },
+          },
+        },
+      });
+      expect(data).not.toHaveProperty("OfficialEntry");
+      expect(data).toHaveProperty("Creation.create.configDigest");
+      expect(budget).toHaveBeenCalledWith("owner");
+      expect(ensureRunnableJob).toHaveBeenCalledExactlyOnceWith(
+        {},
+        "chess-run",
+        { matchId: "id" },
+        "chess-id",
+      );
+    },
+  );
+
+  it("supports a black human billed only to the owner's authorized key", async () => {
+    db.openRouterConnection.findUnique.mockResolvedValue({
+      status: "active",
+      expiresAt: null,
+    } as never);
+    db.openRouterConnection.findFirst.mockResolvedValue({ id: "connection" } as never);
+    openKey.mockResolvedValue({ state: "ok", apiKey: "not-returned", keyHash: "h" });
+    await client("user").create({ ...newConfig(), white: model, black: human });
+    expect(db.chessMatch.create.mock.calls[0]?.[0]?.data).toMatchObject({
+      credentialSource: "owner-openrouter",
+      blackName: "Human",
+    });
+    expect(openKey).toHaveBeenCalledExactlyOnceWith("owner");
+    expect(db.chessMatch.count).toHaveBeenCalledWith({
+      where: {
+        ownerId: "owner",
+        credentialSource: "owner-openrouter",
+        status: { in: ["queued", "running"] },
+      },
+    });
+  });
+
+  it("rejects human/random, two humans, persistent context, official consent and an unknown model", async () => {
+    for (const config of [
+      { white: human, black: baseline },
+      { white: baseline, black: human },
+      { white: human, black: human },
+      { white: human, black: model, rules: { context: "persistent" as const } },
+      { white: human, black: model, official: true },
+      { white: model, black: human, official: true },
+      { white: human, black: { ...model, model: "missing/model" } },
+    ])
+      await expect(client().create({ ...newConfig(), ...config })).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+      });
+    expect(budget).not.toHaveBeenCalled();
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+  });
+});
+
+describe("hosted human move CAS", () => {
+  const now = new Date("2026-11-27T12:00:01.000Z");
+  const human = { name: "Human", model: "human", protocol: "human" as const };
+  function parked(config: Partial<Parameters<typeof createMatch>[0]> = {}) {
+    const archive = createMatch({ white: human, black: model, rules: {}, ...config }, "hosted");
+    beginHostedTurn(archive, new Date(now.getTime() - 1000));
+    const record = { ...row(), source: "hosted", archive, ...chessTurnColumns(archive.turn) };
+    db.chessMatch.findFirst.mockResolvedValue(record as never);
+    db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
+    if (archive.turn.type === "idle") throw new Error("Expected a parked turn");
+    const input = {
+      slug: record.slug,
+      move: "e2e4",
+      expectedSeq: archive.events.length,
+      turnId: archive.turn.turnId,
+    };
+    return { record, archive, input };
+  }
+  const saved = () => db.chessMatch.updateMany.mock.calls[0]?.[0]?.data;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("repairs a lost spectator handoff while a published human turn stays parked", async () => {
+    const { record } = parked();
+    const id = "human-spectator-gap";
+    db.chessMatch.findFirst.mockResolvedValue({ ...record, id, published: true } as never);
+    const game = await client(null).get({ slug: record.slug });
+    expect(game.turn.type).toBe("human");
+    await Promise.resolve();
+    expect(ensureRunnableJob).toHaveBeenCalledWith(
+      { add: reconcileAdd },
+      "chess-spectator",
+      { reason: "spectator", matchId: id, fromPly: 0 },
+      `chess-spectator-${id}-0`,
+      { priority: 10 },
+    );
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("has an independent fail-closed owner action budget", async () => {
+    expect(budgetConfigs).toContainEqual(
+      expect.objectContaining({
+        keyPrefix: "chess:move",
+        points: 120,
+        durationSeconds: 60,
+        failClosed: true,
+      }),
+    );
+    const { input } = parked();
+    budget.mockRejectedValue(new ORPCError("SERVICE_UNAVAILABLE"));
+    await expect(client("user").move(input)).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+    });
+    expect(budget).toHaveBeenCalledExactlyOnceWith("owner");
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("commits an owned legal move before scheduling its deterministic model wake", async () => {
+    const { input, archive } = parked();
+    let transactionOpen = false;
+    db.$transaction.mockImplementation((async (fn: (tx: typeof db) => unknown) => {
+      transactionOpen = true;
+      try {
+        return await fn(db);
+      } finally {
+        transactionOpen = false;
+      }
+    }) as never);
+    ensureRunnableJob.mockImplementation(async () => {
+      expect(transactionOpen).toBe(false);
+      return {};
+    });
+    const result = await client("user").move(input);
+    expect(result).toEqual({ status: "queued", turn: { type: "idle" }, seq: 2 });
+    expect(db.chessMatch.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { slug: input.slug, ownerId: "owner", source: "hosted" } }),
+    );
+    expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "id",
+        ownerId: "owner",
+        source: "hosted",
+        status: "running",
+        runToken: null,
+        turnType: "human",
+        turnId: input.turnId,
+        turnExpectedSeq: 0,
+        turnDeadline: { gt: now },
+      },
+      data: expect.objectContaining({
+        status: "queued",
+        runToken: null,
+        turnType: "idle",
+        pendingMove: DbNull,
+      }),
+    });
+    expect(saved()?.archive).toMatchObject({
+      events: [
+        { type: "timing", elapsedMs: 1000 },
+        { type: "attempt", accepted: true, move: "e2e4" },
+      ],
+    });
+    expect(archive.events).toHaveLength(0);
+    expect(ensureRunnableJob).toHaveBeenCalledExactlyOnceWith(
+      {},
+      "chess-run",
+      { matchId: "id" },
+      "chess-id-turn-2",
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns CONFLICT to the losing duplicate CAS without a second wake", async () => {
+    const { input } = parked();
+    db.chessMatch.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    await client().move(input);
+    await expect(client().move(input)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(ensureRunnableJob).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires a live session under the credential lock", async () => {
+    const { input } = parked();
+    db.session.findFirst.mockResolvedValue(null);
+    await expect(client().move(input)).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    expect(db.session.findFirst).toHaveBeenCalledExactlyOnceWith({
+      where: { id: "test", userId: "owner", expiresAt: { gt: now } },
+      select: { id: true },
+    });
+    expect(db.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      db.session.findFirst.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(db.chessMatch.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("hides foreign/missing/non-hosted rows and refuses stale identity, seq, side or claim", async () => {
+    const { record, input } = parked();
+    for (const other of [
+      null,
+      { ...record, ownerId: "someone-else" },
+      { ...record, source: "local" },
+    ]) {
+      db.chessMatch.findFirst.mockResolvedValue(other as never);
+      await expect(client().move(input)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    }
+    db.chessMatch.findFirst.mockResolvedValue(record as never);
+    for (const request of [
+      { ...input, expectedSeq: 1 },
+      { ...input, turnId: randomUUID() },
+    ])
+      await expect(client().move(request)).rejects.toMatchObject({ code: "CONFLICT" });
+    for (const other of [
+      { ...record, status: "stopped" },
+      { ...record, runToken: "claimed" },
+      { ...record, turnSide: "b" },
+      { ...record, turnDeadline: new Date(now.getTime() + 1) },
+    ]) {
+      db.chessMatch.findFirst.mockResolvedValue(other as never);
+      await expect(client().move(input)).rejects.toMatchObject({ code: "CONFLICT" });
+    }
+    const modelTurn = parked({ white: model, black: human });
+    await expect(client().move(modelTurn.input)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1])(
+    "settles expiry at or after the deadline (%s ms), never the submitted move",
+    async (late) => {
+      const { input, archive } = parked();
+      if (archive.turn.type === "idle") throw new Error("Expected a turn");
+      const receipt = new Date(Date.parse(archive.turn.deadline) + late);
+      vi.setSystemTime(receipt);
+      const result = await client().move(input);
+      expect(result.status).toBe("completed");
+      expect(result.turn).toEqual({ type: "idle" });
+      expect(saved()).toMatchObject({
+        runToken: null,
+        turnType: "idle",
+        pendingMove: DbNull,
+        result: "0-1",
+        terminalCause: "move-timeout",
+        archive: { termination: "move-timeout", events: [{ type: "timing" }] },
+      });
+      expect(db.chessMatch.updateMany.mock.calls[0]?.[0]?.where?.turnDeadline).toEqual({
+        lte: receipt,
+      });
+      expect(ensureRunnableJob).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts the move one millisecond before deadline using server receipt time", async () => {
+    const { input, archive } = parked();
+    if (archive.turn.type === "idle") throw new Error("Expected a turn");
+    vi.setSystemTime(Date.parse(archive.turn.deadline) - 1);
+    expect(await client().move(input)).toMatchObject({ status: "queued", seq: 2 });
+  });
+
+  it("rechecks server time after a procedure-budget wait crosses the deadline", async () => {
+    const { input, archive } = parked();
+    if (archive.turn.type !== "human") throw new Error("Expected human turn");
+    const deadline = Date.parse(archive.turn.deadline);
+    vi.setSystemTime(deadline - 1);
+    budget.mockImplementationOnce(async () => {
+      vi.setSystemTime(deadline);
+    });
+    expect(await client().move(input)).toMatchObject({ status: "completed" });
+    expect(saved()?.archive).toMatchObject({
+      termination: "move-timeout",
+      events: [{ type: "timing" }],
+    });
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+  });
+
+  it("lets only one of a timely move and competing expiry commit", async () => {
+    const { input, archive } = parked();
+    if (archive.turn.type === "idle") throw new Error("Expected a turn");
+    const deadline = Date.parse(archive.turn.deadline);
+    const receiptCaptured = Promise.withResolvers<void>();
+    const releaseCommit = Promise.withResolvers<void>();
+    db.chessMatch.updateMany
+      .mockImplementationOnce(async () => {
+        receiptCaptured.resolve();
+        await releaseCommit.promise;
+        return { count: 1 };
+      })
+      .mockResolvedValueOnce({ count: 0 });
+    vi.setSystemTime(deadline - 1);
+    const timely = client().move(input);
+    // The timely decision has passed the credential/read waits and reached CAS.
+    await receiptCaptured.promise;
+    vi.setSystemTime(deadline);
+    const expired = client().move(input);
+    releaseCommit.resolve();
+    await Promise.all([
+      expect(timely).resolves.toMatchObject({ status: "queued", seq: 2 }),
+      expect(expired).rejects.toMatchObject({ code: "CONFLICT" }),
+    ]);
+    expect(db.chessMatch.updateMany.mock.calls.map(([args]) => args.where.turnDeadline)).toEqual([
+      { gt: new Date(deadline - 1) },
+      { lte: new Date(deadline) },
+    ]);
+    expect(ensureRunnableJob).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops a parked turn without overwriting its event snapshot and normalizes its archive on read", async () => {
+    const { record, input } = parked();
+    await client().stop({ slug: input.slug });
+    expect(saved()).toMatchObject({
+      status: "stopped",
+      runToken: null,
+      turnType: "idle",
+      turnId: null,
+      pendingMove: DbNull,
+    });
+    expect(saved()).not.toHaveProperty("archive");
+    db.chessMatch.findFirst.mockResolvedValue({ ...record, status: "stopped" } as never);
+    expect(await client().inspect({ slug: input.slug })).toMatchObject({
+      status: "stopped",
+      turn: { type: "idle" },
+      archive: { status: "stopped", turn: { type: "idle" } },
+    });
+  });
+
+  it("rearms an illegal retry with a fresh turn and forfeits at the configured attempt limit", async () => {
+    const { input, archive: before } = parked({ rules: { maxAttempts: 2 } });
+    const originalDeadline = before.turn.type === "human" ? before.turn.deadline : "";
+    const retry = await client().move({ ...input, move: "e2e5" });
+    expect(retry).toMatchObject({
+      status: "running",
+      turn: { type: "human", expectedSeq: 2, startedAt: now.toISOString() },
+      seq: 2,
+    });
+    expect(retry.turn).not.toHaveProperty("turnId", input.turnId);
+    expect(retry.turn).toHaveProperty("deadline", originalDeadline);
+    const firstArchive = saved()?.archive as unknown as MatchArchive;
+    expect(firstArchive.events).toMatchObject([
+      { type: "timing" },
+      { type: "attempt", accepted: false },
+    ]);
+    db.chessMatch.findFirst.mockResolvedValue({
+      ...row(),
+      source: "hosted",
+      archive: firstArchive,
+      ...chessTurnColumns(firstArchive.turn),
+    } as never);
+    if (retry.turn.type === "idle") throw new Error("Expected a human turn");
+    expect(
+      await client().move({
+        ...input,
+        move: "e2e5",
+        expectedSeq: retry.seq,
+        turnId: retry.turn.turnId,
+      }),
+    ).toMatchObject({ status: "completed", turn: { type: "idle" }, seq: 4 });
+    expect(db.chessMatch.updateMany.mock.calls[1]?.[0]?.data).toMatchObject({
+      result: "0-1",
+      terminalCause: "illegal-forfeit",
+      whiteIllegal: 2,
+      turnType: "idle",
+      pendingMove: DbNull,
+    });
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+  });
+
+  it("applies promotion and resignation through authoritative chess rules", async () => {
+    const promotion = parked({ initialFen: "7k/P7/8/8/8/8/8/7K w - - 0 1" });
+    expect(await client().move({ ...promotion.input, move: "a7a8q" })).toMatchObject({
+      status: "queued",
+      seq: 2,
+    });
+    expect(saved()?.archive).toMatchObject({
+      events: [{ type: "timing" }, { accepted: true, move: "a7a8q" }],
+    });
+    db.chessMatch.updateMany.mockClear();
+    const resignation = parked();
+    expect(await client().move({ ...resignation.input, move: "resign" })).toMatchObject({
+      status: "completed",
+      turn: { type: "idle" },
+    });
+    expect(saved()).toMatchObject({
+      result: "0-1",
+      terminalCause: "resignation",
+      turnType: "idle",
+      pendingMove: DbNull,
+    });
+  });
+
+  it("rejects browser clocks, comments and malformed or unbounded input before any write", async () => {
+    const { input } = parked();
+    for (const request of [
+      { ...input, move: "e2e4\n" },
+      { ...input, move: "e2e4 ".repeat(100) },
+      { ...input, move: "Nf3" },
+      { ...input, expectedSeq: -1 },
+      { ...input, expectedSeq: 0.1 },
+      { ...input, expectedSeq: 2_147_483_648 },
+      { ...input, turnId: "not-uuid" },
+      { ...input, receivedAt: now.toISOString() },
+      { ...input, comment: "hello" },
+    ])
+      await expect(client().move(request as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(budget).not.toHaveBeenCalled();
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("keeps a committed model wake queued on queue loss and never logs the error payload", async () => {
+    const { input } = parked();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      ensureRunnableJob.mockImplementation(async () => {
+        expect(saved()).toMatchObject({ status: "queued", turnType: "idle" });
+        throw new Error("sensitive payload");
+      });
+      expect(await client().move(input)).toMatchObject({ status: "queued", seq: 2 });
+      expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledExactlyOnceWith("[chess] Hosted wake unavailable", {
+        matchId: "id",
+        jobId: "chess-id-turn-2",
+      });
+    } finally {
+      log.mockRestore();
+    }
   });
 });
 

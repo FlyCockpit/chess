@@ -296,6 +296,13 @@ describe("openrouter.disconnect", () => {
       data: {
         status: "error",
         runToken: null,
+        turnType: "idle",
+        turnId: null,
+        turnSide: null,
+        turnExpectedSeq: null,
+        turnStartedAt: null,
+        turnDeadline: null,
+        pendingMove: expect.anything(),
         ending: { kind: "credential-revoked" },
         terminalCause: "owner-disconnect",
       },

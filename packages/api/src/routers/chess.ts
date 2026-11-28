@@ -1,25 +1,31 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   lockCliCredentials,
   withCliCredentialLockSlot,
 } from "@cockpit-chess/auth/device-redemption-lock";
 import {
+  beginHostedTurn,
+  boardAt,
   createMatch,
   finishMatch,
   isOldRulesVersion,
   MAX_ARCHIVE_BYTES,
   type MatchArchive,
+  MODEL_PROTOCOLS,
   matchConfigSchema,
   parseArchive,
+  playHostedHumanTurn,
   utf8ByteLength,
   validateArchive,
 } from "@cockpit-chess/chess";
 import { endingSummarySchema } from "@cockpit-chess/chess/ending";
 import { CURRENT_PROMPT_VERSION, PROMPT_BUNDLES } from "@cockpit-chess/chess/prompts";
+import { endAtArchiveLimit } from "@cockpit-chess/chess/runner";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { env as serverEnv } from "@cockpit-chess/env/server";
 import { env } from "@cockpit-chess/env/shared";
-import { chessRunQueue, ensureRunnableJob, redisConnection } from "@cockpit-chess/queue";
+import { redisConnection } from "@cockpit-chess/queue";
 import { readChessEngineStats } from "@cockpit-chess/queue/chess-capacity";
 import { ORPCError } from "@orpc/server";
 import { z } from "zod";
@@ -33,6 +39,7 @@ import {
   publicProcedure,
 } from "../index";
 import { sourceCodeUrl } from "../lib/build-commit";
+import { chessTurnData, wakeHostedMatch } from "../lib/chess-human";
 import { admitHostedMatch, CHESS_CREATE_LOCK } from "../lib/chess-locks";
 import { getModelCatalog } from "../lib/chess-models";
 import {
@@ -43,7 +50,7 @@ import {
   officialLeaderboard,
 } from "../lib/chess-official";
 import { spectatorEvaluationsFor } from "../lib/chess-spectator";
-import { chessStatsColumns, INTERRUPTED_ENDING, STOPPED_ENDING } from "../lib/chess-stats";
+import { chessStatsColumns, STOPPED_ENDING } from "../lib/chess-stats";
 import {
   type ChessTurnColumns,
   chessTurnFromColumns,
@@ -126,6 +133,25 @@ const spendBudget = createProcedureBudget({
   unavailableMessage: "Chess scheduling unavailable",
   unavailableLog: "[chess] Scheduling budget unavailable",
 });
+const moveBudget = createProcedureBudget({
+  keyPrefix: "chess:move",
+  points: 120,
+  durationSeconds: 60,
+  failClosed: true,
+  overBudgetMessage: () => "Chess move allowance exceeded",
+  unavailableMessage: "Chess moves unavailable",
+  unavailableLog: "[chess] Move budget unavailable",
+});
+const moveInput = slugInput
+  .extend({
+    move: z
+      .string()
+      .max(6)
+      .regex(/^(?:[a-h][1-8][a-h][1-8][qrbn]?|resign)(?![\s\S])/),
+    expectedSeq: z.number().int().min(0).max(2_147_483_647),
+    turnId: z.uuid(),
+  })
+  .strict();
 const rulesKey = (match: MatchArchive) =>
   createHash("sha256").update(JSON.stringify(match.config.rules)).digest("hex").slice(0, 16);
 const metadata = (match: MatchArchive) => ({
@@ -421,8 +447,21 @@ export const chessRouter = {
         "operator-billing-admin-only",
         "Only admins may bill the operator key",
       );
-    if ([input.white, input.black].some((player) => player.protocol === "human"))
-      throw new ORPCError("BAD_REQUEST");
+    const humans = [archive.config.white, archive.config.black].filter(
+      (player) => player.protocol === "human",
+    );
+    if (
+      humans.length > 0 &&
+      (humans.length !== 1 ||
+        ![archive.config.white, archive.config.black].some((player) =>
+          MODEL_PROTOCOLS.some((protocol) => protocol === player.protocol),
+        ) ||
+        official ||
+        archive.config.rules.context !== "fresh")
+    )
+      throw new ORPCError("BAD_REQUEST", {
+        message: "Hosted human play requires one model, fresh context and practice mode",
+      });
     // No move cap: the rules engine's own draws, the archive limit and these budgets end
     // every game; the clock bounds are the schema's own. See README.md § Rules and endings
     const limits = hostedLimits();
@@ -467,12 +506,12 @@ export const chessRouter = {
     // Untrusted display names never become trusted opponent instructions, for practice
     // or official play. Requested model IDs must resolve in the server catalog.
     const players = [archive.config.white, archive.config.black];
-    if (players.some((player) => player.protocol !== "random")) {
+    if (players.some((player) => player.protocol !== "human" && player.protocol !== "random")) {
       const catalog = await getModelCatalog().catch(() => {
         throw new ORPCError("SERVICE_UNAVAILABLE", { message: "Model catalog unavailable" });
       });
       for (const player of players) {
-        if (player.protocol === "random") continue;
+        if (player.protocol === "human" || player.protocol === "random") continue;
         const model = catalog.models.find((item) => item.id === player.model);
         if (!model) throw new ORPCError("BAD_REQUEST", { message: "Unknown hosted model" });
         player.name = model.id.slice(0, 80);
@@ -482,6 +521,9 @@ export const chessRouter = {
       if (player.protocol === "random") {
         player.name = "Random baseline";
         player.model = "random";
+      } else if (player.protocol === "human") {
+        player.name = "Human";
+        player.model = "human";
       }
     const credentialSource = billing === "operator" ? "operator" : "owner-openrouter";
     const commitment = official ? officialCommitment(archive, credentialSource) : null;
@@ -524,6 +566,7 @@ export const chessRouter = {
             ...(commitment ? { OfficialEntry: { create: commitment } } : {}),
             Creation: { create: { id: creationId, configDigest } },
             heartbeatAt: new Date(),
+            ...chessTurnData(archive.turn),
             archive,
           },
           select: { id: true, slug: true },
@@ -533,25 +576,109 @@ export const chessRouter = {
     );
     // A retry never resurrects or re-enqueues an accepted terminal/withdrawn start.
     if (row.duplicate) return { slug: row.slug };
-    try {
-      await ensureRunnableJob(chessRunQueue, "chess-run", { matchId: row.id }, `chess-${row.id}`);
-    } catch (error) {
-      console.error("[chess] Failed to enqueue hosted match", {
-        matchId: row.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      await prisma.chessMatch.updateMany({
-        where: { id: row.id, status: "queued" },
-        data: {
-          status: "error",
-          runToken: null,
-          ending: INTERRUPTED_ENDING,
-          terminalCause: "enqueue-failed",
-        },
-      });
-      throw new ORPCError("SERVICE_UNAVAILABLE");
-    }
+    await wakeHostedMatch(row.id, archive);
     return { slug };
+  }),
+  move: hostedPlayerProcedure.input(moveInput).handler(async ({ input, context }) => {
+    const ownerId = context.session.user.id;
+    await moveBudget(ownerId);
+    const accepted = await withCliCredentialLockSlot(() =>
+      prisma.$transaction(async (tx) => {
+        await lockCliCredentials(ownerId, tx);
+        const live = await tx.session.findFirst({
+          where: { id: context.session.session.id, userId: ownerId, expiresAt: { gt: new Date() } },
+          select: { id: true },
+        });
+        if (!live) throw new ORPCError("UNAUTHORIZED");
+        const row = await tx.chessMatch.findFirst({
+          where: { slug: input.slug, ownerId, source: "hosted" },
+          select: {
+            ...chessTurnSelect,
+            id: true,
+            ownerId: true,
+            source: true,
+            status: true,
+            runToken: true,
+            archive: true,
+          },
+        });
+        if (!row || row.ownerId !== ownerId || row.source !== "hosted")
+          throw new ORPCError("NOT_FOUND");
+        if (row.status !== "running" || row.runToken !== null) throw new ORPCError("CONFLICT");
+        // Budget/credential/database waits never preserve an earlier browser-side
+        // deadline decision. Only server time after those waits can authorize input.
+        const receivedAt = new Date();
+        const archive = checkedArchive(row.archive, undefined, true);
+        const turn = chessTurnFromColumns(row);
+        if (
+          archive.status !== "running" ||
+          archive.source !== "hosted" ||
+          archive.config.rules.context !== "fresh" ||
+          turn.type !== "human" ||
+          !isDeepStrictEqual(turn, archive.turn) ||
+          turn.turnId !== input.turnId ||
+          turn.expectedSeq !== input.expectedSeq ||
+          turn.expectedSeq !== archive.events.length ||
+          archive.config[turn.side === "w" ? "white" : "black"].protocol !== "human" ||
+          !MODEL_PROTOCOLS.some(
+            (protocol) =>
+              protocol === archive.config[turn.side === "w" ? "black" : "white"].protocol,
+          ) ||
+          receivedAt.getTime() < Date.parse(turn.startedAt)
+        )
+          throw new ORPCError("CONFLICT");
+        const expired = receivedAt.getTime() >= Date.parse(turn.deadline);
+        if (!endAtArchiveLimit(archive))
+          playHostedHumanTurn(archive, receivedAt, expired ? undefined : input.move);
+        endAtArchiveLimit(archive);
+        // A rejected attempt gets a fresh CAS identity but keeps the original
+        // chess-turn deadline, so repeated illegal input cannot buy thinking time.
+        // Model turns remain idle/queued until a worker owns their runToken.
+        if (archive.status === "running" && boardAt(archive).turn() === turn.side) {
+          beginHostedTurn(archive, receivedAt);
+          if (
+            archive.turn.type === "human" &&
+            Date.parse(archive.turn.deadline) > Date.parse(turn.deadline)
+          )
+            archive.turn.deadline = turn.deadline;
+        }
+        const status =
+          archive.status === "running"
+            ? archive.turn.type === "human"
+              ? "running"
+              : "queued"
+            : archive.status;
+        const updated = await tx.chessMatch.updateMany({
+          where: {
+            id: row.id,
+            ownerId,
+            source: "hosted",
+            status: "running",
+            runToken: null,
+            turnType: "human",
+            turnId: input.turnId,
+            turnExpectedSeq: input.expectedSeq,
+            turnDeadline: expired ? { lte: receivedAt } : { gt: receivedAt },
+          },
+          data: {
+            archive,
+            status,
+            runToken: null,
+            heartbeatAt: receivedAt,
+            ...chessTurnData(archive.turn),
+            ...chessStatsColumns(archive),
+          },
+        });
+        if (updated.count !== 1) throw new ORPCError("CONFLICT");
+        return { id: row.id, archive, status };
+      }),
+    );
+    if (accepted.status === "queued") await wakeHostedMatch(accepted.id, accepted.archive);
+    return {
+      status: accepted.status,
+      turn: chessTurnMetadata(accepted.archive.turn),
+      seq: accepted.archive.events.length,
+    };
   }),
   importGame: adminOr404Procedure
     // UTF-16 length never exceeds UTF-8 length, so this cheap bound only rejects
@@ -619,7 +746,9 @@ export const chessRouter = {
    */
   capacity: adminOr404Procedure.handler(async () => {
     const [running, queued, matches, engine] = await Promise.all([
-      prisma.chessMatch.count({ where: { status: "running" } }),
+      prisma.chessMatch.count({
+        where: { source: "hosted", status: "running", runToken: { not: null } },
+      }),
       prisma.chessMatch.count({ where: { status: "queued" } }),
       prisma.chessMatch.findMany({
         where: { status: { in: ["running", "queued"] } },
@@ -658,6 +787,7 @@ export const chessRouter = {
       data: {
         status: "stopped",
         runToken: null,
+        ...chessTurnData({ type: "idle" }),
         ending: STOPPED_ENDING,
         terminalCause: "owner-stop",
       },

@@ -12,6 +12,7 @@ import {
 } from "@cockpit-chess/queue/chess-key-revocation";
 import { ORPCError } from "@orpc/server";
 import { checkAdminAuthority, protectedProcedure } from "../index";
+import { chessTurnData } from "../lib/chess-human";
 import { CHESS_CREATE_LOCK } from "../lib/chess-locks";
 import { CREDENTIAL_REVOKED_ENDING } from "../lib/chess-stats";
 import {
@@ -306,6 +307,7 @@ export const openrouterRouter = {
             data: {
               status: "error",
               runToken: null,
+              ...chessTurnData({ type: "idle" }),
               ending: CREDENTIAL_REVOKED_ENDING,
               terminalCause: "owner-disconnect",
             },

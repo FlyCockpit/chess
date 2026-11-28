@@ -81,6 +81,8 @@ export interface AgentModel {
    * use it to stop at once when the key they hold may no longer be used.
    */
   beforeDispatch?: () => void;
+  /** OpenRouter provider routing policy; does not alter cache prefixes or affinity. */
+  dataCollection?: "deny";
 }
 
 export interface AgentTool<TSchema extends z.ZodType = z.ZodType> {

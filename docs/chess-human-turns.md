@@ -1,7 +1,7 @@
 # Durable turn contract
 
-C1a defines storage and strict readers. Hosted human creation remains disabled;
-C1b owns worker parking, wake jobs, repair, move/timeout legality and action budgets.
+C1a defines storage and strict readers. C1b integrates hosted human creation,
+worker parking, wake jobs, repair, move/timeout legality and action budgets.
 
 The required `archive.turn` discriminated union is exported by
 `@cockpit-chess/chess`. Prerelease snapshots missing it are unsupported; readers
@@ -55,4 +55,46 @@ the new turn atomically with its new event count. Notifications are wake hints;
 durable accepted input plus bounded repair must recover a lost hint. A model
 claim interrupted after dispatch is uncertain: recovery marks it interrupted
 instead of starting inference again. These concurrency/spend rules are C1b's
-integration acceptance; C1a's SQL fixtures prove the storage/CAS/rollback contract.
+integration contract; C1a's SQL fixtures prove the storage/CAS/rollback contract.
+
+## Hosted human execution
+
+C1b enables exactly one human against one catalog-resolved model, with fresh
+context and practice status. Creation uses the existing authorized billing,
+per-owner admission and global queue limits. Humans never receive credentials
+or dispatch provider calls. Persistent human context is refused until a complete
+private transcript persistence contract exists.
+
+A worker claims queued work and establishes one model turn, or parks a human
+turn with a finite server deadline and NULL runToken, returning its BullMQ slot
+before loading any key/catalog/engine. Model reservations persist under that
+claim before dispatch. A legal model move atomically parks the next human turn
+and releases the claim. Unfinished spectator scoring moves to its separate
+bounded backfill queue; parked replay polling repairs a lost handoff, without
+resuming gameplay. A lost active model claim is interrupted; it is never
+redispatched after an uncertain reservation or request.
+
+`chess.move` accepts owner-only UCI or `resign`, turnId and expectedSeq under a
+separate fail-closed action budget. It applies authoritative board legality and
+server clocks directly in the credential-locked transaction, then commits the
+archive and turn columns through one deadline/turn/sequence CAS. Duplicate or
+stale input conflicts. Late input settles timeout without applying a move.
+Illegal retries get a new CAS identity while preserving the original think
+deadline; elapsed time is charged once per interval. Archive headroom follows
+the existing runner limit. No transaction is held while thinking or dispatching.
+
+An accepted legal human move becomes idle/queued model work. After commit it
+wakes one deterministic `chess-<id>-turn-<event count>` job (the initial empty
+snapshot uses `chess-<id>`). Lost hints leave durable accepted work; the bounded
+keyset reconciler repairs missing/terminal human continuation jobs without
+reapplying input or admitting another match. A separate bounded deadline scan
+expires human waits; stale heartbeat sweeps exclude parked human states. Stop,
+disconnect and reset clear all row turn fields and claims atomically; terminal
+readers normalize the last durable archive snapshot through `finishMatch`,
+preserving any move that committed before cancellation.
+
+Hosted credentials require OpenRouter `provider.data_collection: "deny"` at the
+actual HTTP seam for all supported protocols. This routing policy preserves the
+cacheable prompt/tool bytes and provider-affinity session identifiers. The key
+lease and claim guards still run before every provider request, including after
+asynchronous request-body decoding.

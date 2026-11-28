@@ -4,6 +4,7 @@ import {
   boardAt,
   boundReply,
   catalogOutputLimits,
+  clockLeftMs,
   createMatch,
   DEFAULT_POSITION,
   finishMatch,
@@ -12,6 +13,7 @@ import {
   type MatchEvent,
   matchConfigSchema,
   matchStats,
+  playHumanTurn,
   submitMove,
   utf8ByteLength,
   validateArchive,
@@ -20,6 +22,54 @@ import { exportPgn } from "./pgn";
 
 const player = { name: "Baseline", model: "random", protocol: "random" as const };
 const game = (rules = {}) => createMatch({ white: player, black: player, rules });
+describe("local companion human semantics", () => {
+  const human = { name: "Human", model: "human", protocol: "human" as const };
+  const local = (rules = {}) => createMatch({ white: human, black: player, rules });
+
+  it("lets untimed humans think beyond the inference limit without durable turns", () => {
+    const match = local({ turnTimeoutMs: 1000 });
+    expect(playHumanTurn(match, boardAt(match), 400_000, "e2e4")).toMatchObject({ accepted: true });
+    expect(match.events.map((event) => event.type)).toEqual(["attempt"]);
+    expect(match.turn).toEqual({ type: "idle" });
+    expect(validateArchive(match)).toEqual(match);
+    const untimed = local();
+    expect(() => playHumanTurn(untimed, boardAt(untimed), 400_000)).toThrow("cannot expire");
+    expect(untimed.events).toEqual([]);
+  });
+
+  it("charges only the side clock and keeps cumulative think time across illegal attempts", () => {
+    const match = local({ clock: { w: 30_000, b: 30_000 }, turnTimeoutMs: 1000 });
+    const chess = boardAt(match);
+    expect(playHumanTurn(match, chess, 20_000, "e2e5")).toMatchObject({ accepted: false });
+    expect(clockLeftMs(match, "w")).toBe(10_000);
+    expect(playHumanTurn(match, chess, 5000, "e2e4")).toMatchObject({ accepted: true });
+    expect(clockLeftMs(match, "w")).toBe(5000);
+    expect(clockLeftMs(match, "b")).toBe(30_000);
+    expect(match.turn).toEqual({ type: "idle" });
+    expect(validateArchive(match)).toEqual(match);
+  });
+
+  it("rejects a move at clock expiry and supports a clock-only expiry notification", () => {
+    for (const move of ["e2e4", undefined]) {
+      const match = local({ clock: { w: 30_000, b: 30_000 }, turnTimeoutMs: 1000 });
+      expect(playHumanTurn(match, boardAt(match), 30_000, move)).toBeNull();
+      expect(match).toMatchObject({ termination: "timeout", result: "0-1" });
+      expect(match.events).toEqual([
+        expect.objectContaining({ type: "timing", elapsedMs: 30_000 }),
+      ]);
+      expect(validateArchive(match)).toEqual(match);
+    }
+  });
+
+  it("resigns without consuming an illegal attempt", () => {
+    const match = local();
+    expect(playHumanTurn(match, boardAt(match), 1, "resign")).toBeNull();
+    expect(match).toMatchObject({ termination: "resignation", result: "0-1" });
+    expect(match.events).toEqual([]);
+    expect(validateArchive(match)).toEqual(match);
+  });
+});
+
 describe("authoritative chess and portable archives", () => {
   it("round-trips optional cache counts and derives the weighted input-token share", () => {
     const match = game();

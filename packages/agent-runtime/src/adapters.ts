@@ -116,6 +116,26 @@ const guardedFetch =
     return (base ?? globalThis.fetch)(input, init);
   };
 
+/** Apply the provider policy after SDK serialization, without touching prompts. */
+function privacyFetch(model: AgentModel, base?: typeof fetch): typeof fetch | undefined {
+  if (model.dataCollection !== "deny") return base;
+  return async (input, init) => {
+    const request = new Request(input, init);
+    const body: unknown = await request.clone().json();
+    if (typeof body !== "object" || body === null || Array.isArray(body))
+      throw new Error("Invalid provider request");
+    const provider =
+      "provider" in body && typeof body.provider === "object" && body.provider !== null
+        ? body.provider
+        : {};
+    // Body decoding above is asynchronous; recheck immediately at the HTTP seam.
+    model.beforeDispatch?.();
+    return (base ?? globalThis.fetch)(request, {
+      body: JSON.stringify({ ...body, provider: { ...provider, data_collection: "deny" } }),
+    });
+  };
+}
+
 export const createModelAdapter = (
   model: AgentModel,
   cache?: AdapterCacheOptions,
@@ -138,10 +158,17 @@ export const createModelAdapter = (
     const cachesAnthropic = cachingEnabled && isAnthropicModel(model.model);
     const cachesGemini = cachingEnabled && isGeminiModel(model.model);
     const caches = cachesAnthropic || cachesGemini;
-    if (caches || model.headers || model.beforeDispatch || onResponseIdentity) {
-      const fetcher = onResponseIdentity
+    if (
+      caches ||
+      model.headers ||
+      model.beforeDispatch ||
+      onResponseIdentity ||
+      model.dataCollection
+    ) {
+      const identityFetcher = onResponseIdentity
         ? responseIdentityFetch(model.provider, onResponseIdentity)
         : undefined;
+      const fetcher = privacyFetch(model, identityFetcher);
       const httpClient = caches
         ? createAnthropicCacheHttpClient(HTTPClient, cachesGemini ? "gemini" : "anthropic", fetcher)
         : new HTTPClient(fetcher ? { fetcher } : undefined);
@@ -186,9 +213,10 @@ export const createModelAdapter = (
           model.baseUrl && new URL(model.baseUrl).hostname === "openrouter.ai"
             ? anthropicGatewayFetch
             : undefined;
-        const base = onResponseIdentity
+        const identityBase = onResponseIdentity
           ? responseIdentityFetch(model.provider, onResponseIdentity, gatewayBase)
           : gatewayBase;
+        const base = privacyFetch(model, identityBase);
         if (model.beforeDispatch) return { fetch: guardedFetch(model.beforeDispatch, base) };
         return base ? { fetch: base } : {};
       })(),
@@ -208,9 +236,10 @@ export const createModelAdapter = (
     new URL(model.baseUrl).hostname === "openrouter.ai"
       ? geminiGatewayFetch
       : undefined;
-  const baseFetch = onResponseIdentity
+  const identityFetch = onResponseIdentity
     ? responseIdentityFetch(model.provider, onResponseIdentity, gatewayFetch)
     : gatewayFetch;
+  const baseFetch = privacyFetch(model, identityFetch);
   // `maxRetries: 0` — one retry layer: the runtime's retry/failover adapter owns retries.
   const adapter = factory(model.model as OpenAIModel, model.apiKey, {
     maxRetries: 0,

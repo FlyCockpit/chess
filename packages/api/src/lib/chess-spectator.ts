@@ -51,7 +51,12 @@ export function spectatorEvaluationsFor(row: {
   spectatorEvaluations: Prisma.JsonValue;
 }): SpectatorEvaluations | null {
   const evaluations = storedSpectatorEvaluations.parse(row.spectatorEvaluations);
-  if (row.status === "queued" || row.status === "running") return evaluations;
+  if (
+    row.status === "queued" ||
+    (row.status === "running" &&
+      !(row.archive.source === "hosted" && row.archive.turn.type === "human"))
+  )
+    return evaluations;
   let missing: number[] = [];
   try {
     missing = missingSpectatorPlies(row.archive, evaluations);

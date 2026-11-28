@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { chessRunJobId, chessTurnData } from "@cockpit-chess/api/lib/chess-human";
 import {
   chessStatsColumns,
   chessUsageColumns,
@@ -12,10 +13,12 @@ import {
 } from "@cockpit-chess/api/lib/provider-key";
 import { isAdminRole } from "@cockpit-chess/auth/roles";
 import {
+  beginHostedTurn,
   boardAt,
   catalogOutputLimits,
   finishMatch,
   type MatchArchive,
+  playHostedHumanTurn,
   validateArchive,
 } from "@cockpit-chess/chess";
 import {
@@ -34,6 +37,7 @@ import {
   chessReconcileJobSchema,
   chessRunJobSchema,
   chessRunQueue,
+  ensureRunnableJob,
   isLiveJobState,
   type Job,
 } from "@cockpit-chess/queue";
@@ -42,6 +46,7 @@ import { registerHeartbeat } from "./chess-heartbeat";
 import {
   backfillSpectatorEvaluations,
   matchSpectatorFeed,
+  requestSpectatorBackfill,
   settleSpectatorFeed,
 } from "./chess-spectator";
 
@@ -50,6 +55,7 @@ const RECONCILE_BATCH = 50;
 const TERMINAL_WRITE_ATTEMPTS = 3;
 // Per worker process: advance past live queued jobs, then wrap to revisit them.
 let queuedReconcileCursor: { id: string; heartbeatAt: Date } | undefined;
+let humanReconcileCursor: { id: string; turnDeadline: Date } | undefined;
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /**
@@ -74,13 +80,18 @@ export async function handleChessReconcileJob(
   if (data.reason === "spectator")
     return backfillSpectatorEvaluations(data.matchId, data.fromPly, signal);
   const cutoff = new Date(Date.now() - STALE_HEARTBEAT_MS);
-  const select = { id: true, status: true, heartbeatAt: true } as const;
+  const select = { id: true, status: true, heartbeatAt: true, archive: true } as const;
   const orderBy = [{ heartbeatAt: "asc" }, { id: "asc" }] as const;
   // Separate bounded scans: queued rows with live jobs are legitimately old and
   // must not crowd dead running rows out of the batch.
   const [running, queued] = await Promise.all([
     prisma.chessMatch.findMany({
-      where: { status: "running", heartbeatAt: { lt: cutoff } },
+      where: {
+        source: "hosted",
+        status: "running",
+        turnType: { notIn: ["human", "human-move"] },
+        heartbeatAt: { lt: cutoff },
+      },
       select,
       orderBy: [...orderBy],
       take: RECONCILE_BATCH,
@@ -88,6 +99,7 @@ export async function handleChessReconcileJob(
     prisma.chessMatch.findMany({
       where: {
         status: "queued",
+        source: "hosted",
         heartbeatAt: { lt: cutoff },
         ...(queuedReconcileCursor
           ? {
@@ -117,15 +129,27 @@ export async function handleChessReconcileJob(
   for (const row of [...running, ...queued]) {
     try {
       if (row.status === "queued") {
-        const queuedJob = await chessRunQueue.getJob(`chess-${row.id}`);
+        const archive = validateArchive(row.archive);
+        const jobId = chessRunJobId(row.id, archive);
+        const queuedJob = await chessRunQueue.getJob(jobId);
         const state = queuedJob ? await queuedJob.getState() : "missing";
         if (isLiveJobState(state)) continue;
+        // A human's accepted move is already durable; missing delivery is repaired,
+        // never replayed. Initial automatic admission retains its lost-job ending.
+        if (
+          archive.config.white.protocol === "human" ||
+          archive.config.black.protocol === "human"
+        ) {
+          await ensureRunnableJob(chessRunQueue, "chess-run", { matchId: row.id }, jobId);
+          continue;
+        }
       }
       const result = await prisma.chessMatch.updateMany({
         where: { id: row.id, status: row.status, heartbeatAt: row.heartbeatAt },
         data: {
           status: "error",
           runToken: null,
+          ...chessTurnData({ type: "idle" }),
           ending: INTERRUPTED_ENDING,
           terminalCause: row.status === "running" ? "worker-lost" : "queue-lost",
         },
@@ -138,7 +162,79 @@ export async function handleChessReconcileJob(
       });
     }
   }
-  return { scanned: running.length + queued.length, errored };
+  const humans = await prisma.chessMatch.findMany({
+    where: {
+      source: "hosted",
+      status: "running",
+      turnType: "human",
+      runToken: null,
+      turnDeadline: { lte: new Date() },
+      ...(humanReconcileCursor
+        ? {
+            OR: [
+              { turnDeadline: { gt: humanReconcileCursor.turnDeadline } },
+              {
+                turnDeadline: humanReconcileCursor.turnDeadline,
+                id: { gt: humanReconcileCursor.id },
+              },
+            ],
+          }
+        : {}),
+    },
+    select: { id: true, archive: true, turnId: true, turnExpectedSeq: true, turnDeadline: true },
+    orderBy: [{ turnDeadline: "asc" }, { id: "asc" }],
+    take: RECONCILE_BATCH,
+  });
+  const lastHuman = humans.at(-1);
+  humanReconcileCursor =
+    humans.length === RECONCILE_BATCH && lastHuman?.turnDeadline
+      ? { id: lastHuman.id, turnDeadline: lastHuman.turnDeadline }
+      : undefined;
+  let expired = 0;
+  for (const row of humans) {
+    try {
+      const archive = validateArchive(row.archive);
+      if (
+        archive.turn.type !== "human" ||
+        archive.turn.turnId !== row.turnId ||
+        archive.turn.expectedSeq !== row.turnExpectedSeq
+      )
+        throw new Error("Invalid parked turn");
+      const now = new Date();
+      playHostedHumanTurn(archive, now);
+      if (archive.status === "running") continue;
+      const result = await prisma.chessMatch.updateMany({
+        where: {
+          id: row.id,
+          source: "hosted",
+          status: "running",
+          runToken: null,
+          turnType: "human",
+          turnId: row.turnId,
+          turnExpectedSeq: row.turnExpectedSeq,
+          turnDeadline: { lte: now },
+        },
+        data: {
+          archive,
+          status: archive.status,
+          runToken: null,
+          ...chessTurnData(archive.turn),
+          ...chessStatsColumns(archive),
+        },
+      });
+      expired += result.count;
+    } catch (error) {
+      console.error("[chess-reconcile] Failed to expire human turn", {
+        matchId: row.id,
+        error: message(error),
+      });
+    }
+  }
+  return {
+    scanned: running.length + queued.length + humans.length,
+    errored,
+    ...(humans.length ? { expired } : {}),
+  };
 }
 
 /** The row's status/runToken no longer match this run: it was stopped or reconciled. */
@@ -245,10 +341,21 @@ export async function handleChessRunJob(
   });
   if (!row) return;
   let match: MatchArchive;
+  let humanGame = false;
   try {
     match = validateArchive(row.archive);
     if (row.source !== "hosted" || match.source !== "hosted")
       throw new Error("Only hosted archives may run in the hosted worker");
+    const players = [match.config.white, match.config.black];
+    humanGame = players.some((player) => player.protocol === "human");
+    if (
+      humanGame &&
+      (players.filter((player) => player.protocol === "human").length !== 1 ||
+        players.some((player) => player.protocol === "random") ||
+        match.config.rules.context !== "fresh" ||
+        match.turn.type !== "idle")
+    )
+      throw new Error("Hosted human games require one model and fresh context");
   } catch (error) {
     // Release the claim now instead of leaving the row `running` until the
     // stale-heartbeat reconcile. Status only: like reconcile, the unparseable
@@ -262,11 +369,37 @@ export async function handleChessRunJob(
       data: {
         status: "error",
         runToken: null,
+        ...chessTurnData({ type: "idle" }),
         ending: INTERRUPTED_ENDING,
         terminalCause: "archive-invalid",
       },
     });
     return;
+  }
+  // Parking happens before loading a key, catalog, engine or heartbeat. Returning
+  // releases this BullMQ slot; the database owns the finite human deadline.
+  if (humanGame) {
+    beginHostedTurn(match);
+    const parked = match.turn.type === "human";
+    const prepared = await prisma.chessMatch.updateMany({
+      where: { id: matchId, source: "hosted", status: "running", runToken },
+      data: {
+        archive: match,
+        ...chessTurnData(match.turn),
+        ...(parked ? { runToken: null } : {}),
+        ...(match.status !== "running"
+          ? { status: match.status, runToken: null, ...chessStatsColumns(match) }
+          : {}),
+      },
+    });
+    if (prepared.count !== 1) return;
+    if (parked || match.status !== "running")
+      return {
+        parked,
+        result: match.result,
+        termination: match.termination,
+        fen: boardAt(match).fen(),
+      };
   }
   const controller = new AbortController();
   // All aborts at the hosted worker boundary are infrastructure interruptions.
@@ -276,6 +409,7 @@ export async function handleChessRunJob(
   if (signal?.aborted) abort();
   let ownershipEnded = false;
   let terminalPersisted = false;
+  let parkedPersisted = false;
   const revoke = () => controller.abort(CREDENTIAL_REVOKED);
   const heartbeat: Omit<Parameters<typeof registerHeartbeat>[0], "ownerKey"> & {
     ownerKey?: { userId: string; keyHash: string };
@@ -284,7 +418,7 @@ export async function handleChessRunJob(
     runToken,
     onLost: () => {
       // A terminal write ends the claim itself; only a foreign end aborts the run.
-      if (terminalPersisted) return;
+      if (terminalPersisted || parkedPersisted) return;
       ownershipEnded = true;
       abort();
     },
@@ -308,7 +442,19 @@ export async function handleChessRunJob(
   let lastWritten: string | undefined;
   async function persist(archive: MatchArchive) {
     if (ownershipEnded) throw new MatchOwnershipEndedError();
-    if (terminalPersisted) return;
+    if (terminalPersisted || parkedPersisted) return;
+    // A model's successful move ends its claim. The next human interval starts
+    // at this durable commit, never when a browser happened to poll it.
+    if (
+      humanGame &&
+      archive.status === "running" &&
+      archive.turn.type === "model" &&
+      boardAt(archive).turn() !== archive.turn.side
+    ) {
+      archive.turn = { type: "idle" };
+      beginHostedTurn(archive);
+    }
+    const parking = humanGame && archive.status === "running" && archive.turn.type === "human";
     const digest = snapshotDigest(JSON.stringify(archive));
     if (archive.status === "running" && digest === lastWritten) return;
     if (archive.status !== "running") terminalWriteAttempts += 1;
@@ -319,6 +465,8 @@ export async function handleChessRunJob(
           archive,
           ...chessUsageColumns(archive),
           heartbeatAt: new Date(),
+          ...(humanGame || archive.status !== "running" ? chessTurnData(archive.turn) : {}),
+          ...(parking ? { runToken: null } : {}),
           ...(archive.status !== "running"
             ? { status: archive.status, runToken: null, ...chessStatsColumns(archive) }
             : {}),
@@ -336,6 +484,7 @@ export async function handleChessRunJob(
     }
     lastWritten = digest;
     if (archive.status !== "running") terminalPersisted = true;
+    if (parking) parkedPersisted = true;
     // Only the new moves are replayed here; the analysis runs in the background.
     spectators.update(archive);
   }
@@ -351,7 +500,7 @@ export async function handleChessRunJob(
   try {
     const credentials: Partial<Record<"w" | "b", ProviderCredentials>> = {};
     const requiresModel = [match.config.white, match.config.black].some(
-      (player) => player.protocol !== "random",
+      (player) => player.protocol !== "random" && player.protocol !== "human",
     );
     // An own-key match passes the same gates whether or not a model plays: the user
     // matches switch, a usable connection, and the heartbeat's disconnect check (a
@@ -402,7 +551,7 @@ export async function handleChessRunJob(
       };
       for (const side of ["w", "b"] as const) {
         const player = side === "w" ? match.config.white : match.config.black;
-        if (player.protocol === "random") continue;
+        if (player.protocol === "random" || player.protocol === "human") continue;
         const item = catalog.data?.find((entry) => entry.id === player.model);
         const inputPrice = Number(item?.pricing?.prompt);
         const outputPrice = Number(item?.pricing?.completion);
@@ -427,6 +576,7 @@ export async function handleChessRunJob(
             controller.signal.throwIfAborted();
           },
           anthropicAuth: "bearer",
+          dataCollection: "deny",
           inputMicrosPerMillion: Math.ceil(inputPrice * 1e12),
           outputMicrosPerMillion: Math.ceil(outputPrice * 1e12),
           // Each request may use the model's own maximum output (within its budgets).
@@ -440,9 +590,11 @@ export async function handleChessRunJob(
       signal: controller.signal,
       onUpdate: persist,
       conversationMaxBytes: env.CHESS_CONVERSATION_MAX_BYTES,
+      stopAfterTurn: humanGame,
     });
-    if (match.status === "running") finishMatch(match, "*", "provider-error", "error");
-    if (!terminalPersisted) await persist(match);
+    if (match.status === "running" && !parkedPersisted)
+      finishMatch(match, "*", "provider-error", "error");
+    if (!terminalPersisted && !parkedPersisted) await persist(match);
   } catch (error) {
     // Message only: never log credentials, prompts, or the error object itself.
     if (!ownershipEnded) {
@@ -466,6 +618,7 @@ export async function handleChessRunJob(
     while (
       !ownershipEnded &&
       !terminalPersisted &&
+      !parkedPersisted &&
       terminalWriteAttempts < TERMINAL_WRITE_ATTEMPTS
     ) {
       if (terminalWriteAttempts > 0) await delay(50 * terminalWriteAttempts);
@@ -496,6 +649,18 @@ export async function handleChessRunJob(
     // connected meanwhile is never touched.
     if (ownerKey && match.termination === "credential-revoked")
       await markOpenRouterKeyInvalid(ownerKey.userId, ownerKey.keyHash).catch(() => undefined);
+  }
+  if (parkedPersisted) {
+    // Human think time must never retain a gameplay slot for spectator draining.
+    // Spectator work moves to its bounded queue; replay polling repairs a lost hint.
+    spectatorStop.abort();
+    void requestSpectatorBackfill(matchId, 0).catch(() => undefined);
+    return {
+      parked: true,
+      result: match.result,
+      termination: match.termination,
+      fen: boardAt(match).fen(),
+    };
   }
   // The result is already written. Give the last positions a short, bounded wait
   // (they were evaluated while the game was played); anything left goes to a backfill.
