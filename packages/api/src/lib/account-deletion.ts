@@ -13,6 +13,7 @@ import { CHESS_CREATE_LOCK } from "./chess-locks";
 const REAUTH_AGE_MS = 5 * 60_000;
 const TRANSACTION_TIMEOUT_MS = 30_000;
 const SAFE_LOCK_MS = 25_000;
+const DELETION_ATTEMPTS = 3;
 
 export type DeletionStatus = {
   status: "pending";
@@ -68,71 +69,89 @@ export async function requestAccountDeletion(
           await lockCliCredentials(userId, locks);
           await lockSetPasswordLinks(userId, locks);
           await locks.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CHESS_CREATE_LOCK}))::text AS locked`;
-          const remaining = Math.floor(deadline - performance.now());
-          if (remaining <= 0)
-            throw new ORPCError("SERVICE_UNAVAILABLE", {
-              message: "Account security is still updating. Try again shortly.",
-            });
-          return withAdminRemovalGuard(
-            userId,
-            async (tx, target) => {
-              const user = await tx.user.findUniqueOrThrow({
-                where: { id: userId },
-                select: {
-                  deletionRequestedAt: true,
-                  deletionState: true,
-                  banned: true,
-                  banExpires: true,
-                },
-              });
-              if (user.deletionRequestedAt)
-                return {
-                  status: "pending",
-                  requestedAt: user.deletionRequestedAt,
-                  phase: user.deletionState,
-                  complete: false,
-                };
-              const now = new Date();
-              if (authority.kind === "self") {
-                if (isUserBanned(user)) throw new ORPCError("UNAUTHORIZED");
-                if (hasRole(target.role, "admin"))
-                  throw new ORPCError("FORBIDDEN", {
-                    message: "Transfer your administrator role before deleting your account.",
-                    data: { reason: "ADMIN_TRANSFER_REQUIRED" },
+          // A worker may persist an admitted move/heartbeat after the Serializable
+          // snapshot starts. Retry that snapshot, retaining every outer lock so
+          // no new dispatch, credential or admission can enter between attempts.
+          for (let attempt = 1; ; attempt++) {
+            try {
+              const remaining = Math.floor(deadline - performance.now());
+              if (remaining <= 0)
+                throw new ORPCError("SERVICE_UNAVAILABLE", {
+                  message: "Account security is still updating. Try again shortly.",
+                });
+              return await withAdminRemovalGuard(
+                userId,
+                async (tx, target) => {
+                  const user = await tx.user.findUniqueOrThrow({
+                    where: { id: userId },
+                    select: {
+                      deletionRequestedAt: true,
+                      deletionState: true,
+                      banned: true,
+                      banExpires: true,
+                    },
                   });
-                await assertRecentBrowserSession(tx, userId, authority.sessionId, now);
-              }
-              await tx.user.update({
-                where: { id: userId },
-                data: { deletionRequestedAt: now, deletionState: "pending" },
-                select: { id: true },
-              });
-              // Set deletion's cause before the generic reset revoker settles
-              // anything: the official ledger's first terminal write is final.
-              await tx.chessMatch.updateMany({
-                where: { ownerId: userId, status: { in: ["queued", "running"] } },
-                data: {
-                  status: "stopped",
-                  runToken: null,
-                  terminalCause: "owner-delete",
-                  ending: { kind: "cancelled" },
-                  turnType: "idle",
-                  turnId: null,
-                  turnSide: null,
-                  turnExpectedSeq: null,
-                  turnStartedAt: null,
-                  turnDeadline: null,
-                  pendingMove: Prisma.DbNull,
+                  if (user.deletionRequestedAt)
+                    return {
+                      status: "pending",
+                      requestedAt: user.deletionRequestedAt,
+                      phase: user.deletionState,
+                      complete: false,
+                    };
+                  const now = new Date();
+                  if (authority.kind === "self") {
+                    if (isUserBanned(user)) throw new ORPCError("UNAUTHORIZED");
+                    if (hasRole(target.role, "admin"))
+                      throw new ORPCError("FORBIDDEN", {
+                        message: "Transfer your administrator role before deleting your account.",
+                        data: { reason: "ADMIN_TRANSFER_REQUIRED" },
+                      });
+                    await assertRecentBrowserSession(tx, userId, authority.sessionId, now);
+                  }
+                  await tx.user.update({
+                    where: { id: userId },
+                    data: { deletionRequestedAt: now, deletionState: "pending" },
+                    select: { id: true },
+                  });
+                  // Set deletion's cause before the generic reset revoker settles
+                  // anything: the official ledger's first terminal write is final.
+                  await tx.chessMatch.updateMany({
+                    where: { ownerId: userId, status: { in: ["queued", "running"] } },
+                    data: {
+                      status: "stopped",
+                      runToken: null,
+                      terminalCause: "owner-delete",
+                      ending: { kind: "cancelled" },
+                      turnType: "idle",
+                      turnId: null,
+                      turnSide: null,
+                      turnExpectedSeq: null,
+                      turnStartedAt: null,
+                      turnDeadline: null,
+                      pendingMove: Prisma.DbNull,
+                    },
+                  });
+                  await revokeCredentialsInTransaction(tx, userId);
+                  await tx.openRouterConnection.deleteMany({ where: { userId } });
+                  return { status: "pending", requestedAt: now, phase: "pending", complete: false };
                 },
-              });
-              await revokeCredentialsInTransaction(tx, userId);
-              await tx.openRouterConnection.deleteMany({ where: { userId } });
-              return { status: "pending", requestedAt: now, phase: "pending", complete: false };
-            },
-            authority.kind === "admin" ? authority : { ...authority, userId },
-            undefined,
-            Math.min(20_000, remaining),
-          );
+                authority.kind === "admin" ? authority : { ...authority, userId },
+                undefined,
+                Math.min(20_000, remaining),
+              );
+            } catch (error) {
+              if (
+                attempt >= DELETION_ATTEMPTS ||
+                !(error instanceof ORPCError) ||
+                error.code !== "CONFLICT" ||
+                typeof error.data !== "object" ||
+                error.data === null ||
+                !("reason" in error.data) ||
+                error.data.reason !== "USER_CHANGE_CONFLICT"
+              )
+                throw error;
+            }
+          }
         },
         { timeout: TRANSACTION_TIMEOUT_MS, isolationLevel: "ReadCommitted" },
       );

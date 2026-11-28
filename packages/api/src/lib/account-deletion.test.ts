@@ -194,6 +194,101 @@ describe("requestAccountDeletion", () => {
     await expect(requestAccountDeletion("u1", admin)).rejects.toMatchObject({
       message: "fence unavailable",
     });
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
     // Real rollback/idempotency is exercised by the disposable PG integration.
+  });
+});
+
+describe("active-worker serialization retry", () => {
+  it("retries a fresh Serializable authority/effect snapshot without releasing the outer locks", async () => {
+    let conflicts = 1;
+    db.$transaction.mockImplementation(async (run, options) => {
+      if (typeof run !== "function") throw new Error("Expected interactive transaction");
+      if (options?.isolationLevel === "Serializable" && conflicts-- > 0) {
+        await run(tx);
+        throw Object.assign(new Error("worker wrote after snapshot"), { code: "P2034" });
+      }
+      return run(tx);
+    });
+    await expect(requestAccountDeletion("u1", admin)).resolves.toMatchObject({
+      status: "pending",
+      complete: false,
+    });
+    expect(db.$transaction.mock.calls.map(([, options]) => options?.isolationLevel)).toEqual([
+      "ReadCommitted",
+      "Serializable",
+      "Serializable",
+    ]);
+    // Each attempt rechecks the live actor; only the outer scope takes the four locks.
+    expect(tx.session.findFirst).toHaveBeenCalledTimes(2);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.$executeRaw.mock.calls.filter(([, key]) => key === "password-write:u1")).toHaveLength(
+      1,
+    );
+    const { lockCliCredentials } = await import("@cockpit-chess/auth/device-redemption-lock");
+    const { lockSetPasswordLinks } = await import("@cockpit-chess/auth/set-password-link-lock");
+    expect(lockCliCredentials).toHaveBeenCalledOnce();
+    expect(lockSetPasswordLinks).toHaveBeenCalledOnce();
+  });
+
+  it("bounds serialization retries to three attempts and preserves the conflict refusal", async () => {
+    db.$transaction.mockImplementation(async (run, options) => {
+      if (typeof run !== "function") throw new Error("Expected interactive transaction");
+      if (options?.isolationLevel === "Serializable")
+        throw Object.assign(new Error("concurrent worker"), { code: "P2034" });
+      return run(tx);
+    });
+    await expect(requestAccountDeletion("u1", admin)).rejects.toMatchObject({
+      code: "CONFLICT",
+      data: { reason: "USER_CHANGE_CONFLICT" },
+    });
+    expect(db.$transaction).toHaveBeenCalledTimes(4);
+  });
+
+  it("never retries stale authentication", async () => {
+    tx.session.findFirst.mockResolvedValue(null);
+    await expect(
+      requestAccountDeletion("u1", { kind: "self", sessionId: "stale" }),
+    ).rejects.toMatchObject({
+      data: { reason: "REAUTH_REQUIRED" },
+    });
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
+    expect(tx.user.update).not.toHaveBeenCalled();
+  });
+  it("revalidates actor authority after rollback rather than replaying an old authorization", async () => {
+    let attempts = 0;
+    db.$transaction.mockImplementation(async (run, options) => {
+      if (typeof run !== "function") throw new Error("Expected interactive transaction");
+      if (options?.isolationLevel === "Serializable" && attempts++ === 0) {
+        await run(tx);
+        tx.session.findFirst.mockResolvedValue(null);
+        throw Object.assign(new Error("worker write"), { code: "P2034" });
+      }
+      return run(tx);
+    });
+    await expect(requestAccountDeletion("u1", admin)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(tx.session.findFirst).toHaveBeenCalledTimes(2);
+    expect(db.$transaction).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps the original time budget across retries", async () => {
+    const clock = vi.spyOn(performance, "now");
+    clock.mockReturnValue(0);
+    db.$transaction.mockImplementation(async (run, options) => {
+      if (typeof run !== "function") throw new Error("Expected interactive transaction");
+      if (options?.isolationLevel === "Serializable") {
+        clock.mockReturnValue(25_001);
+        throw Object.assign(new Error("worker write"), { code: "P2034" });
+      }
+      return run(tx);
+    });
+    try {
+      await expect(requestAccountDeletion("u1", admin)).rejects.toMatchObject({
+        code: "SERVICE_UNAVAILABLE",
+      });
+      expect(db.$transaction).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });

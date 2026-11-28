@@ -2309,7 +2309,14 @@ async function main() {
       ["account-export", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       [
         "account-deletion",
-        { ...inviteEnv, DATABASE_POOL_MAX: "8", CHESS_PROVIDER_KEY_SECRET: "ab".repeat(32) },
+        {
+          ...inviteEnv,
+          DATABASE_POOL_MAX: "8",
+          CHESS_PROVIDER_KEY_SECRET: "ab".repeat(32),
+          CHESS_HOSTED_ENABLED: "true",
+          CHESS_USER_MATCHES_ENABLED: "true",
+          OPENROUTER_ORIGIN: "https://openrouter.example.test",
+        },
       ],
       ["account-deletion-pool3", { ...inviteEnv, DATABASE_POOL_MAX: "3" }],
       [

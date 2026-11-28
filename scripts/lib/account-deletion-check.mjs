@@ -814,6 +814,7 @@ export async function accountDeletionCheck() {
     console.log(
       "Account deletion: actual PG human-move/deletion lock ordering, stale-session denial, no refused wake/event, and accepted-before-deletion cancellation passed.",
     );
+    await (await import("./account-deletion-active-check.mjs")).accountDeletionActiveCheck();
     console.log(
       "Account deletion: actual PG mint/OpenRouter+IdP callback/admission/dispatch/password lock races, durable revocation, idempotent pending and fresh browser proof passed.",
     );
