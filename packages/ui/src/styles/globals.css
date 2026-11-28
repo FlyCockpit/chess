@@ -558,10 +558,13 @@
 :root [data-sileo-viewport][data-position^="bottom"] {
   bottom: max(var(--bottom-nav-height), var(--safe-area-bottom));
 }
-/* sileo draws the action ("Undo", "Try again") 1.75rem (28px) tall. On a touch
-   screen it is at least 44px, the touch floor; the expanded body re-measures
-   itself, so the taller button fits. */
+/* The toast itself is a button, collapsed to 40px by sileo. Its action
+   ("Undo", "Try again") is 1.75rem (28px) tall. Both need a 44px touch target;
+   the expanded body re-measures itself so the taller action fits. */
 @media (pointer: coarse) {
+  :root [data-sileo-viewport] [data-sileo-toast] {
+    min-height: 44px;
+  }
   :root [data-sileo-viewport] [data-sileo-button] {
     height: auto;
     min-height: 44px;
