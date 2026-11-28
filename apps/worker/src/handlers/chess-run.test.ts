@@ -73,6 +73,7 @@ const score = (fen: string) => ({
 });
 const { env } = vi.hoisted(() => ({
   env: {
+    DATABASE_POOL_MAX: 3,
     CHESS_HOSTED_ENABLED: false,
     OPENROUTER_API_KEY: undefined as string | undefined,
     CHESS_USER_MATCHES_ENABLED: false,
@@ -109,6 +110,7 @@ function row() {
   const match = archive();
   return {
     id: "match-id",
+    publicId: "public-match-id",
     slug: "test-game",
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -165,6 +167,11 @@ beforeEach(() => {
   db.chessMatch.findUnique.mockResolvedValue(row());
   db.chessMatch.findMany.mockResolvedValue([]);
   db.$executeRaw.mockResolvedValue(1);
+  db.user.findUnique.mockResolvedValue({ deletionRequestedAt: null, banned: false } as never);
+  db.$transaction.mockImplementation(async (run) => {
+    if (typeof run !== "function") return Promise.all(run);
+    return run(db);
+  });
   ensureJob.mockResolvedValue({});
   evaluatePosition.mockImplementation(async (fen: string) => score(fen));
   providerKey.markInvalid.mockResolvedValue(undefined);
@@ -462,7 +469,7 @@ describe("durable chess worker", () => {
             spectatorEvaluations: true,
             ownerId: true,
             credentialSource: true,
-            Owner: { select: { role: true } },
+            Owner: { select: { role: true, deletionRequestedAt: true } },
           },
         });
         const claim = db.chessMatch.updateMany.mock.calls[0]?.[0];
@@ -1463,5 +1470,37 @@ describe("hosted human worker parking and repair", () => {
     const ended = validateArchive(update?.data.archive);
     expect(ended.termination).toBe("move-timeout");
     expect(ended.turn).toEqual({ type: "idle" });
+  });
+});
+
+describe("pending owner after a hosted claim", () => {
+  it("clears human turn state with SQL-null input and never dispatches", async () => {
+    const match = createMatch(
+      {
+        white: { name: "Human", model: "human", protocol: "human" },
+        black: { name: "Model", model: "fixture/model", protocol: "openai-chat" },
+        rules: {},
+      },
+      "hosted",
+    );
+    beginHostedTurn(match);
+    db.chessMatch.findUnique.mockResolvedValue({
+      ...row(),
+      archive: match,
+      ...chessTurnData(match.turn),
+      Owner: { role: "user", deletionRequestedAt: new Date() },
+    } as never);
+    await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(db.chessMatch.updateMany.mock.calls.at(-1)?.[0]).toMatchObject({
+      where: { id: "match-id", status: "running", runToken: expect.any(String) },
+      data: {
+        status: "stopped",
+        runToken: null,
+        terminalCause: "owner-delete",
+        ...chessTurnData({ type: "idle" }),
+      },
+    });
+    expect(providerKey.load).not.toHaveBeenCalled();
+    expect(evaluatePosition).not.toHaveBeenCalled();
   });
 });

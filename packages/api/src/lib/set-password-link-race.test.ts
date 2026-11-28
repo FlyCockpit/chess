@@ -238,7 +238,11 @@ const gate = () => {
 };
 /** A mailed invite link the invitee is about to spend (minted, then recorded as mailed). */
 const mailedLink = async () => {
-  const { token } = await createSetPasswordLink({ userId: USER, locale: "en-US" });
+  const { token } = await createSetPasswordLink({
+    authorizeActor: async () => {},
+    userId: USER,
+    locale: "en-US",
+  });
   expect(await recordResetLinkMailed({ token, userId: USER, email: store.user.email })).toBe(true);
   return token;
 };
@@ -307,7 +311,11 @@ describe("invite resend vs a finishing password reset", () => {
     const token = await mailedLink();
     const mintGate = gate();
     store.mintPause = mintGate.closed;
-    const minting = createSetPasswordLink({ userId: USER, locale: "en-US" });
+    const minting = createSetPasswordLink({
+      authorizeActor: async () => {},
+      userId: USER,
+      locale: "en-US",
+    });
     await settle();
     let finished = false;
     const resetting = finishReset(token).then((result) => {
@@ -355,7 +363,11 @@ describe("invite resend vs a finishing password reset", () => {
     const verifying = finishReset(token);
     await settle();
     let settled = false;
-    const minting = createSetPasswordLink({ userId: USER, locale: "en-US" }).finally(() => {
+    const minting = createSetPasswordLink({
+      authorizeActor: async () => {},
+      userId: USER,
+      locale: "en-US",
+    }).finally(() => {
       settled = true;
     });
     // The mint's own result is awaited below; keep the rejection handled.
@@ -371,9 +383,9 @@ describe("invite resend vs a finishing password reset", () => {
   it("a resend after a mailed reset committed is refused outright", async () => {
     const token = await mailedLink();
     expect(await finishReset(token)).toBe(true);
-    await expect(createSetPasswordLink({ userId: USER, locale: "en-US" })).rejects.toThrow(
-      new SetPasswordLinkRefusedError("not-pending"),
-    );
+    await expect(
+      createSetPasswordLink({ authorizeActor: async () => {}, userId: USER, locale: "en-US" }),
+    ).rejects.toThrow(new SetPasswordLinkRefusedError("not-pending"));
     expect(resetLinks()).toHaveLength(0);
   });
 
@@ -381,16 +393,20 @@ describe("invite resend vs a finishing password reset", () => {
   // invite stays pending, so a resend (which mails a link that does verify)
   // still works.
   it("a resend after a revealed link's reset still mints, and the account stays unverified", async () => {
-    const { token } = await createSetPasswordLink({ userId: USER, locale: "en-US" });
+    const { token } = await createSetPasswordLink({
+      authorizeActor: async () => {},
+      userId: USER,
+      locale: "en-US",
+    });
     expect(await finishReset(token)).toBe(true);
     expect(store.user.emailVerified).toBe(false);
-    await createSetPasswordLink({ userId: USER, locale: "en-US" });
+    await createSetPasswordLink({ authorizeActor: async () => {}, userId: USER, locale: "en-US" });
     expect(resetLinks()).toHaveLength(1);
   });
 
   it("a resend with no reset in sight mints exactly one working link", async () => {
-    await createSetPasswordLink({ userId: USER, locale: "en-US" });
-    await createSetPasswordLink({ userId: USER, locale: "en-US" });
+    await createSetPasswordLink({ authorizeActor: async () => {}, userId: USER, locale: "en-US" });
+    await createSetPasswordLink({ authorizeActor: async () => {}, userId: USER, locale: "en-US" });
     expect(resetLinks()).toHaveLength(1);
   });
 });

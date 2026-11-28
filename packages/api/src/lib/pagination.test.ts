@@ -310,3 +310,20 @@ describe("encodeCursor token bound", () => {
     expect(cursorTokenSchema.safeParse(token).success).toBe(true);
   });
 });
+
+describe("public identity keysets", () => {
+  it("keeps pagination delete-safe on an alternate unique tie-breaker without exposing a row id", () => {
+    const cursor = { sortValue: t0, id: "new-public-identity" };
+    expect(
+      withCursor({ published: true }, "createdAt", encodeCursor(cursor), "desc", "publicId"),
+    ).toEqual({
+      AND: [
+        { published: true },
+        { OR: [{ createdAt: { lt: t0 } }, { createdAt: t0, publicId: { lt: cursor.id } }] },
+      ],
+    });
+    expect(cursorWhere("createdAt", cursor, "asc", "publicId")).toEqual({
+      OR: [{ createdAt: { gt: t0 } }, { createdAt: t0, publicId: { gt: cursor.id } }],
+    });
+  });
+});

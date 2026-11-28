@@ -45,6 +45,6 @@ describe("requireVerifiedAdminSession ban admission", () => {
       ok: true,
       session,
     });
-    expect(isTwoFactorPolicySatisfied).toHaveBeenCalledWith(session.user);
+    expect(isTwoFactorPolicySatisfied).toHaveBeenCalledWith(session.user, undefined);
   });
 });

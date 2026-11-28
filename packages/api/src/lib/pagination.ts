@@ -113,10 +113,10 @@ export type CursorDirection = "asc" | "desc";
  * The composite-keyset `where` fragment for one page boundary.
  * `desc` → everything strictly below (`sortColumn`, `id`); `asc` → above.
  */
-export type CursorKeyset<F extends string> = {
+export type CursorKeyset<F extends string, Tie extends string = "id"> = {
   OR: [
     { [K in F]: { lt: Date } | { gt: Date } },
-    { [K in F]: Date } & { id: { lt: string } | { gt: string } },
+    { [K in F]: Date } & { [K in Tie]: { lt: string } | { gt: string } },
   ];
 };
 
@@ -133,18 +133,19 @@ export type CursorKeyset<F extends string> = {
  * total order: `[{ <field>: dir }, { id: dir }]`. Without the `id` tie-breaker,
  * rows sharing a timestamp can repeat or vanish across pages.
  */
-export function cursorWhere<F extends string>(
+export function cursorWhere<F extends string, Tie extends string = "id">(
   field: F,
   cursor: Cursor,
   direction: CursorDirection,
-): CursorKeyset<F> {
+  tieBreaker: Tie = "id" as Tie,
+): CursorKeyset<F, Tie> {
   const bound = direction === "desc" ? { lt: cursor.sortValue } : { gt: cursor.sortValue };
   const tieBreak = direction === "desc" ? { lt: cursor.id } : { gt: cursor.id };
   return {
     OR: [
       { [field]: bound } as { [K in F]: { lt: Date } | { gt: Date } },
-      { [field]: cursor.sortValue, id: tieBreak } as { [K in F]: Date } & {
-        id: { lt: string } | { gt: string };
+      { [field]: cursor.sortValue, [tieBreaker]: tieBreak } as { [K in F]: Date } & {
+        [K in Tie]: { lt: string } | { gt: string };
       },
     ],
   };
@@ -168,14 +169,15 @@ export function cursorWhere<F extends string>(
  * const page = cursorPage(items, limit, "createdAt");
  * ```
  */
-export function withCursor<W, F extends string>(
+export function withCursor<W, F extends string, Tie extends string = "id">(
   where: W,
   field: F,
   token: string | undefined,
   direction: CursorDirection,
-): { AND: Array<W | CursorKeyset<F>> } {
+  tieBreaker: Tie = "id" as Tie,
+): { AND: Array<W | CursorKeyset<F, Tie>> } {
   const cursor = token ? decodeCursor(token) : null;
-  return { AND: cursor ? [where, cursorWhere(field, cursor, direction)] : [where] };
+  return { AND: cursor ? [where, cursorWhere(field, cursor, direction, tieBreaker)] : [where] };
 }
 
 /** A row that can anchor a composite cursor on the column `F`. */

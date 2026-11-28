@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { type CredentialKind, createContext } from "@cockpit-chess/api/context";
 import { appRouter } from "@cockpit-chess/api/routers/index";
 import { auth, passwordPepper, type Session } from "@cockpit-chess/auth";
+import { isOwnerActive } from "@cockpit-chess/auth/account-deletion";
 import { withDeviceRedemptionLock } from "@cockpit-chess/auth/device-redemption-lock";
 import { syncPasswordPepper } from "@cockpit-chess/auth/password-pepper-store";
 import { withPasswordSignInFence } from "@cockpit-chess/auth/password-sign-in-fence";
@@ -501,8 +502,8 @@ if (env.NODE_ENV === "production") {
 // The companion-CLI surface: /api/cli/rpc (bearer-authenticated `cliRouter`)
 // plus the install/download endpoints. Mounted before the catch-all oRPC/SSR
 // handlers below. See cli-routes.ts and packages/api/src/routers/cli.ts.
-// D2a must supply its durable deletion predicate before live upgrades activate.
-const runnerWebSocket = createRunnerWebSocketRuntime({ isOwnerActive: null });
+// Every runner connect, action and heartbeat rechecks durable account authority.
+const runnerWebSocket = createRunnerWebSocketRuntime({ isOwnerActive });
 lifecycle.addTransportDrain(() => runnerWebSocket.stop());
 mountRunnerWsRoutes(app, {
   runtime: runnerWebSocket.runtime,

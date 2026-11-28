@@ -606,6 +606,123 @@ describe("createModelAdapter — durable actual-request authorization", () => {
     }
   });
 
+  it.each(["openrouter", "anthropic", "openai-chat", "openai-responses"] as const)(
+    "%s rechecks persisted authorization expiry after the owner admission wait",
+    async (provider) => {
+      let expired = false;
+      const beforeSend = vi.fn(() => {
+        if (expired) throw new Error("authorization expired");
+      });
+      const beforeDispatch = vi.fn();
+      const dispatchGuard = vi.fn(async (send: () => Promise<Response>) => {
+        await Promise.resolve();
+        expired = true;
+        return send();
+      });
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+      const wrapped = requestFetcher({
+        provider,
+        model: "vendor/model",
+        apiKey: "test-key",
+        dataCollection: "deny",
+        beforeDispatch,
+        dispatchGuard,
+        authorizeRequest: async () => ({ body, beforeSend }),
+      });
+      try {
+        await expect(wrapped(endpoint, { method: "POST", body })).rejects.toThrow(
+          "authorization expired",
+        );
+        expect(dispatchGuard).toHaveBeenCalledOnce();
+        expect(beforeDispatch).toHaveBeenCalledTimes(2);
+        expect(beforeSend).toHaveBeenCalledOnce();
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each(["openrouter", "anthropic", "openai-chat", "openai-responses"] as const)(
+    "%s authorizes final privacy bytes before owner admission and settles usage outside it",
+    async (provider) => {
+      let admitted = false;
+      const order: string[] = [];
+      const usage = { cost: 0.000125 };
+      let replacement = "";
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        expect(admitted).toBe(true);
+        expect(await (input as Request).text()).toBe(replacement);
+        order.push("wire");
+        const terminal =
+          provider === "anthropic"
+            ? { type: "message", stop_reason: "end_turn" }
+            : provider === "openai-responses"
+              ? { object: "response", status: "completed" }
+              : { choices: [{ finish_reason: "stop" }] };
+        return new Response(JSON.stringify({ ...terminal, usage }), {
+          headers: { "content-type": "application/json" },
+        });
+      });
+      const wrapped = requestFetcher({
+        provider,
+        model: "vendor/model",
+        apiKey: "test-key",
+        dataCollection: "deny",
+        beforeDispatch: () => {
+          order.push("lease");
+        },
+        authorizeRequest: async (request) => {
+          expect(admitted).toBe(false);
+          const final = JSON.parse(request.body);
+          expect(final.provider).toMatchObject({ data_collection: "deny" });
+          expect(final.prompt_cache_key).toBe("match:side");
+          final.provider.allow_fallbacks = false;
+          replacement = JSON.stringify(final);
+          await Promise.resolve();
+          order.push("authorized");
+          return {
+            body: replacement,
+            beforeSend: () => {
+              expect(admitted).toBe(true);
+              order.push("expiry");
+            },
+            onUsage: async (raw) => {
+              expect(admitted).toBe(false);
+              expect(raw).toEqual(usage);
+              order.push("settled");
+            },
+          };
+        },
+        dispatchGuard: async (send) => {
+          await Promise.resolve();
+          admitted = true;
+          order.push("admitted");
+          try {
+            return await send();
+          } finally {
+            admitted = false;
+          }
+        },
+      });
+      try {
+        await wrapped(endpoint, { method: "POST", body });
+        expect(order).toEqual([
+          "lease",
+          "authorized",
+          "admitted",
+          "lease",
+          "expiry",
+          "wire",
+          "settled",
+        ]);
+        expect(fetchSpy).toHaveBeenCalledOnce();
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    },
+  );
+
   it("refuses unsupported body carriers before invoking authorization or fetch", async () => {
     const authorizeRequest = vi.fn(async () => undefined);
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
@@ -620,4 +737,143 @@ describe("createModelAdapter — durable actual-request authorization", () => {
       fetchSpy.mockRestore();
     }
   });
+});
+
+describe("createModelAdapter — durable dispatchGuard", () => {
+  it.each(["openrouter", "anthropic", "openai-chat", "openai-responses"] as const)(
+    "%s admits only after the privacy rewrite and charges the immediate guard once",
+    async (provider) => {
+      let decoded: () => void = () => {};
+      const decoding = new Promise<void>((resolve) => {
+        decoded = resolve;
+      });
+      let finishDecode: () => void = () => {};
+      const releaseDecode = new Promise<void>((resolve) => {
+        finishDecode = resolve;
+      });
+      const originalJson = Request.prototype.json;
+      const jsonSpy = vi.spyOn(Request.prototype, "json").mockImplementation(async function (
+        this: Request,
+      ) {
+        const body: unknown = await originalJson.call(this);
+        decoded();
+        await releaseDecode;
+        return body;
+      });
+      let allow = true;
+      const beforeDispatch = vi.fn();
+      const dispatchGuard = vi.fn(async (send: () => Promise<Response>) => {
+        if (!allow) throw new Error("account pending deletion");
+        return send();
+      });
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const request = new Request(input, init);
+        const body: unknown = JSON.parse(await request.text());
+        expect(body).toMatchObject({ provider: { data_collection: "deny" } });
+        return new Response("{}");
+      });
+      let inFlight: Promise<unknown> | undefined;
+      try {
+        createModelAdapter({
+          provider,
+          model: "test-model",
+          apiKey: "k",
+          baseUrl: "https://openrouter.ai/api/v1",
+          dataCollection: "deny",
+          dispatchGuard,
+          beforeDispatch,
+        });
+        const request = () => {
+          const value = new Request("https://openrouter.ai/api/v1/provider", {
+            method: "POST",
+            body: JSON.stringify({ messages: [] }),
+          });
+          if (provider === "openrouter") {
+            const client = lastOpenRouterConfig()?.httpClient as HTTPClient;
+            return client.request(value);
+          }
+          const calls =
+            provider === "anthropic"
+              ? anthropicCalls
+              : provider === "openai-chat"
+                ? chatCompletionsCalls
+                : openaiCalls;
+          const config = calls.at(-1)?.[2] as { fetch?: typeof fetch } | undefined;
+          if (!config?.fetch) throw new Error("Missing guarded fetch");
+          return config.fetch(value);
+        };
+        const waiting = request();
+        inFlight = waiting;
+        await decoding;
+        expect(dispatchGuard).not.toHaveBeenCalled();
+        allow = false;
+        finishDecode();
+        await expect(waiting).rejects.toThrow("account pending deletion");
+        expect(beforeDispatch).not.toHaveBeenCalled();
+        expect(fetchSpy).not.toHaveBeenCalled();
+        allow = true;
+        await request();
+        expect(dispatchGuard).toHaveBeenCalledTimes(2);
+        expect(beforeDispatch).toHaveBeenCalledTimes(1);
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        finishDecode();
+        await inFlight?.catch(() => undefined);
+        jsonSpy.mockRestore();
+        fetchSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each(["openrouter", "anthropic", "openai-chat", "openai-responses"] as const)(
+    "%s checks asynchronous admission and runs the immediate lease guard after it",
+    async (provider) => {
+      let allow = false;
+      const order: string[] = [];
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+        order.push("fetch");
+        return new Response("{}");
+      });
+      try {
+        createModelAdapter({
+          provider,
+          model: "test-model",
+          apiKey: "k",
+          dispatchGuard: async (send) => {
+            await Promise.resolve();
+            if (!allow) throw new Error("account pending deletion");
+            order.push("admitted");
+            return send();
+          },
+          beforeDispatch: () => {
+            order.push("lease");
+          },
+        });
+        const request = () => {
+          if (provider === "openrouter") {
+            const client = lastOpenRouterConfig()?.httpClient as HTTPClient;
+            return client.request(new Request("https://example.test/provider"));
+          }
+          const calls =
+            provider === "anthropic"
+              ? anthropicCalls
+              : provider === "openai-chat"
+                ? chatCompletionsCalls
+                : openaiCalls;
+          const config = calls.at(-1)?.[2] as { fetch?: typeof fetch } | undefined;
+          if (!config?.fetch) throw new Error("Missing guarded fetch");
+          const wrapped = config.fetch;
+          return wrapped("https://example.test/provider");
+        };
+        await expect(request()).rejects.toThrow("account pending deletion");
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(order).toEqual([]);
+        allow = true;
+        await request();
+        expect(order).toEqual(["admitted", "lease", "fetch"]);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    },
+  );
 });

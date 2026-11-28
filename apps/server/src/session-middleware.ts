@@ -1,4 +1,5 @@
 import { auth, type Session } from "@cockpit-chess/auth";
+import { isAccountDeletionPending } from "@cockpit-chess/auth/account-state";
 import { isUserBanned } from "@cockpit-chess/auth/ban";
 import type { Context, Next } from "hono";
 
@@ -30,7 +31,8 @@ export async function sessionMiddleware(c: Context, next: Next) {
     c.set("sessionCookieOwner", session?.user.id ?? null);
     // getSession does not re-check bans. A session minted concurrently with
     // archival can survive session deletion; never expose it to consumers.
-    if (session?.user && isUserBanned(session.user)) session = null;
+    if (session?.user && (isUserBanned(session.user) || isAccountDeletionPending(session.user)))
+      session = null;
   } catch (err) {
     console.warn("[session-middleware] getSession failed, treating as anonymous:", err);
     c.set("sessionLookupFailed", true);

@@ -54,12 +54,27 @@ describe("runner-only credential resolver", () => {
     expect(db.runnerMachine.findUnique).toHaveBeenCalledWith({
       where: { credentialDigest: digestRunnerMachineSecret(secret) },
       select: expect.objectContaining({
-        User: { select: { id: true, emailVerified: true, banned: true, banExpires: true } },
+        User: {
+          select: {
+            id: true,
+            emailVerified: true,
+            banned: true,
+            banExpires: true,
+            deletionRequestedAt: true,
+          },
+        },
       }),
     });
     expect(JSON.stringify(db.runnerMachine.findUnique.mock.calls)).not.toContain(secret);
     expect(db.session.findUnique).not.toHaveBeenCalled();
     expect(db.runnerMachine.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("refuses a runner whose owning account is pending deletion", async () => {
+    db.runnerMachine.findUnique.mockResolvedValue(
+      machineRow({ User: { id: "u1", emailVerified: true, deletionRequestedAt: NOW } }) as never,
+    );
+    expect(await resolveRunnerMachineCredential(`Bearer ${secret}`)).toBeNull();
   });
 
   it.each([

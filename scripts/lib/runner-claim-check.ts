@@ -213,6 +213,58 @@ export async function runnerClaimsCheck() {
       assert.equal(await prisma.runnerMachine.count({ where: { userId: owner.user.id } }), 0);
     }
 
+    // A live original browser session is insufficient once the durable owner
+    // fence is pending. Keep it intentionally: session revocation must not be
+    // the only reason a stale approval or fresh link cannot mint authority.
+    const deletingOwner = await fixture();
+    const approvedBeforeDeletion = await begin();
+    const unclaimedAfterDeletion = await begin();
+    await service.claim(deletingOwner.authority, approvedBeforeDeletion.claimToken);
+    const bindingSelect = { userId: true, sessionId: true, machineId: true, claimedAt: true };
+    const approvedBinding = await prisma.runnerClaim.findUniqueOrThrow({
+      where: { id: approvedBeforeDeletion.claimId },
+      select: bindingSelect,
+    });
+    await locks.withCliCredentialLockSlot(() =>
+      prisma.$transaction(async (tx) => {
+        await locks.lockCliCredentials(deletingOwner.user.id, tx);
+        await tx.user.update({
+          where: { id: deletingOwner.user.id },
+          data: { deletionRequestedAt: new Date(), deletionState: "pending" },
+        });
+      }),
+    );
+    const survivingSession = await prisma.session.findUniqueOrThrow({
+      where: { id: deletingOwner.session.id },
+    });
+    assert.equal(survivingSession.userId, deletingOwner.user.id);
+    assert.ok(survivingSession.expiresAt.getTime() > Date.now());
+    await assert.rejects(
+      service.claim(deletingOwner.authority, unclaimedAfterDeletion.claimToken),
+      { code: "FORBIDDEN" },
+    );
+    await assert.rejects(
+      service.claim(deletingOwner.authority, approvedBeforeDeletion.claimToken),
+      { code: "FORBIDDEN" },
+    );
+    await assert.rejects(service.poll(approvedBeforeDeletion.input), notFound);
+    await assert.rejects(service.exchange(approvedBeforeDeletion.input), notFound);
+    assert.deepEqual(
+      await prisma.runnerClaim.findUniqueOrThrow({
+        where: { id: unclaimedAfterDeletion.claimId },
+        select: bindingSelect,
+      }),
+      { userId: null, sessionId: null, machineId: null, claimedAt: null },
+    );
+    assert.deepEqual(
+      await prisma.runnerClaim.findUniqueOrThrow({
+        where: { id: approvedBeforeDeletion.claimId },
+        select: bindingSelect,
+      }),
+      approvedBinding,
+    );
+    assert.equal(await prisma.runnerMachine.count({ where: { userId: deletingOwner.user.id } }), 0);
+
     // Failure after the mint must roll back BOTH the credential and its claim
     // binding. The same original proof can then retry successfully.
     const failedOwner = await fixture();
@@ -402,7 +454,7 @@ export async function runnerClaimsCheck() {
     );
     assert.equal(JSON.stringify(onlyProofDigest).includes(cleaned.input.proof), false);
     console.log(
-      "runner-claims: first-owner, stable exchange, live authority/reset races, rollback and bounded cleanup passed",
+      "runner-claims: first-owner, stable exchange, pending deletion, live authority/reset races, rollback and bounded cleanup passed",
     );
   } finally {
     await prisma.runnerClaim.deleteMany({ where: { id: { in: ids } } });

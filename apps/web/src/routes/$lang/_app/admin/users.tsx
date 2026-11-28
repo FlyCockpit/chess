@@ -64,6 +64,7 @@ type UserRow = {
   emailVerified: boolean;
   /** Server-computed (users.list): an invite nobody has started using. */
   invitePending: boolean;
+  deletionRequestedAt: Date | string | null;
   banned: boolean | null;
   banReason: string | null;
   createdAt: Date | string;
@@ -173,7 +174,7 @@ function AdminUsers() {
     ...orpc.users.remove.mutationOptions({
       onSuccess: () => {
         setDeleteTarget(null);
-        toast.success(t("admin:users.userDeleted"));
+        toast.success(t("admin:users.deletionRequested"));
         void queryClient.invalidateQueries({ queryKey: orpc.users.key() });
       },
       onError: (error) => {
@@ -313,6 +314,7 @@ function AdminUsers() {
                     const isSelf = user.id === session.user.id;
                     const isAdmin = hasRole(user.role, "admin");
                     const isArchived = !!user.banned;
+                    const deletionPending = user.deletionRequestedAt != null;
                     return (
                       <li
                         key={user.id}
@@ -330,7 +332,13 @@ function AdminUsers() {
                               </span>
                             )}
                             <RolePill isAdmin={isAdmin} />
-                            {isArchived && <ArchivedPill />}
+                            {deletionPending ? (
+                              <span className="inline-flex items-center rounded-md bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium uppercase text-amber-700 dark:text-amber-400">
+                                {t("admin:users.deletionPendingBadge")}
+                              </span>
+                            ) : (
+                              isArchived && <ArchivedPill />
+                            )}
                             {!user.emailVerified && <UnverifiedPill />}
                           </p>
                           <p className="mt-0.5 truncate text-xs text-muted-foreground">
@@ -418,6 +426,8 @@ function AdminUsers() {
         }}
         title={t("admin:users.deleteTitle")}
         description={t("admin:users.deleteDescription")}
+        confirmLabel={t("admin:users.confirmDeletionRequest")}
+        pendingLabel={t("admin:users.requestingDeletion")}
         confirmToken={deleteTarget?.email ?? ""}
         typePrompt={t("admin:users.typeEmailToConfirm")}
         copyAriaLabel={t("admin:users.copyEmailAriaLabel")}
@@ -459,7 +469,8 @@ function UserActions({
   // The server decides what a pending invite is (unverified, password account
   // only, never signed in) and enforces it again on resend. `emailVerified`
   // alone is not it: an active SSO user can be unverified.
-  const invitePending = user.invitePending && !isArchived;
+  const deletionPending = user.deletionRequestedAt != null;
+  const invitePending = user.invitePending && !isArchived && !deletionPending;
   const { t } = useTranslation("admin");
   return (
     <DropdownMenu>
@@ -483,23 +494,29 @@ function UserActions({
           </DropdownMenuItem>
         )}
         {isAdmin ? (
-          <DropdownMenuItem disabled={isSelf || disabled} onClick={() => onSetRole("user")}>
+          <DropdownMenuItem
+            disabled={isSelf || disabled || deletionPending}
+            onClick={() => onSetRole("user")}
+          >
             <Shield className="size-4" />
             {t("users.demoteToUser")}
           </DropdownMenuItem>
         ) : (
-          <DropdownMenuItem disabled={disabled} onClick={() => onSetRole("admin")}>
+          <DropdownMenuItem
+            disabled={disabled || deletionPending}
+            onClick={() => onSetRole("admin")}
+          >
             <Shield className="size-4" />
             {t("users.promoteToAdmin")}
           </DropdownMenuItem>
         )}
         {isArchived ? (
-          <DropdownMenuItem disabled={disabled} onClick={onUnarchive}>
+          <DropdownMenuItem disabled={disabled || deletionPending} onClick={onUnarchive}>
             <ArchiveArrowUp className="size-4" />
             {t("users.restoreUser")}
           </DropdownMenuItem>
         ) : (
-          <DropdownMenuItem disabled={isSelf || disabled} onClick={onArchive}>
+          <DropdownMenuItem disabled={isSelf || disabled || deletionPending} onClick={onArchive}>
             <Archive className="size-4" />
             {t("users.archiveUser")}
           </DropdownMenuItem>

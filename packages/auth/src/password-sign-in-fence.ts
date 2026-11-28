@@ -133,6 +133,8 @@ type Fence = {
   /** The user whose credential the body's email named when the request arrived, if any. */
   userId: string | null;
   credential: string;
+  /** Primary password proof began here; rotations and code steps cannot freshen it. */
+  authenticatedAt: Date;
   /** What the request created, for removal if the credential changed. */
   sessionIds: string[];
   verificationIdentifiers: string[];
@@ -178,6 +180,7 @@ export async function withPasswordSignInFence(
   const fence: Fence = {
     userId: snapshot?.userId ?? null,
     credential: snapshot?.credential ?? "",
+    authenticatedAt: new Date(),
     sessionIds: [],
     verificationIdentifiers: [],
     refused: false,
@@ -315,6 +318,57 @@ export async function fencePasswordSessionBefore(
 }
 
 /**
+ * The primary authentication behind a new browser session. Session createdAt is
+ * deliberately irrelevant: Better Auth resets it during factor enrollment and
+ * other cookie rotations. Call only after fencePasswordSessionBefore succeeds.
+ * Existing signed-in rotations inherit their durable parent's proof, never their
+ * copied request data. A sign-in code step inherits the original password proof
+ * recorded in the existing credential challenge fence, not code completion time.
+ */
+export async function sessionAuthenticationTime(
+  session: { userId: string; impersonatedBy?: string | null },
+  context: HookContext,
+): Promise<Date | null> {
+  const path = context?.path ?? "";
+  if (session.impersonatedBy || path === DEVICE_TOKEN_PATH || path.startsWith("/admin/"))
+    return null;
+  if (path === PASSWORD_SIGN_IN_PATH) return fenceFor.getStore()?.authenticatedAt ?? null;
+  // These are the pinned provider callback / verified ID-token sign-in paths.
+  // A same-user parent cookie must not hide a genuinely new IdP authentication.
+  if (isIdentityProviderSignIn(path)) return new Date();
+  if (path === CHANGE_PASSWORD_PATH) {
+    assertPasswordWriteLocked();
+    return new Date();
+  }
+  const parent = parentSession(context);
+  if (parent) {
+    const live = await prisma.session.findFirst({
+      where: { id: parent.id, userId: session.userId, expiresAt: { gt: new Date() } },
+      select: { authenticatedAt: true },
+    });
+    return validAuthenticationTime(live?.authenticatedAt);
+  }
+  if (!TWO_FACTOR_VERIFY_PATHS.has(path)) return null;
+  const challenge = await twoFactorChallenge(context);
+  if (!challenge) return null;
+  const proof = await prisma.verification.findFirst({
+    where: {
+      identifier: challengeFenceIdentifier(challenge, await credentialFingerprint(session.userId)),
+      value: session.userId,
+      expiresAt: { gt: new Date() },
+    },
+    select: { createdAt: true },
+  });
+  return validAuthenticationTime(proof?.createdAt);
+}
+
+function validAuthenticationTime(value: unknown): Date | null {
+  return value instanceof Date && Number.isFinite(value.getTime()) && value.getTime() <= Date.now()
+    ? value
+    : null;
+}
+
+/**
  * Session-create AFTER hook: the same proof re-checked now that the row is
  * committed. A sign-in session is recorded for the wrapper's final re-check.
  * Otherwise, if the proof no longer holds (the parent session was deleted, the
@@ -365,7 +419,12 @@ export async function recordTwoFactorChallenge(verification: {
   if (!TWO_FACTOR_CHALLENGE.test(verification.identifier)) return;
   const identifier = challengeFenceIdentifier(verification.identifier, fence.credential);
   await prisma.verification.create({
-    data: { identifier, value: fence.userId, expiresAt: verification.expiresAt },
+    data: {
+      identifier,
+      value: fence.userId,
+      expiresAt: verification.expiresAt,
+      createdAt: fence.authenticatedAt,
+    },
     select: { id: true },
   });
   fence.verificationIdentifiers.push(verification.identifier, identifier);

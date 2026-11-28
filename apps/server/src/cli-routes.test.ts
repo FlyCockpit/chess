@@ -83,6 +83,12 @@ beforeEach(() => {
   calls.length = 0;
   release.isCliReleaseConfigured.mockReturnValue(true);
   verifyCliInstallToken.mockReturnValue(null);
+  db.user.findUnique.mockReset().mockResolvedValue({
+    id: "cli-user",
+    banned: false,
+    banExpires: null,
+    deletionRequestedAt: null,
+  } as never);
 });
 
 describe("limiter order", () => {
@@ -138,6 +144,31 @@ describe("GET /api/cli/install.sh and install.ps1", () => {
     expect(await (await app().request("/api/cli/install.ps1", install(TOKEN))).text()).toContain(
       "expired or is invalid",
     );
+  });
+
+  it.each(["/api/cli/install.sh", "/api/cli/install.ps1"])(
+    "refuses a pre-issued capability for a pending owner on %s",
+    async (path) => {
+      validTokenFor({ id: "u1", banned: false, deletionRequestedAt: new Date() });
+      const response = await app().request(path, install(TOKEN));
+      const body = await response.text();
+      expect(response.status).toBe(200);
+      expect(body).toContain("expired or is invalid");
+      expect(body).not.toContain(TOKEN);
+      expect(db.user.findUnique).toHaveBeenCalledWith({
+        where: { id: "u1" },
+        select: { deletionRequestedAt: true, banned: true, banExpires: true },
+      });
+    },
+  );
+
+  it("fails closed on owner storage failure without embedding a capability", async () => {
+    verifyCliInstallToken.mockReturnValue("u1");
+    db.user.findUnique.mockRejectedValue(new Error("private-driver-detail"));
+    const body = await (await app().request("/api/cli/install.sh", install(TOKEN))).text();
+    expect(body).toContain("expired or is invalid");
+    expect(body).not.toContain("private-driver-detail");
+    expect(body).not.toContain(TOKEN);
   });
 
   it("serves the installer for a valid token", async () => {
@@ -196,6 +227,44 @@ describe("GET /api/cli/download/:asset", () => {
     ).toBe(401);
     expect(release.resolveCliAssetUrl).not.toHaveBeenCalled();
   });
+
+  it("rejects a pre-issued install capability after owner deletion is pending", async () => {
+    validTokenFor({ id: "u1", banned: false, deletionRequestedAt: new Date() });
+    const res = await app().request("/api/cli/download/cockpit-chess-linux-x64", install(TOKEN));
+    expect(res.status).toBe(401);
+    expect(release.resolveCliAssetUrl).not.toHaveBeenCalled();
+  });
+
+  it.each(["install", "bearer"] as const)(
+    "rechecks %s owner after release discovery waits",
+    async (credential) => {
+      let started!: () => void;
+      let resume!: (url: string) => void;
+      const waiting = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      release.resolveCliAssetUrl.mockImplementationOnce(async () => {
+        started();
+        return new Promise<string>((resolve) => {
+          resume = resolve;
+        });
+      });
+      validTokenFor({ id: credential === "install" ? "u1" : "cli-user", banned: false });
+      const request = app().request(
+        "/api/cli/download/cockpit-chess-linux-x64",
+        credential === "install" ? install(TOKEN) : { headers: { authorization: "Bearer good" } },
+      );
+      await waiting;
+      db.user.findUnique.mockResolvedValue({
+        banned: false,
+        deletionRequestedAt: new Date(),
+      } as never);
+      resume("https://objects.example/signed?sig=1");
+      const response = await request;
+      expect(response.status).toBe(401);
+      expect(response.headers.get("location")).toBeNull();
+    },
+  );
 
   it("redirects an install-token holder to the resolved asset URL", async () => {
     validTokenFor({ id: "u1", banned: false, banExpires: null });

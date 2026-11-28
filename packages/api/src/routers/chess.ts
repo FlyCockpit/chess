@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { ownerActiveInTransaction } from "@cockpit-chess/auth/account-deletion";
 import {
   lockCliCredentials,
   withCliCredentialLockSlot,
@@ -39,6 +40,13 @@ import {
   publicProcedure,
 } from "../index";
 import { sourceCodeUrl } from "../lib/build-commit";
+import {
+  anonymizeReplay,
+  anonymizeSpectatorEvaluations,
+  DELETED_USER,
+  neutralArchiveId,
+  UNKNOWN_MODEL,
+} from "../lib/chess-anonymization";
 import { chessTurnData, wakeHostedMatch } from "../lib/chess-human";
 import { admitHostedMatch, CHESS_CREATE_LOCK } from "../lib/chess-locks";
 import { getModelCatalog } from "../lib/chess-models";
@@ -82,6 +90,95 @@ const summary = {
   identityMode: true,
   ending: true,
 } satisfies Prisma.ChessMatchSelect;
+/** Visibility is fenced immediately; D2b later detaches only scrubbed published rows. */
+const publicReplayWhere = {
+  published: true,
+  OR: [{ ownerId: null }, { Owner: { is: { deletionRequestedAt: null } } }],
+} satisfies Prisma.ChessMatchWhereInput;
+const publicSummary = {
+  ...summary,
+  publicId: true,
+  ownerId: true,
+  Owner: { select: { deletionRequestedAt: true } },
+  whiteModel: true,
+  blackModel: true,
+  whiteProtocol: true,
+  blackProtocol: true,
+} satisfies Prisma.ChessMatchSelect;
+async function safeCatalogIds() {
+  try {
+    return new Set((await getModelCatalog()).models.map((model) => model.id));
+  } catch {
+    // Privacy never depends on the catalog being available.
+    return new Set<string>();
+  }
+}
+function publicCard(
+  input: Prisma.ChessMatchGetPayload<{ select: typeof publicSummary }>,
+  safeModelIds: ReadonlySet<string>,
+) {
+  const { ownerId, Owner, publicId, whiteModel, blackModel, whiteProtocol, blackProtocol } = input;
+  // Explicit response whitelist: adding a private selection later cannot silently
+  // turn an archive, owner field or internal row identity into public card data.
+  const row = {
+    id: publicId,
+    slug: input.slug,
+    createdAt: input.createdAt,
+    title: input.title,
+    whiteName: input.whiteName,
+    blackName: input.blackName,
+    status: input.status,
+    published: input.published,
+    source: input.source,
+    rulesKey: input.rulesKey,
+    rulesVersion: input.rulesVersion,
+    promptVersion: input.promptVersion,
+    promptHash: input.promptHash,
+    contextMode: input.contextMode,
+    identityMode: input.identityMode,
+    ending: input.ending,
+    OfficialEntry: input.OfficialEntry,
+    turnType: input.turnType,
+    turnId: input.turnId,
+    turnSide: input.turnSide,
+    turnExpectedSeq: input.turnExpectedSeq,
+    turnStartedAt: input.turnStartedAt,
+    turnDeadline: input.turnDeadline,
+    pendingMove: input.pendingMove,
+  };
+  if (Owner?.deletionRequestedAt) throw new ORPCError("NOT_FOUND");
+  if (ownerId !== null) return { ...withEnding({ ...row, id: publicId }), anonymized: false };
+  const identity = neutralArchiveId(row.slug);
+  if (!identity) throw new ORPCError("NOT_FOUND");
+  const name = (model: string | null, protocol: string | null) =>
+    protocol === "human"
+      ? DELETED_USER
+      : protocol === "random"
+        ? "Random"
+        : model && safeModelIds.has(model)
+          ? model.slice(0, 80)
+          : UNKNOWN_MODEL;
+  return {
+    ...withEnding({
+      ...row,
+      ...chessTurnSelectIdle,
+      id: publicId,
+      title: DELETED_USER,
+      whiteName: name(whiteModel, whiteProtocol),
+      blackName: name(blackModel, blackProtocol),
+    }),
+    anonymized: true,
+  };
+}
+const chessTurnSelectIdle = {
+  turnType: "idle",
+  turnId: null,
+  turnSide: null,
+  turnExpectedSeq: null,
+  turnStartedAt: null,
+  turnDeadline: null,
+  pendingMove: null,
+};
 /** The stored short ending; anything malformed reads as unknown rather than failing the list. */
 const cardEnding = endingSummarySchema.nullable().catch(null);
 /**
@@ -279,7 +376,23 @@ const connectionGateSelect = {
   expiresAt: true,
 } satisfies Prisma.OpenRouterConnectionSelect;
 /** Inspect/stop/publish of the caller's own match, shared with the CLI's admin surface. */
-async function inspectOwnMatch(slug: string, ownerId: string) {
+async function assertLiveOwnerRead(ownerId: string, sessionId: string) {
+  return withCliCredentialLockSlot(() =>
+    prisma.$transaction(
+      async (tx) => {
+        await lockCliCredentials(ownerId, tx);
+        const live = await tx.session.findFirst({
+          where: { id: sessionId, userId: ownerId, expiresAt: { gt: new Date() } },
+          select: { id: true },
+        });
+        if (!live || !(await ownerActiveInTransaction(tx, ownerId)))
+          throw new ORPCError("UNAUTHORIZED");
+      },
+      { isolationLevel: "ReadCommitted", timeout: 30_000 },
+    ),
+  );
+}
+async function inspectOwnMatch(slug: string, ownerId: string, sessionId: string) {
   const row = await ownDraft(slug, ownerId, ownInspectSelect);
   // Studio offers no preview of an old-rules game; the CLI gets a reason, not "invalid".
   if (isOldRulesVersion(row.rulesVersion))
@@ -297,6 +410,8 @@ async function inspectOwnMatch(slug: string, ownerId: string) {
           },
         })) + 1
       : null;
+  // Queue IO may outlive the session/deletion state sampled at procedure entry.
+  await assertLiveOwnerRead(ownerId, sessionId);
   return {
     archive,
     turn: chessTurnMetadata(archive.turn),
@@ -309,13 +424,20 @@ async function inspectOwnMatch(slug: string, ownerId: string) {
   } as const;
 }
 async function publishOwnMatch(slug: string, ownerId: string, published: boolean) {
-  const row = await ownDraft(slug, ownerId, ownIdSelect);
-  await prisma.chessMatch.update({
-    where: { id: row.id },
-    data: { published },
-    select: { id: true },
-  });
-  return { published };
+  return withCliCredentialLockSlot(() =>
+    prisma.$transaction(async (tx) => {
+      await lockCliCredentials(ownerId, tx);
+      if (!(await ownerActiveInTransaction(tx, ownerId))) throw new ORPCError("UNAUTHORIZED");
+      const row = await tx.chessMatch.findFirst({ where: { slug, ownerId }, select: ownIdSelect });
+      if (!row) throw new ORPCError("NOT_FOUND");
+      await tx.chessMatch.update({
+        where: { id: row.id },
+        data: { published },
+        select: { id: true },
+      });
+      return { published };
+    }),
+  );
 }
 const capacityMatchSelect = {
   slug: true,
@@ -355,30 +477,69 @@ export const chessRouter = {
     }
   }),
   list: publicProcedure.input(cursorPageInput).handler(async ({ input }) => {
-    const rows = await prisma.chessMatch.findMany({
-      where: withCursor({ published: true }, "createdAt", input.cursor, "desc"),
-      select: summary,
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: pageTake(input.limit),
-    });
-    return cursorPage(rows.map(withEnding), input.limit, "createdAt");
+    const readPage = () =>
+      prisma.chessMatch.findMany({
+        where: withCursor(publicReplayWhere, "createdAt", input.cursor, "desc", "publicId"),
+        select: publicSummary,
+        orderBy: [{ createdAt: "desc" }, { publicId: "desc" }],
+        take: pageTake(input.limit),
+      });
+    let rows = await readPage();
+    let safeIds = new Set<string>();
+    if (rows.some((row) => row.ownerId === null)) {
+      safeIds = await safeCatalogIds();
+      // Catalog IO can take seconds. Only this final, visibility-constrained
+      // query may supply response data or the page boundary.
+      rows = await readPage();
+    }
+    // Cursor stays anchored to the database order; public cards use only the new identity.
+    const page = cursorPage(
+      rows.map((row) => ({ ...row, id: row.publicId })),
+      input.limit,
+      "createdAt",
+    );
+    return {
+      ...page,
+      items: page.items.flatMap((row) => {
+        if (row.Owner?.deletionRequestedAt || (row.ownerId === null && !neutralArchiveId(row.slug)))
+          return [];
+        return [publicCard(row, safeIds)];
+      }),
+    };
   }),
   get: publicProcedure.input(slugInput).handler(async ({ input }) => {
-    const row = await prisma.chessMatch.findFirst({
-      where: { slug: input.slug, published: true },
-      select: { ...summary, archive: true, spectatorEvaluations: true },
-    });
+    const readReplay = () =>
+      prisma.chessMatch.findFirst({
+        where: { ...publicReplayWhere, slug: input.slug },
+        select: { ...publicSummary, archive: true, spectatorEvaluations: true },
+      });
+    let row = await readReplay();
     if (!row) throw new ORPCError("NOT_FOUND");
+    let safeIds = new Set<string>();
+    if (row.ownerId === null) {
+      safeIds = await safeCatalogIds();
+      row = await readReplay();
+      if (!row) throw new ORPCError("NOT_FOUND");
+    }
     const { spectatorEvaluations, archive: stored, ...rest } = row;
+    const card = publicCard(rest, safeIds);
     // An old-rules game has no replay: say so with its card instead of failing the read.
     if (isOldRulesVersion(row.rulesVersion))
-      return { ...withEnding(rest), archive: null, spectatorEvaluations: null };
-    const archive = checkedArchive(stored, row.status, false, row.ending);
+      return { ...card, archive: null, spectatorEvaluations: null };
+    const checked = checkedArchive(stored, row.status, false, row.ending);
+    const neutralId = row.ownerId === null ? neutralArchiveId(row.slug) : null;
+    const archive = neutralId ? anonymizeReplay(checked, neutralId, safeIds) : checked;
     return {
-      ...withEnding(rest),
+      ...card,
       archive,
       turn: chessTurnMetadata(archive.turn),
-      spectatorEvaluations: spectatorEvaluationsFor({ ...row, archive }),
+      spectatorEvaluations: spectatorEvaluationsFor({
+        ...row,
+        archive,
+        spectatorEvaluations: neutralId
+          ? anonymizeSpectatorEvaluations(archive, row.spectatorEvaluations)
+          : row.spectatorEvaluations,
+      }),
     };
   }),
   studio: protectedProcedure.input(cursorPageInput).handler(async ({ input, context }) => {
@@ -388,11 +549,14 @@ export const chessRouter = {
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: pageTake(input.limit),
     });
+    await assertLiveOwnerRead(context.session.user.id, context.session.session.id);
     return cursorPage(rows.map(withEnding), input.limit, "createdAt");
   }),
   inspect: protectedProcedure
     .input(slugInput)
-    .handler(({ input, context }) => inspectOwnMatch(input.slug, context.session.user.id)),
+    .handler(({ input, context }) =>
+      inspectOwnMatch(input.slug, context.session.user.id, context.session.session.id),
+    ),
   create: hostedPlayerProcedure.input(createInput).handler(async ({ input: request, context }) => {
     const { billing: requested, official, creationKey, ...input } = request;
     const ownerId = context.session.user.id;
@@ -589,7 +753,8 @@ export const chessRouter = {
           where: { id: context.session.session.id, userId: ownerId, expiresAt: { gt: new Date() } },
           select: { id: true },
         });
-        if (!live) throw new ORPCError("UNAUTHORIZED");
+        if (!live || !(await ownerActiveInTransaction(tx, ownerId)))
+          throw new ORPCError("UNAUTHORIZED");
         const row = await tx.chessMatch.findFirst({
           where: { slug: input.slug, ownerId, source: "hosted" },
           select: {
@@ -701,38 +866,44 @@ export const chessRouter = {
       // Imported provenance never confers official standing, regardless of claims in the file.
       archive.source = "local";
       const slug = `${slugify(archive.config.title).slice(0, 110) || "match"}-${archive.id.slice(0, 8)}`;
-      const duplicate = async () => {
-        const existing = await prisma.chessMatch.findFirst({
-          where: { slug },
-          select: { ownerId: true },
-        });
-        if (!existing) return null;
-        if (existing.ownerId !== context.session.user.id) throw new ORPCError("CONFLICT");
-        return { slug, duplicate: true };
-      };
-      const existing = await duplicate();
-      if (existing) return existing;
+      const ownerId = context.session.user.id;
+      const importUnderLock = (create: boolean) =>
+        withCliCredentialLockSlot(() =>
+          prisma.$transaction(async (tx) => {
+            await lockCliCredentials(ownerId, tx);
+            if (!(await ownerActiveInTransaction(tx, ownerId))) throw new ORPCError("UNAUTHORIZED");
+            const existing = await tx.chessMatch.findFirst({
+              where: { slug },
+              select: { ownerId: true },
+            });
+            if (existing) {
+              if (existing.ownerId !== ownerId) throw new ORPCError("CONFLICT");
+              return { slug, duplicate: true };
+            }
+            if (!create) throw new ORPCError("CONFLICT");
+            await tx.chessMatch.create({
+              data: {
+                ...metadata(archive),
+                ...chessStatsColumns(archive),
+                ownerId,
+                slug,
+                status: archive.status,
+                archive,
+                published: false,
+              },
+              select: { id: true },
+            });
+            return { slug, duplicate: false };
+          }),
+        );
       try {
-        await prisma.chessMatch.create({
-          data: {
-            ...metadata(archive),
-            ...chessStatsColumns(archive),
-            ownerId: context.session.user.id,
-            slug,
-            status: archive.status,
-            archive,
-            published: false,
-          },
-          select: { id: true },
-        });
+        return await importUnderLock(true);
       } catch (error) {
-        // A concurrent import of the same archive won the unique slug.
+        // A concurrent import's unique violation rolls its transaction back;
+        // reacquire authority in a fresh transaction before returning its receipt.
         if (!isP2002(error)) throw error;
-        const raced = await duplicate();
-        if (!raced) throw new ORPCError("CONFLICT");
-        return raced;
+        return importUnderLock(false);
       }
-      return { slug, duplicate: false };
     }),
   publish: protectedProcedure
     .input(slugInput.extend({ published: z.boolean() }))
@@ -775,7 +946,7 @@ export const chessRouter = {
               workers: engine.workers,
             }
           : null,
-      matches: matches.map(({ Owner, ...match }) => ({ ...match, ownerName: Owner.name })),
+      matches: matches.map(({ Owner, ...match }) => ({ ...match, ownerName: Owner?.name ?? null })),
     };
   }),
   stop: protectedProcedure.input(slugInput).handler(async ({ input, context }) => {
@@ -835,7 +1006,9 @@ export const chessRouter = {
 export const chessCliProcedures = {
   inspect: adminOr404Procedure
     .input(slugInput)
-    .handler(({ input, context }) => inspectOwnMatch(input.slug, context.session.user.id)),
+    .handler(({ input, context }) =>
+      inspectOwnMatch(input.slug, context.session.user.id, context.session.session.id),
+    ),
   publish: adminOr404Procedure
     .input(slugInput.extend({ published: z.boolean() }))
     .handler(({ input, context }) =>

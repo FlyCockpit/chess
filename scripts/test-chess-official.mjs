@@ -957,7 +957,7 @@ export async function chessOfficialCheck() {
     );
 
     console.log(
-      "chess-official: user cascade preserves detached minimal starts and aggregate counts",
+      "chess-official: deletion fence and explicit private cleanup preserve minimal starts and counts",
     );
     const deletingOwner = await owner();
     const deletionGame = archive({ rules: { tokenBudget: 8131 } });
@@ -975,6 +975,32 @@ export async function chessOfficialCheck() {
     };
     const beforeDelete = await officialLeaderboard(deleteFilter);
     assert.equal(beforeDelete.sampleSize, 2);
+    const { requestAccountDeletion } = await import("../packages/api/src/lib/account-deletion.ts");
+    const deletionAdmin = await owner();
+    await prisma.user.update({
+      where: { id: deletionAdmin },
+      data: { role: "admin", twoFactorEnabled: true },
+    });
+    const deletionAdminSession = await prisma.session.create({
+      data: {
+        userId: deletionAdmin,
+        token: randomUUID(),
+        expiresAt: new Date(Date.now() + 600_000),
+      },
+    });
+    assert.equal(
+      (
+        await requestAccountDeletion(deletingOwner, {
+          kind: "admin",
+          userId: deletionAdmin,
+          sessionId: deletionAdminSession.id,
+        })
+      ).complete,
+      false,
+    );
+    // Disposable D2b choreography fixture: production D2a stops at pending.
+    // Private rows are explicitly removed; the nullable User relation cannot cascade.
+    await prisma.chessMatch.deleteMany({ where: { ownerId: deletingOwner, published: false } });
     await prisma.user.deleteMany({ where: { id: deletingOwner } });
     assert.equal(await prisma.chessMatch.count({ where: { ownerId: deletingOwner } }), 0);
     const retainedScore = await prisma.chessOfficialEntry.findUniqueOrThrow({
@@ -1010,7 +1036,10 @@ export async function chessOfficialCheck() {
           const job = await queues.chessRunQueue.getJob(`chess-${id}`);
           await job?.remove();
         }
-      if (prisma && owners.length) await prisma.user.deleteMany({ where: { id: { in: owners } } });
+      if (prisma && owners.length) {
+        await prisma.chessMatch.deleteMany({ where: { ownerId: { in: owners } } });
+        await prisma.user.deleteMany({ where: { id: { in: owners } } });
+      }
     } finally {
       try {
         if (queues) {

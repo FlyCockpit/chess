@@ -3,7 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 
 import { PrismaClient } from "../prisma/generated/client";
 
-export type { Prisma } from "../prisma/generated/client";
+export { Prisma } from "../prisma/generated/client";
 
 // Keep unnamed statements: scheduled enum rebuilds can change parameter types.
 // A statementNameGenerator would cache stale prepared-statement type OIDs.

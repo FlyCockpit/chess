@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import prisma, { type Prisma } from "@cockpit-chess/db";
+import { isAccountDeletionPending } from "./account-state.js";
 import { isUserBanned } from "./ban.js";
 import { lockCliCredentials, withCliCredentialLockSlot } from "./device-redemption-lock.js";
 import { runnerMachineRevocationWrites } from "./runner-machine-revocation.js";
@@ -112,6 +113,7 @@ export async function requireRunnerMachineMintAuthority(
           email: true,
           emailVerified: true,
           banned: true,
+          deletionRequestedAt: true,
           banExpires: true,
           role: true,
           twoFactorEnabled: true,
@@ -122,7 +124,8 @@ export async function requireRunnerMachineMintAuthority(
   });
   if (!liveSession) throw new RunnerMachineSessionRevokedError();
   const user = liveSession.user;
-  if (!user.emailVerified || isUserBanned(user)) throw new RunnerMachineForbiddenError();
+  if (!user.emailVerified || isAccountDeletionPending(user) || isUserBanned(user))
+    throw new RunnerMachineForbiddenError();
   const settingKey = forcedTwoFactorSettingKeyForRole(user.role);
   const setting = await tx.appSetting.findUnique({
     where: { key: settingKey },

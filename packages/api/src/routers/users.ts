@@ -15,7 +15,12 @@ import { isEmailConfigured, renderInviteUser, sendEmail } from "@cockpit-chess/m
 import { ORPCError } from "@orpc/server";
 import { z } from "zod";
 import { adminOr404Procedure } from "../index";
-import { withAdminRemovalGuard } from "../lib/admin-presence";
+import { requestAccountDeletion } from "../lib/account-deletion";
+import {
+  type AdminMutationActor,
+  assertLiveMutationActor,
+  withAdminRemovalGuard,
+} from "../lib/admin-presence";
 import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagination";
 import { createProcedureBudget } from "../lib/procedure-budget";
 import {
@@ -130,11 +135,17 @@ async function deliverInvite(args: {
   name: string;
   email: string;
   locale: string;
+  actor: AdminMutationActor;
 }): Promise<InviteDelivery> {
   let link: { url: string; expiresAt: Date; token: string };
   try {
-    link = await createSetPasswordLink({ userId: args.userId, locale: args.locale });
+    link = await createSetPasswordLink({
+      userId: args.userId,
+      locale: args.locale,
+      authorizeActor: (tx) => assertLiveMutationActor(tx, args.userId, args.actor),
+    });
   } catch (err) {
+    if (err instanceof ORPCError) throw err;
     if (err instanceof SetPasswordLinkRefusedError) throw refusalError(err);
     console.error(
       "[users.invite] failed to create a set-password link for",
@@ -223,7 +234,8 @@ export const usersRouter = {
       // already-paginated pages makes both the empty state and the "load more"
       // affordance lie (an all-archived first page under the "active" tab would
       // look empty even though later pages hold active users). `banned` is a
-      // nullable Boolean, so "active" must match both `false` and NULL.
+      // nullable Boolean, so "active" matches `false` and NULL, while pending
+      // deletion always removes account authority.
       const searchWhere: Prisma.UserWhereInput | undefined = search
         ? {
             OR: [
@@ -235,7 +247,7 @@ export const usersRouter = {
       const now = new Date();
       const statusWhere: Prisma.UserWhereInput | undefined =
         status === "active"
-          ? { OR: [{ banned: false }, { banned: null }] }
+          ? { deletionRequestedAt: null, OR: [{ banned: false }, { banned: null }] }
           : status === "archived"
             ? { banned: true }
             : undefined;
@@ -265,7 +277,12 @@ export const usersRouter = {
       // the client gets the verdict, never the user's linked providers.
       const users = page.items.map(({ accounts, sessions, ...user }) => ({
         ...user,
-        invitePending: isInvitePending({ emailVerified: user.emailVerified, accounts, sessions }),
+        invitePending: isInvitePending({
+          emailVerified: user.emailVerified,
+          deletionRequestedAt: user.deletionRequestedAt,
+          accounts,
+          sessions,
+        }),
       }));
       return { users, nextCursor: page.nextCursor };
     }),
@@ -319,10 +336,20 @@ export const usersRouter = {
                 role: input.role,
               },
             }),
-          { locale: input.locale },
+          {
+            locale: input.locale,
+            authorize: (tx) =>
+              assertLiveMutationActor(tx, context.session.user.id, {
+                kind: "admin",
+                userId: context.session.user.id,
+                sessionId: context.session.session.id,
+                credential: context.credential,
+              }),
+          },
         );
         userId = created.user.id;
       } catch (err) {
+        if (err instanceof ORPCError) throw err;
         const message = err instanceof Error ? err.message : "Failed to invite user";
         if (/already exists|already in use|duplicate/i.test(message)) {
           throw new ORPCError("CONFLICT", {
@@ -355,6 +382,12 @@ export const usersRouter = {
         name: input.name,
         email: input.email,
         locale: input.locale,
+        actor: {
+          kind: "admin",
+          userId: context.session.user.id,
+          sessionId: context.session.session.id,
+          credential: context.credential,
+        },
       });
     }),
 
@@ -387,6 +420,12 @@ export const usersRouter = {
       name: target.name,
       email: target.email,
       locale: target.locale,
+      actor: {
+        kind: "admin",
+        userId: context.session.user.id,
+        sessionId: context.session.session.id,
+        credential: context.credential,
+      },
     });
   }),
 
@@ -416,6 +455,12 @@ export const usersRouter = {
             select: { id: true },
           });
           return { oldRole: target.role, newRole: input.role };
+        },
+        {
+          kind: "admin",
+          userId: context.session.user.id,
+          sessionId: context.session.session.id,
+          credential: context.credential,
         },
         input.role,
       );
@@ -474,6 +519,12 @@ export const usersRouter = {
             await tx.session.deleteMany({ where: { userId: input.userId } });
             await revokeRunnerMachinesInTransaction(tx, input.userId);
           },
+          {
+            kind: "admin",
+            userId: context.session.user.id,
+            sessionId: context.session.session.id,
+            credential: context.credential,
+          },
           undefined,
           timeout,
         ),
@@ -481,24 +532,31 @@ export const usersRouter = {
       return { success: true };
     }),
 
-  unarchive: adminOr404Procedure.input(userIdInput).handler(async ({ input }) => {
-    const target = await prisma.user.findUnique({
-      where: { id: input.userId },
-      select: { id: true },
-    });
-    if (!target) throw new ORPCError("NOT_FOUND", { message: "User not found" });
+  unarchive: adminOr404Procedure.input(userIdInput).handler(async ({ input, context }) => {
+    await prisma.$transaction(
+      async (tx) => {
+        await assertLiveMutationActor(tx, input.userId, {
+          kind: "admin",
+          userId: context.session.user.id,
+          sessionId: context.session.session.id,
+          credential: context.credential,
+        });
+        const target = await tx.user.findUnique({
+          where: { id: input.userId },
+          select: { id: true },
+        });
+        if (!target) throw new ORPCError("NOT_FOUND", { message: "User not found" });
 
-    // Lifts the ban only. If you add a standing credential that `archive`
-    // revokes, do NOT flip it back on from here: the row records that a
-    // credential IS revoked, not who revoked it, so a blanket re-enable would
-    // also resurrect one an admin had deliberately killed earlier (a leaked
-    // key, a decommissioned integration). Restoring precisely needs a column
-    // recording that archive was the revoker.
-    await prisma.user.update({
-      where: { id: input.userId },
-      data: { banned: false, banReason: null, banExpires: null },
-      select: { id: true },
-    });
+        // Lift only the ban. Revoked machines and a pending deletion tombstone
+        // retain their authority fence; restoring the account cannot clear them.
+        await tx.user.update({
+          where: { id: input.userId },
+          data: { banned: false, banReason: null, banExpires: null },
+          select: { id: true },
+        });
+      },
+      { isolationLevel: "ReadCommitted", timeout: 20_000 },
+    );
     return { success: true };
   }),
 
@@ -508,39 +566,14 @@ export const usersRouter = {
         message: "You cannot delete your own account.",
       });
     }
-    // Every relation to User cascades today (sessions, accounts, two-factors,
-    // CLI credentials and chess matches, published ones included). The
-    // constraint mapping below is defensive: a future `onDelete: Restrict`
-    // relation would surface as a friendly "archive instead" message.
-    try {
-      await withCliCredentialSnapshotLock(input.userId, (timeout) =>
-        withAdminRemovalGuard(
-          input.userId,
-          async (tx) => {
-            // Cascade removes rows; the ID-only notification also tells
-            // runner transports on every replica to close immediately.
-            await revokeRunnerMachinesInTransaction(tx, input.userId);
-            await tx.user.delete({ where: { id: input.userId } });
-          },
-          undefined,
-          timeout,
-        ),
-      );
-    } catch (err) {
-      if (err instanceof ORPCError) throw err;
-      const message = err instanceof Error ? err.message : "Failed to delete user";
-      if (/foreign key|constraint|restrict/i.test(message)) {
-        throw new ORPCError("CONFLICT", {
-          message:
-            "This user has authored content and cannot be deleted. Archive them instead, or reassign their content first.",
-        });
-      }
-      console.error("[users.remove] prisma delete failed", err);
-      throw new ORPCError("INTERNAL_SERVER_ERROR", {
-        message:
-          "Couldn't delete that account. Try again, or contact an admin if it keeps happening.",
-      });
-    }
-    return { success: true };
+    // Admin removal cannot bypass the same durable access fence and eventual
+    // replay scrub/physical cleanup used by self-deletion. Never cascade here.
+    const deletion = await requestAccountDeletion(input.userId, {
+      kind: "admin",
+      userId: context.session.user.id,
+      sessionId: context.session.session.id,
+      credential: context.credential,
+    });
+    return { success: true, ...deletion };
   }),
 };

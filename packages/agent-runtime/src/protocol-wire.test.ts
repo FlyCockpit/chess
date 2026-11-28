@@ -837,23 +837,35 @@ describe("OpenRouter provider data policy", () => {
   it("rechecks the lease after asynchronous body decoding before any HTTP", async () => {
     let allowed = true;
     const requests = captureHttp(() => chatResponse(false));
-    const base = options("openai-chat");
-    await expect(
-      runAgentLoop({
-        ...base,
-        model: {
-          ...base.model,
-          dataCollection: "deny",
-          beforeDispatch: () => {
-            if (!allowed) throw new Error("Key lease ended");
-            queueMicrotask(() => {
-              allowed = false;
-            });
-          },
-        },
-      }),
-    ).rejects.toThrow();
-    expect(requests).toEqual([]);
+    const originalJson = Request.prototype.json;
+    const decode = vi.spyOn(Request.prototype, "json").mockImplementation(async function (
+      this: Request,
+    ) {
+      const body: unknown = await originalJson.call(this);
+      // Revoke during the actual asynchronous privacy-body read, rather than
+      // assuming a preliminary guard call occurs before that read.
+      allowed = false;
+      return body;
+    });
+    const guard = vi.fn(() => {
+      if (!allowed) throw new Error("Key lease ended");
+    });
+    try {
+      const base = options("openai-chat");
+      await expect(
+        runAgentLoop({
+          ...base,
+          model: { ...base.model, dataCollection: "deny", beforeDispatch: guard },
+        }),
+      ).rejects.toThrow();
+      // The runtime may retry a transport-level rejection. Each attempt must
+      // decode first, then invoke the guard once, and none may reach HTTP.
+      expect(decode.mock.calls.length).toBeGreaterThan(0);
+      expect(guard).toHaveBeenCalledTimes(decode.mock.calls.length);
+      expect(requests).toEqual([]);
+    } finally {
+      decode.mockRestore();
+    }
   });
   it.each<AgentModel["provider"]>(["openrouter", "openai-chat", "openai-responses", "anthropic"])(
     "denies retention on every %s request while retaining cache routing and prefix bytes",

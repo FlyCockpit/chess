@@ -1,3 +1,4 @@
+import { isAccountDeletionPending } from "@cockpit-chess/auth/account-state";
 import { isUserBanned } from "@cockpit-chess/auth/ban";
 import { isAdminRole } from "@cockpit-chess/auth/roles";
 import { ORPCError, os } from "@orpc/server";
@@ -29,23 +30,44 @@ export type AdminAuthorityFailure =
  * `requireVerifiedAdminSession` (apps/server/src/admin-session-gate.ts) all
  * call this and only map the failure to their own response.
  */
-export async function checkAdminAuthority<S extends NonNullable<Context["session"]>>(
+type AdminAuthoritySession = {
+  user: Pick<
+    NonNullable<Context["session"]>["user"],
+    | "id"
+    | "role"
+    | "emailVerified"
+    | "twoFactorEnabled"
+    | "createdAt"
+    | "banned"
+    | "banExpires"
+    | "deletionRequestedAt"
+  >;
+};
+
+export async function checkAdminAuthority<S extends AdminAuthoritySession>(
   session: S | null | undefined,
   credential?: CredentialKind,
+  policyDb?: Parameters<typeof isTwoFactorPolicySatisfied>[1],
 ): Promise<{ ok: true; session: S } | { ok: false; reason: AdminAuthorityFailure }> {
   if (!session?.user) return { ok: false, reason: "unauthenticated" };
-  if (isUserBanned(session.user)) return { ok: false, reason: "banned" };
+  if (isUserBanned(session.user) || isAccountDeletionPending(session.user))
+    return { ok: false, reason: "banned" };
   if (credential === "api-key") return { ok: false, reason: "api-key" };
   if (!session.user.emailVerified) return { ok: false, reason: "unverified" };
   if (!isAdminRole(session.user.role)) return { ok: false, reason: "not-admin" };
-  if (!(await isTwoFactorPolicySatisfied(session.user))) return { ok: false, reason: "two-factor" };
+  if (!(await isTwoFactorPolicySatisfied(session.user, policyDb)))
+    return { ok: false, reason: "two-factor" };
   return { ok: true, session };
 }
 
 export const publicProcedure = o;
 
 const requireAuth = o.middleware(async ({ context, next }) => {
-  if (!context.session?.user || isUserBanned(context.session.user)) {
+  if (
+    !context.session?.user ||
+    isUserBanned(context.session.user) ||
+    isAccountDeletionPending(context.session.user)
+  ) {
     throw new ORPCError("UNAUTHORIZED");
   }
   return next({
@@ -130,7 +152,8 @@ export const adminOr404Procedure = publicProcedure.use(requireAdminOr404);
 // the handler's to decide, so its errors can say what to do next.
 const requireHostedPlayer = o.middleware(async ({ context, next }) => {
   const user = context.session?.user;
-  if (!user || isUserBanned(user)) throw new ORPCError("UNAUTHORIZED");
+  if (!user || isUserBanned(user) || isAccountDeletionPending(user))
+    throw new ORPCError("UNAUTHORIZED");
   if (context.credential === "api-key")
     throw new ORPCError("FORBIDDEN", { message: "API keys cannot start hosted matches." });
   if (!user.emailVerified)

@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
     id: string;
     email: string;
     emailVerified: boolean;
+    deletionRequestedAt?: Date | null;
     accounts?: { providerId: string }[];
     sessions?: { id: string }[];
   }[],
@@ -61,6 +62,7 @@ const db = vi.hoisted(() => {
         return {
           email: user.email,
           emailVerified: user.emailVerified,
+          deletionRequestedAt: user.deletionRequestedAt ?? null,
           accounts: user.accounts ?? [{ providerId: "credential" }],
           sessions: user.sessions ?? [],
         };
@@ -437,4 +439,26 @@ describe("strict pending invite admission", () => {
   ])("requires exactly one credential account (%j)", async ({ accounts }) => {
     expect(isInvitePending({ emailVerified: false, accounts, sessions: [] })).toBe(false);
   });
+});
+
+it("refuses a valid mailed reset proof once deletion is pending", async () => {
+  link("mailed-before-deletion");
+  await recordResetLinkMailed({
+    token: "mailed-before-deletion",
+    userId: "u1",
+    email: "ada@example.com",
+    now,
+  });
+  const user = state.users[0];
+  if (!user) throw new Error("Missing fixture user");
+  user.deletionRequestedAt = now;
+  expect(
+    await admitResetSpend(
+      db as unknown as Parameters<typeof admitResetSpend>[0],
+      "mailed-before-deletion",
+      now,
+    ),
+  ).toBe(false);
+  expect(db.user.updateMany).not.toHaveBeenCalled();
+  expect(user.emailVerified).toBe(false);
 });

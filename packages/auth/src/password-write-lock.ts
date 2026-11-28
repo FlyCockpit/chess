@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import prisma from "@cockpit-chess/db";
 import { APIError } from "better-auth/api";
+import { isOwnerActive } from "./account-deletion.js";
 import {
   quarantineUntrustedPasswordWrite,
   revokeCredentialsBeforeAdminPasswordReset,
@@ -279,6 +280,7 @@ export async function fenceAdminPasswordReset(): Promise<void> {
   const lock = heldFor.getStore();
   if (lock?.path !== "/admin/set-user-password") return;
   assertPasswordWriteLocked();
+  if (!(await isOwnerActive(lock.userId))) throw new APIError("UNAUTHORIZED");
   await revokeCredentialsBeforeAdminPasswordReset(lock.userId);
   // The revocation waited on another transaction. A lapsed password-write
   // lock must not authorize the following hash write.

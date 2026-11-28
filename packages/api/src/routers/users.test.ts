@@ -7,6 +7,9 @@ import { mockDeep } from "vitest-mock-extended";
 import type { Context } from "../context";
 import { usersRouter } from "./users";
 
+const requestAccountDeletion = vi.hoisted(() => vi.fn());
+vi.mock("../lib/account-deletion", () => ({ requestAccountDeletion }));
+
 // Mock @cockpit-chess/db before importing the module so the router pulls the deep-
 // mocked Prisma client.
 vi.mock("@cockpit-chess/db", async () => {
@@ -115,7 +118,7 @@ const db = prisma as unknown as {
     update: MockInstance;
     delete: MockInstance;
   };
-  session: { deleteMany: MockInstance };
+  session: { deleteMany: MockInstance; findFirst: MockInstance };
   $transaction: MockInstance;
   $queryRaw: MockInstance;
 };
@@ -170,10 +173,12 @@ function buildContext(
 describe("usersRouter", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    db.session.findFirst.mockResolvedValue({ user: buildContext().session!.user });
     prisma.runnerMachine.updateMany.mockResolvedValue({ count: 0 });
     budget.charges.length = 0;
     budget.errorQueue.length = 0;
     mailer.configured = true;
+    createSetPasswordLink.mockReset();
     createSetPasswordLink.mockResolvedValue({
       url: SET_PASSWORD_URL,
       expiresAt: LINK_EXPIRES_AT,
@@ -346,14 +351,39 @@ describe("usersRouter", () => {
       expect(call.where).toEqual({ AND: [{ banned: true }] });
     });
 
-    it("treats active as not-banned, including NULL banned", async () => {
+    it("treats active as not-banned and not deletion-pending, including NULL banned", async () => {
       db.user.findMany.mockResolvedValue([]);
 
       const client = createRouterClient(usersRouter, { context: buildContext() });
       await client.list({ status: "active" });
 
       const call = db.user.findMany.mock.calls[0]?.[0];
-      expect(call.where).toEqual({ AND: [{ OR: [{ banned: false }, { banned: null }] }] });
+      expect(call.where).toEqual({
+        AND: [{ deletionRequestedAt: null, OR: [{ banned: false }, { banned: null }] }],
+      });
+    });
+
+    it("exposes pending deletion without treating the account as an unfinished invite", async () => {
+      const deletionRequestedAt = new Date("2026-11-27T23:59:00.000Z");
+      db.user.findMany.mockResolvedValue([
+        {
+          id: "pending",
+          email: "pending@example.test",
+          name: "Pending",
+          role: "user",
+          emailVerified: false,
+          deletionRequestedAt,
+          createdAt: new Date("2025-01-01"),
+          accounts: [{ providerId: "credential" }],
+          sessions: [],
+        },
+      ]);
+      const client = createRouterClient(usersRouter, { context: buildContext() });
+      const result = await client.list();
+      expect(result.users[0]).toMatchObject({ deletionRequestedAt, invitePending: false });
+      expect(db.user.findMany.mock.calls[0]?.[0].select.deletionRequestedAt).toBe(true);
+      expect(result.users[0]).not.toHaveProperty("accounts");
+      expect(result.users[0]).not.toHaveProperty("sessions");
     });
 
     it("combines status and search with AND", async () => {
@@ -382,6 +412,21 @@ describe("usersRouter", () => {
   });
 
   describe("invite", () => {
+    it("revalidates a revoked actor at the raw creation effect", async () => {
+      const { authorizeAdminInvite } = await import("@cockpit-chess/auth/user-creation-policy");
+      authApi.api.createUser.mockImplementation(async () => {
+        db.session.findFirst.mockResolvedValue(null);
+        await authorizeAdminInvite(prisma);
+        return { user: { id: "must-not-be-created" } };
+      });
+      const client = createRouterClient(usersRouter, { context: buildContext() });
+      await expect(
+        client.invite({ email: "new@example.com", name: "New", role: "admin", locale: "en-US" }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(createSetPasswordLink).not.toHaveBeenCalled();
+      expect(sendEmailMock).not.toHaveBeenCalled();
+    });
+
     it("creates the user with an unusable password and emails a set-password link", async () => {
       authApi.api.createUser.mockResolvedValue({ user: { id: "new-user-id" } });
       sendEmailMock.mockResolvedValue(undefined);
@@ -404,6 +449,7 @@ describe("usersRouter", () => {
       expect(createSetPasswordLink).toHaveBeenCalledWith({
         userId: "new-user-id",
         locale: "es-MX",
+        authorizeActor: expect.any(Function),
       });
       expect(renderInviteUser).toHaveBeenCalledWith({
         name: "New User",
@@ -452,7 +498,7 @@ describe("usersRouter", () => {
       expect(runWithAllowedUserCreation).toHaveBeenCalledWith(
         "admin-invite",
         expect.any(Function),
-        { locale: "es-MX" },
+        { locale: "es-MX", authorize: expect.any(Function) },
       );
     });
 
@@ -592,6 +638,29 @@ describe("usersRouter", () => {
   });
 
   describe("resendInvite", () => {
+    it("revalidates a revoked actor inside the link mint instead of relying on preflight", async () => {
+      db.user.findUnique.mockResolvedValue({
+        id: "u2",
+        email: "pending@example.test",
+        name: "Pending",
+        locale: "en-US",
+        emailVerified: false,
+        banned: false,
+        accounts: [{ providerId: "credential" }],
+        sessions: [],
+      });
+      createSetPasswordLink.mockImplementation(async ({ authorizeActor }) => {
+        db.session.findFirst.mockResolvedValue(null);
+        await authorizeActor(prisma);
+        throw new Error("must not continue");
+      });
+      const client = createRouterClient(usersRouter, { context: buildContext() });
+      await expect(client.resendInvite({ userId: "u2" })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+      expect(sendEmailMock).not.toHaveBeenCalled();
+    });
+
     const pending = {
       id: "u2",
       email: "pending@example.com",
@@ -679,7 +748,11 @@ describe("usersRouter", () => {
         userId: "u2",
         emailSent: true,
       });
-      expect(createSetPasswordLink).toHaveBeenCalledWith({ userId: "u2", locale: "es-MX" });
+      expect(createSetPasswordLink).toHaveBeenCalledWith({
+        userId: "u2",
+        locale: "es-MX",
+        authorizeActor: expect.any(Function),
+      });
       expect(sendEmailMock).toHaveBeenCalledWith(
         expect.objectContaining({ to: "pending@example.com" }),
       );
@@ -865,7 +938,14 @@ describe("usersRouter", () => {
         );
         expect(db.user.findUnique).toHaveBeenCalledWith({
           where: { id: target.id },
-          select: { id: true, role: true, emailVerified: true, banned: true, banExpires: true },
+          select: {
+            id: true,
+            role: true,
+            emailVerified: true,
+            banned: true,
+            banExpires: true,
+            deletionRequestedAt: true,
+          },
         });
         expect(db.user.update).toHaveBeenCalledExactlyOnceWith({
           where: { id: target.id },
@@ -991,98 +1071,96 @@ describe("usersRouter", () => {
     });
   });
 
-  describe.each(["setRole", "archive", "remove"] as const)(
-    "%s admin-removal invariant",
-    (operation) => {
-      const run = (userId = "target") => {
-        const client = createRouterClient(usersRouter, { context: buildContext() });
-        return operation === "setRole"
-          ? client.setRole({ userId, role: "user" })
-          : client[operation]({ userId });
-      };
-      let tx: ReturnType<typeof mockDeep<typeof prisma>>;
-      beforeEach(() => {
-        tx = mockDeep<typeof prisma>();
-        tx.runnerMachine.updateMany.mockResolvedValue({ count: 1 });
-        tx.user.findUnique.mockResolvedValue({
-          id: "target",
-          role: "user, Admin",
-          emailVerified: true,
-          banned: false,
-          banExpires: null,
-        } as Awaited<ReturnType<typeof prisma.user.findUnique>>);
-        tx.$queryRaw.mockResolvedValue([{ count: 1 }]);
-        db.$transaction.mockImplementation(
-          async (body: (client: typeof prisma) => Promise<unknown>) => body(tx),
-        );
-      });
-      afterEach(() => db.$transaction.mockReset());
+  describe.each(["setRole", "archive"] as const)("%s admin-removal invariant", (operation) => {
+    const run = (userId = "target") => {
+      const client = createRouterClient(usersRouter, { context: buildContext() });
+      return operation === "setRole"
+        ? client.setRole({ userId, role: "user" })
+        : client[operation]({ userId });
+    };
+    let tx: ReturnType<typeof mockDeep<typeof prisma>>;
+    beforeEach(() => {
+      tx = mockDeep<typeof prisma>();
+      tx.session.findFirst.mockResolvedValue({ user: buildContext().session!.user } as never);
+      tx.runnerMachine.updateMany.mockResolvedValue({ count: 1 });
+      tx.user.findUnique.mockResolvedValue({
+        id: "target",
+        role: "user, Admin",
+        emailVerified: true,
+        banned: false,
+        banExpires: null,
+      } as Awaited<ReturnType<typeof prisma.user.findUnique>>);
+      tx.$queryRaw.mockResolvedValue([{ count: 1 }]);
+      db.$transaction.mockImplementation(
+        async (body: (client: typeof prisma) => Promise<unknown>) => body(tx),
+      );
+    });
+    afterEach(() => db.$transaction.mockReset());
 
-      it("refuses the last verified active admin using only transaction reads, before any write", async () => {
-        await expect(run()).rejects.toMatchObject({
-          code: "FORBIDDEN",
-          data: { reason: "LAST_ACTIVE_ADMIN" },
-        });
-        expect(db.$transaction).toHaveBeenCalledWith(
-          expect.any(Function),
-          expect.objectContaining({
-            isolationLevel: "Serializable",
-          }),
-        );
-        expect(tx.$queryRaw).toHaveBeenCalledOnce();
-        expect(tx.user.update).not.toHaveBeenCalled();
-        expect(tx.user.delete).not.toHaveBeenCalled();
-        expect(tx.session.deleteMany).not.toHaveBeenCalled();
-        expect(db.user.findUnique).not.toHaveBeenCalled();
+    it("refuses the last verified active admin using only transaction reads, before any write", async () => {
+      await expect(run()).rejects.toMatchObject({
+        code: "FORBIDDEN",
+        data: { reason: "LAST_ACTIVE_ADMIN" },
       });
+      expect(db.$transaction).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.objectContaining({
+          isolationLevel: "Serializable",
+        }),
+      );
+      expect(tx.$queryRaw).toHaveBeenCalledOnce();
+      expect(tx.user.update).not.toHaveBeenCalled();
+      expect(tx.user.delete).not.toHaveBeenCalled();
+      expect(tx.session.deleteMany).not.toHaveBeenCalled();
+      expect(db.user.findUnique).not.toHaveBeenCalled();
+    });
 
-      it("writes and revokes sessions on the same transaction after recounting", async () => {
-        tx.$queryRaw.mockResolvedValue([{ count: 2 }]);
-        await expect(run()).resolves.toEqual({ success: true });
-        const write = operation === "remove" ? tx.user.delete : tx.user.update;
-        expect(write).toHaveBeenCalledOnce();
-        expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
-          write.mock.invocationCallOrder[0] ?? 0,
-        );
-        if (operation === "archive")
-          expect(tx.session.deleteMany).toHaveBeenCalledWith({ where: { userId: "target" } });
-      });
+    it("writes and revokes sessions on the same transaction after recounting", async () => {
+      tx.$queryRaw.mockResolvedValue([{ count: 2 }]);
+      await expect(run()).resolves.toEqual({ success: true });
+      const write = tx.user.update;
+      expect(write).toHaveBeenCalledOnce();
+      expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        write.mock.invocationCallOrder[0] ?? 0,
+      );
+      if (operation === "archive")
+        expect(tx.session.deleteMany).toHaveBeenCalledWith({ where: { userId: "target" } });
+    });
 
-      it("preserves the missing-target reason", async () => {
-        tx.user.findUnique.mockResolvedValue(null);
-        await expect(run()).rejects.toMatchObject({
-          code: "NOT_FOUND",
-          data: { reason: "USER_NOT_FOUND" },
-        });
+    it("preserves the missing-target reason", async () => {
+      tx.user.findUnique.mockResolvedValue(null);
+      await expect(run()).rejects.toMatchObject({
+        code: "NOT_FOUND",
+        data: { reason: "USER_NOT_FOUND" },
       });
+    });
 
-      it("reports a retryable serialization conflict without hiding it behind delete failure", async () => {
-        db.$transaction.mockRejectedValueOnce({ code: "P2034" });
-        await expect(run()).rejects.toMatchObject({
-          code: "CONFLICT",
-          data: { reason: "USER_CHANGE_CONFLICT" },
-        });
+    it("reports a retryable serialization conflict without hiding it behind delete failure", async () => {
+      db.$transaction.mockRejectedValueOnce({ code: "P2034" });
+      await expect(run()).rejects.toMatchObject({
+        code: "CONFLICT",
+        data: { reason: "USER_CHANGE_CONFLICT" },
       });
+    });
 
-      it("allows removal of an unverified invite without treating it as the last usable admin", async () => {
-        tx.user.findUnique.mockResolvedValue({
-          id: "target",
-          role: "admin",
-          emailVerified: false,
-          banned: false,
-          banExpires: null,
-        } as Awaited<ReturnType<typeof prisma.user.findUnique>>);
-        await expect(run()).resolves.toEqual({ success: true });
-        expect(tx.$queryRaw).not.toHaveBeenCalled();
-      });
-    },
-  );
+    it("allows removal of an unverified invite without treating it as the last usable admin", async () => {
+      tx.user.findUnique.mockResolvedValue({
+        id: "target",
+        role: "admin",
+        emailVerified: false,
+        banned: false,
+        banExpires: null,
+      } as Awaited<ReturnType<typeof prisma.user.findUnique>>);
+      await expect(run()).resolves.toEqual({ success: true });
+      expect(tx.$queryRaw).not.toHaveBeenCalled();
+    });
+  });
 
   describe("removals with a retained admin cookie", () => {
-    const operations = ["setRole", "archive", "remove"] as const;
+    const operations = ["setRole", "archive"] as const;
     afterEach(() => db.$transaction.mockReset());
     it.each(operations.flatMap((first) => operations.map((second) => [first, second] as const)))(
-      "recounts after %s before allowing a stale admin's %s",
+      "refuses authority removed by %s before a stale admin can %s",
       async (first, second) => {
         const rows = new Map([
           ["a", { id: "a", role: "admin", emailVerified: true, banned: false, banExpires: null }],
@@ -1097,6 +1175,12 @@ describe("usersRouter", () => {
         // Prisma's fluent clients expose relation methods as well as a promise;
         // these stubs only model the awaited IO boundary used by the guard.
         const store = tx as unknown as typeof db;
+        store.session.findFirst.mockImplementation(
+          async ({ where }: { where: { userId: string } }) => {
+            const user = rows.get(where.userId);
+            return user ? { user: { ...buildContext().session!.user, ...user } } : null;
+          },
+        );
         store.user.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => {
           const user = rows.get(where.id);
           return user ? { ...user } : null;
@@ -1146,12 +1230,9 @@ describe("usersRouter", () => {
             : client[operation]({ userId: targetId });
         };
         await expect(request("a", "b", first)).resolves.toEqual({ success: true });
-        await expect(request("b", "a", second)).rejects.toMatchObject({
-          code: "FORBIDDEN",
-          data: { reason: "LAST_ACTIVE_ADMIN" },
-        });
+        await expect(request("b", "a", second)).rejects.toMatchObject({ code: "NOT_FOUND" });
         expect(rows.get("a")).toMatchObject({ role: "admin", emailVerified: true, banned: false });
-        expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+        expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
         expect(db.$transaction).toHaveBeenNthCalledWith(
           1,
           expect.any(Function),
@@ -1209,6 +1290,34 @@ describe("usersRouter", () => {
   });
 
   describe("unarchive", () => {
+    beforeEach(() => {
+      db.$transaction.mockImplementation(async (run: (tx: typeof prisma) => Promise<unknown>) =>
+        run(prisma),
+      );
+    });
+    afterEach(() => db.$transaction.mockReset());
+    it("denies a revoked actor before restoring a target", async () => {
+      db.session.findFirst.mockResolvedValue(null);
+      const client = createRouterClient(usersRouter, { context: buildContext() });
+      await expect(client.unarchive({ userId: "other-user-id" })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+      expect(db.user.update).not.toHaveBeenCalled();
+      expect(db.user.findUnique).not.toHaveBeenCalled();
+    });
+    it("never clears a pending deletion marker or revoked credentials", async () => {
+      db.user.findUnique.mockResolvedValue({
+        id: "other-user-id",
+        deletionRequestedAt: new Date(),
+      });
+      const client = createRouterClient(usersRouter, { context: buildContext() });
+      await expect(client.unarchive({ userId: "other-user-id" })).resolves.toEqual({
+        success: true,
+      });
+      const update = db.user.update.mock.calls[0]?.[0];
+      expect(update.data).toEqual({ banned: false, banReason: null, banExpires: null });
+      expect(prisma.runnerMachine.updateMany).not.toHaveBeenCalled();
+    });
     it("clears banned + banReason + banExpires", async () => {
       db.user.findUnique.mockResolvedValue({ id: "other-user-id" });
       db.user.update.mockResolvedValue({});
@@ -1227,54 +1336,53 @@ describe("usersRouter", () => {
   });
 
   describe("remove", () => {
+    const pending = {
+      status: "pending",
+      requestedAt: new Date("2026-11-27T21:00:00Z"),
+      phase: "pending",
+      complete: false,
+    };
     beforeEach(() => {
-      db.$transaction.mockImplementation(async (run: (tx: typeof prisma) => Promise<unknown>) =>
-        run(prisma),
-      );
+      requestAccountDeletion.mockReset();
     });
-    it("hard-deletes when no FK constraint blocks it", async () => {
-      db.user.findUnique.mockResolvedValue({ id: "other-user-id" });
-      db.user.delete.mockResolvedValue({});
-
+    it("routes admin removal through the shared pending fence without a cascade", async () => {
+      requestAccountDeletion.mockResolvedValue(pending);
       const client = createRouterClient(usersRouter, { context: buildContext() });
-      const res = await client.remove({ userId: "other-user-id" });
-
-      expect(res).toEqual({ success: true });
-      expect(db.user.delete).toHaveBeenCalledWith({ where: { id: "other-user-id" } });
-      expect(prisma.runnerMachine.updateMany).toHaveBeenCalledWith({
-        where: { userId: "other-user-id", revokedAt: null },
-        data: { revokedAt: expect.any(Date), connectionGeneration: { increment: 1 } },
+      await expect(client.remove({ userId: "other-user-id" })).resolves.toEqual({
+        success: true,
+        ...pending,
       });
-      expect(prisma.runnerMachine.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
-        db.user.delete.mock.invocationCallOrder[0] ?? 0,
-      );
-    });
-
-    it("blocks self-delete", async () => {
-      const client = createRouterClient(usersRouter, { context: buildContext() });
-      await expect(client.remove({ userId: "admin-user-id" })).rejects.toSatisfy(
-        (e: ORPCError<string, unknown>) => {
-          expect(e.code).toBe("FORBIDDEN");
-          return true;
-        },
-      );
+      expect(requestAccountDeletion).toHaveBeenCalledWith("other-user-id", {
+        kind: "admin",
+        userId: "admin-user-id",
+        sessionId: "test-session-id",
+        credential: undefined,
+      });
       expect(db.user.delete).not.toHaveBeenCalled();
     });
-
-    it("converts a Prisma FK constraint error into a CONFLICT with archive guidance", async () => {
-      db.user.findUnique.mockResolvedValue({ id: "other-user-id" });
-      db.user.delete.mockRejectedValue(
-        new Error("Foreign key constraint violated on the field: `Post_authorId_fkey`"),
-      );
-
+    it("blocks self-delete before the shared request", async () => {
       const client = createRouterClient(usersRouter, { context: buildContext() });
-      await expect(client.remove({ userId: "other-user-id" })).rejects.toSatisfy(
-        (e: ORPCError<string, unknown>) => {
-          expect(e.code).toBe("CONFLICT");
-          expect(e.message).toMatch(/archive/i);
-          return true;
-        },
+      await expect(client.remove({ userId: "admin-user-id" })).rejects.toMatchObject({
+        code: "FORBIDDEN",
+      });
+      expect(requestAccountDeletion).not.toHaveBeenCalled();
+    });
+    it("preserves the shared last-admin refusal", async () => {
+      requestAccountDeletion.mockRejectedValue(
+        new ORPCError("FORBIDDEN", {
+          message: "Last active admin",
+          data: { reason: "LAST_ACTIVE_ADMIN" },
+        }),
       );
+      const client = createRouterClient(usersRouter, { context: buildContext() });
+      let caught: unknown;
+      try {
+        await client.remove({ userId: "other-user-id" });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toMatchObject({ code: "FORBIDDEN", data: { reason: "LAST_ACTIVE_ADMIN" } });
+      expect(db.user.delete).not.toHaveBeenCalled();
     });
   });
 });

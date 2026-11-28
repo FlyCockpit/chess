@@ -3,8 +3,10 @@ import { ADMIN_EMAILS, env } from "@cockpit-chess/env/server";
 import { ORPCError } from "@orpc/server";
 import { z } from "zod";
 
-import { adminOr404Procedure, authenticatedProcedure } from "../index";
+import { adminOr404Procedure, authenticatedProcedure, protectedProcedure } from "../index";
+import { requestAccountDeletion } from "../lib/account-deletion";
 import { adminUserExists } from "../lib/admin-presence";
+import { createProcedureBudget } from "../lib/procedure-budget";
 import {
   FORCE_2FA_SETTING_KEYS,
   invalidateForceTwoFactorSettingsCache,
@@ -13,8 +15,30 @@ import {
 // Leak-prevention boundary: only keys listed here are exposed to clients via getAll; future settings must be explicitly opted in.
 const CLIENT_READABLE_SETTING_KEYS: readonly string[] = FORCE_2FA_SETTING_KEYS;
 const writableSettingKeySchema = z.enum(FORCE_2FA_SETTING_KEYS);
+const consumeDeletionBudget = createProcedureBudget({
+  keyPrefix: "rl:account-deletion",
+  points: 5,
+  durationSeconds: 600,
+  failClosed: true,
+  overBudgetMessage: () => "Too many deletion requests. Try again later.",
+  unavailableMessage: "Account deletion is temporarily unavailable. Try again shortly.",
+  unavailableLog: "[settings.deleteAccount] budget unavailable",
+});
 
 export const settingsRouter = {
+  deleteAccount: protectedProcedure
+    .input(z.object({ confirmation: z.literal("DELETE") }).strict())
+    .handler(async ({ input: _input, context }) => {
+      if (context.credential)
+        throw new ORPCError("FORBIDDEN", {
+          message: "Use a signed-in browser to delete your account.",
+        });
+      await consumeDeletionBudget(context.session.user.id);
+      return requestAccountDeletion(context.session.user.id, {
+        kind: "self",
+        sessionId: context.session.session.id,
+      });
+    }),
   getAll: authenticatedProcedure.handler(async () => {
     const settings = await prisma.appSetting.findMany({
       where: { key: { in: [...CLIENT_READABLE_SETTING_KEYS] } },

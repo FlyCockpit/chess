@@ -501,3 +501,29 @@ describe("MatchReplay", () => {
     expect(html).toContain('aria-label="Empty square e4"');
   });
 });
+
+it("localizes retained replay identity and explains removed personal text in both locales", async () => {
+  const match = createMatch({
+    title: "Deleted user",
+    white: { name: "Deleted user", model: "human", protocol: "human" },
+    black: { name: "Unknown model", model: "Unknown model", protocol: "openai-chat" },
+    rules: {},
+  });
+  finishMatch(match, "*", "cancelled", "stopped");
+  for (const [language, title, unknown, notice] of [
+    ["en-US", "Deleted user", "Unknown model", "personal text has been removed"],
+    ["es-MX", "Usuario eliminado", "Modelo desconocido", "se eliminó el texto personal"],
+  ]) {
+    await i18n.changeLanguage(language);
+    const html = renderToStaticMarkup(
+      <I18nextProvider i18n={i18n}>
+        <MatchReplay match={match} anonymized />
+      </I18nextProvider>,
+    );
+    expect(html).toContain(title);
+    expect(html).toContain(unknown);
+    expect(html).toContain(notice);
+    expect(html).not.toContain("replay.deletedUser");
+  }
+  await i18n.changeLanguage("en-US");
+});

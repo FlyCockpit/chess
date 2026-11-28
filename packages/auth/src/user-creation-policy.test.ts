@@ -1,5 +1,5 @@
 import { APIError } from "better-auth/api";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   getAllowedUserCreationMode,
@@ -160,5 +160,24 @@ describe("refuseUnprovedUserCreation", () => {
         refuseUnprovedUserCreation({ emailVerified: false }, { path: "/sign-up/email" }),
       ),
     ).toBe(undefined);
+  });
+});
+
+describe("admin-invite effect authorization", () => {
+  it("rejects missing grants and grants without the committing actor callback", async () => {
+    const { authorizeAdminInvite } = await import("./user-creation-policy");
+    await expect(authorizeAdminInvite({} as never)).rejects.toMatchObject({
+      body: { code: "ADMIN_INVITE_AUTHORITY_REQUIRED" },
+    });
+    await expect(
+      runWithAllowedUserCreation("admin-invite", () => authorizeAdminInvite({} as never)),
+    ).rejects.toMatchObject({ body: { code: "ADMIN_INVITE_AUTHORITY_REQUIRED" } });
+  });
+  it("passes the committing transaction to the exact granted authorizer", async () => {
+    const { authorizeAdminInvite } = await import("./user-creation-policy");
+    const tx = {} as never;
+    const authorize = vi.fn(async () => {});
+    await runWithAllowedUserCreation("admin-invite", () => authorizeAdminInvite(tx), { authorize });
+    expect(authorize).toHaveBeenCalledWith(tx);
   });
 });

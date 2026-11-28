@@ -222,6 +222,7 @@ describe("internal runner enrollment", () => {
 
   it.each([
     { emailVerified: false },
+    { deletionRequestedAt: new Date(NOW) },
     { banned: true, banExpires: null },
     { banned: true, banExpires: new Date(NOW.getTime() + 1000) },
     { role: "admin" },

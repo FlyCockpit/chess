@@ -1,3 +1,4 @@
+import { ownerActiveInTransaction } from "@cockpit-chess/auth/account-deletion";
 import type { Prisma } from "@cockpit-chess/db";
 import { ORPCError } from "@orpc/server";
 
@@ -19,6 +20,7 @@ export async function admitHostedMatch(
   input: { ownerId: string; ownKey: boolean; queueMax: number; dailyMax: number },
 ) {
   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CHESS_CREATE_LOCK}))::text AS locked`;
+  if (!(await ownerActiveInTransaction(tx, input.ownerId))) throw new ORPCError("UNAUTHORIZED");
   if ((await tx.chessMatch.count({ where: { status: "queued" } })) >= input.queueMax)
     throw new ORPCError("TOO_MANY_REQUESTS", {
       message: "The match queue is full",

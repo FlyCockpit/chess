@@ -14,6 +14,11 @@
     "notificationsSaveError": "Couldn't update notification preference. Try again."
   },
   "security": {
+    "deleteAccountTitle": "Delete account",
+    "deleteAccountUnavailable": "Account deletion is not available yet. Once enabled, it will require a fresh sign-in and confirmation.",
+    "deleteAccountPlan": "The plan is to remove private matches and retain published replays with moves, model names, settings and results. Personal text will be removed and replays will get a new neutral URL.",
+    "deleteAccountProviderKey": "Revoke any connected provider key with the provider as well.",
+    "deleteAccountAction": "Delete account",
     "passwordTitle": "Password",
     "passwordDescription": "Change the password you use to sign in.",
     "passwordLoadError": "Couldn't load your password settings.",

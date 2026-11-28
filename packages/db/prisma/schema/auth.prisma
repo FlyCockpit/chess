@@ -21,6 +21,11 @@ model User {
   banExpires           DateTime?
   twoFactorEnabled     Boolean?
   operationalAlerts    Boolean               @default(true)
+  /// Durable access fence; physical cleanup is completed by the deletion job.
+  deletionRequestedAt  DateTime?
+  deletionState        String                @default("active")
+  deletionCursor       String?
+  deletionAttempts     Int                   @default(0)
   sessions             Session[]
   accounts             Account[]
   twoFactors           TwoFactor[]
@@ -33,6 +38,7 @@ model User {
 
   @@unique([email])
   @@index([role])
+  @@index([deletionState, id])
   // Trigram GIN for the ILIKE substring filters in `users.list`
   // (`email`/`name` contains). The btree from @@unique([email]) only serves
   // exact/prefix matches. Needs the `pg_trgm` extension declared on the
@@ -45,6 +51,8 @@ model User {
 model Session {
   id                   String        @id @default(cuid(2))
   createdAt            DateTime      @default(now())
+  /// Primary authentication time, preserved through session rotations; null cannot prove freshness.
+  authenticatedAt      DateTime?
   updatedAt            DateTime      @default(now()) @updatedAt
   expiresAt            DateTime
   token                String

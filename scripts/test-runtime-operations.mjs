@@ -867,7 +867,13 @@ async function runnerMachinesCheck() {
     const removedMachine = await mint(removing);
     await users.remove({ userId: removing.user.id });
     assert.equal(await resolveMachine(removedMachine), null);
-    assert.equal(await prisma.runnerMachine.count({ where: { userId: removing.user.id } }), 0);
+    const removingState = await prisma.user.findUniqueOrThrow({ where: { id: removing.user.id } });
+    assert.ok(removingState.deletionRequestedAt);
+    assert.equal(removingState.deletionState, "pending");
+    assert.equal(
+      await prisma.runnerMachine.count({ where: { userId: removing.user.id, revokedAt: null } }),
+      0,
+    );
     await waitForPg(observer, "admin deletion invalidation", async (db) => {
       await db.query("SELECT 1");
       return notifications.some((event) => event.userId === removing.user.id);
@@ -1275,6 +1281,9 @@ async function passwordSignInRaceCheck() {
  * (`withPasswordWriteLock` around the Better-Auth handler): the account hooks
  * refuse a password write outside it.
  */
+// This owned operator fixture supplies explicit trusted authorizers while
+// exercising reset-token races. Live admin authorization is covered by the
+// account-deletion admin-effect mode and the real users router.
 async function inviteRaceCheck() {
   const [{ auth }, links, linkLock, writeLock, setPassword, { default: prisma }, { loadPg }] =
     await Promise.all([
@@ -1310,7 +1319,11 @@ async function inviteRaceCheck() {
   };
   const tokenOf = (url) => new URL(url).pathname.split("/").at(-1);
   const mint = async (user, { mailed }) => {
-    const link = await setPassword.createSetPasswordLink({ userId: user.id, locale: "en-US" });
+    const link = await setPassword.createSetPasswordLink({
+      authorizeActor: async () => {},
+      userId: user.id,
+      locale: "en-US",
+    });
     assert.equal(tokenOf(link.url), link.token);
     if (mailed) {
       assert.equal(
@@ -1367,7 +1380,11 @@ async function inviteRaceCheck() {
     assert.equal(ok.status, 200, await ok.clone().text());
     assert.equal(await verified(mailedUser), true, "a mailed link verifies the email");
     await assert.rejects(
-      setPassword.createSetPasswordLink({ userId: mailedUser.id, locale: "en-US" }),
+      setPassword.createSetPasswordLink({
+        authorizeActor: async () => {},
+        userId: mailedUser.id,
+        locale: "en-US",
+      }),
       setPassword.SetPasswordLinkRefusedError,
     );
     assert.equal(await resetLinks(mailedUser), 0);
@@ -1399,7 +1416,11 @@ async function inviteRaceCheck() {
       const resetting = spend(racedToken);
       await waitForAdvisoryWaiters("the reset waiting on the set-password-link lock", 1);
       const resending = setPassword
-        .createSetPasswordLink({ userId: racedUser.id, locale: "en-US" })
+        .createSetPasswordLink({
+          authorizeActor: async () => {},
+          userId: racedUser.id,
+          locale: "en-US",
+        })
         .then(
           (link) => ({ token: link.token }),
           (error) => ({ error }),
@@ -1448,7 +1469,11 @@ async function inviteRaceCheck() {
     assert.equal(await resetLinks(verifyingUser), 0, "verification deletes leftover reset links");
     assert.equal((await spend(leftover)).status, 400, "the revealed resend link is dead");
     await assert.rejects(
-      setPassword.createSetPasswordLink({ userId: verifyingUser.id, locale: "en-US" }),
+      setPassword.createSetPasswordLink({
+        authorizeActor: async () => {},
+        userId: verifyingUser.id,
+        locale: "en-US",
+      }),
       setPassword.SetPasswordLinkRefusedError,
     );
 
@@ -2068,6 +2093,24 @@ async function main() {
     else if (process.argv[3] === "runner-claims") {
       const { runnerClaimsCheck } = await import("./lib/runner-claim-check.ts");
       await runnerClaimsCheck();
+    } else if (["account-deletion", "account-deletion-pool3"].includes(process.argv[3])) {
+      try {
+        if (process.argv[3] === "account-deletion-pool3")
+          await (await import("./lib/account-deletion-check.mjs")).accountDeletionPoolCheck();
+        else {
+          await (await import("./lib/account-deletion-check.mjs")).accountDeletionCheck();
+          await (await import("./lib/chess-anonymization-check.mjs")).chessAnonymizationCheck();
+        }
+      } finally {
+        await (await import("../packages/db/src/index.ts")).default.$disconnect();
+        const queues = await import("../packages/queue/src/index.ts");
+        await Promise.all(
+          Object.values(queues)
+            .filter((value) => value instanceof queues.Queue)
+            .map((queue) => queue.close()),
+        );
+        queues.redisConnection.disconnect();
+      }
     } else if (process.argv[3] === "runner-transport") {
       const { runnerTransportCheck } = await import("./lib/runner-transport-check.mjs");
       await runnerTransportCheck();
@@ -2086,6 +2129,7 @@ async function main() {
       "--runner-machines-only",
       "--runner-transport-only",
       "--runner-claims-only",
+      "--account-deletion-only",
     ].includes(process.argv[3]),
   );
   // Container names only. TEST_CONTAINER_PREFIX (shared with backup:test and
@@ -2240,6 +2284,11 @@ async function main() {
       ["runner-claims", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-transport", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       [
+        "account-deletion",
+        { ...inviteEnv, DATABASE_POOL_MAX: "8", CHESS_PROVIDER_KEY_SECRET: "ab".repeat(32) },
+      ],
+      ["account-deletion-pool3", { ...inviteEnv, DATABASE_POOL_MAX: "3" }],
+      [
         "chess-official",
         {
           ...inviteEnv,
@@ -2267,6 +2316,8 @@ async function main() {
       if (process.argv[3] === "--chess-human-only" && mode !== "chess-human") continue;
       if (process.argv[3] === "--runner-transport-only" && mode !== "runner-transport") continue;
       if (process.argv[3] === "--runner-claims-only" && mode !== "runner-claims") continue;
+      if (process.argv[3] === "--account-deletion-only" && !mode.startsWith("account-deletion"))
+        continue;
       if (
         process.argv[3] === "--runner-machines-only" &&
         !["runner-machines", "password-signin-race", "device-flow"].includes(mode)
@@ -2282,18 +2333,20 @@ async function main() {
             ...extra,
             RUNTIME_OPERATIONS_CHILD: "owned-disposable-services",
           },
-          timeout: ["chess-official", "chess-human"].includes(mode)
+          timeout: ["chess-official", "chess-human", "account-deletion"].includes(mode)
             ? 120_000
             : ["runner-machines", "runner-claims", "password-signin-race"].includes(mode)
               ? 60_000
               : 45_000,
-          stdio: ["chess-admission", "chess-official", "chess-human"].includes(mode)
+          stdio: ["chess-admission", "chess-official", "chess-human", "account-deletion"].includes(
+            mode,
+          )
             ? "inherit"
             : ["ignore", "pipe", "pipe"],
           encoding: "utf8",
         },
       );
-      if (!["chess-admission", "chess-official", "chess-human"].includes(mode))
+      if (!["chess-admission", "chess-official", "chess-human", "account-deletion"].includes(mode))
         process.stdout.write(result);
     }
   } finally {

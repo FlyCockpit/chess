@@ -129,6 +129,7 @@ function row() {
   return {
     ...chessTurnColumns({ type: "idle" }),
     id: "id",
+    publicId: "public-id",
     slug: "test-game",
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -223,6 +224,11 @@ beforeEach(() => {
   invalidateForceTwoFactorSettingsCache();
   db.appSetting.findMany.mockResolvedValue([]);
   db.session.findFirst.mockResolvedValue({ id: "test" } as never);
+  db.user.findUnique.mockResolvedValue({
+    deletionRequestedAt: null,
+    banned: false,
+    banExpires: null,
+  } as never);
   env.CHESS_HOSTED_ENABLED = true;
   env.CHESS_MAX_COST_USD = 25;
   env.CHESS_MAX_TOKENS = 10_000_000;
@@ -292,9 +298,16 @@ describe("chess public projection and operator boundaries", () => {
     await client(null).list({ limit: 5 });
     expect(db.chessMatch.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { AND: [{ published: true }] },
+        where: {
+          AND: [
+            {
+              published: true,
+              OR: [{ ownerId: null }, { Owner: { is: { deletionRequestedAt: null } } }],
+            },
+          ],
+        },
         take: 6,
-        select: expect.not.objectContaining({ archive: true, ownerId: true }),
+        select: expect.not.objectContaining({ archive: true }),
       }),
     );
   });
@@ -337,7 +350,13 @@ describe("chess public projection and operator boundaries", () => {
       code: "NOT_FOUND",
     });
     expect(db.chessMatch.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { slug: "private-game", published: true } }),
+      expect.objectContaining({
+        where: expect.objectContaining({
+          slug: "private-game",
+          published: true,
+          OR: [{ ownerId: null }, { Owner: { is: { deletionRequestedAt: null } } }],
+        }),
+      }),
     );
   });
   it("rejects anonymous writes before storage or scheduling", async () => {
@@ -653,8 +672,9 @@ describe("chess public projection and operator boundaries", () => {
     const game = await client(null).get({ slug: "test-game" });
     const select = db.chessMatch.findFirst.mock.calls[0]?.[0]?.select;
     expect(select).toMatchObject({ archive: true, slug: true, status: true });
-    for (const field of ["ownerId", "runToken", "heartbeatAt"])
-      expect(select).not.toHaveProperty(field);
+    for (const field of ["runToken", "heartbeatAt"]) expect(select).not.toHaveProperty(field);
+    expect(game).not.toHaveProperty("ownerId");
+    expect(game).not.toHaveProperty("Owner");
     // A forged-but-well-formed stored archive is served (shape-checked only)...
     expect(game.archive.events).toHaveLength(1);
     // ...while a malformed one is still rejected.
@@ -1790,6 +1810,15 @@ describe("hosted human move CAS", () => {
     expect(db.chessMatch.findFirst).not.toHaveBeenCalled();
   });
 
+  it("refuses a pending owner before reading or mutating a human turn", async () => {
+    const { input } = parked();
+    db.user.findUnique.mockResolvedValue({ deletionRequestedAt: now, banned: false } as never);
+    await expect(client().move(input)).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    expect(db.chessMatch.findFirst).not.toHaveBeenCalled();
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+  });
+
   it("hides foreign/missing/non-hosted rows and refuses stale identity, seq, side or claim", async () => {
     const { record, input } = parked();
     for (const other of [
@@ -2142,5 +2171,206 @@ describe("public durable official ledger", () => {
     }
     expect(db.chessOfficialEntry.findMany).not.toHaveBeenCalled();
     expect(db.$queryRaw).not.toHaveBeenCalled();
+  });
+});
+
+describe("deletion replay visibility and stale admission", () => {
+  it("refuses pending-owner old URLs and removes them from public pages even on a stale query fixture", async () => {
+    const record = { ...row(), published: true, Owner: { deletionRequestedAt: new Date() } };
+    db.chessMatch.findFirst.mockResolvedValue(record as never);
+    db.chessMatch.findMany.mockResolvedValue([record] as never);
+    await expect(client(null).get({ slug: record.slug })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    expect((await client(null).list({ limit: 2 })).items).toEqual([]);
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+  });
+
+  it("requeries the bounded public page after catalog IO before returning personal metadata", async () => {
+    const { neutralReplayIdentity } = await import("../lib/chess-anonymization");
+    const { resetModelCatalogCache } = await import("../lib/chess-models");
+    resetModelCatalogCache();
+    const identity = neutralReplayIdentity();
+    const retained = {
+      ...row(),
+      ownerId: null,
+      Owner: null,
+      publicId: identity.archiveId,
+      slug: identity.slug,
+      published: true,
+    };
+    const personal = {
+      ...row(),
+      title: "PRIVATE title",
+      whiteName: "PRIVATE name",
+      published: true,
+      Owner: { deletionRequestedAt: null },
+    };
+    db.chessMatch.findMany
+      .mockResolvedValueOnce([retained, personal] as never)
+      .mockResolvedValueOnce([retained] as never);
+    let entered!: () => void;
+    let release!: (response: Response) => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () => {
+      entered();
+      return new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+    });
+    try {
+      const listing = client(null).list({ limit: 2 });
+      await waiting;
+      release(Response.json({ data: [] }));
+      const page = await listing;
+      expect(JSON.stringify(page)).not.toContain("PRIVATE");
+      expect(page.items).toHaveLength(1);
+      expect(db.chessMatch.findMany).toHaveBeenCalledTimes(2);
+      expect(db.chessMatch.findMany.mock.calls[1]?.[0]).toEqual(
+        db.chessMatch.findMany.mock.calls[0]?.[0],
+      );
+      expect(page.nextCursor).toBeNull();
+    } finally {
+      fetcher.mockRestore();
+      resetModelCatalogCache();
+    }
+  });
+
+  it("does not return a retained row removed during catalog IO", async () => {
+    const { neutralReplayIdentity } = await import("../lib/chess-anonymization");
+    const { resetModelCatalogCache } = await import("../lib/chess-models");
+    resetModelCatalogCache();
+    const identity = neutralReplayIdentity();
+    db.chessMatch.findFirst
+      .mockResolvedValueOnce({
+        ...row(),
+        ownerId: null,
+        Owner: null,
+        publicId: identity.archiveId,
+        slug: identity.slug,
+      } as never)
+      .mockResolvedValueOnce(null);
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ data: [] }));
+    try {
+      await expect(client(null).get({ slug: identity.slug })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+      expect(db.chessMatch.findFirst).toHaveBeenCalledTimes(2);
+    } finally {
+      fetcher.mockRestore();
+      resetModelCatalogCache();
+    }
+  });
+
+  it.each(["session", "owner"] as const)(
+    "refuses private inspect after %s revocation during queued assembly",
+    async (revoked) => {
+      const record = { ...row(), status: "queued" };
+      db.chessMatch.findFirst.mockResolvedValue(record as never);
+      db.chessMatch.count.mockImplementationOnce(async () => {
+        if (revoked === "session") db.session.findFirst.mockResolvedValue(null);
+        else db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() } as never);
+        return 1;
+      });
+      await expect(client().inspect({ slug: record.slug })).rejects.toMatchObject({
+        code: "UNAUTHORIZED",
+      });
+    },
+  );
+
+  it("refuses private studio data after owner revocation during its query", async () => {
+    db.chessMatch.findMany.mockImplementationOnce(async () => {
+      db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() } as never);
+      return [row()] as never;
+    });
+    await expect(client().studio({ limit: 2 })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("scrubs null-owner JSON/PGN input and card identifiers independently of the stored snapshot", async () => {
+    const { neutralReplayIdentity } = await import("../lib/chess-anonymization");
+    const { exportPgn } = await import("@cockpit-chess/chess/pgn");
+    const identity = neutralReplayIdentity();
+    const archive = match();
+    archive.config.title = "PRIVATE old title";
+    archive.config.white.name = "PRIVATE old name";
+    submitMove(archive, boardAt(archive), "e2e4", "PRIVATE remark");
+    finishMatch(archive, "*", "cancelled", "stopped");
+    const record = {
+      ...row(),
+      id: "PRIVATE-row-id",
+      publicId: identity.archiveId,
+      ownerId: null,
+      Owner: null,
+      slug: identity.slug,
+      title: "PRIVATE old title",
+      whiteName: "PRIVATE old name",
+      blackName: "PRIVATE old name",
+      status: "stopped",
+      archive,
+      published: true,
+    };
+    db.chessMatch.findFirst.mockResolvedValue(record as never);
+    db.chessMatch.findMany.mockResolvedValue([
+      record,
+      { ...record, publicId: "another-public-id" },
+    ] as never);
+    const fetcher = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("catalog offline"));
+    try {
+      const game = await client(null).get({ slug: identity.slug });
+      expect(game.archive).not.toBeNull();
+      const text = JSON.stringify(game) + exportPgn(game.archive as MatchArchive);
+      expect(text).not.toContain("PRIVATE");
+      expect(text).not.toContain(archive.id);
+      expect(game).not.toHaveProperty("ownerId");
+      expect(game).not.toHaveProperty("Owner");
+      expect(game).toMatchObject({
+        id: identity.archiveId,
+        title: "Deleted user",
+        anonymized: true,
+      });
+      const page = await client(null).list({ limit: 1 });
+      expect(page.nextCursor).not.toBeNull();
+      const decoded = Buffer.from(page.nextCursor as string, "base64url").toString();
+      expect(decoded).toContain(identity.archiveId);
+      expect(decoded).not.toContain(record.id);
+      expect(JSON.stringify(page.items)).not.toContain("PRIVATE");
+    } finally {
+      fetcher.mockRestore();
+    }
+  });
+
+  it("refuses an orphaned raw row without a neutral retained replay identity", async () => {
+    db.chessMatch.findFirst.mockResolvedValue({ ...row(), ownerId: null, Owner: null } as never);
+    const fetcher = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("catalog offline"));
+    try {
+      await expect(client(null).get({ slug: "test-game" })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    } finally {
+      fetcher.mockRestore();
+    }
+  });
+
+  it("rechecks durable deletion after the credential lock for create, import and publish", async () => {
+    db.user.findUnique.mockResolvedValue({
+      deletionRequestedAt: new Date(),
+      banned: false,
+    } as never);
+    db.chessMatch.findFirst.mockResolvedValue(row() as never);
+    const archive = match();
+    finishMatch(archive, "*", "cancelled", "stopped");
+    await expect(client().create(newConfig())).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(client().importGame({ json: JSON.stringify(archive) })).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    await expect(client().publish({ slug: "test-game", published: true })).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    expect(db.chessMatch.create).not.toHaveBeenCalled();
+    expect(db.chessMatch.update).not.toHaveBeenCalled();
   });
 });

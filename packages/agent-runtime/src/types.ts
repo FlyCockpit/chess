@@ -109,6 +109,8 @@ export interface AgentModel {
         onUsage?: (usage: unknown) => Promise<void>;
       }
   >;
+  /** Durable per-request admission, including every transport retry/fallback. */
+  dispatchGuard?: (dispatch: () => Promise<Response>) => Promise<Response>;
 }
 
 export interface AgentTool<TSchema extends z.ZodType = z.ZodType> {

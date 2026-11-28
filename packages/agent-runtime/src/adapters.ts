@@ -128,8 +128,11 @@ const guardedFetch = (model: AgentModel): typeof fetch => {
   if (!authorize) {
     // Keep synchronous hosted guards synchronous, including their thrown refusal.
     return (input, init) => {
-      model.beforeDispatch?.();
-      return init === undefined ? globalThis.fetch(input) : globalThis.fetch(input, init);
+      const send = () => {
+        model.beforeDispatch?.();
+        return init === undefined ? globalThis.fetch(input) : globalThis.fetch(input, init);
+      };
+      return model.dispatchGuard ? model.dispatchGuard(send) : send();
     };
   }
   return async (input, init) => {
@@ -150,16 +153,20 @@ const guardedFetch = (model: AgentModel): typeof fetch => {
       signal: request.signal,
     });
     request.signal.throwIfAborted();
-    model.beforeDispatch?.();
-    request.signal.throwIfAborted();
     const outbound = new Request(request, {
       redirect: "error",
       ...(authorized ? { body: authorized.body } : {}),
     });
-    authorized?.beforeSend?.();
-    request.signal.throwIfAborted();
-    // Bun must receive a Request without a second undefined argument.
-    const response = await globalThis.fetch(outbound);
+    const send = () => {
+      // Recheck after the durable owner admission's asynchronous lock wait.
+      model.beforeDispatch?.();
+      request.signal.throwIfAborted();
+      authorized?.beforeSend?.();
+      request.signal.throwIfAborted();
+      // Bun must receive a Request without a second undefined argument.
+      return globalThis.fetch(outbound);
+    };
+    const response = await (model.dispatchGuard ? model.dispatchGuard(send) : send());
     if (!authorized?.onUsage) return response;
     const observed = await responseJsonUsage(
       response,
@@ -175,7 +182,6 @@ const guardedFetch = (model: AgentModel): typeof fetch => {
 function privacyFetch(model: AgentModel, base?: typeof fetch): typeof fetch | undefined {
   if (model.dataCollection !== "deny") return base;
   return async (input, init) => {
-    model.beforeDispatch?.();
     const request = new Request(input, init);
     const body: unknown = await request.clone().json();
     if (typeof body !== "object" || body === null || Array.isArray(body))
@@ -184,8 +190,7 @@ function privacyFetch(model: AgentModel, base?: typeof fetch): typeof fetch | un
       "provider" in body && typeof body.provider === "object" && body.provider !== null
         ? body.provider
         : {};
-    // Body decoding above is asynchronous; recheck immediately at the HTTP seam.
-    model.beforeDispatch?.();
+    // The inner guarded fetch validates authority after this asynchronous rewrite.
     return (base ?? globalThis.fetch)(request, {
       body: JSON.stringify({ ...body, provider: { ...provider, data_collection: "deny" } }),
     });
@@ -219,6 +224,7 @@ export const createModelAdapter = (
       model.headers ||
       model.beforeDispatch ||
       model.authorizeRequest ||
+      model.dispatchGuard ||
       onResponseIdentity ||
       model.dataCollection
     ) {
@@ -266,7 +272,10 @@ export const createModelAdapter = (
         const gatewayBase =
           model.baseUrl && new URL(model.baseUrl).hostname === "openrouter.ai"
             ? anthropicGatewayFetch(wire)
-            : model.beforeDispatch || model.authorizeRequest || model.dataCollection
+            : model.beforeDispatch ||
+                model.authorizeRequest ||
+                model.dispatchGuard ||
+                model.dataCollection
               ? wire
               : undefined;
         const base = onResponseIdentity
@@ -291,7 +300,10 @@ export const createModelAdapter = (
     model.baseUrl &&
     new URL(model.baseUrl).hostname === "openrouter.ai"
       ? geminiGatewayFetch(wire)
-      : model.beforeDispatch || model.authorizeRequest || model.dataCollection
+      : model.beforeDispatch ||
+          model.authorizeRequest ||
+          model.dispatchGuard ||
+          model.dataCollection
         ? wire
         : undefined;
   const baseFetch = onResponseIdentity

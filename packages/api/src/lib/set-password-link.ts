@@ -9,7 +9,7 @@ import {
   RESET_PASSWORD_IDENTIFIER_PREFIX,
 } from "@cockpit-chess/auth/set-password-link-lock";
 import { DEFAULT_LOCALE, isSupportedLocale } from "@cockpit-chess/config/locales";
-import prisma from "@cockpit-chess/db";
+import prisma, { type Prisma } from "@cockpit-chess/db";
 import { env } from "@cockpit-chess/env/server";
 
 /**
@@ -94,10 +94,12 @@ export class SetPasswordLinkRefusedError extends Error {
 export async function createSetPasswordLink({
   userId,
   locale,
+  authorizeActor,
   now = new Date(),
 }: {
   userId: string;
   locale: unknown;
+  authorizeActor: (tx: Prisma.TransactionClient) => Promise<void>;
   now?: Date;
 }): Promise<{ url: string; expiresAt: Date; token: string }> {
   const authContext = await auth.$context;
@@ -125,6 +127,7 @@ export async function createSetPasswordLink({
       // Serializes link minting per user, and with a finishing reset or an
       // activation, until this transaction ends.
       await lockSetPasswordLinks(userId, tx);
+      await authorizeActor(tx);
       const target = await tx.user.findUnique({
         where: { id: userId },
         select: { banned: true, banExpires: true, ...inviteStateSelect(now) },

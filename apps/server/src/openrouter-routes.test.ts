@@ -9,6 +9,7 @@ vi.mock("@cockpit-chess/db", async () => {
 });
 const { env, admin } = vi.hoisted(() => ({
   env: {
+    DATABASE_POOL_MAX: 3,
     OPENROUTER_ORIGIN: "https://openrouter.test",
     CHESS_PROVIDER_KEY_SECRET: "11".repeat(32) as string | undefined,
     CHESS_HOSTED_ENABLED: true,
@@ -103,6 +104,12 @@ const callback = (app: Hono, query: string, cookie?: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  db.$transaction.mockImplementation(async (run) => {
+    if (typeof run !== "function") throw new Error("Expected transaction callback");
+    return run(db);
+  });
+  db.user.findUnique.mockResolvedValue({ deletionRequestedAt: null, banned: false } as never);
+  db.$executeRaw.mockResolvedValue(0);
   db.openRouterConnection.upsert.mockClear();
   currentUser = { id: "user-a", emailVerified: true };
   admin.value = false;
@@ -112,6 +119,13 @@ beforeEach(() => {
 });
 
 describe("POST /api/openrouter/connect", () => {
+  it("refuses OAuth setup for a deletion-pending owner before creating state", async () => {
+    db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() } as never);
+    const ctx = build();
+    expect((await start(ctx.app)).status).toBe(401);
+    expect(ctx.store.set).not.toHaveBeenCalled();
+    expect(ctx.fetcher).not.toHaveBeenCalled();
+  });
   it("returns OpenRouter's consent URL with an S256 challenge and the suggested caps", async () => {
     const ctx = build();
     const { url, cookie, state } = await begin(ctx);
@@ -176,6 +190,26 @@ describe("POST /api/openrouter/connect", () => {
 });
 
 describe("GET /api/openrouter/callback", () => {
+  it("rechecks deletion under the owner lock at the actual code-exchange request", async () => {
+    const ctx = build();
+    const { cookie, state } = await begin(ctx);
+    db.user.findUnique
+      .mockResolvedValueOnce({ deletionRequestedAt: null, banned: false } as never)
+      .mockResolvedValue({ deletionRequestedAt: new Date() } as never);
+    const response = await callback(ctx.app, `code=good-code&state=${state}`, cookie);
+    expect(response.headers.get("location")).toBe("/es-MX/settings/openrouter?error=unavailable");
+    expect(ctx.exchanged).toEqual([]);
+    expect(db.openRouterConnection.upsert).not.toHaveBeenCalled();
+  });
+  it("refuses a callback begun before deletion without exchanging its code", async () => {
+    const ctx = build();
+    const { cookie, state } = await begin(ctx);
+    db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() } as never);
+    const response = await callback(ctx.app, `code=good-code&state=${state}`, cookie);
+    expect(response.headers.get("location")).toBe("/es-MX/settings/openrouter?error=mismatch");
+    expect(ctx.exchanged).toEqual([]);
+    expect(db.openRouterConnection.upsert).not.toHaveBeenCalled();
+  });
   it("returns to the web app's origin in a separate-origin deployment", async () => {
     const ctx = build("https://api.chess.example", "https://chess.example");
     const { cookie, state } = await begin(ctx);

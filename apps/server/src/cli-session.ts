@@ -1,5 +1,6 @@
 import type { CredentialKind } from "@cockpit-chess/api/context";
 import { auth, type Session } from "@cockpit-chess/auth";
+import { isAccountDeletionPending } from "@cockpit-chess/auth/account-state";
 import { isUserBanned } from "@cockpit-chess/auth/ban";
 import { RUNNER_MACHINE_TOKEN_PREFIX } from "@cockpit-chess/auth/runner-machine";
 import { API_KEY_PREFIX, DEVICE_FLOW_SESSION_ORIGIN } from "@cockpit-chess/config/cli";
@@ -45,6 +46,7 @@ const sessionUserSelect = {
   role: true,
   locale: true,
   banned: true,
+  deletionRequestedAt: true,
   banReason: true,
   banExpires: true,
   twoFactorEnabled: true,
@@ -132,7 +134,8 @@ export async function resolveCliCredential(
     console.warn("[cli-session] credential lookup failed, treating as anonymous:", err);
     return null;
   }
-  if (!session?.user || isUserBanned(session.user)) return null;
+  if (!session?.user || isUserBanned(session.user) || isAccountDeletionPending(session.user))
+    return null;
   return { session, credential };
 }
 

@@ -1,7 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 import { isAdminRole } from "@cockpit-chess/auth/roles";
+import type { Prisma } from "@cockpit-chess/db";
 import type { MockInstance } from "vitest";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mockDeep } from "vitest-mock-extended";
 
 vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
@@ -61,6 +63,7 @@ describe("activeAdminUserCount", () => {
     // Authorization requires a verified inbox; pending admin invites cannot save
     // the last usable administrator. Check the predicate on the actual query.
     expect(sql).toContain('AND u."emailVerified" IS TRUE');
+    expect(sql).toContain('AND u."deletionRequestedAt" IS NULL');
     expect(sql).toContain("string_to_array(u.role, ',')");
     expect(sql).toContain("~* '^\\s*admin\\s*$'");
     expect(sql).toContain('u.banned IS NOT TRUE OR u."banExpires" <= ?');
@@ -73,10 +76,10 @@ describe("activeAdminUserCount", () => {
     // and ban predicates run verbatim, rather than returning a canned count.
     using sql = new DatabaseSync(":memory:");
     sql.exec(
-      'CREATE TABLE "user" (id TEXT, role TEXT, "emailVerified" INTEGER, banned INTEGER, "banExpires" INTEGER)',
+      'CREATE TABLE "user" (id TEXT, role TEXT, "emailVerified" INTEGER, banned INTEGER, "banExpires" INTEGER, "deletionRequestedAt" INTEGER)',
     );
     sql.function("admin_token", (role) => Number(isAdminRole(role)));
-    const insert = sql.prepare('INSERT INTO "user" VALUES (?, ?, ?, ?, ?)');
+    const insert = sql.prepare('INSERT INTO "user" VALUES (?, ?, ?, ?, ?, NULL)');
     const now = new Date("2026-11-26T12:00:00Z");
     insert.run("a", "admin", 1, 0, null);
     insert.run("b", "user, Admin", 1, 0, null);
@@ -96,6 +99,9 @@ describe("activeAdminUserCount", () => {
         return sql.prepare(statement).all(instant.getTime());
       });
     expect(await activeAdminUserCount({ $queryRaw: query }, now)).toBe(3);
+    sql.prepare('UPDATE "user" SET "deletionRequestedAt" = 1 WHERE id = ?').run("a");
+    expect(await activeAdminUserCount({ $queryRaw: query }, now)).toBe(2);
+    sql.prepare('UPDATE "user" SET "deletionRequestedAt" = NULL WHERE id = ?').run("a");
     sql.prepare('UPDATE "user" SET role = ? WHERE id = ?').run("user", "b");
     sql
       .prepare('UPDATE "user" SET banned = 1, "banExpires" = NULL WHERE id = ?')
@@ -109,5 +115,103 @@ describe("activeAdminUserCount", () => {
   it("returns zero when there are no active admins", async () => {
     db.$queryRaw.mockResolvedValueOnce([{ count: 0 }]);
     expect(await activeAdminUserCount()).toBe(0);
+  });
+});
+
+describe("admin effect authority", () => {
+  const tx = mockDeep<Prisma.TransactionClient>();
+  const actor = { kind: "admin", userId: "actor", sessionId: "actor-session" } as const;
+  const actorUser = {
+    id: "actor",
+    role: "admin",
+    emailVerified: true,
+    banned: false,
+    banExpires: null,
+    deletionRequestedAt: null,
+    twoFactorEnabled: true,
+    createdAt: new Date(),
+  };
+  beforeEach(() => {
+    vi.mocked(prisma).$transaction.mockImplementation(async (run) => {
+      if (typeof run !== "function") throw new Error("Expected transaction");
+      return run(tx);
+    });
+    tx.$executeRaw.mockReset();
+    tx.session.findFirst.mockReset();
+    tx.user.findUnique.mockReset();
+    tx.appSetting.findMany.mockReset();
+    tx.$executeRaw.mockResolvedValue(0);
+    tx.session.findFirst.mockResolvedValue({ user: actorUser } as never);
+    tx.user.findUnique.mockResolvedValue({
+      id: "target",
+      role: "user",
+      emailVerified: true,
+    } as never);
+    tx.appSetting.findMany.mockResolvedValue([]);
+  });
+  it("locks current User and Session before validating the actor and applying the effect", async () => {
+    const { withAdminRemovalGuard } = await import("./admin-presence");
+    const effect = vi.fn(async () => "done");
+    expect(await withAdminRemovalGuard("target", effect, actor)).toBe("done");
+    const [query, userId, sessionId] = tx.$executeRaw.mock.calls[0] ?? [];
+    expect((query as TemplateStringsArray).join("?")).toContain("FOR SHARE OF u, s");
+    expect([userId, sessionId]).toEqual(["actor", "actor-session"]);
+    expect(tx.session.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "actor-session", userId: "actor", expiresAt: { gt: expect.any(Date) } },
+      }),
+    );
+    expect(effect).toHaveBeenCalledWith(tx, expect.objectContaining({ id: "target" }));
+  });
+  it.each([
+    null,
+    { user: { ...actorUser, role: "user" } },
+    { user: { ...actorUser, banned: true } },
+    { user: { ...actorUser, emailVerified: false } },
+    { user: { ...actorUser, deletionRequestedAt: new Date() } },
+  ])("denies revoked actor authority before reading or mutating a target", async (live) => {
+    const { withAdminRemovalGuard } = await import("./admin-presence");
+    tx.session.findFirst.mockResolvedValue(live as never);
+    const effect = vi.fn();
+    await expect(withAdminRemovalGuard("target", effect, actor)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    expect(effect).not.toHaveBeenCalled();
+    expect(tx.user.findUnique).not.toHaveBeenCalled();
+  });
+  it("uses the transaction for force2FA and preserves enrolled/grace/overdue behavior", async () => {
+    const { withAdminRemovalGuard } = await import("./admin-presence");
+    const effect = vi.fn(async () => "done");
+    tx.session.findFirst.mockResolvedValue({
+      user: { ...actorUser, twoFactorEnabled: false },
+    } as never);
+    await expect(withAdminRemovalGuard("target", effect, actor)).resolves.toBe("done");
+    expect(tx.appSetting.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 2 }));
+    tx.session.findFirst.mockResolvedValue({
+      user: {
+        ...actorUser,
+        twoFactorEnabled: false,
+        createdAt: new Date(Date.now() - 172_800_000),
+      },
+    } as never);
+    await expect(withAdminRemovalGuard("target", effect, actor)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    tx.session.findFirst.mockResolvedValue({
+      user: { ...actorUser, createdAt: new Date(Date.now() - 172_800_000) },
+    } as never);
+    await expect(withAdminRemovalGuard("target", effect, actor)).resolves.toBe("done");
+  });
+  it("fails closed if the same-transaction policy read fails", async () => {
+    const { withAdminRemovalGuard } = await import("./admin-presence");
+    tx.session.findFirst.mockResolvedValue({
+      user: { ...actorUser, twoFactorEnabled: false },
+    } as never);
+    tx.appSetting.findMany.mockRejectedValue(new Error("fixture policy unavailable"));
+    const effect = vi.fn();
+    await expect(withAdminRemovalGuard("target", effect, actor)).rejects.toThrow(
+      "fixture policy unavailable",
+    );
+    expect(effect).not.toHaveBeenCalled();
   });
 });

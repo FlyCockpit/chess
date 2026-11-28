@@ -157,11 +157,27 @@ export const cliAccessRouter = {
    * refetches on mount) so the embedded token is always newly issued and
    * expires 15 minutes later.
    */
-  installCommand: protectedProcedure.handler(({ context }) => {
+  installCommand: protectedProcedure.handler(async ({ context }) => {
     if (!isCliReleaseConfigured()) {
       return { available: false as const };
     }
-    const { token, expiresAt } = createCliInstallToken(context.session.user.id);
+    if (context.credential !== undefined) throw new ORPCError("UNAUTHORIZED");
+    let capability: ReturnType<typeof createCliInstallToken>;
+    try {
+      capability = await mintCliCredentialForSession(
+        { userId: context.session.user.id, sessionId: context.session.session.id },
+        {
+          mint: async () => createCliInstallToken(context.session.user.id),
+          // A stateless capability is never returned if the locked post-check
+          // fails. Its redemption independently checks durable owner state.
+          discard: async () => {},
+        },
+      );
+    } catch (error) {
+      if (error instanceof CliCredentialSessionRevokedError) throw new ORPCError("UNAUTHORIZED");
+      throw error;
+    }
+    const { token, expiresAt } = capability;
     const base = `${env.BETTER_AUTH_URL}/api/cli`;
     // The token rides in a header, never the URL, so access logs (the app's
     // and any reverse proxy's) never record it.

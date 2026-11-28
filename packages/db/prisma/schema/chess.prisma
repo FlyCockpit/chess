@@ -1,11 +1,12 @@
 /// A complete replay archive. Public readers always filter published=true.
 model ChessMatch {
   id                   String              @id @default(cuid(2))
+  publicId             String              @unique @default(dbgenerated("(gen_random_uuid())::text"))
   slug                 String              @unique
   createdAt            DateTime            @default(now())
   updatedAt            DateTime            @default(now()) @updatedAt
-  ownerId              String
-  Owner                User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerId              String?
+  Owner                User?               @relation(fields: [ownerId], references: [id], onDelete: SetNull)
   title                String
   whiteName            String
   blackName            String
@@ -69,6 +70,7 @@ model ChessMatch {
   credentialSource     String              @default("operator")
 
   @@index([published, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([published, createdAt(sort: Desc), publicId(sort: Desc)])
   @@index([ownerId, createdAt(sort: Desc)])
   @@index([promptVersion, createdAt(sort: Desc), id(sort: Desc)])
   @@index([status, heartbeatAt])

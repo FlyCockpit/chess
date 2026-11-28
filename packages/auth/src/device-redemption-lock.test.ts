@@ -302,7 +302,12 @@ describe("browser device approval", () => {
     expect(strings.join("?")).toContain("pg_advisory_xact_lock(hashtext(?))");
     expect(key).toBe("cli-credentials:u1");
     expect(tx.session.findFirst).toHaveBeenCalledWith({
-      where: { id: data.session?.[0]?.id, userId: "u1", expiresAt: { gt: expect.any(Date) } },
+      where: {
+        id: data.session?.[0]?.id,
+        userId: "u1",
+        expiresAt: { gt: expect.any(Date) },
+        user: { deletionRequestedAt: null },
+      },
       select: { id: true },
     });
     expect(tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(

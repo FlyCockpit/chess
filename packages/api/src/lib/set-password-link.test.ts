@@ -88,6 +88,25 @@ beforeEach(() => {
 });
 
 describe("createSetPasswordLink", () => {
+  it("requires actor authorization after the setup lock and before any link mutation", async () => {
+    const order: string[] = [];
+    db.$executeRaw.mockImplementation(async () => {
+      order.push("setup");
+      return 1;
+    });
+    const authorizeActor = vi.fn(async (tx) => {
+      expect(tx).toBe(db);
+      order.push("actor");
+      throw new Error("actor revoked");
+    });
+    await expect(
+      createSetPasswordLink({ userId: "u1", locale: "en-US", authorizeActor }),
+    ).rejects.toThrow("actor revoked");
+    expect(order).toEqual(["setup", "actor"]);
+    expect(db.verification.create).not.toHaveBeenCalled();
+    expect(db.verification.deleteMany).not.toHaveBeenCalled();
+  });
+
   const now = new Date("2026-11-04T12:00:00Z");
 
   // Better-Auth 1.7.14 `requestPasswordReset` stores exactly this row through
@@ -98,7 +117,12 @@ describe("createSetPasswordLink", () => {
       url,
       expiresAt,
       token: returned,
-    } = await createSetPasswordLink({ userId: "u1", locale: "es-MX", now });
+    } = await createSetPasswordLink({
+      authorizeActor: async () => {},
+      userId: "u1",
+      locale: "es-MX",
+      now,
+    });
 
     expect(INVITE_LINK_TTL_DAYS).toBe(7);
     expect(expiresAt).toEqual(new Date(now.getTime() + INVITE_LINK_TTL_SECONDS * 1000));
@@ -123,7 +147,12 @@ describe("createSetPasswordLink", () => {
   });
 
   it("invalidates earlier links and writes the new one in one transaction, under a per-user lock", async () => {
-    await createSetPasswordLink({ userId: "u1", locale: "en-US", now });
+    await createSetPasswordLink({
+      authorizeActor: async () => {},
+      userId: "u1",
+      locale: "en-US",
+      now,
+    });
 
     expect(db.$transaction).toHaveBeenCalledTimes(1);
     // pg_advisory_xact_lock(hashtext('set-password-link:u1')) — tagged template.
@@ -143,7 +172,12 @@ describe("createSetPasswordLink", () => {
   // The transaction pins a pooled connection while it may wait for the lock,
   // so it runs in a lock slot (lock-slots.ts), with no nested reservation.
   it("runs the locked transaction in one lock slot", async () => {
-    await createSetPasswordLink({ userId: "u1", locale: "en-US", now });
+    await createSetPasswordLink({
+      authorizeActor: async () => {},
+      userId: "u1",
+      locale: "en-US",
+      now,
+    });
     expect(withLockSlot).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withLockSlot).mock.calls[0]?.[1]).toBeUndefined();
     expect(slot.transactionsInSlot).toBe(1);
@@ -167,9 +201,9 @@ describe("createSetPasswordLink", () => {
   ])("refuses %s inside the transaction and writes nothing", async (_label, patch, reason) => {
     db.user.findUnique.mockResolvedValue({ ...pendingInvitee, ...patch });
 
-    await expect(createSetPasswordLink({ userId: "u1", locale: "en-US", now })).rejects.toThrow(
-      expect.objectContaining({ name: "SetPasswordLinkRefusedError", reason }),
-    );
+    await expect(
+      createSetPasswordLink({ authorizeActor: async () => {}, userId: "u1", locale: "en-US", now }),
+    ).rejects.toThrow(expect.objectContaining({ name: "SetPasswordLinkRefusedError", reason }));
     expect(db.user.findUnique.mock.calls[0]?.[0].where).toEqual({ id: "u1" });
     expect(db.verification.deleteMany).not.toHaveBeenCalled();
     expect(db.verification.create).not.toHaveBeenCalled();
@@ -177,23 +211,33 @@ describe("createSetPasswordLink", () => {
 
   it("refuses a user that no longer exists", async () => {
     db.user.findUnique.mockResolvedValue(null);
-    await expect(createSetPasswordLink({ userId: "u1", locale: "en-US", now })).rejects.toThrow(
-      new SetPasswordLinkRefusedError("missing"),
-    );
+    await expect(
+      createSetPasswordLink({ authorizeActor: async () => {}, userId: "u1", locale: "en-US", now }),
+    ).rejects.toThrow(new SetPasswordLinkRefusedError("missing"));
     expect(db.verification.create).not.toHaveBeenCalled();
   });
 
   it("fails loudly if Better-Auth stops storing verification rows as plain Postgres rows", async () => {
     authOptions.verification = { storeIdentifier: "hashed" };
-    await expect(createSetPasswordLink({ userId: "u1", locale: "en-US", now })).rejects.toThrow(
-      /verification storage/,
-    );
+    await expect(
+      createSetPasswordLink({ authorizeActor: async () => {}, userId: "u1", locale: "en-US", now }),
+    ).rejects.toThrow(/verification storage/);
     expect(db.$transaction).not.toHaveBeenCalled();
   });
 
   it("mints a different token every time", async () => {
-    await createSetPasswordLink({ userId: "u1", locale: "en-US", now });
-    await createSetPasswordLink({ userId: "u1", locale: "en-US", now });
+    await createSetPasswordLink({
+      authorizeActor: async () => {},
+      userId: "u1",
+      locale: "en-US",
+      now,
+    });
+    await createSetPasswordLink({
+      authorizeActor: async () => {},
+      userId: "u1",
+      locale: "en-US",
+      now,
+    });
     const [first, second] = db.verification.create.mock.calls.map(
       (call) => call[0].data.identifier,
     );

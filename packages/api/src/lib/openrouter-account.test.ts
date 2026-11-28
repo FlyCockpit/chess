@@ -8,6 +8,7 @@ vi.mock("@cockpit-chess/db", async () => {
 });
 const { env } = vi.hoisted(() => ({
   env: {
+    DATABASE_POOL_MAX: 3,
     OPENROUTER_ORIGIN: "https://openrouter.test",
     CHESS_PROVIDER_KEY_SECRET: "11".repeat(32) as string | undefined,
     CHESS_HOSTED_ENABLED: true,
@@ -26,6 +27,13 @@ const json = (body: unknown, status = 200) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  db.openRouterConnection.upsert.mockClear();
+  db.$transaction.mockImplementation(async (run) => {
+    if (typeof run !== "function") throw new Error("Expected transaction callback");
+    return run(db);
+  });
+  db.user.findUnique.mockResolvedValue({ deletionRequestedAt: null, banned: false } as never);
+  db.$executeRaw.mockResolvedValue(0);
   env.CHESS_PROVIDER_KEY_SECRET = "11".repeat(32);
   env.CHESS_HOSTED_ENABLED = true;
   env.CHESS_USER_MATCHES_ENABLED = false;
@@ -134,6 +142,22 @@ describe("saveOpenRouterConnection", () => {
     expect(args?.update).toMatchObject({ keyHint: CANARY.slice(-4), status: "active" });
     const update = args?.update as { keyCiphertext: Uint8Array; keyNonce: Uint8Array };
     expect(openProviderKey("user-a", update, "11".repeat(32))).toBe(CANARY);
+  });
+
+  it("refuses a late callback once the owner is pending deletion", async () => {
+    db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() } as never);
+    await expect(
+      account.saveOpenRouterConnection("user-a", CANARY, {
+        label: null,
+        limitMicros: null,
+        limitRemainingMicros: null,
+        usageMicros: null,
+        usageDailyMicros: null,
+        expiresAt: null,
+      }),
+    ).rejects.toMatchObject({ code: "rejected" });
+    expect(db.openRouterConnection.upsert).not.toHaveBeenCalled();
+    expect(db.$executeRaw).toHaveBeenCalled();
   });
 
   it("refuses without a sealing secret", async () => {

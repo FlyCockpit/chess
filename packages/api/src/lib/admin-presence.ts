@@ -2,6 +2,8 @@ import { isUserBanned } from "@cockpit-chess/auth/ban";
 import { hasRole } from "@cockpit-chess/auth/roles";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { ORPCError } from "@orpc/server";
+import type { CredentialKind } from "../context";
+import { checkAdminAuthority } from "../index";
 
 /**
  * "Admin" here means the same thing as `isAdminRole` in
@@ -49,6 +51,7 @@ export async function activeAdminUserCount(
         WHERE r.token ~* '^\\s*admin\\s*$'
       )
       AND u."emailVerified" IS TRUE
+      AND u."deletionRequestedAt" IS NULL
       AND (u.banned IS NOT TRUE OR u."banExpires" <= ${now})`;
   return rows[0]?.count ?? 0;
 }
@@ -59,9 +62,62 @@ const ADMIN_REMOVAL_SELECT = {
   emailVerified: true,
   banned: true,
   banExpires: true,
+  deletionRequestedAt: true,
 } satisfies Prisma.UserSelect;
 
 type AdminRemovalTarget = Prisma.UserGetPayload<{ select: typeof ADMIN_REMOVAL_SELECT }>;
+
+/** Caller identity is derived from the authenticated context, never the target input. */
+export type AdminMutationActor = {
+  kind: "admin";
+  userId: string;
+  sessionId: string;
+  credential?: CredentialKind;
+};
+
+/**
+ * Bind the actor to the effect. SHARE conflicts with user authority updates and
+ * session deletion, while permitting concurrent authorized reads. Acquire no other
+ * user's credential lock: reciprocal admin actions may serialize/abort safely,
+ * without introducing an actor/target advisory-lock cycle.
+ */
+type MutationAuthority = AdminMutationActor | { kind: "self"; userId: string; sessionId: string };
+
+export async function assertLiveMutationActor(
+  tx: Prisma.TransactionClient,
+  targetId: string,
+  actor: MutationAuthority,
+) {
+  if (actor.kind === "self" && actor.userId !== targetId) throw new ORPCError("UNAUTHORIZED");
+  await tx.$executeRaw`
+    SELECT u.id FROM "user" u JOIN "session" s ON s."userId" = u.id
+    WHERE u.id = ${actor.userId} AND s.id = ${actor.sessionId}
+    FOR SHARE OF u, s`;
+  const live = await tx.session.findFirst({
+    where: { id: actor.sessionId, userId: actor.userId, expiresAt: { gt: new Date() } },
+    select: {
+      user: {
+        select: {
+          id: true,
+          role: true,
+          emailVerified: true,
+          twoFactorEnabled: true,
+          createdAt: true,
+          banned: true,
+          banExpires: true,
+          deletionRequestedAt: true,
+        },
+      },
+    },
+  });
+  if (!live) {
+    if (actor.kind === "self")
+      throw new ORPCError("PRECONDITION_FAILED", { data: { reason: "REAUTH_REQUIRED" } });
+    throw new ORPCError("NOT_FOUND", { message: "Not found" });
+  }
+  if (actor.kind === "admin" && !(await checkAdminAuthority(live, actor.credential, tx)).ok)
+    throw new ORPCError("NOT_FOUND", { message: "Not found" });
+}
 
 /**
  * Every admin-removing write shares this transaction: read the target, count
@@ -72,12 +128,14 @@ type AdminRemovalTarget = Prisma.UserGetPayload<{ select: typeof ADMIN_REMOVAL_S
 export async function withAdminRemovalGuard<T>(
   userId: string,
   mutate: (tx: Prisma.TransactionClient, target: AdminRemovalTarget) => Promise<T>,
+  authority: MutationAuthority,
   nextRole?: string,
   timeout?: number,
 ): Promise<T> {
   try {
     return await prisma.$transaction(
       async (tx) => {
+        await assertLiveMutationActor(tx, userId, authority);
         const target = await tx.user.findUnique({
           where: { id: userId },
           select: ADMIN_REMOVAL_SELECT,
@@ -92,6 +150,7 @@ export async function withAdminRemovalGuard<T>(
           !hasRole(nextRole, "admin") &&
           hasRole(target.role, "admin") &&
           target.emailVerified &&
+          !target.deletionRequestedAt &&
           !isUserBanned(target) &&
           (await activeAdminUserCount(tx)) <= 1
         ) {

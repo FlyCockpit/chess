@@ -54,6 +54,19 @@ function SecuritySettings() {
         </CardHeader>
         <CardContent>{has2FA ? <Disable2FASection /> : <Enable2FASection />}</CardContent>
       </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("security.deleteAccountTitle")}</CardTitle>
+          <CardDescription>{t("security.deleteAccountUnavailable")}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">{t("security.deleteAccountPlan")}</p>
+          <p className="text-sm text-muted-foreground">{t("security.deleteAccountProviderKey")}</p>
+          <Button type="button" variant="destructive" className="min-h-[44px]" disabled>
+            {t("security.deleteAccountAction")}
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

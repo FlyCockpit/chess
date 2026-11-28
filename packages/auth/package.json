@@ -13,6 +13,12 @@
     "./password-pepper-store": {
       "default": "./src/password-pepper-store.ts"
     },
+    "./account-state": {
+      "default": "./src/account-state.ts"
+    },
+    "./account-deletion": {
+      "default": "./src/account-deletion.ts"
+    },
     "./ban": {
       "default": "./src/ban.ts"
     },

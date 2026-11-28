@@ -162,6 +162,30 @@ describe("cliAccess.installCommand", () => {
       vi.useRealTimers();
     }
   });
+  it("mints installation authority only under the caller's live credential lock", async () => {
+    env.CLI_RELEASE_REPO = "acme/app";
+    await client().installCommand();
+    expect(lock.calls).toEqual([{ userId: "user-1", sessionId: "auth-session" }]);
+    lock.revoked = true;
+    await expect(client().installCommand()).rejects.toSatisfy(isCode("UNAUTHORIZED"));
+  });
+
+  it("does not return a stateless capability after the mint lock lapses", async () => {
+    env.CLI_RELEASE_REPO = "acme/app";
+    lock.lapseAfterMint = true;
+    await expect(client().installCommand()).rejects.toThrow("lapsed");
+  });
+
+  it.each(["api-key", "session-token"] as const)(
+    "refuses %s issuance on the browser surface",
+    async (credential) => {
+      env.CLI_RELEASE_REPO = "acme/app";
+      await expect(client("user-1", {}, credential).installCommand()).rejects.toSatisfy(
+        isCode("UNAUTHORIZED"),
+      );
+      expect(lock.calls).toHaveLength(0);
+    },
+  );
 });
 
 describe("cliAccess.apiKeys", () => {

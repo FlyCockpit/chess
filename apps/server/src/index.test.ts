@@ -44,6 +44,7 @@ vi.mock("@cockpit-chess/auth", () => ({
   auth: { api: { getSession: state.getSession }, handler: state.authHandler },
   passwordPepper: state.passwordPepper,
 }));
+vi.mock("@cockpit-chess/auth/account-deletion", () => ({ isOwnerActive: async () => true }));
 vi.mock("@cockpit-chess/auth/password-pepper-store", () => ({
   syncPasswordPepper: state.syncPasswordPepper,
 }));
@@ -90,7 +91,9 @@ vi.mock("./lifecycle.js", () => ({
   }),
 }));
 vi.mock("./runner-ws-runtime.js", () => ({
-  createRunnerWebSocketRuntime: (options: { isOwnerActive: null }) => {
+  createRunnerWebSocketRuntime: (options: {
+    isOwnerActive: (userId: string) => Promise<boolean>;
+  }) => {
     state.runnerCreate(options);
     return { server: state.runnerServer, runtime: null, stop: state.runnerStop };
   },
@@ -221,8 +224,9 @@ it("awaits password pepper synchronization before listening", async () => {
   expect(state.fetch).toBeDefined();
 });
 
-it("registers the runner upgrade adapter and drain with the deletion fence deliberately absent", async () => {
-  expect(runnerCreateCalls).toEqual([[{ isOwnerActive: null }]]);
+it("registers the runner upgrade adapter and drain with the authoritative deletion fence", async () => {
+  const { isOwnerActive } = await import("@cockpit-chess/auth/account-deletion");
+  expect(runnerCreateCalls).toEqual([[{ isOwnerActive }]]);
   expect(state.websocket).toEqual({ server: state.runnerServer });
   expect(transportDrains).toHaveLength(1);
   await transportDrains[0]?.[0]();

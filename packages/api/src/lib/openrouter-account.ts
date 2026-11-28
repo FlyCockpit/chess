@@ -1,4 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
+import { ownerActiveInTransaction } from "@cockpit-chess/auth/account-deletion";
+import { lockCliCredentials } from "@cockpit-chess/auth/device-redemption-lock";
+import { withLockSlot } from "@cockpit-chess/auth/lock-slots";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { env } from "@cockpit-chess/env/shared";
 import { z } from "zod";
@@ -179,12 +182,22 @@ export async function saveOpenRouterConnection(
     status: "active",
     lastCheckedAt: new Date(),
   } satisfies Prisma.OpenRouterConnectionUncheckedUpdateInput;
-  await prisma.openRouterConnection.upsert({
-    where: { userId },
-    create: { userId, ...data },
-    update: data,
-    select: { id: true },
-  });
+  await withLockSlot(() =>
+    prisma.$transaction(
+      async (tx) => {
+        await lockCliCredentials(userId, tx);
+        if (!(await ownerActiveInTransaction(tx, userId)))
+          throw new OpenRouterAccountError("rejected");
+        await tx.openRouterConnection.upsert({
+          where: { userId },
+          create: { userId, ...data },
+          update: data,
+          select: { id: true },
+        });
+      },
+      { isolationLevel: "ReadCommitted", timeout: 30_000 },
+    ),
+  );
 }
 
 /**

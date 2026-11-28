@@ -5,7 +5,7 @@ import {
   isTwoFactorRequirementSatisfied,
   type TwoFactorPolicyUser,
 } from "@cockpit-chess/auth/two-factor-policy";
-import prisma from "@cockpit-chess/db";
+import prisma, { type Prisma } from "@cockpit-chess/db";
 
 // The keys, the absent-row defaults, and the grace window live in
 // `@cockpit-chess/auth/two-factor-policy` so the browser mirror
@@ -23,12 +23,14 @@ const FORCE_2FA_CACHE_TTL_MS = 60_000;
 
 let forceTwoFactorCache: { byKey: Map<string, string>; expiresAt: number } | null = null;
 
-async function loadForceTwoFactorSettings(): Promise<Map<string, string>> {
+type PolicyStore = Pick<Prisma.TransactionClient, "appSetting">;
+
+async function loadForceTwoFactorSettings(db?: PolicyStore): Promise<Map<string, string>> {
   const now = Date.now();
-  if (forceTwoFactorCache && forceTwoFactorCache.expiresAt > now) {
+  if (!db && forceTwoFactorCache && forceTwoFactorCache.expiresAt > now) {
     return forceTwoFactorCache.byKey;
   }
-  const settings = await prisma.appSetting.findMany({
+  const settings = await (db ?? prisma).appSetting.findMany({
     where: {
       key: {
         in: [...FORCE_2FA_SETTING_KEYS],
@@ -39,7 +41,7 @@ async function loadForceTwoFactorSettings(): Promise<Map<string, string>> {
     take: FORCE_2FA_SETTING_KEYS.length,
   });
   const byKey = new Map(settings.map((setting) => [setting.key, setting.value]));
-  forceTwoFactorCache = { byKey, expiresAt: now + FORCE_2FA_CACHE_TTL_MS };
+  if (!db) forceTwoFactorCache = { byKey, expiresAt: now + FORCE_2FA_CACHE_TTL_MS };
   return byKey;
 }
 
@@ -52,9 +54,12 @@ export function invalidateForceTwoFactorSettingsCache(): void {
  * Is forced 2FA on for this role? An absent AppSetting row resolves to
  * `FORCE_2FA_DEFAULTS` — which means **on** for internal (admin) users.
  */
-export async function isForcedTwoFactorEnabledForRole(role: unknown): Promise<boolean> {
+export async function isForcedTwoFactorEnabledForRole(
+  role: unknown,
+  db?: PolicyStore,
+): Promise<boolean> {
   const targetKey = forcedTwoFactorSettingKeyForRole(role);
-  const byKey = await loadForceTwoFactorSettings();
+  const byKey = await loadForceTwoFactorSettings(db);
 
   return isForcedTwoFactorEnabled(targetKey, byKey.get(targetKey));
 }
@@ -67,8 +72,9 @@ export async function isForcedTwoFactorEnabledForRole(role: unknown): Promise<bo
  */
 export async function isTwoFactorPolicySatisfied(
   user: TwoFactorPolicyUser & { role?: unknown },
+  db?: PolicyStore,
 ): Promise<boolean> {
   if (user.twoFactorEnabled) return true;
-  const forced = await isForcedTwoFactorEnabledForRole(user.role);
+  const forced = await isForcedTwoFactorEnabledForRole(user.role, db);
   return isTwoFactorRequirementSatisfied(user, forced);
 }

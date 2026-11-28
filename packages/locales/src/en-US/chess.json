@@ -104,6 +104,9 @@
     "rejectedBySide": "Rejected moves (White / Black)"
   },
   "replay": {
+    "deletedUser": "Deleted user",
+    "unknownModel": "Unknown model",
+    "anonymized": "The owner deleted their account. This replay retains moves, settings and results; personal text has been removed.",
     "first": "Starting position",
     "previous": "Previous event",
     "next": "Next event",

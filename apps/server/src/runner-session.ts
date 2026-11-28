@@ -1,3 +1,4 @@
+import { isAccountDeletionPending } from "@cockpit-chess/auth/account-state";
 import { isUserBanned } from "@cockpit-chess/auth/ban";
 import {
   digestRunnerMachineSecret,
@@ -7,7 +8,15 @@ import prisma, { type Prisma } from "@cockpit-chess/db";
 
 const runnerCredentialSelect = {
   ...runnerMachinePublicSelect,
-  User: { select: { id: true, emailVerified: true, banned: true, banExpires: true } },
+  User: {
+    select: {
+      id: true,
+      emailVerified: true,
+      banned: true,
+      banExpires: true,
+      deletionRequestedAt: true,
+    },
+  },
 } satisfies Prisma.RunnerMachineSelect;
 
 /** Runner authority only: deliberately no Better-Auth Session or general role. */
@@ -42,7 +51,8 @@ export async function resolveRunnerMachineCredential(
       row.revokedAt !== null ||
       row.expiresAt.getTime() <= Date.now() ||
       !row.User?.emailVerified ||
-      isUserBanned(row.User)
+      isUserBanned(row.User) ||
+      isAccountDeletionPending(row.User)
     ) {
       return null;
     }

@@ -61,6 +61,14 @@ beforeEach(() => {
 });
 
 describe("resolveCliCredential", () => {
+  it("refuses surviving companion credentials for deletion-pending owners", async () => {
+    const user = userRow({ deletionRequestedAt: new Date() });
+    db.session.findUnique.mockResolvedValue(sessionRow({ user }) as never);
+    expect(await resolveCliCredential("Bearer device-token")).toBeNull();
+    verifyApiKey.mockResolvedValue({ valid: true, key: { id: "k1", referenceId: "user-1" } });
+    db.user.findUnique.mockResolvedValue(user as never);
+    expect(await resolveCliCredential(`Bearer ${API_KEY}`)).toBeNull();
+  });
   it("refuses runner machine credentials before any companion lookup", async () => {
     await expect(
       resolveCliCredential(`Bearer cockpit_chess_runner_${"ab".repeat(32)}`),

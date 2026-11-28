@@ -11,6 +11,7 @@ import {
   saveOpenRouterConnection,
 } from "@cockpit-chess/api/lib/openrouter-account";
 import type { Session } from "@cockpit-chess/auth";
+import { dispatchForActiveOwner, isOwnerActive } from "@cockpit-chess/auth/account-deletion";
 import { DEFAULT_LOCALE, isSupportedLocale } from "@cockpit-chess/config/locales";
 import type { Context, Env, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -126,7 +127,7 @@ export function mountOpenRouterRoutes<E extends Env>(
 
   app.post(OPENROUTER_CONNECT_PATH, async (c) => {
     const session = sessionOf(c);
-    if (!session?.user) {
+    if (!session?.user || !(await isOwnerActive(session.user.id))) {
       record(c, "unauthenticated");
       return c.json({ error: "unauthenticated" }, 401);
     }
@@ -239,17 +240,23 @@ export function mountOpenRouterRoutes<E extends Env>(
     if (
       !session?.user ||
       session.user.id !== stored.userId ||
+      !(await isOwnerActive(session.user.id)) ||
       !presented ||
       !sameHex(presented, stored.cookie)
     )
       return done("mismatch");
     if (!ownOpenRouterAvailable(await isAdmin(session))) return done("disabled");
     if (code.length > 512) return done("exchange");
+    // The state/session checks may have awaited other storage. Each outbound
+    // request is admitted under the same owner lock as the deletion tombstone.
+    // Saving below takes its own short lock after these network guards release.
+    const ownerFetch: typeof fetch = (input, init) =>
+      dispatchForActiveOwner(session.user.id, () => fetcher(input, init));
     try {
-      const key = await exchangeOpenRouterCode(code, stored.verifier, fetcher);
+      const key = await exchangeOpenRouterCode(code, stored.verifier, ownerFetch);
       let info: Awaited<ReturnType<typeof fetchOpenRouterKeyInfo>>;
       try {
-        info = await fetchOpenRouterKeyInfo(key, fetcher);
+        info = await fetchOpenRouterKeyInfo(key, ownerFetch);
       } catch (error) {
         return done(
           error instanceof OpenRouterAccountError && error.code === "unavailable"

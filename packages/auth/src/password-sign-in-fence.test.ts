@@ -167,6 +167,7 @@ const { betterAuth } = await import("better-auth");
 const { memoryAdapter } = await import("better-auth/adapters/memory");
 const { hashPassword, verifyPassword } = await import("better-auth/crypto");
 const { twoFactor } = await import("better-auth/plugins");
+const { TWO_FACTOR_ALLOW_PASSWORDLESS_ENROLLMENT } = await import("./two-factor-policy");
 const { createAuthMiddleware } = await import("better-auth/api");
 const {
   passwordChangeRevocationTarget,
@@ -262,6 +263,7 @@ const auth = betterAuth({
   },
   plugins: [
     twoFactor({
+      allowPasswordless: TWO_FACTOR_ALLOW_PASSWORDLESS_ENROLLMENT,
       otpOptions: {
         storeOTP: "hashed",
         sendOTP: async ({ otp: code }) => {
@@ -270,6 +272,9 @@ const auth = betterAuth({
       },
     }),
   ],
+  session: {
+    additionalFields: { authenticatedAt: { type: "date", required: false, input: false } },
+  },
   // The wiring index.ts uses.
   hooks: {
     after: createAuthMiddleware(async (ctx) => {
@@ -295,7 +300,15 @@ const auth = betterAuth({
     session: {
       create: {
         before: async (session, context) => {
-          if (!fenceDisabled) await fence.fencePasswordSessionBefore(session, context);
+          if (!fenceDisabled) {
+            await fence.fencePasswordSessionBefore(session, context);
+            return {
+              data: {
+                ...session,
+                authenticatedAt: await fence.sessionAuthenticationTime(session, context),
+              },
+            };
+          }
         },
         after: async (session, context) => {
           if (!fenceDisabled) await fence.fencePasswordSessionAfter(session, context);
@@ -428,6 +441,7 @@ describe("password sign-in vs password reset (real Better-Auth handler)", {
     expect(sessionsOf()).toHaveLength(1);
     const session = await auth.api.getSession({ headers: new Headers({ cookie: cookiesOf(res) }) });
     expect(session?.user.id).toBe(USER);
+    expect(sessionsOf()[0]?.authenticatedAt).toBeInstanceOf(Date);
   });
 
   it("a reset that completes while the old hash is being verified leaves no session", async () => {
@@ -515,6 +529,7 @@ describe("two-factor sign-in vs password reset (real Better-Auth handler)", {
     const res = await auth.handler(post("/two-factor/verify-otp", { code: otp }, cookie));
     expect(res.status).toBe(200);
     expect(sessionsOf()).toHaveLength(1);
+    expect(sessionsOf()[0]?.authenticatedAt).toBeInstanceOf(Date);
     // The challenge's credential fence row is spent with it.
     expect(tables.db.verification?.some((v) => String(v.identifier).includes(":credential:"))).toBe(
       false,
@@ -556,6 +571,168 @@ describe("two-factor sign-in vs password reset (real Better-Auth handler)", {
     const res = await auth.handler(post("/two-factor/verify-otp", { code: otp }, cookie));
     expect(res.status).toBeGreaterThanOrEqual(400);
     expect(sessionsOf()).toHaveLength(0);
+  });
+});
+
+describe("session authentication proof (real Better-Auth rotations)", { timeout: 30_000 }, () => {
+  it("a stale SSO cookie can enroll email OTP but its new session keeps the old proof", async () => {
+    const signedIn = await signIn(OLD_PASSWORD);
+    expect(signedIn.status).toBe(200);
+    const parent = sessionsOf()[0];
+    if (!parent) throw new Error("missing initial session");
+    const authenticatedAt = new Date(Date.now() - 86_400_000);
+    parent.authenticatedAt = authenticatedAt;
+    parent.createdAt = authenticatedAt;
+    // No password account remains: the actual pinned plugin follows its SSO-only
+    // enrollment path and rotates a session without primary authentication.
+    tables.db.account = [
+      { id: "sso-account", userId: USER, accountId: "subject", providerId: "sso" },
+    ];
+    const rotated = await auth.handler(
+      post("/two-factor/enable", { method: "otp" }, cookiesOf(signedIn)),
+    );
+    expect(rotated.status).toBe(200);
+    const current = sessionsOf()[0];
+    expect(current?.id).not.toBe(parent.id);
+    if (!(current?.createdAt instanceof Date) || !(current.authenticatedAt instanceof Date))
+      throw new Error("missing rotated session dates");
+    expect(current.createdAt.getTime()).toBeGreaterThan(authenticatedAt.getTime());
+    expect(current.authenticatedAt).toEqual(authenticatedAt);
+    expect(current.authenticatedAt.getTime()).toBeLessThan(Date.now() - 300_000);
+  });
+
+  it("a genuine password re-sign-in refreshes proof even when an old same-user cookie exists", async () => {
+    const initial = await signIn(OLD_PASSWORD);
+    const old = new Date(Date.now() - 86_400_000);
+    const parent = sessionsOf()[0];
+    if (!parent) throw new Error("missing initial session");
+    parent.authenticatedAt = old;
+    const started = Date.now();
+    const reauthenticated = await send(
+      "/sign-in/email",
+      { email: EMAIL, password: OLD_PASSWORD },
+      cookiesOf(initial),
+    );
+    expect(reauthenticated.status).toBe(200);
+    const fresh = sessionsOf().find((row) => row.id !== parent.id);
+    if (!(fresh?.authenticatedAt instanceof Date)) throw new Error("missing genuine proof");
+    expect(fresh.authenticatedAt.getTime()).toBeGreaterThanOrEqual(started);
+  });
+
+  it("a password sign-in code step keeps primary proof time instead of refreshing it", async () => {
+    await seed({ twoFactorEnabled: true });
+    const primary = await signIn(OLD_PASSWORD);
+    const cookie = cookiesOf(primary);
+    expect((await primary.clone().json()).twoFactorRedirect).toBe(true);
+    const proof = tables.db.verification?.find((v) =>
+      String(v.identifier).includes(":credential:"),
+    );
+    if (!proof) throw new Error("missing challenge credential fence");
+    const primaryTime = new Date(Date.now() - 301_000);
+    proof.createdAt = primaryTime;
+    expect((await auth.handler(post("/two-factor/send-otp", {}, cookie))).status).toBe(200);
+    const completed = await auth.handler(post("/two-factor/verify-otp", { code: otp }, cookie));
+    expect(completed.status).toBe(200);
+    expect(sessionsOf()[0]?.authenticatedAt).toEqual(primaryTime);
+  });
+});
+
+describe("durable authentication provenance", () => {
+  it.each(["/callback/sso", "/callback/:id", "/callback/google", "/sign-in/social"])(
+    "stamps genuine pinned IdP primary authentication on %s, even with an old parent",
+    async (path) => {
+      const old = new Date(Date.now() - 86_400_000);
+      tables.db.session = [
+        {
+          id: "s-parent",
+          userId: USER,
+          expiresAt: new Date(Date.now() + 60_000),
+          authenticatedAt: old,
+        },
+      ];
+      const started = Date.now();
+      const proof = await fence.sessionAuthenticationTime(
+        { userId: USER },
+        {
+          path,
+          context: { session: { session: { id: "s-parent", userId: USER } } },
+        },
+      );
+      expect(proof).toBeInstanceOf(Date);
+      expect(proof?.getTime()).toBeGreaterThanOrEqual(started);
+    },
+  );
+
+  it("takes a rotation proof from the live parent's stored row, not a newly copied timestamp", async () => {
+    const old = new Date(Date.now() - 86_400_000);
+    tables.db.session = [
+      {
+        id: "s-parent",
+        userId: USER,
+        expiresAt: new Date(Date.now() + 60_000),
+        authenticatedAt: old,
+      },
+    ];
+    const copied = { userId: USER, authenticatedAt: new Date() };
+    const context = {
+      path: "/two-factor/verify-totp",
+      context: { session: { session: { id: "s-parent", userId: USER } } },
+    };
+    expect(await fence.sessionAuthenticationTime(copied, context)).toEqual(old);
+    tables.db.session = [
+      {
+        id: "s-parent",
+        userId: "other",
+        expiresAt: new Date(Date.now() + 60_000),
+        authenticatedAt: new Date(),
+      },
+    ];
+    expect(await fence.sessionAuthenticationTime(copied, context)).toBeNull();
+    tables.db.session = [
+      {
+        id: "s-parent",
+        userId: USER,
+        expiresAt: new Date(Date.now() - 1),
+        authenticatedAt: new Date(),
+      },
+    ];
+    expect(await fence.sessionAuthenticationTime(copied, context)).toBeNull();
+  });
+
+  it.each([
+    "/device/token",
+    "/admin/impersonate-user",
+    "/admin/stop-impersonating",
+    "/oauth2/callback/sso",
+    "/unknown",
+  ])("cannot turn %s into fresh authentication", async (path) => {
+    expect(await fence.sessionAuthenticationTime({ userId: USER }, { path })).toBeNull();
+  });
+
+  it("does not infer authentication for a parent with no stored proof", async () => {
+    tables.db.session = [
+      {
+        id: "s-parent",
+        userId: USER,
+        expiresAt: new Date(Date.now() + 60_000),
+        createdAt: new Date(),
+      },
+    ];
+    expect(
+      await fence.sessionAuthenticationTime(
+        { userId: USER },
+        {
+          path: "/two-factor/enable",
+          context: { session: { session: { id: "s-parent", userId: USER } } },
+        },
+      ),
+    ).toBeNull();
+    expect(
+      await fence.sessionAuthenticationTime(
+        { userId: USER, impersonatedBy: "admin" },
+        { path: "/callback/sso" },
+      ),
+    ).toBeNull();
   });
 });
 

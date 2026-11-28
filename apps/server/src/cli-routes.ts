@@ -7,14 +7,13 @@ import {
 } from "@cockpit-chess/api/lib/cli-release";
 import { cliRouter } from "@cockpit-chess/api/routers/cli";
 import type { Session } from "@cockpit-chess/auth";
-import { isUserBanned } from "@cockpit-chess/auth/ban";
+import { isOwnerActive } from "@cockpit-chess/auth/account-deletion";
 import {
   CLI_CHECKSUMS_ASSET,
   CLI_INSTALL_AUTH_SCHEME,
   CLI_PLATFORMS,
   CLI_RPC_PREFIX,
 } from "@cockpit-chess/config/cli";
-import prisma from "@cockpit-chess/db";
 import { env } from "@cockpit-chess/env/server";
 import { onError } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
@@ -64,12 +63,7 @@ async function installTokenUser(token: string | undefined): Promise<string | nul
   if (!token || !INSTALL_TOKEN_SHAPE.test(token)) return null;
   const userId = verifyCliInstallToken(token);
   if (!userId) return null;
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { id: true, banned: true, banExpires: true },
-  });
-  if (!user || isUserBanned(user)) return null;
-  return user.id;
+  return (await isOwnerActive(userId)) ? userId : null;
 }
 
 function noStore(c: Context) {
@@ -143,6 +137,10 @@ export function mountCliRoutes<E extends Env & CliEnv>(
 
     try {
       const url = await resolveCliAssetUrl(asset);
+      // Release discovery can wait on upstream IO; the sampled credential
+      // cannot authorize a redirect after its account became pending.
+      if (!(await isOwnerActive(userId)))
+        return c.json({ error: "Sign in or copy a fresh install command." }, 401);
       if (!url) return c.json({ error: "This release does not include that file." }, 404);
       return c.redirect(url, 302);
     } catch (error) {

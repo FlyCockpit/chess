@@ -141,7 +141,12 @@ export async function mintCliCredentialForSession<T>(
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${cliCredentialLockKey(session.userId)}))`;
         const liveSession = () =>
           tx.session.findFirst({
-            where: { id: session.sessionId, userId: session.userId, expiresAt: { gt: new Date() } },
+            where: {
+              id: session.sessionId,
+              userId: session.userId,
+              expiresAt: { gt: new Date() },
+              user: { deletionRequestedAt: null },
+            },
             select: { id: true },
           });
         if (!(await liveSession())) throw new CliCredentialSessionRevokedError();

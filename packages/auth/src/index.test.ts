@@ -256,7 +256,10 @@ type CapturedOptions = {
   };
   user?: Record<string, unknown>;
   advanced?: { ipAddress?: { disableIpTracking?: boolean } };
-  session?: { cookieCache?: { enabled?: boolean; maxAge?: number } };
+  session?: {
+    cookieCache?: { enabled?: boolean; maxAge?: number };
+    additionalFields?: Record<string, { type?: string; required?: boolean; input?: boolean }>;
+  };
   hooks?: {
     before?: (
       ctx: Parameters<typeof import("better-auth/api").getSessionFromCtx>[0],
@@ -302,6 +305,35 @@ type CapturedOptions = {
 
 const options = betterAuth.mock.calls[0]?.[0] as CapturedOptions;
 describe("Better-Auth config", () => {
+  it("keeps primary authentication proof server-owned and nullable", () => {
+    expect(options.session?.additionalFields?.authenticatedAt).toEqual({
+      type: "date",
+      required: false,
+      input: false,
+    });
+  });
+  it("refuses every new session, including SSO callbacks, for a deletion-pending account", async () => {
+    const before = options.databaseHooks?.session?.create?.before;
+    if (!before) throw new Error("session create hook missing");
+    const lookup = vi
+      .spyOn(prismaStub.user, "findUnique")
+      .mockResolvedValue({ locale: "en-US", deletionRequestedAt: new Date() } as never);
+    try {
+      for (const path of [
+        "/callback/sso",
+        "/sign-in/social",
+        "/device/token",
+        "/change-password",
+        "/two-factor/verify-totp",
+      ]) {
+        await expect(before({ userId: "pending-user" }, { path })).rejects.toMatchObject({
+          status: "UNAUTHORIZED",
+        });
+      }
+    } finally {
+      lookup.mockRestore();
+    }
+  });
   // A reset is what a user does when they suspect someone else has their
   // password; it must sign out every existing session, the attacker's included.
   it("revokes every session when a password is reset", () => {
@@ -321,7 +353,7 @@ describe("Better-Auth config", () => {
       /credential fence is missing/,
     );
     await expect(before(session, { path: "/sign-in/social" })).resolves.toEqual({
-      data: { ...session, ipAddress: "" },
+      data: { ...session, authenticatedAt: expect.any(Date), ipAddress: "" },
     });
     const { withDeviceRedemptionLock } = await import("./device-redemption-lock");
     // The lock helper's DB calls are not under test here: with no device code

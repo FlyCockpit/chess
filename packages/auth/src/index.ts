@@ -24,6 +24,7 @@ import {
   afterUserUpdate,
   noteVerificationWrite,
 } from "./account-activation.js";
+import { isOwnerActive } from "./account-deletion.js";
 import {
   passwordChangeRevocationTarget,
   revokeCredentialsAfterPasswordChange,
@@ -48,6 +49,7 @@ import {
   fencePasswordSessionAfter,
   fencePasswordSessionBefore,
   recordTwoFactorChallenge,
+  sessionAuthenticationTime,
 } from "./password-sign-in-fence.js";
 import {
   confirmPasswordWriteLocked,
@@ -105,6 +107,11 @@ export const auth = betterAuth({
   trustedOrigins: isCrossOrigin ? [env.CORS_ORIGIN!, env.BETTER_AUTH_URL] : [env.BETTER_AUTH_URL],
   user: {
     additionalFields: {
+      deletionRequestedAt: {
+        type: "date",
+        required: false,
+        input: false,
+      },
       // Surface the Prisma `User.locale` column on the typed session so the
       // web app can read `session.user.locale` (and the i18n hook can sync it
       // into i18next). Default mirrors the Prisma `@default("en-US")` so a
@@ -245,6 +252,11 @@ export const auth = betterAuth({
       enabled: false,
     },
     additionalFields: {
+      authenticatedAt: {
+        type: "date",
+        required: false,
+        input: false,
+      },
       // How the session was issued (`Session.origin` in auth.prisma).
       // Server-set only; the device-flow hook in `databaseHooks` below is the
       // one writer of a non-default value.
@@ -556,14 +568,25 @@ export const auth = betterAuth({
         // callback mints a session with none of these
         // (password-sign-in-fence.ts).
         before: async (session, context) => {
+          if (!(await isOwnerActive(session.userId))) throw new APIError("UNAUTHORIZED");
           const tagged = deviceFlowSessionData(session, context);
           if (tagged) assertDeviceRedemptionLocked(session.userId);
           await fencePasswordSessionBefore(session, context);
           // Two-factor rotations pass the parent row as an override after
           // Better Auth's IP default; never copy a legacy IP into a new row.
-          return { data: { ...(tagged?.data ?? session), ipAddress: "" } };
+          return {
+            data: {
+              ...(tagged?.data ?? session),
+              authenticatedAt: await sessionAuthenticationTime(session, context),
+              ipAddress: "",
+            },
+          };
         },
         after: async (session, context) => {
+          if (!(await isOwnerActive(session.userId))) {
+            await prisma.session.deleteMany({ where: { id: session.id } });
+            throw new APIError("UNAUTHORIZED");
+          }
           if (deviceFlowSessionData(session, context)) await removeDeviceSessionIfUnlocked(session);
           await fencePasswordSessionAfter(session, context);
         },

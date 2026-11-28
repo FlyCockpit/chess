@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import prisma, { type Prisma } from "@cockpit-chess/db";
+import { isAccountDeletionPending } from "./account-state.js";
 import { withLockSlot } from "./lock-slots.js";
 import {
   lockSetPasswordLinks,
@@ -61,6 +62,7 @@ export const CREDENTIAL_PROVIDER_ID = "credential";
 export function inviteStateSelect(now: Date) {
   return {
     emailVerified: true,
+    deletionRequestedAt: true,
     accounts: { select: { providerId: true }, take: 2 },
     sessions: { where: { expiresAt: { gt: now } }, select: { id: true }, take: 1 },
   } satisfies Prisma.UserSelect;
@@ -84,10 +86,12 @@ export function inviteStateSelect(now: Date) {
  */
 export function isInvitePending(row: {
   emailVerified: boolean;
+  deletionRequestedAt?: Date | null;
   accounts: { providerId: string }[];
   sessions: { id: string }[];
 }): boolean {
   return (
+    !isAccountDeletionPending(row) &&
     !row.emailVerified &&
     row.accounts.length === 1 &&
     row.accounts[0]?.providerId === CREDENTIAL_PROVIDER_ID &&
@@ -228,7 +232,7 @@ export async function admitResetSpend(
     select: { ...inviteStateSelect(now), email: true },
   });
   const proved = target?.userId === userId && target.email === user?.email;
-  if (!user || (!proved && !isInvitePending(user))) return false;
+  if (!user || isAccountDeletionPending(user) || (!proved && !isInvitePending(user))) return false;
   await tx.verification.deleteMany({
     where: {
       value: userId,

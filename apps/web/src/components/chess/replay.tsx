@@ -358,11 +358,13 @@ function evaluationNote(
 }
 
 export function MatchReplay({
-  match,
+  match: original,
+  anonymized = false,
   live = false,
   spectator,
 }: {
   match: MatchArchive;
+  anonymized?: boolean;
   live?: boolean;
   /**
    * Spectator-only engine scores (`chess.get` / `chess.inspect`, the local lab's
@@ -371,6 +373,33 @@ export function MatchReplay({
   spectator?: { evaluations: SpectatorEvaluations | null; available?: boolean };
 }) {
   const { t, i18n } = useTranslation("chess");
+  const match = useMemo(() => {
+    if (!anonymized) return original;
+    const player = (value: Player): Player => {
+      const name =
+        value.protocol === "human"
+          ? t("replay.deletedUser")
+          : value.protocol === "random"
+            ? t("lab.random")
+            : value.model === "Unknown model"
+              ? t("replay.unknownModel")
+              : value.name;
+      return {
+        ...value,
+        name,
+        model: value.model === "Unknown model" ? t("replay.unknownModel") : value.model,
+      };
+    };
+    return {
+      ...original,
+      config: {
+        ...original.config,
+        title: t("replay.deletedUser"),
+        white: player(original.config.white),
+        black: player(original.config.black),
+      },
+    };
+  }, [anonymized, original, t]);
   const [cursor, setCursor] = useState<number | null>(null);
   // The scrubber moved the cursor last: the board snaps instead of animating a step.
   const [scrubbed, setScrubbed] = useState(false);
@@ -697,6 +726,7 @@ export function MatchReplay({
           <span className="cc-pill">{match.result}</span>
         </div>
         <h2>{match.config.title}</h2>
+        {anonymized && <p className="text-muted-foreground text-sm">{t("replay.anonymized")}</p>}
         <p className="cc-muted cc-ending-text">{ending}</p>
         <div className="cc-rule-tags">
           <span>{t(`context.${match.config.rules.context}`)}</span>

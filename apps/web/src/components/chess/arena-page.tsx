@@ -176,7 +176,7 @@ function Arena({
         gameRetry
       ) : oldRulesGame ? (
         <div className="cc-empty" role="status">
-          <h3>{oldRulesGame.title}</h3>
+          <h3>{oldRulesGame.anonymized ? t("replay.deletedUser") : oldRulesGame.title}</h3>
           <p>{t("arena.oldRules")}</p>
           <p>{t("arena.oldRulesDescription")}</p>
           <button type="button" className="cc-button mt-5" onClick={() => onNavigate("arena")}>
@@ -187,6 +187,7 @@ function Arena({
         <MatchReplay
           key={selected?.id ?? "demonstration"}
           match={current}
+          anonymized={selected?.anonymized}
           live={current.status === "running"}
           spectator={selected ? { evaluations: selected.spectatorEvaluations } : undefined}
         />
@@ -258,9 +259,23 @@ function Arena({
               const body = (
                 <>
                   <span className="cc-pill">{t(`arena.status.${game.status}`)}</span>
-                  <h3>{game.title}</h3>
+                  <h3>{game.anonymized ? t("replay.deletedUser") : game.title}</h3>
                   <p>
-                    {game.whiteName} <span aria-hidden="true">×</span> {game.blackName}
+                    {game.anonymized && game.whiteName === "Deleted user"
+                      ? t("replay.deletedUser")
+                      : game.anonymized && game.whiteName === "Unknown model"
+                        ? t("replay.unknownModel")
+                        : game.anonymized && game.whiteName === "Random"
+                          ? t("lab.random")
+                          : game.whiteName}{" "}
+                    <span aria-hidden="true">×</span>{" "}
+                    {game.anonymized && game.blackName === "Deleted user"
+                      ? t("replay.deletedUser")
+                      : game.anonymized && game.blackName === "Unknown model"
+                        ? t("replay.unknownModel")
+                        : game.anonymized && game.blackName === "Random"
+                          ? t("lab.random")
+                          : game.blackName}
                   </p>
                   {game.ending && (
                     <p className="cc-card-ending">{endingHeadlineLabel(t, game.ending)}</p>

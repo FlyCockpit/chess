@@ -259,6 +259,9 @@
     "k": "rey"
   },
   "replay": {
+    "deletedUser": "Usuario eliminado",
+    "unknownModel": "Modelo desconocido",
+    "anonymized": "El propietario eliminó su cuenta. Esta repetición conserva las jugadas, la configuración y los resultados; se eliminó el texto personal.",
     "first": "Posición inicial",
     "previous": "Evento anterior",
     "next": "Siguiente evento",

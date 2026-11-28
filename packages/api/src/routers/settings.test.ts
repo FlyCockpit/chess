@@ -6,6 +6,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "../context";
 import { settingsRouter } from "./settings";
 
+const requestAccountDeletion = vi.hoisted(() => vi.fn());
+const consumeBudget = vi.hoisted(() => vi.fn());
+vi.mock("../lib/account-deletion", () => ({ requestAccountDeletion }));
+vi.mock("../lib/procedure-budget", () => ({ createProcedureBudget: () => consumeBudget }));
+
 // Mock @cockpit-chess/db before importing the module
 vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
@@ -387,6 +392,59 @@ describe("settingsRouter", () => {
           return true;
         },
       );
+    });
+  });
+  describe("deleteAccount", () => {
+    beforeEach(() => {
+      requestAccountDeletion.mockReset();
+      consumeBudget.mockReset();
+    });
+    it("uses only the cookie session identity and returns pending", async () => {
+      const pending = {
+        status: "pending",
+        phase: "pending",
+        complete: false,
+        requestedAt: new Date(),
+      };
+      requestAccountDeletion.mockResolvedValue(pending);
+      const context = buildContext();
+      const client = createRouterClient(settingsRouter, { context });
+      await expect(client.deleteAccount({ confirmation: "DELETE" })).resolves.toEqual(pending);
+      expect(requestAccountDeletion).toHaveBeenCalledWith("test-user-id", {
+        kind: "self",
+        sessionId: context.session?.session.id,
+      });
+      expect(consumeBudget).toHaveBeenCalledWith("test-user-id");
+    });
+    it.each(["session-token", "api-key"] as const)(
+      "refuses the %s bearer surface",
+      async (credential) => {
+        const context = { ...buildContext(), credential };
+        const client = createRouterClient(settingsRouter, { context });
+        await expect(client.deleteAccount({ confirmation: "DELETE" })).rejects.toMatchObject({
+          code: "FORBIDDEN",
+        });
+        expect(requestAccountDeletion).not.toHaveBeenCalled();
+      },
+    );
+    it("rejects body identities and wrong confirmation", async () => {
+      const client = createRouterClient(settingsRouter, { context: buildContext() });
+      const invoke = client.deleteAccount as (input: unknown) => Promise<unknown>;
+      await expect(invoke({ confirmation: "DELETE", userId: "other" })).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+      });
+      await expect(invoke({ confirmation: "delete" })).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+      });
+      expect(requestAccountDeletion).not.toHaveBeenCalled();
+    });
+    it("fails closed when its dedicated budget is unavailable", async () => {
+      consumeBudget.mockRejectedValue(new ORPCError("SERVICE_UNAVAILABLE"));
+      const client = createRouterClient(settingsRouter, { context: buildContext() });
+      await expect(client.deleteAccount({ confirmation: "DELETE" })).rejects.toMatchObject({
+        code: "SERVICE_UNAVAILABLE",
+      });
+      expect(requestAccountDeletion).not.toHaveBeenCalled();
     });
   });
 });

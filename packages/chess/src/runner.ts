@@ -383,6 +383,7 @@ export interface ProviderCredentials {
   dataCollection?: "deny";
   /** Local durable spend authority at the actual HTTP seam, including each retry. */
   authorizeRequest?: AgentModel["authorizeRequest"];
+  dispatchGuard?: (dispatch: () => Promise<Response>) => Promise<Response>;
   /** Conservative price quotes, integer microdollars per million tokens. */
   inputMicrosPerMillion: number;
   outputMicrosPerMillion: number;
@@ -506,6 +507,7 @@ export async function advanceMatch(
     ...(credential.beforeDispatch ? { beforeDispatch: credential.beforeDispatch } : {}),
     ...(credential.dataCollection ? { dataCollection: credential.dataCollection } : {}),
     ...(credential.authorizeRequest ? { authorizeRequest: credential.authorizeRequest } : {}),
+    ...(credential.dispatchGuard ? { dispatchGuard: credential.dispatchGuard } : {}),
   };
   const bundle = assertPinnedPrompt(match.config);
   const systemPrompt = matchSystemPrompt(match);

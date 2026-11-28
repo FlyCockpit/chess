@@ -13,6 +13,11 @@
     "notificationsSaveError": "No se pudo actualizar la preferencia de notificaciones. Intenta de nuevo."
   },
   "security": {
+    "deleteAccountTitle": "Eliminar cuenta",
+    "deleteAccountUnavailable": "La eliminación de cuentas aún no está disponible. Cuando se habilite, requerirá iniciar sesión de nuevo y confirmar.",
+    "deleteAccountPlan": "Se planea eliminar las partidas privadas y conservar las repeticiones publicadas con jugadas, nombres de modelos, configuraciones y resultados. Se quitará el texto personal y las repeticiones recibirán una nueva URL neutral.",
+    "deleteAccountProviderKey": "Revoca también con el proveedor cualquier clave conectada.",
+    "deleteAccountAction": "Eliminar cuenta",
     "twoFactorTitle": "Autenticación de Dos Factores",
     "enabledDescription": "La autenticación de dos factores está habilitada en tu cuenta",
     "disabledDescription": "Añade una capa extra de seguridad a tu cuenta",

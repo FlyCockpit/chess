@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Locale } from "@cockpit-chess/config/locales";
+import type { Prisma } from "@cockpit-chess/db";
 import { APIError } from "better-auth/api";
 
 type UserCreationMode = "admin-bootstrap" | "admin-invite";
@@ -10,7 +11,13 @@ type UserCreationMode = "admin-bootstrap" | "admin-invite";
 // cost would differ by address (signup-response.ts). `locale` is the language
 // the server chose for the new account (an admin invite picks the invitee's);
 // the user.create hook seeds `User.locale` from it instead of the request.
-type UserCreationGrant = { mode: UserCreationMode; created: boolean; locale?: Locale };
+type UserCreationAuthorizer = (tx: Prisma.TransactionClient) => Promise<void>;
+type UserCreationGrant = {
+  mode: UserCreationMode;
+  created: boolean;
+  locale?: Locale;
+  authorize?: UserCreationAuthorizer;
+};
 
 const userCreationModeStorage = new AsyncLocalStorage<UserCreationGrant>();
 
@@ -38,9 +45,20 @@ export function getAllowedUserCreationMode(): UserCreationMode | undefined {
 export function runWithAllowedUserCreation<T>(
   mode: UserCreationMode,
   fn: () => T | Promise<T>,
-  options: { locale?: Locale } = {},
+  options: { locale?: Locale; authorize?: UserCreationAuthorizer } = {},
 ): T | Promise<T> {
-  return userCreationModeStorage.run({ mode, created: false, locale: options.locale }, fn);
+  return userCreationModeStorage.run(
+    { mode, created: false, locale: options.locale, authorize: options.authorize },
+    fn,
+  );
+}
+
+/** The raw admin-invite INSERT must authorize on its committing transaction. */
+export async function authorizeAdminInvite(tx: Prisma.TransactionClient): Promise<void> {
+  const grant = userCreationModeStorage.getStore();
+  if (grant?.mode !== "admin-invite" || !grant.authorize)
+    throw new APIError("FORBIDDEN", { code: "ADMIN_INVITE_AUTHORITY_REQUIRED" });
+  await grant.authorize(tx);
 }
 
 /**

@@ -11,6 +11,8 @@ import {
   loadOwnerOpenRouterKey,
   markOpenRouterKeyInvalid,
 } from "@cockpit-chess/api/lib/provider-key";
+import { dispatchForActiveOwner } from "@cockpit-chess/auth/account-deletion";
+import { isAccountDeletionPending } from "@cockpit-chess/auth/account-state";
 import { isAdminRole } from "@cockpit-chess/auth/roles";
 import {
   beginHostedTurn,
@@ -336,10 +338,24 @@ export async function handleChessRunJob(
       spectatorEvaluations: true,
       ownerId: true,
       credentialSource: true,
-      Owner: { select: { role: true } },
+      Owner: { select: { role: true, deletionRequestedAt: true } },
     },
   });
   if (!row) return;
+  if (!row.ownerId || !row.Owner || isAccountDeletionPending(row.Owner)) {
+    await prisma.chessMatch.updateMany({
+      where: { id: matchId, status: "running", runToken },
+      data: {
+        status: "stopped",
+        runToken: null,
+        terminalCause: "owner-delete",
+        ...chessTurnData({ type: "idle" }),
+        ending: { kind: "cancelled" },
+      },
+    });
+    return;
+  }
+  const ownerId = row.ownerId;
   let match: MatchArchive;
   let humanGame = false;
   try {
@@ -522,7 +538,10 @@ export async function handleChessRunJob(
     }
     let key: Awaited<ReturnType<typeof playerKey>> | undefined;
     try {
-      key = requiresModel || ownKeyMatch ? await playerKey(row) : undefined;
+      key =
+        requiresModel || ownKeyMatch
+          ? await playerKey({ ownerId, credentialSource: row.credentialSource, Owner: row.Owner })
+          : undefined;
     } finally {
       // A Disconnect of this key aborts the run here (the signal is checked below and
       // by every provider request), before anything is sent with it.
@@ -568,6 +587,7 @@ export async function handleChessRunJob(
           apiKey: key.apiKey,
           baseUrl: `${env.OPENROUTER_ORIGIN}/api/v1`,
           headers: attributionHeaders(),
+          dispatchGuard: (send) => dispatchForActiveOwner(ownerId, send),
           // The key-use lease, checked synchronously before every provider request.
           beforeDispatch: () => {
             controller.signal.throwIfAborted();

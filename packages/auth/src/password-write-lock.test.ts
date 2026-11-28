@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const db = vi.hoisted(() => ({
   locks: new Set<string>(),
   verification: { findFirst: vi.fn() },
+  user: { findUnique: vi.fn() },
   sessionFindFirst: vi.fn(),
   $transaction: vi.fn(),
 }));
@@ -37,6 +38,7 @@ const post = (path: string, body: unknown, query = "") =>
 beforeEach(() => {
   vi.clearAllMocks();
   db.locks.clear();
+  db.user.findUnique.mockResolvedValue({ deletionRequestedAt: null });
   db.$transaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) => {
     const held: string[] = [];
     try {
@@ -76,6 +78,23 @@ describe("withPasswordWriteLock", () => {
       },
       { getSession: noSession },
     );
+  });
+
+  it("refuses an authorized password reset after a deletion tombstone without revoking again", async () => {
+    const { fenceAdminPasswordReset } = await import("./password-write-lock");
+    db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() });
+    await expect(
+      withPasswordWriteLock(
+        "/admin/set-user-password",
+        post("/admin/set-user-password", { userId: "target" }),
+        async () => {
+          await fenceAdminPasswordReset();
+          return ok();
+        },
+        { getSession: noSession },
+      ),
+    ).rejects.toMatchObject({ status: "UNAUTHORIZED" });
+    expect(adminPreFence).not.toHaveBeenCalled();
   });
 
   it("refuses the authorized admin password write if the pre-fence fails", async () => {

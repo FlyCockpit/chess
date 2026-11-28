@@ -79,6 +79,11 @@ describe("sessionMiddleware", () => {
     expect(await res.json()).toEqual({ session });
   });
 
+  it("refuses a surviving cookie session after deletion was requested", async () => {
+    getSession.mockResolvedValue({ user: { id: "u1", deletionRequestedAt: new Date() } });
+    expect(await (await app.request("/")).json()).toEqual({ session: null });
+  });
+
   it.each([
     ["permanent", null],
     ["temporary", new Date(Date.now() + 60_000)],
