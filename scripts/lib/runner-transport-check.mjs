@@ -306,8 +306,48 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
   const ioSetTimeout = globalThis.setTimeout;
   const ioClearTimeout = globalThis.clearTimeout;
   let heartbeatNow = 0;
+  const traceStart = process.hrtime.bigint();
+  const timeline = [];
+  let tracing = true;
+  const trace = (event, details = {}) =>
+    tracing &&
+    timeline.push({
+      realMs: Number(process.hrtime.bigint() - traceStart) / 1e6,
+      fakeMs: heartbeatNow,
+      event,
+      ...details,
+    });
   const performanceNow = mock.method(performance, "now", () => heartbeatNow);
   mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const traceMocks = [];
+  const emit = WebSocket.prototype.emit;
+  traceMocks.push(
+    mock.method(WebSocket.prototype, "emit", function (type, ...args) {
+      if (["open", "ping", "pong", "message", "close", "error"].includes(type)) {
+        trace("wire-receive", {
+          side: runtime?.server.clients.has(this) ? "server" : "client",
+          kind:
+            type === "message" && !args[1]
+              ? `application-${JSON.parse(args[0].toString()).type}`
+              : type,
+          code: type === "close" ? args[0] : undefined,
+        });
+      }
+      return emit.call(this, type, ...args);
+    }),
+  );
+  for (const name of ["send", "ping", "pong"]) {
+    const original = WebSocket.prototype[name];
+    traceMocks.push(
+      mock.method(WebSocket.prototype, name, function (...args) {
+        trace("wire-send", {
+          side: runtime?.server.clients.has(this) ? "server" : "client",
+          kind: name === "send" ? `application-${JSON.parse(args[0].toString()).type}` : name,
+        });
+        return original.apply(this, args);
+      }),
+    );
+  }
   let runtime;
   let http;
   let connection;
@@ -322,16 +362,6 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
       runtime: runtime.runtime,
     });
     await until("live socket subscriptions", () => runtime.runtime.isAvailable());
-    let fromClientPing = 0;
-    let fromClientPong = 0;
-    const applicationTypes = new Set();
-    runtime.server.on("connection", (peer) => {
-      peer.on("ping", () => fromClientPing++);
-      peer.on("pong", () => fromClientPong++);
-      peer.on("message", (data, binary) => {
-        if (!binary) applicationTypes.add(JSON.parse(data.toString()).type);
-      });
-    });
     const port = await new Promise((resolve) => {
       http = serve(
         { fetch: app.fetch, hostname: "127.0.0.1", port: 0, websocket: { server: runtime.server } },
@@ -360,32 +390,54 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
     connection.start();
     await until("real outbound hello acknowledgement", () => observed.includes("ack"));
     assert.equal(connection.getState(), "connected");
+    trace("hello-join-start");
     await runtime.runtime.transport.idle();
+    trace("hello-join-end");
     // Nothing may send a heartbeat early. Mock timers run interval callbacks
     // at their production periods; all socket reads/writes below remain real.
     // Join every 5s poll before advancing again: its production 5s storage
     // deadlines must not elapse while actual IO is waiting for the event loop.
     for (const step of [5_000, 5_000, 5_000, 5_000, 4_999]) {
+      trace("advance-start", { step });
       heartbeatNow += step;
       mock.timers.tick(step);
+      trace("poll-join-start");
       await runtime.runtime.transport.idle();
+      trace("poll-join-end");
     }
-    assert.equal(fromClientPing, 0);
-    assert.equal(fromClientPong, 0);
-    assert.equal(applicationTypes.has("heartbeat"), false);
-    assert.equal(applicationTypes.has("pong"), false);
+    const livenessKinds = ["ping", "pong", "application-heartbeat", "application-pong"];
+    assert.equal(
+      timeline.some((entry) => entry.event === "wire-send" && livenessKinds.includes(entry.kind)),
+      false,
+      "Neither peer may send native/application liveness before 25s",
+    );
+    trace("advance-start", { step: 1 });
     heartbeatNow = 25_000;
     mock.timers.tick(1);
+    trace("poll-join-start");
     await runtime.runtime.transport.idle();
+    trace("poll-join-end");
     await until(
       "controlled 25s bidirectional native and application heartbeat",
       () =>
-        fromClientPing > 0 &&
-        fromClientPong > 0 &&
-        applicationTypes.has("heartbeat") &&
-        applicationTypes.has("pong"),
+        ["server", "client"].every((side) =>
+          livenessKinds.every((kind) =>
+            timeline.some(
+              (entry) =>
+                entry.event === "wire-receive" && entry.side === side && entry.kind === kind,
+            ),
+          ),
+        ),
       30_000,
     );
+    assert.equal(connection.getState(), "connected");
+    assert.equal(
+      timeline.some((entry) => entry.kind === "close" || entry.kind === "error"),
+      false,
+    );
+    trace("heartbeat-asserted");
+    tracing = false;
+    for (const method of traceMocks) method.mock.restore();
     await locks.withCliCredentialLockSlot(() =>
       prisma.$transaction(async (tx) => {
         await locks.lockCliCredentials(ownerId, tx);
@@ -484,6 +536,8 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
       "Runner socket: real Hono upgrades, Authorization-only outbound ws, controlled 25s native/application ping/pong, PG revoke, rejected browser/query/API key credentials, binary/64KiB limits and 1012 drain passed.",
     );
   } finally {
+    console.error("HEARTBEAT_TIMELINE " + JSON.stringify(timeline));
+    for (const method of traceMocks) method.mock.restore();
     try {
       connection?.stop();
       for (const peer of peers) peer.terminate();

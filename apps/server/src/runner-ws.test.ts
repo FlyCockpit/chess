@@ -1332,6 +1332,70 @@ describe("durable operating-limit transport", () => {
 });
 
 describe("scheduled runner transport work", () => {
+  it("keeps queued receives out of unrelated admission slots", async () => {
+    const h = harness();
+    const { active, transport } = await connect(h, h.transport());
+    active.receive(hello());
+    await active.idle();
+    let release: (() => void) | undefined;
+    h.authority.resolve.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(h.live.get("Bearer secret") ?? null);
+        }),
+    );
+    for (let index = 0; index < RUNNER_MAX_LOCAL_CONNECTIONS; index++) {
+      active.receive(frame("heartbeat", index + 2, { nonce: `queued_${index}` }));
+    }
+    expect(await transport.admit(async () => true)).toBe(true);
+    h.live.set("Bearer other", { ...h.identity, machineId: "machine2", connectionGeneration: 0 });
+    const reserved = await transport.reserve("Bearer other", "203.0.113.2");
+    expect(reserved).not.toBeNull();
+    await reserved?.release();
+    expect(release).toBeTypeOf("function");
+    release?.();
+    await transport.idle();
+    expect(active.isClosed()).toBe(false);
+    await transport.drain();
+  });
+  it("joins post-ACK delivery before idle returns", async () => {
+    let entered: (() => void) | undefined;
+    const delivering = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release: (() => void) | undefined;
+    const delivered = new Promise<RunnerDelivery[]>((resolve) => {
+      release = () => resolve([]);
+    });
+    const h = harness({
+      outbox: async () => {
+        entered?.();
+        return delivered;
+      },
+      handle: async () => [],
+    });
+    const { active, peer, transport } = await connect(h, h.transport());
+    let joined = false;
+    let joining: Promise<void> | undefined;
+    // Reproduce the runtime harness's boundary: the ACK is visible while the
+    // hello handler still has asynchronous outbox work to start and finish.
+    vi.mocked(peer.send).mockImplementation((value) => {
+      if (JSON.parse(value).type === "ack") {
+        joining = transport.idle().then(() => {
+          joined = true;
+        });
+      }
+    });
+    active.receive(hello());
+    await delivering;
+    expect(joining).toBeDefined();
+    expect(joined).toBe(false);
+    release?.();
+    await joining;
+    await active.idle();
+    expect(joined).toBe(true);
+    await transport.drain();
+  });
   it("joins a delayed outbox tick before advancing the heartbeat clock", async () => {
     const h = harness();
     const outbox = vi.fn(async () => []);

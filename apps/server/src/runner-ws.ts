@@ -90,6 +90,8 @@ export function createRunnerTransport(options: Options) {
   let draining = false;
   let opening = 0;
   const inflight = new Set<Promise<unknown>>();
+  // Queued receive chains join lifecycle work but do not spend admission slots.
+  const receiving = new Set<Promise<unknown>>();
   type Reservation = {
     identity: RunnerMachineIdentity;
     lease: RunnerLease;
@@ -97,10 +99,14 @@ export function createRunnerTransport(options: Options) {
   };
   const reservations = new Set<Reservation>();
 
+  function track<T>(operation: Promise<T>, work = inflight): Promise<T> {
+    work.add(operation);
+    void operation.finally(() => work.delete(operation)).catch(() => {});
+    return operation;
+  }
+
   function run<T>(operation: Promise<T>): Promise<T> {
-    inflight.add(operation);
-    void operation.finally(() => inflight.delete(operation)).catch(() => {});
-    return withRunnerDeadline(operation);
+    return withRunnerDeadline(track(operation));
   }
 
   async function checkAuthority(
@@ -443,6 +449,9 @@ export function createRunnerTransport(options: Options) {
         })
         .catch((error) => close(...failureClose(error)))
         .finally(() => --pending);
+      // ACKs can reach the peer before delivery finishes. Track the entire
+      // receive chain so idle/drain also join the gaps between storage reads.
+      track(processing, receiving);
     }
     const api = {
       identity,
@@ -627,7 +636,8 @@ export function createRunnerTransport(options: Options) {
     },
     /** Join already-started transport work without retiring live authority. */
     async idle() {
-      while (inflight.size) await withRunnerDeadline(Promise.allSettled([...inflight]));
+      while (inflight.size || receiving.size)
+        await withRunnerDeadline(Promise.allSettled([...inflight, ...receiving]));
     },
     async drain() {
       draining = true;
@@ -637,7 +647,8 @@ export function createRunnerTransport(options: Options) {
       );
       // Join storage activity before lifecycle disconnects Prisma/Redis. A
       // failed drain must not claim that dependencies are safe to disconnect.
-      while (inflight.size) await withRunnerDeadline(Promise.allSettled([...inflight]));
+      while (inflight.size || receiving.size)
+        await withRunnerDeadline(Promise.allSettled([...inflight, ...receiving]));
     },
   };
 }
