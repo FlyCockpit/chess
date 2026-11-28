@@ -1,0 +1,11 @@
+# Dedicated chess VPS only. Owner installs after reviewing the two paths.
+[Unit]
+Description=Expire chess operational logs and local database safety copies
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/journalctl --rotate --vacuum-time=29d
+ExecStart=/usr/bin/find /srv/cockpit-chess/backups -xdev -type f ( -name *.dump -o -name *.dump.* ) -mmin +41760 -delete
+ProtectSystem=strict
+ReadWritePaths=/var/log/journal -/run/log/journal /srv/cockpit-chess/backups
+PrivateTmp=true
+NoNewPrivileges=true

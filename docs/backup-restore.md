@@ -4,6 +4,13 @@
 
 **Backups are opt-in and default off.** New deployments need no backup settings, storage or sidecar; migrations and readiness work normally. Startup logs one notice with enablement instructions. To opt in, enable exactly one daily logical-backup schedule, or choose provider backups/PITR with retention and alerts. Set `BACKUP_ENABLED=true` for automatic snapshots before migrations and freshness monitoring. Restore and restore drills run inside the target network; agents prepare commands and the owner runs them.
 
+**Public chess deployment:** the owner requires daily encrypted off-VPS backups
+and 30-day database/log expiry, plus a separate current erasure register. Use
+the [public configuration and retention fixtures](./public-hosting.md#public-retention-and-recovery);
+the generic opt-in/14-day defaults below do not satisfy public launch. The
+public recipe selects a new never-versioned bucket to avoid retained historic
+versions, and expires manual/pre-restore/local copies as well as daily dumps.
+
 Back up `BETTER_AUTH_SECRET` separately from the database and retain the keys needed for older backups. A restored database may need its original key for [password pepper rotation or recovery](./auth-and-routing.md#password-pepper).
 
 Account erasure also needs the [external suppression register](#account-erasure-suppression). This is independent of the backup opt-in: account deletion stays pending and an actual restore refuses when that register is unavailable.

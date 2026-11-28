@@ -40,6 +40,11 @@ RUN echo "apt-cache-date: ${APT_CACHE_DATE}" \
 # Adds git + pnpm. Not inherited by the final runtime image.
 FROM base AS build-base
 
+# Developer-tool opt-outs apply before install/generate/build, never to visitor tracking.
+ENV TURBO_TELEMETRY_DISABLED=1 \
+    CHECKPOINT_DISABLE=1 \
+    REACT_DOCTOR_NO_TELEMETRY=1
+
 RUN apt-get update -y && apt-get install -y \
   git \
   && rm -rf /var/lib/apt/lists/*

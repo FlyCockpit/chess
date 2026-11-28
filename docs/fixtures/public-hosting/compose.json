@@ -1,0 +1,307 @@
+{
+  "name": "cockpit-chess-public",
+  "services": {
+    "postgres": {
+      "image": "postgres:18",
+      "restart": "unless-stopped",
+      "environment": {
+        "POSTGRES_USER": "${POSTGRES_USER:-cockpit_chess}",
+        "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD:?set a URI-safe password}",
+        "POSTGRES_DB": "${POSTGRES_DB:-cockpit_chess}"
+      },
+      "volumes": ["postgres-data:/var/lib/postgresql"],
+      "logging": {
+        "driver": "journald",
+        "options": {
+          "tag": "cockpit-chess-public/{{.Name}}"
+        }
+      },
+      "healthcheck": {
+        "test": [
+          "CMD-SHELL",
+          "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""
+        ],
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": 5,
+        "start_period": "10s"
+      }
+    },
+    "redis": {
+      "image": "valkey/valkey:9.1",
+      "restart": "unless-stopped",
+      "command": [
+        "valkey-server",
+        "--appendonly",
+        "yes",
+        "--maxmemory-policy",
+        "noeviction",
+        "--requirepass",
+        "${REDIS_PASSWORD:?set a URI-safe password}"
+      ],
+      "environment": {
+        "REDIS_PASSWORD": "${REDIS_PASSWORD:?set a URI-safe password}"
+      },
+      "volumes": ["redis-data:/data"],
+      "logging": {
+        "driver": "journald",
+        "options": {
+          "tag": "cockpit-chess-public/{{.Name}}"
+        }
+      },
+      "healthcheck": {
+        "test": ["CMD-SHELL", "valkey-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping"],
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": 5
+      }
+    },
+    "server": {
+      "restart": "unless-stopped",
+      "stop_grace_period": "30s",
+      "depends_on": {
+        "postgres": {
+          "condition": "service_healthy"
+        },
+        "redis": {
+          "condition": "service_healthy"
+        }
+      },
+      "logging": {
+        "driver": "journald",
+        "options": {
+          "tag": "cockpit-chess-public/{{.Name}}"
+        }
+      },
+      "deploy": {
+        "replicas": 1
+      },
+      "build": {
+        "context": "https://github.com/FlyCockpit/chess.git#${CHESS_COMMIT:?set the approved full 40-character Git SHA}",
+        "dockerfile": "Dockerfile",
+        "args": {
+          "BUILD_VERSION": "${CHESS_COMMIT:?set the approved full 40-character Git SHA}",
+          "BUILDKIT_CONTEXT_KEEP_GIT_DIR": "1"
+        }
+      },
+      "image": "cockpit-chess-public-server:${CHESS_COMMIT:?set the approved full 40-character Git SHA}",
+      "environment": {
+        "NODE_ENV": "production",
+        "DATABASE_URL": "postgresql://${POSTGRES_USER:-cockpit_chess}:${POSTGRES_PASSWORD:?set a URI-safe password}@postgres:5432/${POSTGRES_DB:-cockpit_chess}",
+        "REDIS_URL": "redis://:${REDIS_PASSWORD:?set a URI-safe password}@redis:6379",
+        "ACCOUNT_DELETION_REGISTER_DIR": "/account-deletions",
+        "CHESS_HOSTED_ENABLED": "${CHESS_HOSTED_ENABLED:-false}",
+        "CHESS_USER_MATCHES_ENABLED": "${CHESS_USER_MATCHES_ENABLED:-false}",
+        "CHESS_PROVIDER_KEY_SECRET": "${CHESS_PROVIDER_KEY_SECRET:?set the shared 64-hex encryption secret}",
+        "CHESS_RUN_CONCURRENCY": "512",
+        "CHESS_ENGINE_POOL_SIZE": "2",
+        "CHESS_QUEUE_MAX": "200",
+        "CHESS_USER_DAILY_MATCHES": "20",
+        "DATABASE_POOL_MAX": "10",
+        "BACKUP_ENABLED": "true",
+        "BACKUP_MAX_AGE_HOURS": "26",
+        "SMTP_HOST": "${SMTP_HOST:?set the verified relay hostname}",
+        "SMTP_PORT": "465",
+        "SMTP_USER": "${SMTP_USER:?set the relay user}",
+        "SMTP_PASS": "${SMTP_PASS:?set the relay secret}",
+        "SMTP_FROM": "${SMTP_FROM:?set the verified sender}",
+        "BACKUP_S3_BUCKET": "${BACKUP_S3_BUCKET:?set the dedicated off-VPS bucket}",
+        "BACKUP_S3_REGION": "${BACKUP_S3_REGION:?set the AWS region}",
+        "BACKUP_S3_PREFIX": "cockpit-chess/production/chess.flycockpit.app/database",
+        "BACKUP_S3_ACCESS_KEY_ID": "${BACKUP_S3_ACCESS_KEY_ID:?set the backup writer key}",
+        "BACKUP_S3_SECRET_ACCESS_KEY": "${BACKUP_S3_SECRET_ACCESS_KEY:?set the backup writer secret}",
+        "BACKUP_S3_SSE": "AES256",
+        "BETTER_AUTH_SECRET": "${BETTER_AUTH_SECRET:?set the auth secret}",
+        "BETTER_AUTH_URL": "https://chess.flycockpit.app",
+        "PUBLIC_APP_URL": "https://chess.flycockpit.app",
+        "SIGNUP_ENABLED": "${SIGNUP_ENABLED:-false}",
+        "ADMIN_EMAILS": "${ADMIN_EMAILS:-}",
+        "WORKER_MODE": "external",
+        "MIGRATE_ON_START": "true",
+        "TRUST_PROXY_HOPS": "2",
+        "SETUP_KEY": "${SETUP_KEY:-}",
+        "BETTER_AUTH_SECRET_PREVIOUS": "${BETTER_AUTH_SECRET_PREVIOUS:-}",
+        "CHESS_PROVIDER_KEY_SECRET_PREVIOUS": "${CHESS_PROVIDER_KEY_SECRET_PREVIOUS:-}"
+      },
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/srv/cockpit-chess/account-deletions",
+          "target": "/account-deletions",
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "volume",
+          "source": "backups",
+          "target": "/backups",
+          "volume": {
+            "nocopy": true
+          }
+        }
+      ],
+      "networks": ["default", "ingress"],
+      "labels": {
+        "traefik.enable": "true",
+        "traefik.docker.network": "dokploy-network",
+        "traefik.http.routers.chess-public.rule": "Host(`chess.flycockpit.app`)",
+        "traefik.http.routers.chess-public.entrypoints": "chesssecure",
+        "traefik.http.routers.chess-public.tls": "true",
+        "traefik.http.routers.chess-public.tls.options": "chess-zone@file",
+        "traefik.http.services.chess-public.loadbalancer.server.port": "3000"
+      }
+    },
+    "worker": {
+      "restart": "unless-stopped",
+      "stop_grace_period": "30s",
+      "depends_on": {
+        "postgres": {
+          "condition": "service_healthy"
+        },
+        "redis": {
+          "condition": "service_healthy"
+        }
+      },
+      "logging": {
+        "driver": "journald",
+        "options": {
+          "tag": "cockpit-chess-public/{{.Name}}"
+        }
+      },
+      "deploy": {
+        "replicas": 1
+      },
+      "build": {
+        "context": "https://github.com/FlyCockpit/chess.git#${CHESS_COMMIT:?set the approved full 40-character Git SHA}",
+        "dockerfile": "Dockerfile.worker",
+        "args": {
+          "BUILD_VERSION": "${CHESS_COMMIT:?set the approved full 40-character Git SHA}",
+          "BUILDKIT_CONTEXT_KEEP_GIT_DIR": "1"
+        }
+      },
+      "image": "cockpit-chess-public-worker:${CHESS_COMMIT:?set the approved full 40-character Git SHA}",
+      "environment": {
+        "NODE_ENV": "production",
+        "DATABASE_URL": "postgresql://${POSTGRES_USER:-cockpit_chess}:${POSTGRES_PASSWORD:?set a URI-safe password}@postgres:5432/${POSTGRES_DB:-cockpit_chess}",
+        "REDIS_URL": "redis://:${REDIS_PASSWORD:?set a URI-safe password}@redis:6379",
+        "ACCOUNT_DELETION_REGISTER_DIR": "/account-deletions",
+        "CHESS_HOSTED_ENABLED": "${CHESS_HOSTED_ENABLED:-false}",
+        "CHESS_USER_MATCHES_ENABLED": "${CHESS_USER_MATCHES_ENABLED:-false}",
+        "CHESS_PROVIDER_KEY_SECRET": "${CHESS_PROVIDER_KEY_SECRET:?set the shared 64-hex encryption secret}",
+        "CHESS_RUN_CONCURRENCY": "512",
+        "CHESS_ENGINE_POOL_SIZE": "2",
+        "CHESS_QUEUE_MAX": "200",
+        "CHESS_USER_DAILY_MATCHES": "20",
+        "DATABASE_POOL_MAX": "10",
+        "BACKUP_ENABLED": "true",
+        "BACKUP_MAX_AGE_HOURS": "26",
+        "SMTP_HOST": "${SMTP_HOST:?set the verified relay hostname}",
+        "SMTP_PORT": "465",
+        "SMTP_USER": "${SMTP_USER:?set the relay user}",
+        "SMTP_PASS": "${SMTP_PASS:?set the relay secret}",
+        "SMTP_FROM": "${SMTP_FROM:?set the verified sender}",
+        "BACKUP_S3_BUCKET": "${BACKUP_S3_BUCKET:?set the dedicated off-VPS bucket}",
+        "BACKUP_S3_REGION": "${BACKUP_S3_REGION:?set the AWS region}",
+        "BACKUP_S3_PREFIX": "cockpit-chess/production/chess.flycockpit.app/database",
+        "MIGRATE_ON_START": "false",
+        "BACKUP_MONITOR_S3_ACCESS_KEY_ID": "${BACKUP_MONITOR_S3_ACCESS_KEY_ID:?set the ListBucket-only key}",
+        "BACKUP_MONITOR_S3_SECRET_ACCESS_KEY": "${BACKUP_MONITOR_S3_SECRET_ACCESS_KEY:?set the ListBucket-only secret}",
+        "CHESS_PROVIDER_KEY_SECRET_PREVIOUS": "${CHESS_PROVIDER_KEY_SECRET_PREVIOUS:-}"
+      },
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/srv/cockpit-chess/account-deletions",
+          "target": "/account-deletions",
+          "bind": {
+            "create_host_path": false
+          }
+        }
+      ]
+    },
+    "backup": {
+      "image": "cockpit-chess-public-server:${CHESS_COMMIT:?set the approved full 40-character Git SHA}",
+      "profiles": ["backup"],
+      "command": "backup-schedule",
+      "restart": "unless-stopped",
+      "depends_on": {
+        "postgres": {
+          "condition": "service_healthy"
+        },
+        "redis": {
+          "condition": "service_healthy"
+        },
+        "server": {
+          "condition": "service_started"
+        }
+      },
+      "environment": {
+        "DATABASE_URL": "postgresql://${POSTGRES_USER:-cockpit_chess}:${POSTGRES_PASSWORD:?set a URI-safe password}@postgres:5432/${POSTGRES_DB:-cockpit_chess}",
+        "BACKUP_S3_BUCKET": "${BACKUP_S3_BUCKET:?set the dedicated off-VPS bucket}",
+        "BACKUP_S3_REGION": "${BACKUP_S3_REGION:?set the AWS region}",
+        "BACKUP_S3_PREFIX": "cockpit-chess/production/chess.flycockpit.app/database",
+        "BACKUP_S3_ACCESS_KEY_ID": "${BACKUP_S3_ACCESS_KEY_ID:?set the backup writer key}",
+        "BACKUP_S3_SECRET_ACCESS_KEY": "${BACKUP_S3_SECRET_ACCESS_KEY:?set the backup writer secret}",
+        "BACKUP_S3_SSE": "AES256",
+        "BACKUP_SCHEDULE": "daily",
+        "BACKUP_HOUR_UTC": "3",
+        "BACKUP_KEEP": "30",
+        "ACCOUNT_DELETION_REGISTER_DIR": "/account-deletions"
+      },
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "backups",
+          "target": "/backups",
+          "volume": {
+            "nocopy": true
+          }
+        },
+        {
+          "type": "bind",
+          "source": "/srv/cockpit-chess/account-deletions",
+          "target": "/account-deletions",
+          "bind": {
+            "create_host_path": false
+          },
+          "read_only": true
+        }
+      ],
+      "logging": {
+        "driver": "journald",
+        "options": {
+          "tag": "cockpit-chess-public/{{.Name}}"
+        }
+      },
+      "healthcheck": {
+        "test": ["CMD", "node", "/app/scripts/backup/schedule.mjs", "health"],
+        "interval": "5m",
+        "timeout": "30s",
+        "retries": 1,
+        "start_period": "10m"
+      }
+    }
+  },
+  "volumes": {
+    "postgres-data": {},
+    "redis-data": {},
+    "backups": {
+      "driver": "local",
+      "driver_opts": {
+        "type": "none",
+        "o": "bind",
+        "device": "/srv/cockpit-chess/backups"
+      }
+    }
+  },
+  "networks": {
+    "default": {
+      "driver": "bridge"
+    },
+    "ingress": {
+      "external": true,
+      "name": "dokploy-network"
+    }
+  }
+}

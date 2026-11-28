@@ -1,5 +1,16 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
   generateDokployCompose,
@@ -384,5 +395,235 @@ test("previous pepper secret is an optional server-only compose setting", () => 
       JSON.stringify(config.environmentVariablesToSetOnce),
       /BETTER_AUTH_SECRET_PREVIOUS/,
     );
+  }
+});
+
+const publicFixture = (name: string) =>
+  readFileSync(new URL(`../docs/fixtures/public-hosting/${name}`, import.meta.url), "utf8");
+const publicCompose = () => JSON.parse(publicFixture("compose.json"));
+
+test("public fixture keeps one current SHA, migration leader and external consumer", () => {
+  const fixture = publicCompose();
+  const { server, worker, backup, postgres, redis } = fixture.services;
+  assert.deepEqual(Object.keys(fixture.services).sort(), [
+    "backup",
+    "postgres",
+    "redis",
+    "server",
+    "worker",
+  ]);
+  for (const [role, dockerfile] of [
+    [server, "Dockerfile"],
+    [worker, "Dockerfile.worker"],
+  ] as const) {
+    assert.equal(role.build.dockerfile, dockerfile);
+    assert.equal(role.build.context, server.build.context);
+    assert.equal(role.build.args.BUILD_VERSION, server.build.args.BUILD_VERSION);
+    assert.match(role.build.context, /#\$\{CHESS_COMMIT:\?[^}]+\}$/);
+    assert.match(role.image, /:\$\{CHESS_COMMIT:\?[^}]+\}$/);
+    assert.equal(role.deploy.replicas, 1);
+    assert.equal(role.stop_grace_period, "30s");
+    assert.equal(role.healthcheck, undefined, "preserve image startup allowance");
+  }
+  assert.equal(backup.image, server.image);
+  assert.equal(backup.command, "backup-schedule");
+  assert.deepEqual(backup.profiles, ["backup"]);
+  assert.equal(server.environment.MIGRATE_ON_START, "true");
+  assert.equal(server.environment.WORKER_MODE, "external");
+  assert.equal(worker.environment.MIGRATE_ON_START, "false");
+  assert.equal(worker.environment.DATABASE_URL, server.environment.DATABASE_URL);
+  assert.equal(worker.environment.REDIS_URL, server.environment.REDIS_URL);
+  assert.equal(postgres.image, "postgres:18");
+  assert.equal(redis.image, "valkey/valkey:9.1");
+  assert.ok(redis.command.includes("noeviction"));
+  assert.deepEqual(postgres.volumes, ["postgres-data:/var/lib/postgresql"]);
+  assert.deepEqual(redis.volumes, ["redis-data:/data"]);
+});
+
+test("public fixture requires same-origin secrets and measured ingress without public data ports", () => {
+  const fixture = publicCompose();
+  const { server, worker } = fixture.services;
+  assert.equal(server.environment.BETTER_AUTH_URL, "https://chess.flycockpit.app");
+  assert.equal(server.environment.PUBLIC_APP_URL, server.environment.BETTER_AUTH_URL);
+  assert.equal(server.environment.TRUST_PROXY_HOPS, "2");
+  assert.equal(server.environment.CORS_ORIGIN, undefined);
+  assert.equal(server.environment.VITE_SERVER_URL, undefined);
+  assert.equal(server.environment.SIGNUP_ENABLED, `\${SIGNUP_ENABLED:-false}`);
+  assert.equal(server.environment.SETUP_KEY, `\${SETUP_KEY:-}`);
+  assert.equal(worker.environment.SETUP_KEY, undefined);
+  assert.equal(server.environment.BETTER_AUTH_SECRET_PREVIOUS, `\${BETTER_AUTH_SECRET_PREVIOUS:-}`);
+  assert.equal(worker.environment.BETTER_AUTH_SECRET_PREVIOUS, undefined);
+  for (const role of [server, worker]) {
+    assert.equal(role.environment.SMTP_PORT, "465");
+    assert.match(role.environment.SMTP_PASS, /^\$\{SMTP_PASS:\?/);
+    assert.match(role.environment.CHESS_PROVIDER_KEY_SECRET, /^\$\{CHESS_PROVIDER_KEY_SECRET:\?/);
+    assert.equal(role.environment.CHESS_RUN_CONCURRENCY, "512");
+    assert.equal(role.environment.CHESS_ENGINE_POOL_SIZE, "2");
+    assert.equal(
+      role.environment.CHESS_PROVIDER_KEY_SECRET_PREVIOUS,
+      `\${CHESS_PROVIDER_KEY_SECRET_PREVIOUS:-}`,
+    );
+    assert.equal(role.environment.CHESS_HOSTED_ENABLED, `\${CHESS_HOSTED_ENABLED:-false}`);
+    assert.equal(
+      role.environment.CHESS_USER_MATCHES_ENABLED,
+      `\${CHESS_USER_MATCHES_ENABLED:-false}`,
+    );
+    assert.equal(role.environment.OPENROUTER_API_KEY, undefined);
+  }
+  assert.equal(
+    server.environment.CHESS_PROVIDER_KEY_SECRET,
+    worker.environment.CHESS_PROVIDER_KEY_SECRET,
+  );
+  for (const service of Object.values(fixture.services)) {
+    assert.equal(Object.hasOwn(service as object, "ports"), false);
+    assert.equal(Object.hasOwn(service as object, "network_mode"), false);
+  }
+  assert.deepEqual(server.networks, ["default", "ingress"]);
+  assert.equal(worker.networks, undefined);
+  assert.equal(fixture.networks.ingress.name, "dokploy-network");
+  assert.equal(server.labels["traefik.http.routers.chess-public.tls.options"], "chess-zone@file");
+  assert.equal(
+    server.labels["traefik.http.routers.chess-public.rule"],
+    "Host(`chess.flycockpit.app`)",
+  );
+  assert.equal(server.labels["traefik.http.routers.chess-public.tls.certresolver"], undefined);
+  const tls = JSON.parse(publicFixture("traefik-tls.json")).tls.options["chess-zone"];
+  assert.equal(tls.sniStrict, true);
+  assert.equal(tls.clientAuth.clientAuthType, "RequireAndVerifyClientCert");
+  assert.deepEqual(tls.clientAuth.caFiles, ["/run/chess-tls/zone-client-ca.crt"]);
+});
+
+test("public fixture separates required backup writer, monitor and erasure storage", () => {
+  const { server, worker, backup } = publicCompose().services;
+  const prefix = "cockpit-chess/production/chess.flycockpit.app/database";
+  assert.equal(backup.environment.BACKUP_SCHEDULE, "daily");
+  assert.equal(backup.environment.BACKUP_KEEP, "30");
+  assert.equal(backup.environment.BACKUP_HOUR_UTC, "3");
+  for (const role of [server, worker]) {
+    assert.equal(role.environment.BACKUP_ENABLED, "true");
+    assert.equal(role.environment.BACKUP_MAX_AGE_HOURS, "26");
+    assert.equal(role.environment.ACCOUNT_DELETION_REGISTER_DIR, "/account-deletions");
+    assert.deepEqual(role.volumes[0], {
+      type: "bind",
+      source: "/srv/cockpit-chess/account-deletions",
+      target: "/account-deletions",
+      bind: { create_host_path: false },
+    });
+  }
+  assert.deepEqual(server.volumes[1], backup.volumes[0]);
+  assert.deepEqual(backup.volumes[0], {
+    type: "volume",
+    source: "backups",
+    target: "/backups",
+    volume: { nocopy: true },
+  });
+  assert.deepEqual(publicCompose().volumes.backups, {
+    driver: "local",
+    driver_opts: { type: "none", o: "bind", device: "/srv/cockpit-chess/backups" },
+  });
+  assert.notEqual(server.volumes[0].source, backup.volumes[0].source);
+  for (const role of [server, worker, backup])
+    assert.equal(role.environment.BACKUP_S3_PREFIX, prefix);
+  for (const writer of [server, backup]) {
+    assert.match(writer.environment.BACKUP_S3_ACCESS_KEY_ID, /^\$\{BACKUP_S3_ACCESS_KEY_ID:\?/);
+    assert.match(
+      writer.environment.BACKUP_S3_SECRET_ACCESS_KEY,
+      /^\$\{BACKUP_S3_SECRET_ACCESS_KEY:\?/,
+    );
+    assert.equal(writer.environment.BACKUP_S3_SSE, "AES256");
+    assert.equal(writer.environment.BACKUP_MONITOR_S3_SECRET_ACCESS_KEY, undefined);
+  }
+  assert.match(
+    worker.environment.BACKUP_MONITOR_S3_SECRET_ACCESS_KEY,
+    /^\$\{BACKUP_MONITOR_S3_SECRET_ACCESS_KEY:\?/,
+  );
+  assert.equal(worker.environment.BACKUP_S3_SECRET_ACCESS_KEY, undefined);
+  assert.equal(backup.environment.REDIS_URL, undefined);
+  assert.equal(backup.environment.ACCOUNT_DELETION_REGISTER_DIR, "/account-deletions");
+  assert.deepEqual(backup.volumes[1], { ...server.volumes[0], read_only: true });
+  const lifecycle = JSON.parse(publicFixture("bucket-lifecycle.json"));
+  assert.deepEqual(lifecycle.Rules, [
+    {
+      ID: "chess-database-expire-30-days",
+      Status: "Enabled",
+      Filter: { Prefix: `${prefix}/` },
+      Expiration: { Days: 30 },
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 },
+    },
+  ]);
+  assert.deepEqual(JSON.parse(publicFixture("bucket-encryption.json")), {
+    Rules: [{ ApplyServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } }],
+  });
+});
+
+test("public retention is time based and excludes the external erasure register", () => {
+  for (const role of Object.values(publicCompose().services)) {
+    assert.deepEqual((role as { logging: object }).logging, {
+      driver: "journald",
+      options: { tag: "cockpit-chess-public/{{.Name}}" },
+    });
+  }
+  const journal = publicFixture("journald.conf");
+  assert.match(journal, /MaxRetentionSec=29day/);
+  assert.match(journal, /MaxFileSec=1h/);
+  const maintenance = publicFixture("chess-retention.service");
+  assert.match(maintenance, /journalctl --rotate --vacuum-time=29d/);
+  assert.match(
+    maintenance,
+    /find \/srv\/cockpit-chess\/backups -xdev -type f \( -name \*\.dump -o -name \*\.dump\.\* \) -mmin \+41760 -delete/,
+  );
+  assert.doesNotMatch(maintenance, /account-deletions|postgres-data|redis-data/);
+  assert.match(publicFixture("chess-retention.timer"), /OnCalendar=hourly\nPersistent=true/);
+});
+
+test("both image builders disable tool telemetry before installation and preserve startup", () => {
+  for (const dockerfile of ["Dockerfile", "Dockerfile.worker"]) {
+    const source = readFileSync(new URL(`../${dockerfile}`, import.meta.url), "utf8");
+    for (const key of [
+      "TURBO_TELEMETRY_DISABLED",
+      "CHECKPOINT_DISABLE",
+      "REACT_DOCTOR_NO_TELEMETRY",
+    ]) {
+      const position = source.indexOf(`${key}=1`);
+      assert.ok(position > source.indexOf("FROM base AS build-base"));
+      assert.ok(position < source.indexOf("RUN pnpm install"));
+    }
+    assert.match(source, /start-period=510s/);
+    assert.match(source, /ENTRYPOINT \["docker-entrypoint.sh"\]/);
+  }
+});
+
+test("public maintenance expires old local dumps while preserving recent dumps and the register", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "chess-public-retention-"));
+  try {
+    const backups = join(scratch, "backups");
+    const register = join(scratch, "account-deletions");
+    mkdirSync(backups);
+    mkdirSync(register);
+    const oldDump = join(backups, "manual-old.dump");
+    const recentDump = join(backups, "daily-recent.dump");
+    const oldPartial = join(backups, ".manual-old.dump.partial");
+    const recentPartial = join(backups, ".manual-recent.dump.partial");
+    const record = join(register, "retained.json");
+    for (const file of [oldDump, recentDump, oldPartial, recentPartial, record])
+      writeFileSync(file, "synthetic");
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    for (const file of [oldDump, oldPartial, record]) utimesSync(file, old, old);
+    const command = publicFixture("chess-retention.service")
+      .split("\n")
+      .find((line) => line.startsWith("ExecStart=/usr/bin/find "));
+    assert.ok(command);
+    const args = command.slice("ExecStart=/usr/bin/find ".length).split(" ");
+    assert.equal(args[0], "/srv/cockpit-chess/backups");
+    args[0] = backups;
+    const result = spawnSync("/usr/bin/find", args, { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(oldDump), false);
+    assert.equal(existsSync(recentDump), true);
+    assert.equal(existsSync(oldPartial), false);
+    assert.equal(existsSync(recentPartial), true);
+    assert.equal(existsSync(record), true);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 });

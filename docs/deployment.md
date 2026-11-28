@@ -2,6 +2,12 @@
 
 Cockpit Chess runs as long-lived Node processes with PostgreSQL 18 and Valkey 9. Dokploy builds directly from this Git repository. Development follows `main` automatically; production is manually deployed from the same immutable `release/<full-commit-sha>` tag for every role. Keep development and production databases, cache instances, secrets and backup prefixes separate.
 
+For **chess.flycockpit.app** behind the direct Cloudflare proxy, use the
+[public launch runbook and fixtures](./public-hosting.md#public-launch-configuration).
+They explicitly enable the owner's 30-day retention, encrypted daily off-VPS
+backups, external deletion register and measured two-hop ingress. Generic
+backup-off/Traefik-only examples below are not the public activation recipe.
+
 The two supported topologies are:
 
 | Topology | Background jobs | Migration admission |
@@ -337,7 +343,7 @@ Run `cloudflared` (a pinned `cloudflare/cloudflared` image, `tunnel --no-autoupd
 | --- | --- |
 | Request bodies over 100 MB (Free/Pro) are refused with `413` at the edge | No valid request comes near it: the server refuses bodies over 10 MiB (`apps/server/src/index.ts`) and match archives over 2,000,000 bytes (`MAX_ARCHIVE_BYTES` in `packages/chess/src/index.ts`). An oversized body gets a `413`; an oversized archive gets a `400` or `413`, depending on which check catches it. The limit is on uploads only; CLI downloads are redirects to the release host in any case. |
 | `524` when the origin sends no response for about 100 s (Cloudflare currently documents 125 s; only Enterprise can raise it) | Hosted matches run as background jobs whose state the browser polls, and the CLI's device sign-in polls every few seconds. The slowest synchronous requests send email (verification, password reset and 2FA codes, admin invitations, the transport check before a code is sent); the mailer bounds connection setup to 10 s and socket idle to 20 s, starts a retry only within 25 s, and abandons a send after 60 s and the transport check after 20 s (`packages/mailer/src/index.ts`), so SMTP waits end well before Cloudflare's timeout; each caller decides how a failed send is reported (an invitation returns `emailSent: false`, the one-time-code endpoint relies on the transport check). |
-| WebSockets drop when Cloudflare restarts an edge or `cloudflared` reconnects | Not used. A polling request that fails during a tunnel reconnect is retried by the query's own retry and refetch schedule (a running match's details poll every 2 seconds, the match lists every few seconds). |
+| WebSockets drop when Cloudflare restarts an edge or `cloudflared` reconnects | Runner `/api/cli/runner/ws` uses 25-second native/application heartbeats, about 60-second liveness expiry and a separate 120-second gameplay resume grace while clocks run. Reconnect reconciles accepted work; no new model dispatch while disconnected. Revoke/reset/delete fence immediately. Public match views still poll. See the [edge acceptance contract](./public-hosting.md#edge-cache-static-source-and-runner-settings). |
 
 **What does not apply.** The generated Traefik labels' TLS and ACME settings (`websecure`, `tls.certresolver=letsencrypt`) are not in the path in topology 1: Cloudflare terminates the visitor's TLS with its edge certificate, and with this ingress Dokploy's HTTP challenge cannot reach Traefik anyway. Traefik's compress middleware is out of the path in topology 1; Cloudflare compresses text responses at the edge. Cloudflare's ranges and `trustedIPs` for Cloudflare itself are not needed: the server's peer is `cloudflared`, never the edge. Nor are open ports 80/443, a static IP or a DDNS client: the tunnel follows the box wherever it connects from. The box's power, disk and uplink become part of the operator's job.
 

@@ -576,6 +576,7 @@ packages/
 
 - [Companion CLI](./apps/cli/README.md)
 - [Deployment](./docs/deployment.md), [environment](./docs/environment.md) and the [access matrix](./docs/access-matrix.md)
+- [Public VPS launch, retention and recovery](./docs/public-hosting.md#public-launch-configuration)
 - [Schema migrations](./docs/schema-migrations.md), [change recipes](./docs/schema-changes-recipe.md) and [backup/restore](./docs/backup-restore.md)
 - [Changelog](./CHANGELOG.md)
 - [Web routes](./sitemap.md)

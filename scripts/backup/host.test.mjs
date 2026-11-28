@@ -27,6 +27,8 @@ function run(
     imageGone = false,
     registerDir = "/account-deletions",
     registerMount = "volume",
+    registerSource = "alpha-deletions",
+    networks = "dokploy-network alpha_default",
   } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "backup-host-test-"));
@@ -64,9 +66,9 @@ case "$1" in
     if [ "$format" = "{{.Image}}" ]; then echo app-image
     elif [ "$format" = "{{.Config.Image}}" ]; then echo postgres:18
     elif [[ $format == *.Mounts* && $format == *.Type* ]]; then
-      if [ -n "$HOST_TEST_REGISTER_MOUNT" ]; then printf '%s\\t%s\\talpha-deletions\\n' "$HOST_TEST_REGISTER_DIR" "$HOST_TEST_REGISTER_MOUNT"; fi
+      if [ -n "$HOST_TEST_REGISTER_MOUNT" ]; then printf '%s\\t%s\\t%s\\n' "$HOST_TEST_REGISTER_DIR" "$HOST_TEST_REGISTER_MOUNT" "$HOST_TEST_REGISTER_SOURCE"; fi
     elif [[ $format == *.Mounts* ]]; then echo "$HOST_TEST_VOLUME"
-    elif [[ $format == *.NetworkSettings* ]]; then echo "dokploy-network alpha_default"
+    elif [[ $format == *.NetworkSettings* ]]; then echo "$HOST_TEST_NETWORKS"
     elif [[ $format == *.Config.Labels* ]]; then echo "\${id/app-/}"
     elif [[ $format == *.State.Running* ]]; then echo true
     elif [[ $format == *.Config.Env* ]]; then printf 'DATABASE_URL=%s\\nBACKUP_S3_BUCKET=fake-backups\\nBACKUP_S3_SECRET_ACCESS_KEY=fake-secret\\nS3_ACCESS_KEY_ID=fake-upload-key\\nUNRELATED_SECRET=must-not-pass\\nACCOUNT_DELETION_REGISTER_DIR=%s\\n' "postgresql://fake:fake@db/app" "$HOST_TEST_REGISTER_DIR"
@@ -115,6 +117,8 @@ exit 0
         HOST_TEST_RESTORE_SIGNAL: restoreSignal,
         HOST_TEST_REGISTER_DIR: registerDir,
         HOST_TEST_REGISTER_MOUNT: registerMount,
+        HOST_TEST_REGISTER_SOURCE: registerSource,
+        HOST_TEST_NETWORKS: networks,
         ...(markOnStop ? { HOST_TEST_MARK: join(dir, "stopped") } : {}),
         ...(gone ? { HOST_TEST_GONE: join(dir, "reader-gone") } : {}),
         ...(imageGone ? { HOST_TEST_IMAGE_GONE: "1" } : {}),
@@ -665,5 +669,42 @@ test("host stops with the recreate command when the server's image ID is gone, a
       [],
       command,
     );
+  }
+});
+
+test("public fixture supports helper network/backup discovery and a read-only bound register", () => {
+  const fixture = JSON.parse(readFileSync("docs/fixtures/public-hosting/compose.json", "utf8"));
+  const project = fixture.name;
+  const server = fixture.services.server;
+  const register = server.volumes.find((mount) => mount.target === "/account-deletions");
+  const backup = server.volumes.find((mount) => mount.target === "/backups");
+  assert.equal(backup.type, "volume");
+  assert.equal(fixture.networks.ingress.name, "dokploy-network");
+  for (const action of ["list", "backup", "restore daily.dump", "drill daily.dump"]) {
+    const result = run(
+      `require_terminal() { return 0; }\nask() { return 0; }\nmain ${action} --project ${project}`,
+      {
+        projects: `${project}\n`,
+        // Deliberately first: the helper must skip ingress before choosing DB network.
+        networks: `${fixture.networks.ingress.name} ${project}_default`,
+        volume: `${project}_${backup.source}`,
+        registerDir: server.environment.ACCOUNT_DELETION_REGISTER_DIR,
+        registerMount: register.type,
+        registerSource: register.source,
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const operation = result.calls.find((call) => call.args[0] === "run" && call.envPath);
+    assert.ok(operation.args.includes(`${project}_${backup.source}:/backups`));
+    if (!action.startsWith("drill")) {
+      assert.equal(operation.args[operation.args.indexOf("--network") + 1], `${project}_default`);
+    }
+    if (action.startsWith("restore") || action.startsWith("drill")) {
+      assert.ok(
+        operation.args.includes(
+          `type=bind,source=${register.source},target=${register.target},readonly`,
+        ),
+      );
+    }
   }
 });

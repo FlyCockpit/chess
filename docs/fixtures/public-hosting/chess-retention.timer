@@ -1,0 +1,8 @@
+[Unit]
+Description=Check chess retention hourly
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=chess-retention.service
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,17 @@
+{
+  "Rules": [
+    {
+      "ID": "chess-database-expire-30-days",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "cockpit-chess/production/chess.flycockpit.app/database/"
+      },
+      "Expiration": {
+        "Days": 30
+      },
+      "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 1
+      }
+    }
+  ]
+}

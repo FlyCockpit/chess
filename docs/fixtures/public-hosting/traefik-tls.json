@@ -1,0 +1,20 @@
+{
+  "tls": {
+    "certificates": [
+      {
+        "certFile": "/run/chess-tls/origin.crt",
+        "keyFile": "/run/chess-tls/origin.key"
+      }
+    ],
+    "options": {
+      "chess-zone": {
+        "sniStrict": true,
+        "minVersion": "VersionTLS12",
+        "clientAuth": {
+          "caFiles": ["/run/chess-tls/zone-client-ca.crt"],
+          "clientAuthType": "RequireAndVerifyClientCert"
+        }
+      }
+    }
+  }
+}
