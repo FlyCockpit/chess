@@ -1,9 +1,17 @@
 export type AccountDeletionSuppression = {
-  version: 1;
+  version: 2;
   subjectHash: string;
   requestedAt: string;
   expiresAt: string;
+  sequence: number;
+  previousDigest: string;
+  digest: string;
 };
+export type AccountDeletionRegister = {
+  head: string;
+  records: AccountDeletionSuppression[];
+};
+export declare const EMPTY_REGISTER_HEAD: string;
 export function accountDeletionSubjectHash(userId: string): string;
 export function assertAccountDeletionRegisterAvailable(
   directory: string | undefined,
@@ -17,6 +25,13 @@ export function appendAccountDeletionSuppression(input: {
 export function readAccountDeletionSuppressions(
   directory: string | undefined,
 ): Promise<AccountDeletionSuppression[]>;
+export function readAccountDeletionRegister(
+  directory: string | undefined,
+): Promise<AccountDeletionRegister>;
+export function assertAccountDeletionRegisterHead(
+  snapshot: AccountDeletionRegister,
+  expectedHead: string,
+): void;
 export function accountDeletionSuppressionSql(
   records: AccountDeletionSuppression[],
   schema?: string,

@@ -414,6 +414,13 @@ describe("hold-deletions (runHold)", () => {
     assert.equal(db.runnerHolder, null, "runner lock released");
     assert.match(r.out, /Scheduled deletions are paused until \S+Z \(owner hold, 7 days/);
     assert.doesNotMatch(r.out, /postgresql:|u:p@/);
+    assert.match(r.out, /scheduled schema deletions only/);
+    assert.match(r.out, /does not apply account-erasure suppression/);
+    assert.match(
+      r.out,
+      /After a restore, keep all writers stopped.*guarded restore.*independently verified current register head/,
+    );
+    assert.doesNotMatch(r.out, /app can run|be started.*usual/);
   });
 
   test("takes a day count and never shortens a longer hold", async () => {

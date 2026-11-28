@@ -1442,7 +1442,7 @@ export async function runHold(options = {}) {
       ]);
       const until = new Date(result.rows[0].until).toISOString().replace(/\.\d{3}Z$/, "Z");
       console.log(
-        `[hold-deletions] Scheduled deletions are paused until ${until} (owner hold, ${days} day${days === 1 ? "" : "s"}; a longer existing hold is kept). The app can run (or be started) as usual. Remove it early with \`hold-deletions --clear\`.`,
+        `[hold-deletions] Scheduled deletions are paused until ${until} (owner hold, ${days} day${days === 1 ? "" : "s"}; a longer existing hold is kept). This pauses scheduled schema deletions only; it does not apply account-erasure suppression. After a restore, keep all writers stopped until the isolated conversion and guarded restore with an independently verified current register head are complete (docs/backup-restore.md). Remove it early with \`hold-deletions --clear\`.`,
       );
       return 0;
     } finally {

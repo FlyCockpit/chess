@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fixture, interruptAt, interruptRestore, restore } from "./restore-fixture.mjs";
@@ -69,10 +68,9 @@ test("a signal after COMMIT was sent but before it was confirmed is uncertain, n
 });
 
 test("a signal while the source is still being verified is a refusal, exit 3 (nothing changed)", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "backup-restore-signal-"));
+  const f = fixture();
+  const { dir, archive } = f;
   try {
-    const archive = join(dir, "manual-20261113T000000Z.dump");
-    writeFileSync(archive, "PGDMP-inert-test-archive");
     // pg_restore --list hangs, as a slow archive check would.
     writeFileSync(
       join(dir, "pg_restore"),
@@ -85,11 +83,14 @@ exec sleep 30
     );
     writeFileSync(join(dir, "psql"), "#!/bin/sh\necho 180000\n", { mode: 0o755 });
     const { code, output } = await interruptAt({
-      args: [archive, "--confirm", "RESTORE:restore_fixture"],
-      env: {
-        PATH: `${dir}:${dirname(process.execPath)}:/usr/bin:/bin`,
-        DATABASE_URL: "postgresql://127.0.0.1/restore_fixture",
-      },
+      args: [
+        archive,
+        "--expected-register-head",
+        f.expectedHead,
+        "--confirm",
+        "RESTORE:restore_fixture",
+      ],
+      env: f.env("exit:0"),
       marker: join(dir, "listing"),
       signal: "SIGINT",
     });
@@ -97,7 +98,7 @@ exec sleep 30
     assert.match(output, /cancelled by SIGINT before the restore started — nothing was changed/);
     assert.doesNotMatch(output, /rolled back|uncertain/);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    f.cleanup();
   }
 });
 
@@ -174,7 +175,16 @@ process.once("beforeExit", () => {
     );
     const child = spawn(
       process.execPath,
-      ["--require", hold, restore, f.archive, "--confirm", "RESTORE:restore_fixture"],
+      [
+        "--require",
+        hold,
+        restore,
+        f.archive,
+        "--expected-register-head",
+        f.expectedHead,
+        "--confirm",
+        "RESTORE:restore_fixture",
+      ],
       { env: f.env(mode), stdio: ["ignore", "pipe", "pipe"], detached: true },
     );
     const closed = once(child, "close").then(([code]) => code);

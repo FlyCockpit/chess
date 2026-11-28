@@ -138,11 +138,14 @@ export const RESTORE_USAGE = `Usage:
 <source>
   latest                       The newest backup in /backups (daily, manual or
                                pre-migration; never a pre-restore snapshot).
-  /backups/<file>              A file inside the container (raw pg_dump -Fc/-Ft
-                               archive or a gzip-wrapped one, e.g. Dokploy's .sql.gz).
+  /backups/<file>              A guarded checkpointed backup envelope, optionally
+                               gzip-wrapped. Raw provider exports need isolated conversion.
   s3://<bucket>/<key>          An object in BACKUP_S3_BUCKET (needs BACKUP_S3_*).
 
 Options
+  --expected-register-head <sequence>:<sha256>
+                               Required for an actual restore: trusted current
+                               head from the independent protected register copy.
   --confirm RESTORE:<db>       Required to change anything. <db> is the database
                                named in DATABASE_URL. Without it, restore only
                                verifies the source and prints a preview.
@@ -166,6 +169,7 @@ Options
  * @typedef {{
  *   source: string,
  *   confirm: string | null,
+ *   expectedRegisterHead: string | null,
  *   replace: boolean,
  *   allowActiveConnections: boolean,
  *   skipSnapshot: boolean,
@@ -186,6 +190,7 @@ export function parseRestoreArgs(argv) {
   const parsed = {
     source: "",
     confirm: null,
+    expectedRegisterHead: null,
     replace: false,
     allowActiveConnections: false,
     skipSnapshot: false,
@@ -217,6 +222,11 @@ export function parseRestoreArgs(argv) {
       case "-h":
       case "--help":
         parsed.help = true;
+        break;
+      case "--expected-register-head":
+        if (parsed.expectedRegisterHead !== null)
+          throw new UsageError("Duplicate --expected-register-head.");
+        parsed.expectedRegisterHead = takeValue(flag, inline);
         break;
       case "--confirm":
         parsed.confirm = takeValue(flag, inline);

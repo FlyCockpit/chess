@@ -176,7 +176,7 @@ if [ "$use_local" = 1 ]; then
   # .partial behind: the EXIT trap never ran. Older than 120 minutes, it
   # cannot belong to a dump that is still running; remove it so a full volume
   # does not fail every later backup.
-  find "$LOCAL_DIR" -maxdepth 1 -type f -name ".$label-*.dump.partial" -mmin +120 \
+  find "$LOCAL_DIR" -maxdepth 1 -type f \( -name ".$label-*.dump.partial" -o -name ".$label-*.dump.partial.sealed" \) -mmin +120 \
     -printf '[backup] Removed stale partial dump %f\n' -delete ||
     echo "WARNING: [backup] could not remove every stale partial dump in $LOCAL_DIR." >&2
 else
@@ -193,15 +193,19 @@ final="$out_dir/$name"
 partial="$(mktemp --suffix=.dump.partial "$out_dir/.${name%.dump}-XXXXXX")" ||
   fatal "cannot create a staging file in $out_dir."
 if [ "$use_local" = 1 ]; then
-  trap 'rm -f "$partial"' EXIT
+  trap 'rm -f "$partial" "$partial.sealed"' EXIT
 fi
 
 echo "[backup] Dumping $PGDATABASE to $final ..."
 umask 077
+register_before="$(node "$HERE/account-deletion-suppression.mjs" head)" ||
+  fatal "cannot verify the current account deletion register; no backup was published."
 pg_dump -Fc --no-owner --no-privileges -f "$partial" ||
   fatal "pg_dump failed; nothing was migrated or changed."
 pg_restore --list "$partial" >/dev/null ||
   fatal "pg_restore --list rejected the new dump (corrupt or empty)."
+node "$HERE/register-backup.mjs" seal "$partial" "$register_before" ||
+  fatal "cannot bind the account deletion register head to the backup; no backup was published."
 # Never replace another run's finished dump of the same second.
 mv -n "$partial" "$final"
 n=1
@@ -233,6 +237,7 @@ if [ "$use_s3" = 1 ] && ! node "$HERE/s3.mjs" upload "$final"; then
 fi
 
 if [ "$use_local" = 1 ]; then
-  echo "[backup] To restore it: restore $final --confirm RESTORE:$PGDATABASE"
+  echo "[backup] Obtain the trusted current register head from the independent protected copy (docs/backup-restore.md), then replace SEQUENCE:DIGEST below:"
+  echo "[backup] To restore it: restore $final --expected-register-head 'SEQUENCE:DIGEST' --confirm RESTORE:$PGDATABASE"
 fi
 echo "[backup] Done."

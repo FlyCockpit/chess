@@ -8,9 +8,9 @@
 # Then, on the server:
 #   bash app-db.sh list                    list the backups, newest first
 #   bash app-db.sh backup                  take a backup now
-#   bash app-db.sh restore [<backup>]      guided restore (default: the newest backup)
-#   bash app-db.sh drill [<backup>]        restore into a throwaway database and check it
-#                                          (s3://… backups: add --etag <etag>)
+#   bash app-db.sh restore [<backup>] --expected-register-head <trusted-current-head>
+#   bash app-db.sh drill [<backup>] --expected-register-head <trusted-current-head>
+#                                          (independent protected head; S3: --etag <etag>)
 #   bash app-db.sh hold-deletions [days|--clear]
 #                                          pause scheduled deletions (after a restore the
 #                                          app cannot detect, e.g. a Volume Backups copy)
@@ -84,9 +84,15 @@ parse_args() {
   }
   shift
   project=""
+  expected_register_head=""
   args=()
   while [ $# -gt 0 ]; do
     case "$1" in
+      --expected-register-head)
+        [ $# -ge 2 ] && [ -n "$2" ] && [ -z "$expected_register_head" ] || die "--expected-register-head needs one trusted head."
+        expected_register_head="$2"
+        shift 2
+        ;;
       --project)
         [ $# -ge 2 ] || die "--project needs a name."
         project="$2"
@@ -170,7 +176,7 @@ discover_app() {
   local register_dir register_mounted destination mount_type mount_source
   register_dir="$(app_env | sed -n 's/^ACCOUNT_DELETION_REGISTER_DIR=//p')"
   register_mounted=0
-  if [ -n "$register_dir" ] && { [ "$action" = restore ] || [ "$action" = drill ]; }; then
+  if [ -n "$register_dir" ] && { [ "$action" = restore ] || [ "$action" = drill ] || [ "$action" = backup ]; }; then
     while IFS=$'\t' read -r destination mount_type mount_source; do
       [ "$destination" = "$register_dir" ] || continue
       case "$mount_type" in
@@ -183,7 +189,7 @@ discover_app() {
     done < <(docker inspect -f '{{range .Mounts}}{{printf "%s\t%s\t" .Destination .Type}}{{if eq .Type "volume"}}{{.Name}}{{else}}{{.Source}}{{end}}{{printf "\n"}}{{end}}' "$server")
   fi
   case "$action" in
-    restore | drill)
+    restore | drill | backup)
       [ -n "$register_dir" ] && [ "$register_mounted" = 1 ] ||
         die "mount the current external account-erasure register and set ACCOUNT_DELETION_REGISTER_DIR on the app before restore or drill."
       ;;
@@ -203,9 +209,15 @@ run_image() {
 
 main() {
   parse_args "$@"
+
+  case "$action" in
+    restore | drill)
+      [[ "$expected_register_head" =~ ^(0|[1-9][0-9]{0,5}):[a-f0-9]{64}$ ]] ||
+        die "supply --expected-register-head from the independent protected current register copy; see docs/backup-restore.md."
+      ;;
+  esac
   command -v docker >/dev/null || die "docker is not installed on this machine."
   docker info >/dev/null 2>&1 || die "cannot talk to Docker. Run this on the Dokploy server as a user who can run docker."
-
   discover_app
 
   say "app \"$project\": server container ${server:0:12}, network $network, backups volume ${volume:-none}"
@@ -312,7 +324,7 @@ main() {
       done
       status=0
       restore_invoked=1
-      run_image restore "$source" --guided || status=$?
+      run_image restore "$source" --expected-register-head "$expected_register_head" --guided || status=$?
       exit "$status"
       ;;
     drill)
@@ -378,7 +390,7 @@ main() {
       }
       status=0
       docker run --rm --network "$drill_net" "${volume_args[@]}" --env-file <(drill_env) \
-        "$image" restore-drill "$source" "${pins[@]}" || status=$?
+        "$image" restore-drill "$source" "${pins[@]}" --expected-register-head "$expected_register_head" || status=$?
       say "Removed the throwaway database."
       exit "$status"
       ;;

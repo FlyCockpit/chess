@@ -1,6 +1,7 @@
 /** Shared fixtures for restore.test.mjs and restore-interrupts.test.mjs. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import {
   existsSync,
@@ -15,8 +16,21 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { EMPTY_REGISTER_HEAD } from "./account-deletion-suppression.mjs";
 
 export const restore = fileURLToPath(new URL("./restore.mjs", import.meta.url));
+
+/** Synchronous envelope for inert PGDMP bytes; no database tools are invoked. */
+export function fixtureArchive(body, registerHead = EMPTY_REGISTER_HEAD) {
+  const metadata = JSON.stringify({
+    version: 1,
+    registerHead,
+    archiveSha256: createHash("sha256").update(body).digest("hex"),
+  });
+  const header = Buffer.from(`COCKPIT-CHESS-BACKUP-v1\n${metadata}`.padEnd(512, " "));
+  assert.equal(header.length, 512);
+  return Buffer.concat([header, Buffer.from(body)]);
+}
 
 /**
  * Inert Postgres executables for the restore CLI and its lock handover.
@@ -59,7 +73,7 @@ export function fixture() {
   const receipt = join(dir, "commit-observed.txt");
   const suppressionDirectory = join(dir, "account-deletions");
   mkdirSync(suppressionDirectory, { mode: 0o700 });
-  writeFileSync(archive, "PGDMP-inert-test-archive");
+  writeFileSync(archive, fixtureArchive("PGDMP-inert-test-archive"));
   // The fixtures' `#!/usr/bin/env node` finds node here, so the spawn-failure
   // modes can run with a PATH of this directory alone.
   symlinkSync(process.execPath, join(dir, "node"));
@@ -246,6 +260,7 @@ if (queryIndex !== -1) {
   return {
     dir,
     archive,
+    expectedHead: EMPTY_REGISTER_HEAD,
     receipt,
     suppressionDirectory,
     env,
@@ -260,7 +275,13 @@ export function runRestore({ mode = "exit:0", preview = false, xact = "unknown" 
   try {
     const result = spawnSync(
       process.execPath,
-      [restore, f.archive, ...(preview ? [] : ["--confirm", "RESTORE:restore_fixture"])],
+      [
+        restore,
+        f.archive,
+        ...(preview
+          ? []
+          : ["--expected-register-head", f.expectedHead, "--confirm", "RESTORE:restore_fixture"]),
+      ],
       // SIGKILL: a regression that traps SIGTERM cannot outlive the timeout.
       { env: f.env(mode, xact), encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" },
     );
@@ -331,7 +352,13 @@ export async function interruptRestore({ mode, marker, signal }) {
   const f = fixture();
   try {
     const result = await interruptAt({
-      args: [f.archive, "--confirm", "RESTORE:restore_fixture"],
+      args: [
+        f.archive,
+        "--expected-register-head",
+        f.expectedHead,
+        "--confirm",
+        "RESTORE:restore_fixture",
+      ],
       env: f.env(mode),
       marker: marker(f),
       signal,

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { appendAccountDeletionSuppression } from "./account-deletion-suppression.mjs";
 import { fixture, restore, runRestore } from "./restore-fixture.mjs";
 
 test("restore preview is a refusal (exit 3) that never invokes a transaction", () => {
@@ -13,6 +14,10 @@ test("restore preview is a refusal (exit 3) that never invokes a transaction", (
   assert.equal(result.commit, null);
   assert.match(result.output, /preview only/);
   assert.match(result.output, /--confirm RESTORE:restore_fixture/);
+  assert.match(
+    result.output,
+    /--expected-register-head '<trusted-head-from-independent-protected-copy>'/,
+  );
 });
 
 test("a committed restore exits 0 and reports completion", () => {
@@ -29,7 +34,14 @@ test("a missing suppression register refuses before the restore transaction", ()
   try {
     const result = spawnSync(
       process.execPath,
-      [restore, f.archive, "--confirm", "RESTORE:restore_fixture"],
+      [
+        restore,
+        f.archive,
+        "--expected-register-head",
+        f.expectedHead,
+        "--confirm",
+        "RESTORE:restore_fixture",
+      ],
       {
         env: { ...f.env("exit:0"), ACCOUNT_DELETION_REGISTER_DIR: "" },
         encoding: "utf8",
@@ -45,12 +57,69 @@ test("a missing suppression register refuses before the restore transaction", ()
   }
 });
 
+test("an actual restore requires an operator-supplied trusted register head", () => {
+  const f = fixture();
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [restore, f.archive, "--confirm", "RESTORE:restore_fixture"],
+      { env: f.env("exit:0"), encoding: "utf8", timeout: 10_000 },
+    );
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.equal(f.commit(), null);
+    assert.match(result.stderr, /--expected-register-head/);
+    assert.doesNotMatch(result.stdout, /Restoring into/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("raw archives and changed archive bodies refuse before the restore transaction", () => {
+  for (const kind of ["raw", "changed-body"]) {
+    const f = fixture();
+    try {
+      const bytes = readFileSync(f.archive);
+      if (kind === "raw") writeFileSync(f.archive, bytes.subarray(512));
+      else {
+        bytes[bytes.length - 1] ^= 1;
+        writeFileSync(f.archive, bytes);
+      }
+      const result = spawnSync(
+        process.execPath,
+        [
+          restore,
+          f.archive,
+          "--expected-register-head",
+          f.expectedHead,
+          "--confirm",
+          "RESTORE:restore_fixture",
+        ],
+        { env: f.env("exit:0"), encoding: "utf8", timeout: 10_000 },
+      );
+      assert.equal(result.status, 3, `${kind}: ${result.stdout}${result.stderr}`);
+      assert.equal(f.commit(), null, kind);
+      assert.match(result.stderr, kind === "raw" ? /no verifiable.*checkpoint/ : /checksum/);
+      assert.doesNotMatch(result.stdout, /Restoring into/);
+    } finally {
+      f.cleanup();
+    }
+  }
+});
+
 test("active-connection bypass cannot race erasure-suppression acceptance", () => {
   const f = fixture();
   try {
     const result = spawnSync(
       process.execPath,
-      [restore, f.archive, "--allow-active-connections", "--confirm", "RESTORE:restore_fixture"],
+      [
+        restore,
+        f.archive,
+        "--expected-register-head",
+        f.expectedHead,
+        "--allow-active-connections",
+        "--confirm",
+        "RESTORE:restore_fixture",
+      ],
       {
         env: f.env("exit:0"),
         encoding: "utf8",
@@ -244,4 +313,33 @@ test("a usage error is a refusal, exit 3", () => {
   });
   assert.equal(result.status, 3, result.stdout + result.stderr);
   assert.match(result.stderr, /REFUSED: /);
+});
+
+test("an untrusted valid suffix beyond the independently trusted head refuses", async () => {
+  const f = fixture();
+  try {
+    await appendAccountDeletionSuppression({
+      directory: f.suppressionDirectory,
+      userId: "untrusted-suffix-victim",
+      requestedAt: new Date(),
+    });
+    const result = spawnSync(
+      process.execPath,
+      [
+        restore,
+        f.archive,
+        "--expected-register-head",
+        f.expectedHead,
+        "--confirm",
+        "RESTORE:restore_fixture",
+      ],
+      { env: f.env("exit:0"), encoding: "utf8", timeout: 10000 },
+    );
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.equal(f.commit(), null);
+    assert.match(result.stderr, /does not exactly match.*trusted current/);
+    assert.doesNotMatch(result.stdout, /Restoring into/);
+  } finally {
+    f.cleanup();
+  }
 });

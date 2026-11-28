@@ -3,7 +3,7 @@
  * Image command `restore-drill <source>` — proves a backup restores.
  *
  * Restores <source> (`latest`, a /backups file, or s3://… with --etag and
- * optionally --version-id — the only options it accepts) into
+ * optionally --version-id, plus --expected-register-head) into
  * DATABASE_URL, which must be a THROWAWAY EMPTY database: scripts/backup/host.sh
  * `drill` starts a temporary Postgres container for it and removes it after.
  * Production is never touched: the database must be named `restore_drill`,
@@ -28,6 +28,7 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { createGunzip } from "node:zlib";
 import { detectArchiveFormat, parseS3Source, pgEnvFromUrl, pickLatest } from "./lib.mjs";
+import { unsealBackupArchive } from "./register-backup.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DRILL_DATABASE = "restore_drill";
@@ -101,7 +102,7 @@ function psql(env, sql) {
 }
 
 const DRILL_USAGE =
-  "usage: restore-drill <latest | /backups/<file> | s3://bucket/key --etag <etag> [--version-id <id>]>";
+  "usage: restore-drill <latest | /backups/<file> | s3://bucket/key --etag <etag> [--version-id <id>]> --expected-register-head <trusted-head>";
 
 /**
  * The drill's arguments: one source plus, for s3:// only, the options that pin
@@ -120,14 +121,14 @@ export function parseDrillArgs(argv) {
     const arg = /** @type {string} */ (rest.shift());
     const eq = arg.indexOf("=");
     const flag = eq === -1 ? arg : arg.slice(0, eq);
-    if (flag !== "--etag" && flag !== "--version-id")
+    if (flag !== "--etag" && flag !== "--version-id" && flag !== "--expected-register-head")
       throw new Error(`restore-drill does not accept ${arg}.\n${DRILL_USAGE}`);
     const value = eq === -1 ? rest.shift() : arg.slice(eq + 1);
     if (!value || value.startsWith("-") || pins.has(flag))
       throw new Error(`${flag} needs one value.\n${DRILL_USAGE}`);
     pins.set(flag, value);
   }
-  if (pins.size && !source.startsWith("s3://"))
+  if ((pins.has("--etag") || pins.has("--version-id")) && !source.startsWith("s3://"))
     throw new Error(`--etag and --version-id apply only to s3:// sources.\n${DRILL_USAGE}`);
   return { source, pins: [...pins].flat() };
 }
@@ -293,6 +294,9 @@ export async function archiveListing(source, pins, env, deps = {}) {
       );
       file = unwrapped;
     }
+    const unsealed = path.join(workDir, "source.archive");
+    await unsealBackupArchive(file, unsealed);
+    file = unsealed;
     const listing = deps.list
       ? deps.list(file)
       : spawnSync("pg_restore", ["--list", file], { env, encoding: "utf8" });

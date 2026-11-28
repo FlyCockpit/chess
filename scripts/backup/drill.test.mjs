@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { gzipSync } from "node:zlib";
+import { EMPTY_REGISTER_HEAD } from "./account-deletion-suppression.mjs";
 import {
   archiveCreatedAt,
   archiveListing,
@@ -11,6 +12,7 @@ import {
   drillVerdict,
   parseDrillArgs,
 } from "./drill.mjs";
+import { fixtureArchive } from "./restore-fixture.mjs";
 
 const LISTING = `;
 ; Archive created at 2026-11-11 03:00:01 UTC
@@ -61,12 +63,32 @@ describe("restore drill", () => {
     );
   });
 
-  it("accepts only a source and the s3 pins; never an option that widens the restore", () => {
+  it("accepts a trusted head and s3 pins; never an option that widens the restore", () => {
     assert.deepEqual(parseDrillArgs(["latest"]), { source: "latest", pins: [] });
+    assert.deepEqual(parseDrillArgs(["latest", "--expected-register-head", EMPTY_REGISTER_HEAD]), {
+      source: "latest",
+      pins: ["--expected-register-head", EMPTY_REGISTER_HEAD],
+    });
+    assert.deepEqual(
+      parseDrillArgs(["/backups/x.dump", `--expected-register-head=${EMPTY_REGISTER_HEAD}`]),
+      { source: "/backups/x.dump", pins: ["--expected-register-head", EMPTY_REGISTER_HEAD] },
+    );
     assert.deepEqual(parseDrillArgs(["s3://b/k.dump", "--etag", '"abc"', "--version-id=v1"]), {
       source: "s3://b/k.dump",
       pins: ["--etag", '"abc"', "--version-id", "v1"],
     });
+    assert.deepEqual(
+      parseDrillArgs([
+        "s3://b/k.dump",
+        "--etag=e",
+        "--expected-register-head",
+        EMPTY_REGISTER_HEAD,
+      ]),
+      {
+        source: "s3://b/k.dump",
+        pins: ["--etag", "e", "--expected-register-head", EMPTY_REGISTER_HEAD],
+      },
+    );
     for (const argv of [
       [],
       ["--replace"],
@@ -78,6 +100,15 @@ describe("restore drill", () => {
       ["s3://b/k.dump", "--etag", "a", "--etag", "b"],
       ["latest", "--etag", "e"],
       ["latest", "extra"],
+      ["latest", "--expected-register-head"],
+      ["latest", "--expected-register-head="],
+      [
+        "latest",
+        "--expected-register-head",
+        EMPTY_REGISTER_HEAD,
+        "--expected-register-head",
+        EMPTY_REGISTER_HEAD,
+      ],
     ])
       assert.throws(() => parseDrillArgs(argv), /usage: restore-drill/, JSON.stringify(argv));
   });
@@ -91,14 +122,15 @@ describe("restore drill", () => {
     assert.equal(drillVerdict({ expected: [], counts, migrations }).pass, false);
   });
 
-  it("reads the table list of a raw, a gzip-wrapped and an s3:// source", async () => {
+  it("reads the table list of a sealed, a gzip-wrapped and an s3:// source", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "drill-test-"));
     try {
       const raw = Buffer.concat([Buffer.from("PGDMP"), Buffer.alloc(600, 1)]);
+      const sealed = fixtureArchive(raw);
       const rawFile = path.join(dir, "a.dump");
       const gzFile = path.join(dir, "a.dump.gz");
-      writeFileSync(rawFile, raw);
-      writeFileSync(gzFile, gzipSync(raw));
+      writeFileSync(rawFile, sealed);
+      writeFileSync(gzFile, gzipSync(sealed));
       /** @type {Buffer[]} */
       const seen = [];
       const list = (/** @type {string} */ file) => {
@@ -111,7 +143,7 @@ describe("restore drill", () => {
       const downloads = [];
       const download = async (/** @type {{ dest: string }} */ args) => {
         downloads.push({ ...args, dest: undefined });
-        writeFileSync(args.dest, gzipSync(raw));
+        writeFileSync(args.dest, gzipSync(sealed));
       };
       assert.equal(
         await archiveListing(
@@ -133,7 +165,7 @@ describe("restore drill", () => {
           dest: undefined,
         },
       ]);
-      // pg_restore always sees the unwrapped archive, never the gzip bytes.
+      // pg_restore always sees the verified archive body, without either wrapper.
       assert.equal(seen.length, 3);
       for (const bytes of seen) assert.ok(bytes.equals(raw));
       await assert.rejects(archiveListing("s3://b/k", [], {}, { download, list }), /--etag/);
@@ -141,6 +173,9 @@ describe("restore drill", () => {
         archiveListing(rawFile, [], {}, { list: () => ({ status: 1, stdout: "", stderr: "bad" }) }),
         /pg_restore --list failed: bad/,
       );
+      writeFileSync(rawFile, raw);
+      await assert.rejects(archiveListing(rawFile, [], {}, { list }), /checkpoint/);
+      assert.equal(seen.length, 3, "an unsealed archive must never reach pg_restore");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

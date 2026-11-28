@@ -18,19 +18,27 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendAccountDeletionSuppression } from "./account-deletion-suppression.mjs";
+import { runHold } from "../db/migrate-runtime.mjs";
+import {
+  appendAccountDeletionSuppression,
+  EMPTY_REGISTER_HEAD,
+  readAccountDeletionRegister,
+} from "./account-deletion-suppression.mjs";
 import { containerPrefix, e2eNames } from "./e2e-names.mjs";
+import { unsealBackupArchive } from "./register-backup.mjs";
 
 const SCRIPTS = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let hostPort;
@@ -106,9 +114,9 @@ function sql(db, sql) {
  * /app/scripts, an optional /backups volume, DATABASE_URL for the target.
  * @param {string} db
  * @param {string[]} command
- * @param {{ mount?: "rw" | "ro" | "none" }} [options]
+ * @param {{ mount?: "rw" | "ro" | "none", register?: string }} [options]
  */
-function tool(db, command, { mount = "rw" } = {}) {
+function tool(db, command, { mount = "rw", register = suppressionDirectory } = {}) {
   const volume =
     mount === "none" ? [] : ["-v", `${backups}:/backups${mount === "ro" ? ":ro" : ""}`];
   return docker(
@@ -122,7 +130,7 @@ function tool(db, command, { mount = "rw" } = {}) {
       "-v",
       `${SCRIPTS}:/app/scripts:ro`,
       "-v",
-      `${suppressionDirectory}:/account-deletions:ro`,
+      `${register}:/account-deletions:ro`,
       ...volume,
       "-e",
       "ACCOUNT_DELETION_REGISTER_DIR=/account-deletions",
@@ -145,11 +153,73 @@ function tool(db, command, { mount = "rw" } = {}) {
 
 /** @param {string} db @param {...string} args */
 const restore = (db, ...args) => {
+  // Test operator input comes from the host's current register, never from the
+  // backup or the register mounted inside a restoring runtime.
+  if (args.includes("--confirm") && !args.includes("--expected-register-head"))
+    args.push("--expected-register-head", trustedHead());
   const result = tool(db, ["bash", "/app/scripts/backup/restore.sh", "restore", ...args]);
   if (process.env.BACKUP_TEST_VERBOSE)
     console.log(`--- restore ${args.join(" ")} → ${result.code}\n${result.out}`);
   return result;
 };
+
+/** Read the test operator's trusted checkpoint on the host. */
+function trustedHead() {
+  const result = spawnSync(
+    process.execPath,
+    [join(SCRIPTS, "backup/account-deletion-suppression.mjs"), "head"],
+    { env: { ACCOUNT_DELETION_REGISTER_DIR: suppressionDirectory }, encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
+/** Seal a completed direct dump with its pre-dump checkpoint. */
+function sealDump(file, beforeHead) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(SCRIPTS, "backup/register-backup.mjs"),
+      "seal",
+      join(backups, basename(file)),
+      beforeHead,
+    ],
+    { env: { ACCOUNT_DELETION_REGISTER_DIR: suppressionDirectory }, encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+}
+
+/** Direct pg_dump fixtures follow the guarded before/dump/after protocol. */
+function dumpArchive(db, file) {
+  const before = trustedHead();
+  const result = tool(db, ["pg_dump", "-Fc", "-f", file]);
+  assert.equal(result.code, 0, result.out);
+  sealDump(file, before);
+  return result;
+}
+
+/** List only the checksum-verified raw body, never the envelope. */
+function listArchive(db, file) {
+  const destination = join(backups, "listing-unsealed.dump");
+  try {
+    const unseal = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        "const { unsealBackupArchive } = await import(process.argv[1]); await unsealBackupArchive(process.argv[2], process.argv[3]);",
+        new URL("./register-backup.mjs", import.meta.url).href,
+        join(backups, basename(file)),
+        destination,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(unseal.status, 0, unseal.stderr);
+    return tool(db, ["pg_restore", "--list", `/backups/${basename(destination)}`]);
+  } finally {
+    rmSync(destination, { force: true });
+  }
+}
 
 /** A content fingerprint of everything the seed creates. */
 function fingerprint(db) {
@@ -251,6 +321,7 @@ RUN ldconfig && node --version
   sql("app", SEED);
   mkdirSync(backups);
   mkdirSync(suppressionDirectory, { mode: 0o700 });
+  assert.equal(trustedHead(), EMPTY_REGISTER_HEAD);
 }
 
 function teardown() {
@@ -270,6 +341,47 @@ function dumps(prefix) {
 
 try {
   setup();
+  await stepAsync(
+    "independent head command runs disconnected without database configuration",
+    async () => {
+      const independent = join(work, "head-command-register");
+      mkdirSync(independent, { mode: 0o700 });
+      for (const nonempty of [false, true]) {
+        if (nonempty)
+          await appendAccountDeletionSuppression({
+            directory: independent,
+            userId: "head-command-only",
+            requestedAt: new Date(),
+          });
+        const expected = (await readAccountDeletionRegister(independent)).head;
+        const result = docker(
+          [
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            uid,
+            "--entrypoint",
+            "node",
+            "--mount",
+            `type=bind,source=${independent},target=/account-deletions,readonly`,
+            "-v",
+            `${SCRIPTS}:/app/scripts:ro`,
+            "-e",
+            "ACCOUNT_DELETION_REGISTER_DIR=/account-deletions",
+            TOOLS_IMAGE,
+            "/app/scripts/backup/account-deletion-suppression.mjs",
+            "head",
+          ],
+          { allowFail: true },
+        );
+        assert.equal(result.code, 0, result.out);
+        assert.equal(result.stdout.trim(), expected);
+      }
+    },
+  );
+
   const sourcePrint = fingerprint("app");
 
   step("pre-migrate: no destination → silent exit 0; --required → non-zero", () => {
@@ -305,11 +417,11 @@ try {
     assert.ok(!kept.includes("pre-migrate-20200101T000001Z.dump"));
     assert.match(
       result.out,
-      /restore \/backups\/pre-migrate-\d{8}T\d{6}Z\.dump --confirm RESTORE:app/,
+      /restore \/backups\/pre-migrate-\d{8}T\d{6}Z\.dump --expected-register-head 'SEQUENCE:DIGEST' --confirm RESTORE:app/,
     );
     const fresh = /** @type {string} */ (kept.at(-1));
     assert.match(fresh, /^pre-migrate-\d{8}T\d{6}Z\.dump$/);
-    const list = tool("app", ["pg_restore", "--list", `/backups/${fresh}`]);
+    const list = listArchive("app", `/backups/${fresh}`);
     assert.equal(list.code, 0, list.out);
     for (const old of kept.slice(0, -1)) rmSync(join(backups, old));
   });
@@ -336,7 +448,7 @@ try {
     assert.equal(sql("restored_raw", "SELECT to_regclass('public.\"User\"') IS NULL"), "t");
   });
 
-  step("restore: raw pg_dump -Fc archive round-trips into an empty database", () => {
+  step("restore: sealed pg_dump -Fc archive round-trips into an empty database", () => {
     const result = restore("restored_raw", raw, "--confirm", "RESTORE:restored_raw");
     assert.equal(result.code, 0, result.out);
     assert.match(
@@ -368,7 +480,7 @@ try {
     sql("postgres", "CREATE DATABASE hold_dst");
     assert.equal(restore("hold_src", raw, "--confirm", "RESTORE:hold_src").code, 0);
     sql("hold_src", `UPDATE "_cockpit_chess_hold" SET until = now() + interval '30 days'`);
-    const dump = tool("hold_src", ["pg_dump", "-Fc", "-f", "/backups/hold.dump"]);
+    const dump = dumpArchive("hold_src", "/backups/hold.dump");
     assert.equal(dump.code, 0, dump.out);
     const result = restore("hold_dst", "/backups/hold.dump", "--confirm", "RESTORE:hold_dst");
     assert.equal(result.code, 0, result.out);
@@ -398,7 +510,7 @@ try {
       } finally {
         await client.end();
       }
-      const dump = tool("cluster_db", ["pg_dump", "-Fc", "-f", "/backups/cluster.dump"]);
+      const dump = dumpArchive("cluster_db", "/backups/cluster.dump");
       assert.equal(dump.code, 0, dump.out);
       const result = restore(
         "cluster_db",
@@ -435,12 +547,11 @@ try {
   );
 
   step("restore: gzip-wrapped (Dokploy-style) dump round-trips", () => {
+    dumpArchive("app", "/backups/dokploy-app.dump");
     const dump = tool("app", [
-      "bash",
-      "-o",
-      "pipefail",
+      "sh",
       "-c",
-      "pg_dump -Fc --no-acl --no-owner | gzip > /backups/dokploy-app.sql.gz",
+      "gzip -c /backups/dokploy-app.dump > /backups/dokploy-app.sql.gz",
     ]);
     assert.equal(dump.code, 0, dump.out);
     const result = restore(
@@ -478,12 +589,9 @@ try {
     );
     const snapshots = dumps("pre-restore-");
     assert.equal(snapshots.length, 1, snapshots.join(", "));
-    const list = tool("restored_raw", [
-      "sh",
-      "-c",
-      `pg_restore --list /backups/${snapshots[0]} | grep -c 'TABLE public Newer'`,
-    ]);
-    assert.equal(list.stdout.trim(), "1", list.out);
+    const list = listArchive("restored_raw", `/backups/${snapshots[0]}`);
+    assert.equal(list.code, 0, list.out);
+    assert.equal((list.stdout.match(/TABLE public Newer /g) ?? []).length, 1, list.out);
   });
 
   step("restore: refuses while another session is connected", () => {
@@ -560,8 +668,10 @@ try {
   });
 
   step("restore: plain-SQL dumps are refused", () => {
+    const before = trustedHead();
     const dump = tool("app", ["sh", "-c", "pg_dump > /backups/plain.sql"]);
     assert.equal(dump.code, 0, dump.out);
+    sealDump("/backups/plain.sql", before);
     const result = restore(
       "restored_misc",
       "/backups/plain.sql",
@@ -584,7 +694,7 @@ try {
       "RESTORE:restored_misc",
     );
     assert.equal(result.code, 3, result.out);
-    assert.match(result.out, /incomplete or corrupt|rejected the archive/);
+    assert.match(result.out, /checksum|incomplete or corrupt|rejected the archive/);
     assert.equal(
       sql(
         "restored_misc",
@@ -608,7 +718,7 @@ try {
        ALTER TABLE later ADD CONSTRAINT later_check CHECK (v <> 'x') NOT VALID;
        UPDATE pg_constraint SET convalidated = true WHERE conname = 'later_check';`,
     );
-    const dump = tool("broken_src", ["pg_dump", "-Fc", "-f", "/backups/broken.dump"]);
+    const dump = dumpArchive("broken_src", "/backups/broken.dump");
     assert.equal(dump.code, 0, dump.out);
     const result = restore(
       "restored_misc",
@@ -670,12 +780,7 @@ try {
       ALTER TABLE "User" ADD CONSTRAINT restore_lock_pause_check CHECK (restore_lock_pause());
     `,
     );
-    const pauseDump = tool("restore_lock_src", [
-      "pg_dump",
-      "-Fc",
-      "-f",
-      "/backups/restore-lock-pause.dump",
-    ]);
+    const pauseDump = dumpArchive("restore_lock_src", "/backups/restore-lock-pause.dump");
     assert.equal(pauseDump.code, 0, pauseDump.out);
     sql("postgres", "CREATE TABLE IF NOT EXISTS lock_probe (got boolean)");
     const q = (db, text) => `psql -X -q -At -h ${PG} -U postgres -d ${db} -c "${text}"`;
@@ -733,6 +838,10 @@ try {
       sql(
         "erasure_src",
         `
+      CREATE TABLE "_prisma_migrations" (
+        id text PRIMARY KEY, checksum text NOT NULL, finished_at timestamptz, migration_name text NOT NULL,
+        logs text, rolled_back_at timestamptz, started_at timestamptz NOT NULL DEFAULT now(), applied_steps_count integer NOT NULL DEFAULT 0);
+      INSERT INTO "_prisma_migrations" (id,checksum,finished_at,migration_name) VALUES ('erasure-fixture','fixture',now(),'0_init');
       CREATE TABLE "user" (id text PRIMARY KEY, "deletionRequestedAt" timestamptz, "deletionState" text NOT NULL DEFAULT 'active', "deletionCursor" text);
       INSERT INTO "user" (id) VALUES ('erase-victim'), ('keep-peer');
       CREATE TABLE "session" (id text PRIMARY KEY, "userId" text REFERENCES "user" ON DELETE CASCADE, "impersonatedBy" text);
@@ -767,23 +876,177 @@ try {
       INSERT INTO "chess_official_entry" VALUES ('official-sentinel','terminal','completed','board-result');
     `,
       );
-      const dump = tool("erasure_src", ["pg_dump", "-Fc", "-f", "/backups/before-erasure.dump"]);
+      const dump = dumpArchive("erasure_src", "/backups/before-erasure.dump");
       assert.equal(dump.code, 0, dump.out);
       await appendAccountDeletionSuppression({
         directory: suppressionDirectory,
         userId: "erase-victim",
         requestedAt: new Date(),
       });
+      const olderHead = trustedHead();
+      const olderRegister = join(work, "older-register");
+      cpSync(suppressionDirectory, olderRegister, { recursive: true });
+      await appendAccountDeletionSuppression({
+        directory: suppressionDirectory,
+        userId: "already-absent-account",
+        requestedAt: new Date(),
+      });
+      const currentHead = trustedHead();
+      assert.notEqual(currentHead, olderHead);
+      // Model provider recovery into an isolated target, before any admission.
+      // A schema hold alone leaves account authority intact; final recovery must
+      // be converted with the current register and pass guarded restore below.
+      sql("postgres", "CREATE DATABASE erasure_provider;");
+      await unsealBackupArchive(
+        join(backups, "before-erasure.dump"),
+        join(backups, "provider-isolated-body.dump"),
+      );
+      const providerRestore = tool("erasure_provider", [
+        "pg_restore",
+        "--no-owner",
+        "--no-privileges",
+        "--dbname",
+        "erasure_provider",
+        "/backups/provider-isolated-body.dump",
+      ]);
+      assert.equal(providerRestore.code, 0, providerRestore.out);
+      const held = await runHold({
+        args: ["7"],
+        env: {
+          DATABASE_URL: `postgresql://postgres@127.0.0.1:${hostPort}/erasure_provider?schema=public`,
+        },
+      });
+      assert.equal(held, 0);
+      assert.equal(
+        sql("erasure_provider", `SELECT "deletionState" FROM "user" WHERE id='erase-victim'`),
+        "active",
+        "schema hold is not an erasure fence",
+      );
+      assert.equal(
+        sql("erasure_provider", `SELECT count(*) FROM "session" WHERE id='victim-session'`),
+        "1",
+        "schema hold leaves restored credentials untouched",
+      );
+      const converted = tool("erasure_provider", [
+        "bash",
+        "/app/scripts/backup/pre-migrate.sh",
+        "--label",
+        "provider-converted",
+        "--required",
+      ]);
+      assert.equal(converted.code, 0, converted.out);
+      const convertedName = dumps("provider-converted-").at(-1);
+      assert.ok(convertedName);
+      cpSync(join(backups, convertedName), join(backups, "checkpoint-erasure.dump"));
+
+      const emptyRegister = join(work, "empty-register");
+      mkdirSync(emptyRegister, { mode: 0o700 });
+      const tamperedRegister = join(work, "tampered-register");
+      cpSync(suppressionDirectory, tamperedRegister, { recursive: true });
+      const entry = readdirSync(tamperedRegister).find((name) => name.endsWith(".json"));
+      assert.ok(entry, "the real append created a chained register entry");
+      const entryPath = join(tamperedRegister, entry);
+      const tampered = JSON.parse(readFileSync(entryPath, "utf8"));
+      tampered.subjectHash = "f".repeat(64);
+      writeFileSync(entryPath, `${JSON.stringify(tampered)}\n`);
+
+      for (const [db, register, archive, trusted, reason] of [
+        [
+          "fresh_suffix",
+          suppressionDirectory,
+          "/backups/before-erasure.dump",
+          olderHead,
+          "untrusted suffix beyond trusted current checkpoint",
+        ],
+        [
+          "fresh_empty",
+          emptyRegister,
+          "/backups/before-erasure.dump",
+          currentHead,
+          "empty register vs trusted head",
+        ],
+        [
+          "fresh_older",
+          olderRegister,
+          "/backups/before-erasure.dump",
+          currentHead,
+          "valid older subset vs trusted head",
+        ],
+        [
+          "fresh_backup",
+          olderRegister,
+          "/backups/checkpoint-erasure.dump",
+          olderHead,
+          "backup newer than register even with old operator head",
+        ],
+        [
+          "fresh_tampered",
+          tamperedRegister,
+          "/backups/checkpoint-erasure.dump",
+          currentHead,
+          "tampered chained entry",
+        ],
+      ]) {
+        sql("postgres", `CREATE DATABASE ${db};`);
+        const refused = tool(
+          db,
+          [
+            "bash",
+            "/app/scripts/backup/restore.sh",
+            "restore",
+            archive,
+            "--expected-register-head",
+            trusted,
+            "--confirm",
+            `RESTORE:${db}`,
+          ],
+          { register },
+        );
+        assert.equal(refused.code, 3, `${reason}: ${refused.out}`);
+        assert.match(refused.out, /head|checkpoint|sequence|digest|chain|suppression/i, reason);
+        assert.doesNotMatch(refused.out, /Restoring into|Restore complete/, reason);
+        assert.equal(
+          sql(
+            db,
+            "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public'",
+          ),
+          "0",
+          `${reason}: target stays empty`,
+        );
+        console.log(`ok   - restore freshness: ${reason} refuses before mutation`);
+      }
+
+      sql("postgres", "CREATE DATABASE erasure_matching;");
+      const matching = restore(
+        "erasure_matching",
+        "/backups/checkpoint-erasure.dump",
+        "--expected-register-head",
+        currentHead,
+        "--confirm",
+        "RESTORE:erasure_matching",
+      );
+      assert.equal(matching.code, 0, matching.out);
+      assert.match(matching.out, /Applied 2 external account-erasure suppression/);
+      assert.equal(
+        sql("erasure_matching", `SELECT "deletionState" FROM "user" WHERE id='erase-victim'`),
+        "pending",
+      );
+      assert.equal(
+        sql("erasure_matching", `SELECT count(*) FROM "session" WHERE id='victim-session'`),
+        "0",
+      );
       sql("erasure_src", `DELETE FROM "user" WHERE id='erase-victim';`);
       assert.equal(sql("erasure_src", `SELECT count(*) FROM "user" WHERE id='erase-victim'`), "0");
       const result = restore(
         "erasure_dst",
         "/backups/before-erasure.dump",
+        "--expected-register-head",
+        currentHead,
         "--confirm",
         "RESTORE:erasure_dst",
       );
       assert.equal(result.code, 0, result.out);
-      assert.match(result.out, /Applied 1 external account-erasure suppression/);
+      assert.match(result.out, /Applied 2 external account-erasure suppression/);
       assert.equal(
         sql(
           "erasure_dst",
@@ -875,12 +1138,7 @@ try {
       "erasure_incomplete",
       `CREATE TABLE "user" (id text PRIMARY KEY, "deletionRequestedAt" timestamptz, "deletionState" text, "deletionCursor" text); INSERT INTO "user" (id,"deletionState") VALUES ('erase-victim','active');`,
     );
-    const dump = tool("erasure_incomplete", [
-      "pg_dump",
-      "-Fc",
-      "-f",
-      "/backups/incomplete-erasure.dump",
-    ]);
+    const dump = dumpArchive("erasure_incomplete", "/backups/incomplete-erasure.dump");
     assert.equal(dump.code, 0, dump.out);
     const result = restore(
       "erasure_dst",

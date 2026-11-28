@@ -220,6 +220,7 @@ COPY scripts/backup/pre-migrate.sh \
      scripts/backup/restore.sh \
      scripts/backup/restore.mjs \
      scripts/backup/account-deletion-suppression.mjs \
+     scripts/backup/register-backup.mjs \
      scripts/backup/lib.mjs \
      scripts/backup/s3.mjs \
      scripts/backup/schedule.mjs \

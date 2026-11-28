@@ -216,9 +216,9 @@ Every hold write keeps the later `until` (`greatest`), so two holds never shorte
 | `pg_restore --data-only` into the existing tables | **not detected** |
 | Neon branch reset, Aurora restore, any provider whose restore identity behavior has not been verified | possibly not detected |
 
-So a restore, PITR, HA failover or Blue/Green switchover delays deletions by 7 days; crashes, reboots and OOM restarts do not.
+This table describes scheduled schema-deletion holds only, never account-erasure suppression or admission eligibility. A detected restore, PITR, HA failover or Blue/Green switchover delays schema deletions by 7 days; crashes, reboots and OOM restarts do not.
 
-Dokploy's database Restore button and the `restore` command are detected automatically: scheduled deletions wait 7 days. Restart or redeploy the app afterwards. Restoring a Dokploy **Volume Backups** copy is not detected: start only the database, run the `hold-deletions` image command, then start the app.
+Restore detection and `hold-deletions` concern **scheduled schema deletions only**; neither establishes account-erasure suppression or permission to start consumers. Every provider/PITR/volume/raw recovery stays isolated with all writers stopped until [account-erasure suppression](./backup-restore.md#account-erasure-suppression) is complete: guarded backup conversion with the verified complete-current register, then guarded final restore with the independently verified current expected head. Reopen admission only after that restore succeeds; unavailable current evidence blocks recovery.
 
 ### Runner-owned tables
 
@@ -324,7 +324,7 @@ Use the image’s `restore` command for the isolated recovery target: preview fi
 
 ## Holding deletions by hand
 
-After a restore the runner cannot detect (a Dokploy Volume Backups copy, a provider snapshot, `pg_restore --data-only`, any restore on a provider not marked verified), the owner pauses scheduled deletions before the app starts: start only the database, run the image's `hold-deletions` command once, then start the app. From a shell on the server, on the database's Docker network:
+After a restore the runner cannot detect (a Dokploy Volume Backups copy, a provider snapshot, `pg_restore --data-only`, any restore on a provider not marked verified), keep the recovered database isolated with every app/worker/writer stopped. The owner may run `hold-deletions` to pause **scheduled schema deletions only**; this does not reapply account-erasure suppression and never authorizes starting the app. Follow [account-erasure suppression](./backup-restore.md#account-erasure-suppression): create a guarded checkpointed backup of the isolated result with the verified complete-current register, then perform guarded restore into the final target using the independently verified current expected head before any admission. If that current evidence is unavailable, stop. From a shell on the server, on the isolated database's Docker network:
 
 ```bash
 docker run --rm --network <db-network> -e DATABASE_URL=… <image> hold-deletions     # 7 days
@@ -332,7 +332,7 @@ docker run --rm --network <db-network> -e DATABASE_URL=… <image> hold-deletion
 docker run --rm --network <db-network> -e DATABASE_URL=… <image> hold-deletions --clear
 ```
 
-On a container platform, run the same command as a one-off job with the app's database secret. It writes the `owner` row in `_cockpit_chess_hold` (a longer existing hold is kept), prints until when deletions are paused, and never prints `DATABASE_URL`. `--clear` removes only the owner hold. It is not needed after the `restore` command, Dokploy's Restore button, any `pg_restore --clean`, PITR, or a dump into another server or database: those are detected.
+On a container platform, run the same command as a one-off job with the app's database secret. It writes the `owner` row in `_cockpit_chess_hold` (a longer existing hold is kept), prints until when deletions are paused, and never prints `DATABASE_URL`. `--clear` removes only the owner hold. For scheduled schema deletions, this manual hold is not needed after detected restore paths (guarded `restore`, Dokploy's Restore button, `pg_restore --clean`, PITR, or a dump into another server/database). Detection and holds do not establish account-erasure suppression: alternative restore paths still require the isolated conversion and guarded final restore above before admission.
 
 ## A database with tables but no migration history
 
@@ -367,7 +367,7 @@ Use this when a deploy stops with `failed`, `db-ahead`, or a history mismatch, a
 - `needs a person: …`: the deletion failed 3 times in this release, and nothing was deleted. An agent writes a fix migration for the cause (for example something new that depends on the column) and ships it; the release that adds it gets 3 fresh tries. If the cause is unclear, stop and ask the owner. Never edit a merged `contract.sql`.
 - **Getting a field back** before its deletion runs: ship a `--recover` PR ([§ Getting a field back](#getting-a-field-back)). **After any restore, ship the `--recover` PR within 7 days.**
 
-Restores, PITR and dumps into another server or database are detected automatically and hold deletions for 7 days. Dokploy's database Restore button and the `restore` command are detected automatically: scheduled deletions wait 7 days. Restart or redeploy the app afterwards. Restoring a Dokploy **Volume Backups** copy is not detected: start only the database, run the `hold-deletions` image command, then start the app.
+Detected restores, PITR and dumps into another server or database hold scheduled schema deletions for 7 days. Restore detection and `hold-deletions` concern **scheduled schema deletions only**; neither establishes account-erasure suppression or permission to start consumers. Every provider/PITR/volume/raw recovery stays isolated with all writers stopped until [account-erasure suppression](./backup-restore.md#account-erasure-suppression) is complete: guarded backup conversion with the verified complete-current register, then guarded final restore with the independently verified current expected head. Reopen admission only after that restore succeeds; unavailable current evidence blocks recovery.
 
 Never edit an applied migration, and never run `prisma migrate reset`, `prisma migrate dev`, or drop the database to "start over" in any shared environment. Restoring a backup is a last resort: [backup-restore.md § Restore](./backup-restore.md#restore).
 

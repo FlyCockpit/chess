@@ -121,9 +121,9 @@ Run these inside the target network using the same immutable app image and the i
 | `migrate` | Apply/admit committed history and exit, without starting HTTP or requiring Redis/auth configuration |
 | `backup [--keep <n>]` | Verified manual dump; missing destination fails |
 | `backup-schedule` | Daily service loop; requires `BACKUP_SCHEDULE=daily` |
-| `restore <source> [options]` | Verify and preview; explicit confirmation required to change the target |
-| `restore-drill <source> [--etag …] [--version-id …]` | Restore only into an empty disposable database named `restore_drill` |
-| `hold-deletions [days\|--clear]` | Owner deletion hold, default 7 days, range 1–90; clear removes only the owner hold |
+| `restore <source> --expected-register-head <trusted-current-head> [options]` | Verify and preview; independently verified current register head and explicit confirmation required to change the target |
+| `restore-drill <source> --expected-register-head <trusted-current-head> [--etag …] [--version-id …]` | Restore only into an empty disposable database named `restore_drill` |
+| `hold-deletions [days\|--clear]` | Scheduled schema-deletion hold only, default 7 days, range 1–90; never substitutes for account-erasure suppression |
 
 With the generated Compose configuration, an explicit migration run is:
 
@@ -206,7 +206,7 @@ For a replacement database, change and recreate **every** consumer: server/embed
 
 Run the chosen compatible release's `migrate` command before followers. Resume runtimes from that same immutable ref, then require `deploy:check`, controlled sign-in and restored record checks. Take a new verified backup of the replacement, confirm its off-site object or provider recovery point, and drill it into an empty isolated target. Confirm the next scheduled backup and a fresh monitor verdict; a cached old-target card is insufficient. Keep recovery pending until these pass.
 
-Restore writes a seven-day deletion hold atomically with restored history. Provider restore detection is best effort: a volume copy, data-only restore or unverified provider snapshot requires `hold-deletions` before restarting the app. If recovering a deleted field, ship its `--recover` migration within seven elapsed days. Keep the original database and backups until the owner approves retirement.
+Restore writes a seven-day deletion hold atomically with restored history. Provider restore detection is best effort: a volume copy, data-only restore or unverified provider snapshot stays isolated with all writers stopped. `hold-deletions` pauses scheduled schema deletions only; it does not suppress erased accounts or authorize admission. Follow [account-erasure suppression](./backup-restore.md#account-erasure-suppression): guarded backup of the isolated result with the verified complete-current register, then guarded final restore with the independently verified current expected head, before starting any consumer. Missing current evidence blocks recovery. If recovering a deleted field, ship its `--recover` migration within seven elapsed days. Keep the original database and backups until the owner approves retirement.
 
 After the replacement accepts writes or emits job effects, switching targets back can lose data or repeat effects. Stop and reconcile before any reversal; do not keep old and replacement consumers active together.
 

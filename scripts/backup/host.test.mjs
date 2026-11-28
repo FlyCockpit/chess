@@ -214,7 +214,7 @@ test("host forwards only backup and erasure-register settings through an --env-f
 test("host requires a persistent current register before stopping writers for restore", () => {
   for (const options of [{ registerDir: "" }, { registerMount: "" }, { registerMount: "tmpfs" }]) {
     const result = run(
-      "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --project alpha",
+      "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 --project alpha",
       options,
     );
     assert.equal(result.status, 1, result.stderr);
@@ -226,7 +226,7 @@ test("host requires a persistent current register before stopping writers for re
 test("host mounts the current register read-only for restore and drill", () => {
   for (const action of ["restore daily.dump", "drill daily.dump"]) {
     const result = run(
-      `require_terminal() { return 0; }\nask() { return 0; }\nmain ${action} --project alpha`,
+      `require_terminal() { return 0; }\nask() { return 0; }\nmain ${action} --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 --project alpha`,
     );
     assert.equal(result.status, 0, result.stderr);
     const call = result.calls.find((item) => item.args.includes("--env-file"));
@@ -239,7 +239,7 @@ test("host mounts the current register read-only for restore and drill", () => {
 
 test("host starts the app again after a successful restore (stop, restore, then stop-then-start)", () => {
   const result = run(
-    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore daily.dump --project alpha",
+    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha",
   );
   assert.equal(result.status, 0, result.stderr);
   const actions = result.calls.filter((call) => ["stop", "start", "run"].includes(call.args[0]));
@@ -255,7 +255,13 @@ test("host starts the app again after a successful restore (stop, restore, then 
     ["app-server", "app-worker", "app-backup"],
   );
   const restore = actions.find((call) => call.args[0] === "run");
-  assert.deepEqual(restore.args.slice(-3), ["restore", "/backups/daily.dump", "--guided"]);
+  assert.deepEqual(restore.args.slice(-5), [
+    "restore",
+    "/backups/daily.dump",
+    "--expected-register-head",
+    "0:0000000000000000000000000000000000000000000000000000000000000000",
+    "--guided",
+  ]);
   // The outcome is reported on stderr (a `| tee` reader may be gone).
   assert.match(result.stderr, /Restore done/);
   assert.match(result.stderr, /pending migrations/);
@@ -265,7 +271,7 @@ test("host starts the app again after a successful restore (stop, restore, then 
 test("host leaves all writers stopped after a restore whose outcome is uncertain (or that committed, then failed)", () => {
   for (const restoreExit of ["1", "5", "7", "130", "143"]) {
     const result = run(
-      "require_terminal() { return 0; }\nask() { return 0; }\nmain restore daily.dump --project alpha",
+      "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha",
       { restoreExit },
     );
     assert.equal(result.status, Number(restoreExit), result.stderr);
@@ -291,7 +297,7 @@ test("host leaves all writers stopped after a restore whose outcome is uncertain
 
 test("host restarts every stopped writer when the restore failed and rolled back (exit 4)", () => {
   const result = run(
-    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore daily.dump --project alpha",
+    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha",
     { restoreExit: "4" },
   );
   assert.equal(result.status, 4, result.stderr);
@@ -314,7 +320,7 @@ test("host restarts every stopped writer when the restore failed and rolled back
 
 test("host restarts every stopped writer when the restore is cancelled or refused (exit 3)", () => {
   const result = run(
-    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore daily.dump --project alpha",
+    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha",
     { restoreExit: "3" },
   );
   assert.equal(result.status, 3, result.stderr);
@@ -334,7 +340,7 @@ test("host restarts every stopped writer when the restore is cancelled or refuse
 
 test("host keeps writers stopped on docker run exit 125 (a wait failure can follow a started restore)", () => {
   const result = run(
-    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore daily.dump --project alpha",
+    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha",
     { restoreExit: "125" },
   );
   assert.equal(result.status, 125, result.stderr);
@@ -347,7 +353,7 @@ test("host keeps writers stopped on docker run exit 125 (a wait failure can foll
 
 test("host keeps writers stopped when restore is interrupted", () => {
   const result = run(
-    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --project alpha",
+    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 --project alpha",
     { restoreSignal: "SIGTERM" },
   );
   assert.ok(result.signal === "SIGTERM" || result.status === 143);
@@ -360,7 +366,7 @@ test("host keeps writers stopped when restore is interrupted", () => {
 // The stop prompt's answer arrives on stdin here instead of /dev/tty; ask()'s
 // own y/yes check, EOF handling and the cancel path are the real ones.
 const answerFromStdin = 'read_answer() { read -r -p "$1 [y/N] " answer; }';
-const declinedRestore = `require_terminal() { return 0; }\n${answerFromStdin}\nmain restore daily.dump --project alpha`;
+const declinedRestore = `require_terminal() { return 0; }\n${answerFromStdin}\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha`;
 
 test("host restore: declining the stop prompt (n, Enter, other text, EOF) exits 3 with the app untouched", () => {
   for (const [label, input] of [
@@ -393,14 +399,14 @@ test("host restore: a declined stop prompt still exits 3 through `| tee` (pipefa
     ["EOF", ""],
   ]) {
     const result = run(
-      `require_terminal() { return 0; }\n${answerFromStdin}\nset -o pipefail\nmain restore daily.dump --project alpha | cat\nexit $?`,
+      `require_terminal() { return 0; }\n${answerFromStdin}\nset -o pipefail\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha | cat\nexit $?`,
       { input },
     );
     assert.equal(result.status, 3, `${label}: ${result.stderr}`);
     assert.match(result.stdout, /Cancelled\. Nothing was changed/, label);
     assert.ok(!result.calls.some((call) => ["stop", "start", "run"].includes(call.args[0])), label);
     const piped = run(
-      `require_terminal() { return 0; }\n${answerFromStdin}\nset +o pipefail\nmain restore daily.dump --project alpha | cat\nexit "\${PIPESTATUS[0]}"`,
+      `require_terminal() { return 0; }\n${answerFromStdin}\nset +o pipefail\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha | cat\nexit "\${PIPESTATUS[0]}"`,
       { input },
     );
     assert.equal(piped.status, 3, `${label} (PIPESTATUS): ${piped.stderr}`);
@@ -413,7 +419,7 @@ test("host restore: a declined stop prompt exits 3 even when the `| tee` reader 
   const result = run(
     `require_terminal() { return 0; }
 read_answer() { until [ -f "$HOST_TEST_GONE" ]; do sleep 0.05; done; read -r answer; }
-main restore daily.dump --project alpha | { while read -r line; do [[ "$line" != *"asked once more"* ]] || break; done; exec 0<&-; touch "$HOST_TEST_GONE"; }
+main restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha | { while read -r line; do [[ "$line" != *"asked once more"* ]] || break; done; exec 0<&-; touch "$HOST_TEST_GONE"; }
 exit "\${PIPESTATUS[0]}"`,
     { input: "n\n", gone: true },
   );
@@ -437,7 +443,9 @@ read_answer() { local pid=$BASHPID; ( sleep 0.2; kill -${signal} "$pid" ) & ${wa
 
 test("host restore: Ctrl-C (INT), TERM or HUP while the stop prompt waits exits 3 with the app untouched", () => {
   for (const [name, signal] of promptSignals) {
-    const result = run(`${signalAtPrompt(signal)}\nmain restore daily.dump --project alpha`);
+    const result = run(
+      `${signalAtPrompt(signal)}\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha`,
+    );
     assert.equal(result.status, 3, `${name}: ${result.signal ?? ""} ${result.stderr}`);
     assert.deepEqual(
       result.calls
@@ -457,10 +465,13 @@ test("host restore: Ctrl-C (INT), TERM or HUP while the stop prompt waits exits 
 test("host restore: a signal at the stop prompt still exits 3 through `| tee` (pipefail / PIPESTATUS)", () => {
   for (const [name, signal] of promptSignals) {
     for (const [mode, tail] of [
-      ["pipefail", "set -o pipefail\nmain restore daily.dump --project alpha | cat\nexit $?"],
+      [
+        "pipefail",
+        "set -o pipefail\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha | cat\nexit $?",
+      ],
       [
         "PIPESTATUS",
-        `set +o pipefail\nmain restore daily.dump --project alpha | cat\nexit "\${PIPESTATUS[0]}"`,
+        `set +o pipefail\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha | cat\nexit "\${PIPESTATUS[0]}"`,
       ],
     ]) {
       const result = run(`${signalAtPrompt(signal)}\n${tail}`);
@@ -483,7 +494,7 @@ test("host restore: a signal at the stop prompt exits 3 even when a `2>&1 | tee`
     const result = run(
       `require_terminal() { return 0; }
 read_answer() { local pid=$BASHPID; until [ -f "$HOST_TEST_GONE" ]; do sleep 0.05; done; ( sleep 0.2; kill -${signal} "$pid" ) & ${waitForever}; }
-main restore daily.dump --project alpha 2>&1 | { while read -r line; do [[ "$line" != *"asked once more"* ]] || break; done; exec 0<&-; touch "$HOST_TEST_GONE"; }
+main restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha 2>&1 | { while read -r line; do [[ "$line" != *"asked once more"* ]] || break; done; exec 0<&-; touch "$HOST_TEST_GONE"; }
 exit "\${PIPESTATUS[0]}"`,
       { gone: true },
     );
@@ -543,7 +554,9 @@ test("host restore: only y / yes at the stop prompt stops the app", () => {
 
 test("host restore refuses before stopping anything when stdin is not a terminal", () => {
   // spawnSync gives the script a pipe for stdin: the real require_terminal.
-  const result = run("ask() { return 0; }\nmain restore --project alpha");
+  const result = run(
+    "ask() { return 0; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 --project alpha",
+  );
   assert.equal(result.status, 1);
   assert.match(result.stderr, /run it in a terminal/);
   assert.ok(!result.calls.some((call) => ["stop", "run", "start"].includes(call.args[0])));
@@ -552,7 +565,7 @@ test("host restore refuses before stopping anything when stdin is not a terminal
 test("host restore | tee: a terminal on stdin alone gets docker run -it", () => {
   // stdout is a pipe here (as with `| tee log`); stdin is reported as a terminal.
   const result = run(
-    "stdin_is_terminal() { return 0; }\nrequire_terminal() { return 0; }\nask() { return 0; }\nmain restore daily.dump --project alpha",
+    "stdin_is_terminal() { return 0; }\nrequire_terminal() { return 0; }\nask() { return 0; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha",
   );
   assert.equal(result.status, 0, result.stderr);
   const restore = result.calls.find((call) => call.args[0] === "run");
@@ -563,7 +576,7 @@ test("host starts the app again when its stdout reader dies before the restore r
   // The reader leaves once the first writer is stopped, like `tee` killed by
   // Ctrl-C; every later write hits a broken pipe, so the restore never runs.
   const result = run(
-    'require_terminal() { return 0; }\nask() { return 0; }\nmain restore daily.dump --project alpha | { while read -r _; do [ ! -f "$HOST_TEST_MARK" ] || break; done; }',
+    'require_terminal() { return 0; }\nask() { return 0; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha | { while read -r _; do [ ! -f "$HOST_TEST_MARK" ] || break; done; }',
     { markOnStop: true },
   );
   assert.ok(!result.calls.some((call) => call.args[0] === "run"), result.stderr);
@@ -576,7 +589,7 @@ test("host starts the app again when its stdout reader dies before the restore r
 
 test("host keeps the cancelled-restore restart when its stdout reader is gone (exit 3 under a dead pipe)", () => {
   const result = run(
-    'require_terminal() { return 0; }\nask() { return 0; }\nsay() { :; }\nmain restore daily.dump --project alpha | { while read -r _; do [ ! -f "$HOST_TEST_MARK" ] || break; done; }',
+    'require_terminal() { return 0; }\nask() { return 0; }\nsay() { :; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 daily.dump --project alpha | { while read -r _; do [ ! -f "$HOST_TEST_MARK" ] || break; done; }',
     { markOnStop: true, restoreExit: "3" },
   );
   assert.deepEqual(
@@ -595,7 +608,7 @@ test("host supports S3-only backups without a backups volume", () => {
 
 test("host restarts app writers even when stopping one fails", () => {
   const result = run(
-    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --project alpha",
+    "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 --project alpha",
     { stopExit: "8", stopFailOn: "app-worker" },
   );
   assert.equal(result.status, 8, result.stderr);
@@ -608,16 +621,18 @@ test("host restarts app writers even when stopping one fails", () => {
 
 test("host drill uses a throwaway private network and removes its database without an env file", () => {
   const result = run(
-    "main drill s3://fake-backups/database/daily.dump --etag pinned --project alpha",
+    "main drill --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 s3://fake-backups/database/daily.dump --etag pinned --project alpha",
   );
   assert.equal(result.status, 0, result.stderr);
   const call = result.calls.find((item) => item.args.includes("restore-drill"));
   assert.match(call.args[call.args.indexOf("--network") + 1], /^cockpit-chess-drill-/);
-  assert.deepEqual(call.args.slice(-4), [
+  assert.deepEqual(call.args.slice(-6), [
     "restore-drill",
     "s3://fake-backups/database/daily.dump",
     "--etag",
     "pinned",
+    "--expected-register-head",
+    "0:0000000000000000000000000000000000000000000000000000000000000000",
   ]);
   const assignment = call.env.split("\n").filter((line) => line.startsWith("DATABASE_URL="));
   assert.equal(assignment.length, 1);
@@ -650,7 +665,7 @@ test("host prints usage with no arguments, from a file and piped into bash -s, e
 test("host stops with the recreate command when the server's image ID is gone, and never runs the tag", () => {
   for (const command of ["list", "backup", "drill", "restore daily.dump"]) {
     const result = run(
-      `require_terminal() { return 0; }\nask() { return 0; }\nmain ${command} --project alpha`,
+      `require_terminal() { return 0; }\nask() { return 0; }\nmain ${command} --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000 --project alpha`,
       { imageGone: true },
     );
     assert.equal(result.status, 1, `${command}: ${result.stderr}`);
@@ -682,7 +697,7 @@ test("public fixture supports helper network/backup discovery and a read-only bo
   assert.equal(fixture.networks.ingress.name, "dokploy-network");
   for (const action of ["list", "backup", "restore daily.dump", "drill daily.dump"]) {
     const result = run(
-      `require_terminal() { return 0; }\nask() { return 0; }\nmain ${action} --project ${project}`,
+      `require_terminal() { return 0; }\nask() { return 0; }\nmain ${action}${action.startsWith("restore") || action.startsWith("drill") ? " --expected-register-head 0:0000000000000000000000000000000000000000000000000000000000000000" : ""} --project ${project}`,
       {
         projects: `${project}\n`,
         // Deliberately first: the helper must skip ingress before choosing DB network.
@@ -706,5 +721,14 @@ test("public fixture supports helper network/backup discovery and a read-only bo
         ),
       );
     }
+  }
+});
+
+test("host refuses missing trusted head before Docker or stopping writers", () => {
+  for (const action of ["restore", "drill"]) {
+    const result = run(`main ${action} --project alpha`);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /independent protected current register copy/);
+    assert.deepEqual(result.calls, []);
   }
 });

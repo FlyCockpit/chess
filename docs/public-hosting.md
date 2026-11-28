@@ -569,11 +569,13 @@ on protection failure. This filesystem/replication service is **not supplied by
 Compose**, and an empty directory on a replacement VPS is not proof of a
 complete register. A daily register snapshot alone can lose today's erasures.
 
-Keep every record **at least 31 days**, and longer until **all** backups predating
-that erasure are permanently unavailable, including manual/pre-restore copies,
-noncurrent versions, provider recovery points and abandoned drill artifacts.
-No automatic pruning is configured for the register; its advisory expiry is
-not deletion authority. Use a separate storage namespace and protection policy,
+The strict v2 register is an append-only sequence/digest chain. Keep the **entire
+chain**, including every record for at least 31 days, while any earlier backup
+remains restorable. Individual entries cannot be pruned without breaking
+ancestry. Inventory manual/pre-restore copies, noncurrent versions, provider
+recovery points and abandoned drill artifacts before any owner-reviewed
+whole-register retirement. No automatic pruning is configured; advisory expiry
+is not deletion authority. Use a separate storage namespace and protection policy,
 never the database-prefix 30-day lifecycle. Maintain a restricted inventory of
 restorable DB copies and current register generation/completeness evidence.
 If the current register cannot be recovered after host loss, keep app/worker
@@ -602,21 +604,94 @@ runtime-operation integrations; the suppression regression must restore a
 pre-erasure dump using the complete current register and prove access stays
 blocked. Run owner recovery drills on an isolated destination, never production.
 
-**PENDING CP-REGFIX HANDOFF — restore activation remains blocked.** The follow-up
-adds a verified register head, records it with each DB backup, and requires a
-trusted expected head from the independently protected register copy. Insert
-its exact operator flags and head-recovery/verification steps here from the
-reviewed G1 handoff before any public restore. An empty/readable directory or an
-operator assertion of completeness is not a substitute. The workflow below is
-the general guarded restore sequence; it does not supply those pending flags.
+**Recovery requires independently verified current evidence.** The procedure
+below is defined; public restore activation still requires the owner to prove
+the independent protection/freshness and isolated drill in the checklist.
+A readable register, backup checkpoint, timestamp or assertion alone cannot
+establish that the copy covers the final accepted deletion. If currentness
+cannot be established after host loss, keep admission closed.
+
+1. Use the approved current image for **all** manual, daily, migration and
+   pre-restore backups, with the complete current register mounted. The existing
+   helper takes a manual backup with `bash app-db.sh backup --project cockpit-chess-public`.
+   A verified head is captured before the dump and again after it; the latter
+   must extend the former. The `.dump` file is a **checkpointed backup envelope**
+   containing the post-dump head and dump-body checksum. Concurrent deletions
+   are conservatively included. Preserve that whole file/object, ETag and
+   version. The checksum is not a signature, and the backup-time head is not
+   proof of the current head at recovery time. Old raw/unchained prerelease
+   formats are refused; normal deletion writes require the strict v2 chain.
+2. For recovery, stop/drain **every** app, worker, scheduler, migration leader and
+   external writer first, disable auto-deploy/restarts and block ingress. Recover
+   the independently protected **complete-current full chain** through the last
+   acknowledged deletion. Establish its provenance/freshness outside the DB and
+   suspect restore mount. Keep it separate from every DB/host rollback domain.
+3. Set the operator shell values `APP_IMAGE` to the recorded immutable app image
+   and `PROTECTED_REGISTER_COPY` to that independently verified recovered
+   directory. These are shell values, not new app environment variables; neither
+   has a guessed default. The directory/records must match the image runtime UID
+   and restricted permissions above. Extract and record the trusted head with
+   networking disabled and no DB/Redis credentials:
+
+   ```bash
+   : "${APP_IMAGE:?set the approved immutable app image}"
+   : "${PROTECTED_REGISTER_COPY:?set the independently verified complete-current copy}"
+   TRUSTED_REGISTER_HEAD="$(docker run --rm --network none --entrypoint node \
+     --mount "type=bind,source=$PROTECTED_REGISTER_COPY,target=/account-deletions,readonly" \
+     -e ACCOUNT_DELETION_REGISTER_DIR=/account-deletions "$APP_IMAGE" \
+     /app/scripts/backup/account-deletion-suppression.mjs head)"
+   printf '%s\n' "$TRUSTED_REGISTER_HEAD"
+   ```
+
+   Stop if extraction fails or independent currentness is unproven. The token
+   is `<sequence>:<sha256>` and is not a secret; its authenticity/freshness are
+   critical. Never derive it from the suspect mount, restored DB or archive.
+4. Mount the recovered full register read-only for recovery. Its head must
+   **exactly equal** that independently trusted current token. A longer suffix
+   is unauthenticated until independently reverified; a valid old prefix, fork
+   or empty stale directory refuses. The backup checkpoint must also be an
+   exact ancestor. A genuinely empty register only passes with independently
+   current genesis (`0:` plus 64 zeroes) and a genesis backup checkpoint.
+5. Choose the exact source from `bash app-db.sh list` as shell value
+   `BACKUP_SOURCE`, then have the owner run the existing guided helper/drill:
+
+   ```bash
+   : "${BACKUP_SOURCE:?choose the exact checkpointed backup source}"
+   : "${TRUSTED_REGISTER_HEAD:?recover the independent current head first}"
+   bash app-db.sh restore "$BACKUP_SOURCE" --project cockpit-chess-public \
+     --expected-register-head "$TRUSTED_REGISTER_HEAD"
+   bash app-db.sh drill "$BACKUP_SOURCE" --project cockpit-chess-public \
+     --expected-register-head "$TRUSTED_REGISTER_HEAD"
+   ```
+
+   Restore shows a preview and asks for target confirmation; an S3 source is
+   pinned in that guided preview. For an S3 **drill**, also pass its recorded
+   `--etag` and optional `--version-id`. Direct image jobs use
+   `restore <source> --expected-register-head <trusted-current-head>` for the
+   preview, then the same command with `--confirm RESTORE:<target-db>` and
+   `--replace` only when replacing a nonempty target. Direct drills use
+   `restore-drill <source> --expected-register-head <trusted-current-head>`.
+   S3 direct jobs additionally need exact ETag/optional version pins. Supply the
+   target network, existing injected DB/backup settings and mounts, not real
+   secrets in command text. See [the complete owner procedure](./backup-restore.md#account-erasure-suppression).
+6. For provider PITR, volume recovery or a raw export, recover into an isolated
+   DB with **no application admission**. Run the current image's `backup` command
+   against **that isolated DB's** injected `DATABASE_URL`, with the verified
+   complete-current register and a writable backup destination. This creates a
+   checkpointed envelope; conversion does not suppress the intermediate DB.
+   Finally use guarded `restore` of that envelope into the intended final target
+   with the independently current expected head before starting any consumer.
+   A schema hold or successful conversion never authorizes admission.
 
 For an actual restore, stop every server, worker, daily writer, migration leader
 and external DB writer, block public ingress, and prevent auto-restarts/deploys.
 Follow the existing [guarded restore](./backup-restore.md#restore): preview the
 exact ETag/version-pinned source inside the target network, then have the owner
 supply its exact confirmation after reviewing the target and safety snapshot.
-Mount the **complete current register read-only**, owned by the runtime UID.
-The tool rereads it after writers drain and reapplies suppressions in the same
+Mount the **complete current register read-only**, owned by the runtime UID,
+and supply the independently verified `--expected-register-head` above. The
+tool checks exact current-head equality and backup-checkpoint ancestry, repeats
+those checks after writers drain, and reapplies suppressions in the same
 restore transaction **before COMMIT/admission**. Missing/malformed/incomplete
 register evidence keeps traffic closed. Never use an active-writer bypass.
 
@@ -631,8 +706,9 @@ register writable for ongoing deletion cleanup. Confirm erased credentials,
 runner authority and private games do not return; retained published replays
 are scrubbed with neutral URLs, hidden replays stay hidden, and official starts
 remain counted. Confirm pending physical cleanup completes before reopening
-traffic. Provider PITR/snapshots must first be isolated and converted to a
-logical dump, then restored through the same guarded path. A seven-day schema
+traffic. Provider PITR/snapshots must first be isolated and converted by the
+current guarded `backup` command to a checkpointed envelope, then restored
+through the guarded path with the independently current expected head. A seven-day schema
 hold is not erasure reapplication. Inventory and expire the pre-restore safety
 copy too.
 
@@ -665,8 +741,8 @@ external facts. The batched project acceptance owns the live/browser rows.
   to every DB copy, no hidden versions/holds, monitor/failure alerts delivered,
   local expiry/journal expiry tested and provider retention recorded.
 - [ ] Current register survives DB replacement **and host loss**; independent
-  encrypted recovery copy, permissions and 31-day minimum/no-early-prune policy
-  proven; pre-erasure restore drill denies resurrected authority before serving.
+  encrypted complete-current chain/head, permissions, full-chain retention and
+  no-early-prune policy proven; pre-erasure restore drill denies resurrected authority before serving.
 - [ ] Through the actual Cloudflare hostname at desktop1440×900 and phone390×844,
   en-US/es-MX: signup/verify/2FA, OpenRouter own-key consent, practice/official
   pre-start choice, hosted human play, claim/run/control/limits, revoke/reset,

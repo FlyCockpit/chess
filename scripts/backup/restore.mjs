@@ -10,7 +10,7 @@
  *
  * Safeguards, in order (nothing changes before step 6):
  *   1. Source: local file or s3:// object pinned by --etag (and --version-id);
- *      gzip wrappers (Dokploy) are unwrapped; the archive must be pg_dump
+ *      gzip wrappers and checkpoint envelopes are verified/unwrapped; the archive must be pg_dump
  *      custom or tar format and must read completely with pg_restore.
  *   2. Target: reachable, primary (not a read replica), pg_restore client major
  *      ≥ server major; empty unless --replace.
@@ -48,7 +48,8 @@ import { HOLD_DDL } from "../db/lib/contracts.mjs";
 import { prismaSchemaName } from "../db/lib/migration-state.mjs";
 import {
   accountDeletionSuppressionSql,
-  readAccountDeletionSuppressions,
+  assertAccountDeletionRegisterHead,
+  readAccountDeletionRegister,
 } from "./account-deletion-suppression.mjs";
 import {
   detectArchiveFormat,
@@ -67,6 +68,7 @@ import {
   sortBackups,
   UsageError,
 } from "./lib.mjs";
+import { unsealBackupArchive } from "./register-backup.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BACKUPS_DIR = "/backups";
@@ -266,6 +268,10 @@ async function prepareSource(args, workDir) {
     path = unwrapped;
     format = detectArchiveFormat(await readHead(path));
   }
+  const unsealed = join(workDir, "source.archive");
+  const registerHead = await unsealBackupArchive(path, unsealed);
+  path = unsealed;
+  format = detectArchiveFormat(await readHead(path));
   if (format === "plain-sql") {
     throw new Refusal(
       "this is a plain-SQL dump. Restore accepts pg_dump custom (-Fc) or tar (-Ft) archives, raw or gzip-wrapped, because only those can be verified before they touch the target.",
@@ -280,7 +286,8 @@ async function prepareSource(args, workDir) {
     `format:   pg_dump ${format}${wrapped ? " (gzip-wrapped)" : ""}`,
     `sha256:   ${await sha256(path)}`,
   );
-  return { path, format, identity };
+  identity.push(`register checkpoint: ${registerHead}`);
+  return { path, format, identity, registerHead };
 }
 
 /**
@@ -905,6 +912,12 @@ async function main() {
     const rerun = [
       "restore",
       shellQuote(args.source),
+      ...(args.expectedRegisterHead
+        ? ["--expected-register-head", shellQuote(args.expectedRegisterHead)]
+        : [
+            "--expected-register-head",
+            shellQuote("<trusted-head-from-independent-protected-copy>"),
+          ]),
       ...(args.etag ? ["--etag", shellQuote(args.etag)] : []),
       ...(args.versionId ? ["--version-id", shellQuote(args.versionId)] : []),
       ...(target.occupied ? ["--replace"] : []),
@@ -944,7 +957,21 @@ async function main() {
       throw new Refusal(
         "account deletion suppression requires all writers stopped; --allow-active-connections cannot be used for restore.",
       );
-    await readAccountDeletionSuppressions(process.env.ACCOUNT_DELETION_REGISTER_DIR);
+    if (!args.expectedRegisterHead)
+      throw new Refusal(
+        "Supply --expected-register-head from the independent protected current register copy. Never derive restore trust from the mounted register or restored data; see docs/backup-restore.md.",
+      );
+    const checkRegister = async () => {
+      const snapshot = await readAccountDeletionRegister(process.env.ACCOUNT_DELETION_REGISTER_DIR);
+      assertAccountDeletionRegisterHead(snapshot, args.expectedRegisterHead);
+      if (snapshot.head !== args.expectedRegisterHead)
+        throw new Refusal(
+          "The mounted register head does not exactly match the trusted current --expected-register-head. Re-establish the complete-current independent protected copy/head after stopping every writer; unexpected suffix records are not authenticated. See docs/backup-restore.md.",
+        );
+      assertAccountDeletionRegisterHead(snapshot, source.registerHead);
+      return snapshot.records;
+    };
+    await checkRegister();
 
     const lock = await openLockSession(env);
     try {
@@ -1019,9 +1046,7 @@ async function main() {
         );
       // Re-read after the final no-writers check and snapshot, under all restore
       // locks. Completed erasures recorded since preparation must not be lost.
-      const suppressions = await readAccountDeletionSuppressions(
-        process.env.ACCOUNT_DELETION_REGISTER_DIR,
-      );
+      const suppressions = await checkRegister();
       // The lock session itself runs the restore transaction: the locks are
       // never released between the checks and COMMIT.
       applyStarted = true;

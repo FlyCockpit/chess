@@ -29,7 +29,7 @@ What it does: a few minutes after it starts (when the last backup is missing or 
 
 ### Dokploy-managed Postgres
 
-If Postgres is a Dokploy database instead of part of the compose, use Dokploy's built-in backups: database → **Backups** tab → add an S3 destination, a daily schedule, and a retention of at least 14 days ([deployment.md](./deployment.md#backups-before-real-data)). Dokploy writes gzip-wrapped `pg_dump` files; the guarded image `restore` command reads them directly and reapplies account-erasure suppression. A direct Dokploy restore must stay isolated until the same suppression has been applied; detecting a restore for schema holds alone does not prevent erased accounts returning.
+If Postgres is a Dokploy database instead of part of the compose, use Dokploy's built-in backups: database → **Backups** tab → add an S3 destination, a daily schedule, and a retention of at least 14 days ([deployment.md](./deployment.md#backups-before-real-data)). Dokploy writes gzip-wrapped `pg_dump` files without our register checkpoint. The guarded image `restore` command refuses these raw exports. Use the image's `backup` command for directly restorable backups, or the isolated provider-recovery conversion below. A direct Dokploy restore must stay isolated until the same suppression has been applied; detecting a restore for schema holds alone does not prevent erased accounts returning.
 
 Avoid Dokploy's **Volume Backups** for the database: restoring such a copy is not detected. If you ever do, keep all application writers stopped, hold schema deletions as described below, and follow [account-erasure suppression](#account-erasure-suppression) before starting the app. A hold alone does not reapply erasure requests.
 
@@ -78,15 +78,41 @@ S3 expiration is controlled by bucket lifecycle rules, never local pruning. A su
 
 ### Account-erasure suppression
 
-Mount a separate persistent directory into every app and worker replica and the restore container. Set `ACCOUNT_DELETION_REGISTER_DIR` to its absolute path, for example `/account-deletions`. The directory must already exist, belong to the runtime user, and have mode `0700`; committed records have mode `0600`. Use a restricted shared filesystem when replicas run on different hosts. Do not put the register inside Postgres storage, a database dump, an ephemeral container layer, or any snapshot that will be rolled back with the database. The image does not create a disposable default. The Dokploy host helper forwards this setting and mounts the matching app volume read-only into restore and drill commands.
+Mount a separate persistent directory into every app and worker replica and the restore container. Set `ACCOUNT_DELETION_REGISTER_DIR` to its absolute path, for example `/account-deletions`. The directory must already exist, belong to the runtime user, and have mode `0700`; committed records have mode `0600`. Use a restricted shared filesystem when replicas run on different hosts. Do not put the register inside Postgres storage, a database dump, an ephemeral container layer, or any snapshot that will be rolled back with the database. The image does not create a disposable default. The Dokploy host helper forwards this setting and mounts the matching app volume read-only into backup, restore and drill commands. Backup/scheduler and migration containers also need this mount.
 
-The erasure flow fsyncs one idempotent record before it can finish. A record contains only a purpose-bound SHA-256 restoration identifier, the request time and a review expiry; it contains no email, name, raw user ID, key or replay. This restricted operational register is separate from anonymous official statistics. Back it up through a separately controlled current copy: losing or restoring an outdated register can resurrect authority from old backups. The configured deployment must preserve the current register across both database restoration and host loss; this code does not claim an off-site copy was configured or erase remote backup objects.
+The erasure flow fsyncs one idempotent **v2 chained record** before it can finish. Each sequence-numbered file contains a purpose-bound SHA-256 restoration identifier, request time, review expiry, previous digest and its own digest. No email, name, raw user ID, key or replay is stored. Atomic append and file/directory fsync keep concurrent deletions durable. Missing entries, modified entries, forks and invalid shapes refuse validation. This is a prerelease format replacement: unchained records are rejected, never silently converted.
 
-Each record's review expiry is at least 31 days after the request and append time. It is **never automatically deleted or ignored** at expiry. The owner may prune a record only after verifying every backup or provider recovery point predating the erasure is permanently unavailable, including noncurrent object versions, manual and pre-restore dumps. The public deployment's 30-day backup expiry is established by G1; it is not inferred from this local retention date. Retain records longer when an older backup still exists.
+**A valid hash chain alone cannot detect an old volume or a missing tail.** Restore therefore always requires `--expected-register-head <sequence>:<sha256>` from the **independent protected complete-current register copy**, supplied explicitly by the operator. Never get this expected value from the suspect restore mount, database, archive checkpoint, directory timestamps or a record count. The mounted chain must exactly match the independently trusted current sequence/digest; extra suffix records are unauthenticated and refused until the operator verifies a fresh independent current head. It may be newer than the backup checkpoint only when that checkpoint is an exact ancestor; a larger count on a fork is refused. An empty directory only passes when both the independently established current head and backup checkpoint are the genesis `0:` followed by 64 zeroes. An empty or older valid subset cannot satisfy a later trusted head. If complete-current evidence is unavailable after host/storage loss, **do not restore or reopen admission**: recover the independent copy and its trusted latest head first. There is no accept-what-is-there override.
 
-An actual guarded restore requires the complete current register, even when it is empty or `BACKUP_ENABLED=false`. A missing, unreadable, permissively accessible, malformed or over-capacity register refuses before the restore transaction. The command reads it again after draining writers and taking the pre-restore snapshot, then reapplies it **inside the same transaction as the archive, before COMMIT**. Matching restored users become deletion-pending, sessions/API keys/device approvals/password and SSO credentials/2FA/OpenRouter connections are removed, runners are revoked, active games stop as owner withdrawals, and outstanding runner commands are cancelled. Existing terminal outcomes and the permanent official ledger remain unchanged. Public readers immediately hide pending-owner replays. The normal deletion worker then resumes physical cleanup and anonymization; restore success is not physical-erasure completion.
+The deployment must preserve and independently protect the full register and its latest head after every accepted deletion, including host loss. Protect this copy/head with separate access control and immutable/versioned retention outside the DB/host rollback domain. A stale daily register copy is insufficient for deletions accepted since that copy. Code does not provision or attest that external protection; G1 must establish and drill it before enabling public erasure. A head token is not a secret, but its authenticity and freshness are critical. Retain the **entire chain** while any old backup/provider recovery point remains restorable; do not prune individual entries, even past their at-least-31-day review expiry, because that breaks ancestry. Retention includes noncurrent object versions, manual and pre-restore dumps. Any eventual whole-register retirement requires owner review of all recovery points and independent trust anchors.
 
-Stop every app, worker and other database writer for this operation. `--allow-active-connections` is refused for actual restores because it permits a suppression-register race. Start the current image after success, and confirm pending deletion cleanup finishes before treating restored accounts as physically erased. If using provider PITR, a volume snapshot or a direct database restore, first restore into an isolated database with no application admission, take a logical dump of that isolated result, then use the guarded image `restore` command with the current register for the final target. Do not point the app at the unsuppressed intermediate database. No automated destructive restore is introduced.
+Every guarded backup captures a verified head before `pg_dump` and again after it finishes. The second must extend the first; a register rollback/fork during the dump fails the backup. The post-dump checkpoint conservatively includes deletions racing the DB snapshot. A fixed-size versioned envelope stores that checkpoint and a SHA-256 checksum of the exact dump bytes in the same `.dump` file (including S3 uploads and retry uploads). Restore verifies and unwraps it before invoking `pg_restore`. This checksum binds the checkpoint to archive bytes; it is not a signature or a substitute for trusted protected storage. Raw/old dumps with no checkpoint are refused. Gzip wrapping of the new envelope remains supported. Backup opt-in defaults are unchanged, but an actual backup requires the register even when it is still empty.
+
+Owner restore procedure:
+
+1. Stop/drain every app, worker, scheduler and other writer. Disable auto-deploy for the operation. Establish the independently protected copy is complete/current through the final accepted deletion; preserve its provenance and latest head outside the restored data. If that cannot be proved, stop here.
+2. On that **independent copy**, run the current image's module with its restricted register mounted read-only and the runtime UID. For example, with an operator-owned protected directory and a pinned image:
+
+   ```bash
+   docker run --rm --entrypoint node --mount type=bind,source=/protected/current-account-deletions,target=/account-deletions,readonly \
+     -e ACCOUNT_DELETION_REGISTER_DIR=/account-deletions <pinned-app-image> \
+     /app/scripts/backup/account-deletion-suppression.mjs head
+   ```
+
+   Record the printed `<sequence>:<sha256>` in the recovery record. The command validates the full chain. G1 must supply the actual protected location and establish its freshness; reading an arbitrary valid copy is not evidence of freshness.
+3. Set the shell variable `TRUSTED_REGISTER_HEAD` to that independently verified token. Mount the full register (matching the independently trusted current head) into the restore container. Preview first, then have the owner execute the confirmed command:
+
+   ```bash
+   bash app-db.sh restore daily-<timestamp>.dump --expected-register-head "$TRUSTED_REGISTER_HEAD"
+   bash app-db.sh drill daily-<timestamp>.dump --expected-register-head "$TRUSTED_REGISTER_HEAD"
+   ```
+
+   Direct image commands likewise take `restore <source> --expected-register-head "$TRUSTED_REGISTER_HEAD"` plus the existing preview/confirmation/replace options. The helper refuses a missing trusted head before touching Docker or stopping writers; it never derives trust from the live mount. A direct preview may omit the trusted head, but actual execution cannot.
+4. Restore checks the mounted chain against **both** that trusted head and the backup's checkpoint. It repeats verification after draining writers and taking the pre-restore snapshot, under all restore locks, before starting replacement. Missing, unreadable, permissive, tampered, stale, forked or over-capacity registers refuse before the restore transaction (exit `3`, nothing changed). Keep writers stopped while resolving freshness failures; do not choose an older expected head to make a restore pass.
+
+Suppression is reapplied **inside the same transaction as the archive, before COMMIT**. Matching restored users become deletion-pending; sessions/API keys/device approvals/password and SSO credentials/2FA/OpenRouter connections are removed, runners are revoked, active games stop as owner withdrawals, and outstanding runner commands are cancelled. Existing terminal outcomes and the permanent official ledger remain unchanged. Public readers hide pending-owner replays. Start the current image only after success and confirm the normal deletion worker finishes physical cleanup/anonymization. Restore success is not physical-erasure completion. `--allow-active-connections` remains refused.
+
+For provider PITR, volume snapshots or old raw exports, first recover into an **isolated** database with no application admission, then run the current image's guarded `backup` against that isolated result **with the verified complete-current external register mounted**. Its new envelope includes the current checkpoint. Finally use guarded `restore` with the independently trusted expected head for the final target. Never point an app at the unsuppressed intermediate database. These remain owner-run operations; no automated destructive restore is introduced.
 
 ## Restore
 
@@ -98,10 +124,11 @@ restore --list                    list the backups in /backups, newest first
 
 <source>   latest                 the newest backup in /backups (daily, manual or
                                   pre-migration; never a pre-restore snapshot)
-           /backups/<file>        a file inside the container (raw pg_dump -Fc/-Ft,
-                                  or gzip-wrapped such as Dokploy's .sql.gz)
+           /backups/<file>        a guarded checkpointed backup envelope, optionally gzip-wrapped
            s3://<bucket>/<key>    an object in BACKUP_S3_BUCKET (needs BACKUP_S3_*)
 
+--expected-register-head <sequence>:<sha256>
+                             required for execution; independent protected current head
 --confirm RESTORE:<db>       required to change anything; <db> is the database named
                              in DATABASE_URL. Without it: verify the source and preview only.
 --replace                    allow restoring over a non-empty database (snapshot first,
@@ -148,8 +175,8 @@ docker exec "$(docker ps -q -f label=com.docker.compose.service=server | head -n
 |---|---|
 | `bash app-db.sh list` | Lists the backups in the server's `backups` volume, newest first. |
 | `bash app-db.sh backup` | Takes a verified backup now (`manual-<time>.dump`). |
-| `bash app-db.sh restore [<backup>]` | Guided restore. Default: the newest backup. |
-| `bash app-db.sh drill [<backup>]` | [Restore drill](#restore-drill) into a throwaway database. |
+| `bash app-db.sh restore [<backup>] --expected-register-head <trusted-head>` | Guided restore. Default: the newest backup. |
+| `bash app-db.sh drill [<backup>] --expected-register-head <trusted-head>` | [Restore drill](#restore-drill) into a throwaway database. |
 | `bash app-db.sh hold-deletions [days\|--clear]` | Pauses scheduled deletions after a restore the app cannot detect. |
 
 It finds the app's containers, image, network and backups volume by itself (`--project <name>` picks one when the server runs several apps), and hands the database settings from the running app straight to a one-off container of the same image, so no secrets are written to a file. "Same image" means the running server's image ID, never its tag: if a redeploy rebuilt an identical image and Docker dropped the old ID while the server still runs it (Docker 29's containerd image store), every helper command stops with exit `1` and `the server container's image … is no longer on this machine` before it runs or stops anything, and prints the fix: `cd <the compose's directory> && docker compose -p <project> up -d --no-build --force-recreate server` (it restarts the app; add the same `--profile` flags the deploy uses, e.g. `--profile backup`). Then re-run the helper. `<backup>` is a file name from `list`, or an `s3://<bucket>/<key>` object when `BACKUP_S3_*` is set.
@@ -157,8 +184,8 @@ It finds the app's containers, image, network and backups volume by itself (`--p
 #### Restoring
 
 ```bash
-bash app-db.sh restore                       # the newest backup
-bash app-db.sh restore daily-20261110T030000Z.dump
+bash app-db.sh restore --expected-register-head "$TRUSTED_REGISTER_HEAD" # newest backup
+bash app-db.sh restore daily-20261110T030000Z.dump --expected-register-head "$TRUSTED_REGISTER_HEAD"
 ```
 
 1. It asks before it stops the app (and worker and backup service). Postgres and Redis keep running. Only `y` or `yes` goes on: anything else, just Enter, Ctrl-D, or Ctrl-C while it waits (or a TERM or HUP signal then) cancels with exit `3`, and nothing is stopped or started. If Auto Deploy is on in Dokploy, don't merge anything until it finishes. `host.sh` and `pre-migrate.sh` are Linux-only (`host.sh` runs on the Dokploy server, `pre-migrate.sh` inside the Debian app image; both use GNU `find`/`mktemp`/`mountpoint`). `host.sh` needs a terminal on stdin; `bash app-db.sh restore | tee restore.log` works and still prompts.
@@ -179,11 +206,11 @@ Restarts are best effort (a failed `docker start` does not change the exit statu
 
 A restore by `restore` is detected automatically: scheduled schema deletions wait 7 days. Dokploy's database Restore button is detected too. Restoring a Dokploy **Volume Backups** copy is not: start only the database and run `bash app-db.sh hold-deletions` ([schema-migrations.md § Holding deletions by hand](./schema-migrations.md#holding-deletions-by-hand)). Apply [account-erasure suppression](#account-erasure-suppression) before any application admission for these alternative restore paths; schema holds do not defer account erasure.
 
-Dokploy-managed Postgres (no `postgres` service in the compose): the helper does not apply; run the same `restore` image command by hand as a one-off container on `dokploy-network` with the app's `DATABASE_URL` (agents prepare it). Dokploy's own S3 backups restore via `s3://` when `BACKUP_S3_*` points at that bucket, or download the `.sql.gz` into the backups volume first.
+Dokploy-managed Postgres (no `postgres` service in the compose): the helper does not apply; run the same `restore` image command by hand as a one-off container on `dokploy-network` with the app's `DATABASE_URL` (agents prepare it). Raw Dokploy exports require the isolated recovery conversion in [account-erasure suppression](#account-erasure-suppression); only guarded checkpointed backups restore directly via `s3://` or the backups volume.
 
 ### On a container platform
 
-Provider point-in-time recovery must first target an isolated server with no application admission. Convert that result to a logical dump, then run the guarded image restore with the current [external register](#account-erasure-suppression) before switching `DATABASE_URL`. To load a logical dump, the infra workflow runs the app image as a one-shot job (Azure Container Apps job / ECS RunTask) with command `restore <source> …`, the environment's secrets, the separate register mount, and app + worker scaled to zero. Same two runs: preview, then `--confirm`. Then deploy the current SHA as usual so the `migrate` job brings the schema forward.
+Provider point-in-time recovery must first target an isolated server with no application admission. Run the guarded backup command against that isolated result, then run guarded image restore with the independently trusted head and current [external register](#account-erasure-suppression) before switching `DATABASE_URL`. To load a logical dump, the infra workflow runs the app image as a one-shot job (Azure Container Apps job / ECS RunTask) with command `restore <source> …`, the environment's secrets, the separate register mount, and app + worker scaled to zero. Same two runs: preview, then `--confirm`. Then deploy the current SHA as usual so the `migrate` job brings the schema forward.
 
 If the restored database is **newer** than the image (its history has migrations the image lacks), the app starts only when every one of those is rollback-safe and none of their deletions has run; otherwise it refuses with `db-ahead` and you deploy a newer SHA. If it reports `failed`, follow [schema-migrations.md § Recovery runbook](./schema-migrations.md#recovery-runbook).
 
@@ -201,15 +228,15 @@ If you restored to get a deleted field's data back, ship the `--recover` PR with
 Run a restore drill before relying on backups, every quarter, and after any backup change. On the Dokploy server:
 
 ```bash
-bash app-db.sh drill            # the newest backup; or name one from `bash app-db.sh list`
-bash app-db.sh drill s3://<bucket>/<key> --etag <etag>   # a copy in the bucket (ETag from the upload log)
+bash app-db.sh drill --expected-register-head "$TRUSTED_REGISTER_HEAD" # the newest backup; or name one from `bash app-db.sh list`
+bash app-db.sh drill s3://<bucket>/<key> --etag <etag> --expected-register-head "$TRUSTED_REGISTER_HEAD"   # a copy in the bucket (ETag from the upload log)
 ```
 
-It starts a throwaway Postgres container next to the app (same image as the app's database, on its own private network), restores the backup into it with the app's own `restore` command, then checks that every table in the backup came back and that the migration history is complete. The table list is read for every source kind: a raw archive directly, a gzip-wrapped one after unwrapping it, and an `s3://` object after downloading the same pinned object again. `latest` is resolved once, so the restore and the check read the same file. A drill that cannot read the list, or whose archive holds no table data, **FAILS**; it never reports PASSED without the comparison. It prints each table's row count and the backup's age (a warning when the newest backup is over a day old), then **DRILL PASSED** or **DRILL FAILED**, and removes the throwaway database. Production is never touched: the drill only restores into an empty database named `restore_drill`, and it accepts no option but `--etag` / `--version-id` (for `s3://` backups).
+It starts a throwaway Postgres container next to the app (same image as the app's database, on its own private network), restores the backup into it with the app's own `restore` command, then checks that every table in the backup came back and that the migration history is complete. The table list is read for every source kind: a checkpointed envelope after verification/unwrapping, a gzip-wrapped envelope after decompression, and an `s3://` object after downloading the same pinned object again. `latest` is resolved once, so the restore and the check read the same file. A drill that cannot read the list, or whose archive holds no table data, **FAILS**; it never reports PASSED without the comparison. It prints each table's row count and the backup's age (a warning when the newest backup is over a day old), then **DRILL PASSED** or **DRILL FAILED**, and removes the throwaway database. Production is never touched: the drill only restores into an empty database named `restore_drill`, and it accepts the required `--expected-register-head` and `--etag` / `--version-id` (for `s3://` backups).
 
 Record the date, exact backup key/version, checked records and result in the deployment recovery log.
 
-On a container platform, run the image's `restore-drill <source>` command as a one-shot job with `DATABASE_URL` pointing at a new, empty database named `restore_drill` (never production), then delete that database.
+On a container platform, run the image's `restore-drill <source> --expected-register-head <trusted-head>` command as a one-shot job with `DATABASE_URL` pointing at a new, empty database named `restore_drill` (never production), then delete that database.
 
 ## Monitoring backups
 

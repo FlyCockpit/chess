@@ -97,6 +97,7 @@ describe("parseRestoreArgs", () => {
       {
         source: "/backups/a.dump",
         confirm: "RESTORE:app",
+        expectedRegisterHead: null,
         replace: true,
         allowActiveConnections: false,
         skipSnapshot: false,
@@ -132,6 +133,26 @@ describe("parseRestoreArgs", () => {
     assert.equal(args.etag, '"abc"');
     assert.equal(args.versionId, "v1");
     assert.equal(args.confirm, "RESTORE:db");
+  });
+
+  it("accepts one explicit trusted head and rejects duplicate or absent values", () => {
+    const head = `0:${"0".repeat(64)}`;
+    assert.equal(
+      parseRestoreArgs(["a.dump", "--expected-register-head", head]).expectedRegisterHead,
+      head,
+    );
+    assert.throws(() => parseRestoreArgs(["a.dump", "--expected-register-head"]), /needs a value/);
+    assert.throws(
+      () =>
+        parseRestoreArgs([
+          "a.dump",
+          "--expected-register-head",
+          head,
+          "--expected-register-head",
+          head,
+        ]),
+      /Duplicate/,
+    );
   });
 
   it("leaves confirm unset for a preview", () => {
