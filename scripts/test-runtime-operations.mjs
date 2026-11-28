@@ -2065,7 +2065,10 @@ async function main() {
     else if (process.argv[3] === "invite-race") await inviteRaceCheck();
     else if (process.argv[3] === "password-signin-race") await passwordSignInRaceCheck();
     else if (process.argv[3] === "runner-machines") await runnerMachinesCheck();
-    else if (process.argv[3] === "runner-transport") {
+    else if (process.argv[3] === "runner-claims") {
+      const { runnerClaimsCheck } = await import("./lib/runner-claim-check.ts");
+      await runnerClaimsCheck();
+    } else if (process.argv[3] === "runner-transport") {
       const { runnerTransportCheck } = await import("./lib/runner-transport-check.mjs");
       await runnerTransportCheck();
     } else await runtimeCheck(process.argv[3]);
@@ -2082,6 +2085,7 @@ async function main() {
       "--chess-human-only",
       "--runner-machines-only",
       "--runner-transport-only",
+      "--runner-claims-only",
     ].includes(process.argv[3]),
   );
   // Container names only. TEST_CONTAINER_PREFIX (shared with backup:test and
@@ -2233,6 +2237,7 @@ async function main() {
       // independent browser mint to reach the database while that write waits.
       ["password-signin-race", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-machines", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
+      ["runner-claims", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-transport", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       [
         "chess-official",
@@ -2261,6 +2266,7 @@ async function main() {
       if (process.argv[3] === "--chess-official-only" && mode !== "chess-official") continue;
       if (process.argv[3] === "--chess-human-only" && mode !== "chess-human") continue;
       if (process.argv[3] === "--runner-transport-only" && mode !== "runner-transport") continue;
+      if (process.argv[3] === "--runner-claims-only" && mode !== "runner-claims") continue;
       if (
         process.argv[3] === "--runner-machines-only" &&
         !["runner-machines", "password-signin-race", "device-flow"].includes(mode)
@@ -2278,7 +2284,7 @@ async function main() {
           },
           timeout: ["chess-official", "chess-human"].includes(mode)
             ? 120_000
-            : ["runner-machines", "password-signin-race"].includes(mode)
+            : ["runner-machines", "runner-claims", "password-signin-race"].includes(mode)
               ? 60_000
               : 45_000,
           stdio: ["chess-admission", "chess-official", "chess-human"].includes(mode)

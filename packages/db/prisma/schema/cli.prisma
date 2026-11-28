@@ -73,19 +73,42 @@ model ApiKey {
 /// Purpose-scoped runner authority. Never a Better-Auth session or companion API key.
 /// Only the digest and a display prefix are stored; the secret is returned once.
 model RunnerMachine {
-  id                   String    @id @default(cuid(2))
+  id                   String       @id @default(cuid(2))
   userId               String
-  User                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  User                 User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   displayName          String
-  credentialDigest     String    @unique
+  credentialDigest     String       @unique
   credentialPrefix     String
-  createdAt            DateTime  @default(now())
+  createdAt            DateTime     @default(now())
   expiresAt            DateTime
   revokedAt            DateTime?
   lastSeenAt           DateTime?
-  connectionGeneration Int       @default(0)
+  connectionGeneration Int          @default(0)
+  Claim                RunnerClaim?
 
   @@index([userId, id])
   @@index([expiresAt])
   @@map("runner_machine")
+}
+
+/// Short-lived per-run pairing. Only purpose-bound digests, never reusable secrets.
+/// Deleting the approving session invalidates even a previously exchanged claim.
+model RunnerClaim {
+  id          String         @id @default(cuid(2))
+  tokenDigest String         @unique
+  proofDigest String
+  createdAt   DateTime       @default(now())
+  expiresAt   DateTime
+  claimedAt   DateTime?
+  userId      String?
+  User        User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId   String?
+  Session     Session?       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  machineId   String?        @unique
+  Machine     RunnerMachine? @relation(fields: [machineId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt, id])
+  @@index([userId, machineId, expiresAt])
+  @@index([sessionId])
+  @@map("runner_claim")
 }

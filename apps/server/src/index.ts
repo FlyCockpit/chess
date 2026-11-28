@@ -60,6 +60,9 @@ import {
   openrouterLimiter,
   readyLimiter,
   rpcLimiter,
+  runnerClaimBeginLimiter,
+  runnerClaimExchangeLimiter,
+  runnerClaimPollLimiter,
   runnerWsConnectIpLimiter,
   runnerWsConnectMachineLimiter,
   signinRecipientLimiter,
@@ -68,6 +71,7 @@ import {
   ssrLimiter,
 } from "./rate-limit.js";
 import { requestLog, sanitizedRequestPath } from "./request-log.js";
+import { mountRunnerClaimRoutes } from "./runner-claim.js";
 import { mountRunnerWsRoutes } from "./runner-ws-routes.js";
 import { createRunnerWebSocketRuntime } from "./runner-ws-runtime.js";
 import { mountSecurityHeaders } from "./security-headers.js";
@@ -161,6 +165,24 @@ app.onError((err, c) => {
 // 404s every method (preflights included), and every request is limited and
 // audited by the route itself. See setup-routes.ts.
 mountSetupRoutes(app, { setupKey: env.SETUP_KEY, passwordSignInEnabled: !FORCE_SSO });
+
+// Dedicated proof endpoints enforce their smaller stream and deadline bounds first.
+mountRunnerClaimRoutes(app, {
+  budgets: {
+    begin: createRateLimiterMiddleware(runnerClaimBeginLimiter, {
+      failClosed: true,
+      resolveKey: resolveClientIp,
+    }),
+    poll: createRateLimiterMiddleware(runnerClaimPollLimiter, {
+      failClosed: true,
+      resolveKey: resolveClientIp,
+    }),
+    exchange: createRateLimiterMiddleware(runnerClaimExchangeLimiter, {
+      failClosed: true,
+      resolveKey: resolveClientIp,
+    }),
+  },
+});
 
 // Body-limit — reject oversized payloads early (before JSON parsing) to
 // prevent memory exhaustion. 10 MB covers archive imports and large form
@@ -497,6 +519,7 @@ mountRunnerWsRoutes(app, {
     return undefined;
   },
 });
+
 mountCliRoutes(app, { onOrpcError: logOrpcError });
 
 // "Connect OpenRouter" (OAuth PKCE): users' own keys for hosted matches. Cookie

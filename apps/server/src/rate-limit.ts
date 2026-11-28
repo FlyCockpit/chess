@@ -74,6 +74,9 @@ const cliBudget = rpcRateFamily({ points: 100, windowSeconds: 60 });
 const cliIpBudget = rpcRateFamily({ points: 300, windowSeconds: 60 });
 const runnerWsConnectIpBudget = rpcRateFamily({ points: 240, windowSeconds: 60 });
 const runnerWsConnectMachineBudget = rpcRateFamily({ points: 12, windowSeconds: 60 });
+const runnerClaimBeginBudget = rpcRateFamily({ points: 20, windowSeconds: 3600 });
+const runnerClaimPollBudget = rpcRateFamily({ points: 1200, windowSeconds: 60 });
+const runnerClaimExchangeBudget = rpcRateFamily({ points: 120, windowSeconds: 60 });
 const cliDownloadBudget = rpcRateFamily({ points: 20, windowSeconds: 60 });
 const devicePollBudget = rpcRateFamily({ points: 30, windowSeconds: 60 });
 const openrouterBudget = rpcRateFamily({ points: 20, windowSeconds: 600 });
@@ -566,6 +569,25 @@ export const runnerWsConnectIpLimiter = createSurfaceLimiter(
 export const runnerWsConnectMachineLimiter = createSurfaceLimiter(
   "runner-ws-connect-machine",
   runnerWsConnectMachineBudget,
+  { insurance: false },
+);
+
+// Pairing is separate from transport and browser traffic. Poll supports forty
+// terminals at one request per two seconds behind a NAT; exchange permits three
+// lost-response retries each. Begin has its own smaller hourly budget.
+export const runnerClaimBeginLimiter = createSurfaceLimiter(
+  "runner-claim-begin",
+  runnerClaimBeginBudget,
+  { insurance: false },
+);
+export const runnerClaimPollLimiter = createSurfaceLimiter(
+  "runner-claim-poll",
+  runnerClaimPollBudget,
+  { insurance: false },
+);
+export const runnerClaimExchangeLimiter = createSurfaceLimiter(
+  "runner-claim-exchange",
+  runnerClaimExchangeBudget,
   { insurance: false },
 );
 

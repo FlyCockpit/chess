@@ -32,6 +32,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   redirect: (options: unknown) => ({ redirect: options }),
   useNavigate: () => vi.fn(),
   useRouter: () => ({ invalidate: vi.fn() }),
+  useLocation: () => "",
   useParams: () => ({ lang: "en-US" }),
   Outlet: () => null,
   Link: ({

@@ -135,6 +135,16 @@ it("decodes hashes and leaves malformed escapes usable", () => {
   expect(hashTargetId("#")).toBeNull();
 });
 
+it("never treats a runner claim fragment as a scroll target", () => {
+  const fragment = `#runner-claim=${"a".repeat(64)}`;
+  expect(hashTargetId(fragment)).toBeNull();
+  expect(hashTargetId(`#%72unner-claim%3D${"a".repeat(64)}`)).toBeNull();
+  expect(hashTargetId(`#%23runner-claim=${"a".repeat(64)}`)).toBeNull();
+  win.location.hash = fragment;
+  useHashTargetScroll();
+  expect(TestObserver.active).toHaveLength(0);
+});
+
 describe("delayed hash reveal", () => {
   it("waits for gated content and focuses reachable controls", () => {
     const cancel = revealHashTarget("late");

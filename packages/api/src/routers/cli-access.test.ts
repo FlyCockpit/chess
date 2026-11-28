@@ -35,7 +35,13 @@ const runnerLock = vi.hoisted(() => ({
   slot: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
   revoke: vi.fn(async () => 1),
 }));
-vi.mock("@cockpit-chess/auth/runner-machine", () => ({
+const claimRun = vi.hoisted(() => vi.fn());
+vi.mock("@cockpit-chess/auth/runner-claim", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@cockpit-chess/auth/runner-claim")>()),
+  runnerClaimService: { claim: claimRun },
+}));
+vi.mock("@cockpit-chess/auth/runner-machine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@cockpit-chess/auth/runner-machine")>()),
   revokeRunnerMachinesInTransaction: runnerLock.revoke,
 }));
 vi.mock("@cockpit-chess/auth/device-redemption-lock", () => {
@@ -531,6 +537,70 @@ describe("cliAccess.runners", () => {
     expect(db.$transaction).not.toHaveBeenCalled();
     expect(runnerLock.slot).not.toHaveBeenCalled();
     expect(runnerLock.revoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("cliAccess.runners.claim", () => {
+  const token = "b2".repeat(32);
+  it("passes only the settled browser identity and fragment token to the atomic claim helper", async () => {
+    claimRun.mockResolvedValueOnce({ claimed: true });
+    await expect(client().runners.claim({ token })).resolves.toEqual({ claimed: true });
+    expect(claimRun).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", sessionId: "auth-session" },
+      token,
+    );
+  });
+
+  it("retains anonymous, ban, forced-2FA and bearer gates", async () => {
+    await expect(anonymous().runners.claim({ token })).rejects.toSatisfy(isCode("UNAUTHORIZED"));
+    await expect(client("user-1", { banned: true }).runners.claim({ token })).rejects.toSatisfy(
+      isCode("UNAUTHORIZED"),
+    );
+    await expect(
+      client("user-1", { role: "admin", createdAt: new Date("2020-01-01") }).runners.claim({
+        token,
+      }),
+    ).rejects.toSatisfy(isCode("FORBIDDEN"));
+    for (const credential of ["api-key", "session-token"] as const)
+      await expect(client("user-1", {}, credential).runners.claim({ token })).rejects.toSatisfy(
+        isCode("UNAUTHORIZED"),
+      );
+    expect(claimRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "b".repeat(63), "B2".repeat(32), `${token}\n`])(
+    "bounds the token before entering the helper %#",
+    async (bad) => {
+      await expect(client().runners.claim({ token: bad })).rejects.toSatisfy(isCode("BAD_REQUEST"));
+      expect(claimRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it("returns safe authority codes and strips storage errors with sensitive causes", async () => {
+    const { RunnerClaimNotFoundError } = await import("@cockpit-chess/auth/runner-claim");
+    const {
+      RunnerMachineSessionRevokedError,
+      RunnerMachineForbiddenError,
+      RunnerMachineLimitError,
+    } = await import("@cockpit-chess/auth/runner-machine");
+    for (const [error, code] of [
+      [new RunnerClaimNotFoundError(), "NOT_FOUND"],
+      [new RunnerMachineSessionRevokedError(), "UNAUTHORIZED"],
+      [new RunnerMachineForbiddenError(), "FORBIDDEN"],
+      [new RunnerMachineLimitError(), "TOO_MANY_REQUESTS"],
+      [new Error("proof-containing-sql"), "SERVICE_UNAVAILABLE"],
+    ] as const) {
+      claimRun.mockRejectedValueOnce(error);
+      await expect(client().runners.claim({ token })).rejects.toMatchObject({ code });
+    }
+    claimRun.mockRejectedValueOnce(new Error("proof-containing-sql"));
+    try {
+      await client().runners.claim({ token });
+      throw new Error("expected refusal");
+    } catch (error) {
+      expect(String(error)).not.toContain("proof-containing-sql");
+      expect(error).not.toHaveProperty("cause");
+    }
   });
 });
 

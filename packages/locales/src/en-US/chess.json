@@ -411,7 +411,24 @@
     "assetUnavailable": "Local asset unavailable. Build the local web client first.",
     "secureEndpoint": "Use HTTPS for remote inference, without credentials, query strings or fragments in the endpoint URL.",
     "engineUnavailable": "Engine evaluation is unavailable in the compiled binary. Set rules.engineEvaluation to \"off\" or run from source.",
-    "runFailed": "A game failed; the series stopped. Completed results were printed and the failed game was saved."
+    "runFailed": "A game failed; the series stopped. Completed results were printed and the failed game was saved.",
+    "runner": {
+      "failed": "Runner startup failed. Retry with a new run, or explicitly resume an existing machine.",
+      "invalidLimits": "Use positive USD amounts with at most six decimal places and concurrency from 1 to 64.",
+      "expired": "Runner claim expired or could not be completed. Start a new run.",
+      "ceilings": "Local ceilings: {{match}}/match, {{day}}/day, concurrency {{concurrency}}.",
+      "missing": "No unexpired runner credential for this machine at this server. Start a new run.",
+      "claim": "Claim this run within 10 minutes:\n{{url}}",
+      "claimed": "Claimed by {{email}}. Controls: {{url}}",
+      "waiting": "Connecting runner transport. Match execution is not available in this build.",
+      "limitsRejected": "Operating limit revision {{revision}} rejected: updates are unavailable in this build.",
+      "terminal": "Start the runner from a private terminal so claim links and account details are not written to logs.",
+      "resumeHelp": "Resume an existing runner at this server without creating a claim",
+      "matchHelp": "Local hard USD ceiling per match",
+      "dayHelp": "Local hard USD ceiling per day",
+      "concurrencyHelp": "Local hard concurrency ceiling (1–64)",
+      "description": "Cockpit Chess: connect a runner, or use companion commands"
+    }
   },
   "termination": {
     "playing": "In progress",

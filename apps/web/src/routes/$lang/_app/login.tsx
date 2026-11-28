@@ -6,7 +6,14 @@ import { TextField } from "@cockpit-chess/ui/components/text-field";
 import { cn } from "@cockpit-chess/ui/lib/utils";
 import { useForm } from "@tanstack/react-form";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link, redirect, useNavigate, useRouter } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  Link,
+  redirect,
+  useLocation,
+  useNavigate,
+  useRouter,
+} from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import z from "zod";
@@ -20,6 +27,11 @@ import { authClient } from "@/lib/auth-client";
 import { markAnonymousOnlyRoute } from "@/lib/document-identity";
 import { resolveRouteSession } from "@/lib/route-session";
 import { decideAnonymousOnlyRouteAccess } from "@/lib/route-session-access";
+import {
+  runnerClaimAfterSignIn,
+  runnerClaimToken,
+  watchRunnerClaimIdentity,
+} from "@/lib/runner-claim-link";
 import { setSessionHint } from "@/lib/session-hint";
 import { verificationCallback } from "@/lib/verify-email-search";
 import {
@@ -36,11 +48,14 @@ export const Route = createFileRoute("/$lang/_app/login")({
   validateSearch: (search: Record<string, unknown>) => ({
     redirectTo: typeof search.redirectTo === "string" ? search.redirectTo : undefined,
   }),
-  beforeLoad: async ({ params, search }) => {
+  beforeLoad: async ({ params, search, location }) => {
+    watchRunnerClaimIdentity(location.pathname, params.lang);
     const decision = decideAnonymousOnlyRouteAccess(await resolveRouteSession());
     if (decision.kind === "error") throw new Error("Route session unavailable");
     if (decision.kind === "redirect-authenticated") {
-      throw redirect({ href: safeRedirectTo(search.redirectTo, params.lang) });
+      throw redirect({
+        href: runnerClaimAfterSignIn(search.redirectTo, params.lang, location.hash),
+      });
     }
   },
   component: LoginPage,
@@ -67,6 +82,7 @@ function LoginPage() {
   markAnonymousOnlyRoute();
   const { lang } = Route.useParams();
   const { redirectTo } = Route.useSearch();
+  const hash = useLocation({ select: (location) => location.hash });
   const [twoFactor, setTwoFactor] = useState(initialTwoFactorState);
   const authSession = useAuthSession();
   // Another tab signed in: re-run this page's guard, which sends a signed-in
@@ -92,6 +108,8 @@ function LoginPage() {
     ((configData?.signupEnabled ?? true) || configData?.adminBootstrapSignupEnabled === true);
   const emailEnabled = configData?.emailEnabled ?? false;
   const postAuthRedirect = safeRedirectTo(redirectTo, lang);
+  const identityRedirect = runnerClaimAfterSignIn(redirectTo, lang, hash);
+  const claimToken = runnerClaimToken(hash);
   const sessionPending =
     authSession.state.status === "pending" || authSession.state.status === "error";
 
@@ -127,7 +145,7 @@ function LoginPage() {
         toast.error(codeFailureMessage(result.error, t("auth:errors.invalidTotp")));
       } else {
         toast.success(t("auth:signedInSuccess"));
-        window.location.assign(postAuthRedirect);
+        window.location.assign(identityRedirect);
       }
     } catch (err) {
       // The request itself failed (offline, server unreachable).
@@ -244,9 +262,25 @@ function LoginPage() {
         >
           {ssoEnabled && (
             <>
-              <Button variant="outline" className="min-h-[44px] w-full" onClick={handleSsoLogin}>
-                {t("auth:login.ssoContinue", { provider: ssoProviderName })}
-              </Button>
+              {claimToken ? (
+                <>
+                  <Link
+                    to="/$lang/login"
+                    params={{ lang }}
+                    search={{ redirectTo: postAuthRedirect }}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={cn(buttonVariants({ variant: "outline" }), "min-h-[44px] w-full")}
+                  >
+                    {t("auth:runnerClaim.ssoContinue", { provider: ssoProviderName })}
+                  </Link>
+                  <p className="text-sm text-muted-foreground">{t("auth:runnerClaim.newTab")}</p>
+                </>
+              ) : (
+                <Button variant="outline" className="min-h-[44px] w-full" onClick={handleSsoLogin}>
+                  {t("auth:login.ssoContinue", { provider: ssoProviderName })}
+                </Button>
+              )}
               {!forceSso && (
                 <div className="relative">
                   <div className="absolute inset-0 flex items-center">
@@ -263,6 +297,8 @@ function LoginPage() {
             <SignInForm
               lang={lang}
               redirectTo={postAuthRedirect}
+              identityRedirect={identityRedirect}
+              keepClaimTab={claimToken !== null}
               showForgotPassword={emailEnabled}
               onNeeds2FA={() => setTwoFactor({ ...initialTwoFactorState, active: true })}
             />
@@ -281,6 +317,8 @@ function LoginPage() {
                 to="/$lang/signup"
                 params={{ lang }}
                 search={{ redirectTo }}
+                target={claimToken ? "_blank" : undefined}
+                rel={claimToken ? "noopener noreferrer" : undefined}
                 className={cn(buttonVariants({ variant: "link" }), "min-h-[44px]")}
               >
                 {t("auth:login.signupHint")}
@@ -296,11 +334,15 @@ function LoginPage() {
 function SignInForm({
   lang,
   redirectTo,
+  identityRedirect,
+  keepClaimTab,
   showForgotPassword,
   onNeeds2FA,
 }: {
   lang: string;
   redirectTo: string;
+  identityRedirect: string;
+  keepClaimTab: boolean;
   showForgotPassword: boolean;
   onNeeds2FA: () => void;
 }) {
@@ -378,7 +420,7 @@ function SignInForm({
         setSessionHint(queryClient, true);
         navigate({ to: APP_HOME, params: { lang } });
       } else {
-        window.location.assign(redirectTo);
+        window.location.assign(identityRedirect);
       }
     },
     validators: {
@@ -438,6 +480,8 @@ function SignInForm({
               to="/$lang/forgot-password"
               params={{ lang }}
               search={{ redirectTo }}
+              target={keepClaimTab ? "_blank" : undefined}
+              rel={keepClaimTab ? "noopener noreferrer" : undefined}
               className={cn(
                 buttonVariants({ variant: "link" }),
                 "min-h-[44px] px-0 text-sm text-muted-foreground max-sm:h-11 max-sm:items-end max-sm:pb-[5px]",

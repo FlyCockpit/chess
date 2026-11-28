@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   runnerStop: vi.fn(async () => {}),
   addTransportDrain: vi.fn<(drain: () => Promise<void>) => void>(),
   websocket: undefined as { server: unknown } | undefined,
+  runnerBegin: vi.fn(),
 }));
 
 // Import the real app/handlers without loading dotenv, starting a listener,
@@ -27,6 +28,14 @@ vi.mock("@cockpit-chess/env/server", () => ({
   ADMIN_EMAILS: new Set(),
   FORCE_SSO: false,
 }));
+vi.mock("@cockpit-chess/env/shared", () => ({ env: { DATABASE_POOL_MAX: 5 } }));
+vi.mock("@cockpit-chess/auth/runner-claim", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@cockpit-chess/auth/runner-claim")>();
+  return {
+    ...original,
+    runnerClaimService: { begin: state.runnerBegin, poll: vi.fn(), exchange: vi.fn() },
+  };
+});
 vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
   return { default: mockDeep() };
@@ -100,6 +109,9 @@ vi.mock("./rate-limit.js", () => ({
   openrouterLimiter: {},
   readyLimiter: {},
   rpcLimiter: {},
+  runnerClaimBeginLimiter: { name: "claim-begin" },
+  runnerClaimPollLimiter: { name: "claim-poll" },
+  runnerClaimExchangeLimiter: { name: "claim-exchange" },
   runnerWsConnectIpLimiter: {},
   runnerWsConnectMachineLimiter: {},
   signinRecipientLimiter: {},
@@ -107,7 +119,10 @@ vi.mock("./rate-limit.js", () => ({
   signupLimiter: {},
   signupRecipientLimiter: {},
   ssrLimiter: {},
-  createRateLimiterMiddleware: () => async (_c: Context, next: Next) => next(),
+  createRateLimiterMiddleware: (limiter: { name?: string }) => async (_c: Context, next: Next) => {
+    if (limiter.name) state.order.push(limiter.name);
+    return next();
+  },
 }));
 vi.mock("./email-recipient-limit.js", () => ({
   EMAIL_RECIPIENT_PATHS: [],
@@ -163,6 +178,7 @@ beforeEach(() => {
   });
   state.authHandler.mockImplementation(() => new Response("auth ok"));
   state.order.length = 0;
+  state.runnerBegin.mockResolvedValue({ claimId: "run", claimToken: "b".repeat(64) });
   state.withDeviceRedemptionLock.mockImplementation(
     async (request: Request, run: () => Promise<Response>) => {
       const body = (await request.clone().json()) as { device_code?: string };
@@ -215,6 +231,26 @@ it("registers the runner upgrade adapter and drain with the deletion fence delib
     headers: { Upgrade: "websocket", Authorization: "Bearer runner-fixture" },
   });
   expect(response.status).toBe(503);
+});
+
+it("mounts the dedicated claim budget and body bound before the general body middleware", async () => {
+  const proof = "a".repeat(64);
+  const accepted = await request("/api/cli/runner/begin", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ proof }),
+  });
+  expect(accepted.status).toBe(200);
+  expect(state.runnerBegin).toHaveBeenCalledExactlyOnceWith({ proof });
+  expect(state.order).toEqual(["claim-begin"]);
+  const oversized = await request("/api/cli/runner/begin", {
+    method: "POST",
+    headers: { "content-type": "application/json", "content-length": String(11 * 1024 * 1024) },
+    body: JSON.stringify({ proof }),
+  });
+  expect(oversized.status).toBe(413);
+  expect(await oversized.json()).toEqual({ error: "BAD_REQUEST" });
+  expect(state.runnerBegin).toHaveBeenCalledOnce();
 });
 
 describe.each(["/rpc", "/api-reference"])(

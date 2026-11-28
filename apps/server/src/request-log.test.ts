@@ -44,6 +44,22 @@ describe("requestLog", () => {
     expect(output).not.toContain("SENTINEL");
   });
 
+  it("logs no claim proof, token, claimant or fragment", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const app = new Hono();
+    app.use("*", requestLog);
+    app.post("/api/cli/runner/begin", (c) => c.json({ claimToken: "TOKEN_SENTINEL" }));
+    app.get("/en-US/runner/claim", (c) => c.text("page"));
+    await app.request("/api/cli/runner/begin", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ proof: "PROOF_SENTINEL", email: "IDENTITY_SENTINEL" }),
+    });
+    await app.request("/en-US/runner/claim#runner-claim=TOKEN_SENTINEL");
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("SENTINEL");
+  });
+
   it("logs the request ID, method, safe path, status and duration once", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const app = new Hono<{ Variables: { requestId: string } }>();

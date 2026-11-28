@@ -37,6 +37,23 @@ vi.mock("@cockpit-chess/queue", () => ({
   redisConnection: {},
 }));
 
+describe("runner claim surface budgets", () => {
+  it("separates begin, poll and replay exchange and fails closed without insurance", async () => {
+    const limiters = await import("./rate-limit");
+    for (const [name, prefix, points, duration] of [
+      ["runnerClaimBeginLimiter", "rl:runner-claim-begin", 20, 3600],
+      ["runnerClaimPollLimiter", "rl:runner-claim-poll", 1200, 60],
+      ["runnerClaimExchangeLimiter", "rl:runner-claim-exchange", 120, 60],
+    ] as const) {
+      const limiter = limiters[name];
+      expect(limiter.keyPrefix).toBe(prefix);
+      expect(limiter.points).toBe(points);
+      expect(limiter.duration).toBe(duration);
+      expect(Reflect.get(limiter, "options")).not.toHaveProperty("insuranceLimiter");
+    }
+  });
+});
+
 const mockGetConnInfo = vi.fn(() => ({ remote: { address: "10.0.0.1" } }));
 
 vi.mock("@hono/node-server/conninfo", () => ({

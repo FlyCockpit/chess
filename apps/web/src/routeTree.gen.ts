@@ -28,6 +28,7 @@ import { Route as LangAppAdminIndexRouteImport } from './routes/$lang/_app/admin
 import { Route as LangAppAdminJobsRouteImport } from './routes/$lang/_app/admin/jobs'
 import { Route as LangAppAdminSettingsRouteImport } from './routes/$lang/_app/admin/settings'
 import { Route as LangAppAdminUsersRouteImport } from './routes/$lang/_app/admin/users'
+import { Route as LangAppAuthRunnerClaimRouteImport } from './routes/$lang/_app/_auth/runner/claim'
 import { Route as LangAppAuthSettingsIndexRouteImport } from './routes/$lang/_app/_auth/settings/index'
 import { Route as LangAppAuthSettingsCliRouteImport } from './routes/$lang/_app/_auth/settings/cli'
 import { Route as LangAppAuthSettingsOpenrouterRouteImport } from './routes/$lang/_app/_auth/settings/openrouter'
@@ -125,6 +126,11 @@ const LangAppAdminUsersRoute = LangAppAdminUsersRouteImport.update({
   path: '/users',
   getParentRoute: () => LangAppAdminRoute,
 } as any)
+const LangAppAuthRunnerClaimRoute = LangAppAuthRunnerClaimRouteImport.update({
+  id: '/runner/claim',
+  path: '/runner/claim',
+  getParentRoute: () => LangAppAuthRoute,
+} as any)
 const LangAppAuthSettingsIndexRoute =
   LangAppAuthSettingsIndexRouteImport.update({
     id: '/',
@@ -166,6 +172,7 @@ export interface FileRoutesByFullPath {
   '/$lang/admin/settings': typeof LangAppAdminSettingsRoute
   '/$lang/admin/users': typeof LangAppAdminUsersRoute
   '/$lang/admin/': typeof LangAppAdminIndexRoute
+  '/$lang/runner/claim': typeof LangAppAuthRunnerClaimRoute
   '/$lang/settings/cli': typeof LangAppAuthSettingsCliRoute
   '/$lang/settings/openrouter': typeof LangAppAuthSettingsOpenrouterRoute
   '/$lang/settings/security': typeof LangAppAuthSettingsSecurityRoute
@@ -185,6 +192,7 @@ export interface FileRoutesByTo {
   '/$lang/admin/settings': typeof LangAppAdminSettingsRoute
   '/$lang/admin/users': typeof LangAppAdminUsersRoute
   '/$lang/admin': typeof LangAppAdminIndexRoute
+  '/$lang/runner/claim': typeof LangAppAuthRunnerClaimRoute
   '/$lang/settings/cli': typeof LangAppAuthSettingsCliRoute
   '/$lang/settings/openrouter': typeof LangAppAuthSettingsOpenrouterRoute
   '/$lang/settings/security': typeof LangAppAuthSettingsSecurityRoute
@@ -211,6 +219,7 @@ export interface FileRoutesById {
   '/$lang/_app/admin/settings': typeof LangAppAdminSettingsRoute
   '/$lang/_app/admin/users': typeof LangAppAdminUsersRoute
   '/$lang/_app/admin/': typeof LangAppAdminIndexRoute
+  '/$lang/_app/_auth/runner/claim': typeof LangAppAuthRunnerClaimRoute
   '/$lang/_app/_auth/settings/cli': typeof LangAppAuthSettingsCliRoute
   '/$lang/_app/_auth/settings/openrouter': typeof LangAppAuthSettingsOpenrouterRoute
   '/$lang/_app/_auth/settings/security': typeof LangAppAuthSettingsSecurityRoute
@@ -235,6 +244,7 @@ export interface FileRouteTypes {
     | '/$lang/admin/settings'
     | '/$lang/admin/users'
     | '/$lang/admin/'
+    | '/$lang/runner/claim'
     | '/$lang/settings/cli'
     | '/$lang/settings/openrouter'
     | '/$lang/settings/security'
@@ -254,6 +264,7 @@ export interface FileRouteTypes {
     | '/$lang/admin/settings'
     | '/$lang/admin/users'
     | '/$lang/admin'
+    | '/$lang/runner/claim'
     | '/$lang/settings/cli'
     | '/$lang/settings/openrouter'
     | '/$lang/settings/security'
@@ -279,6 +290,7 @@ export interface FileRouteTypes {
     | '/$lang/_app/admin/settings'
     | '/$lang/_app/admin/users'
     | '/$lang/_app/admin/'
+    | '/$lang/_app/_auth/runner/claim'
     | '/$lang/_app/_auth/settings/cli'
     | '/$lang/_app/_auth/settings/openrouter'
     | '/$lang/_app/_auth/settings/security'
@@ -425,6 +437,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LangAppAdminUsersRouteImport
       parentRoute: typeof LangAppAdminRoute
     }
+    '/$lang/_app/_auth/runner/claim': {
+      id: '/$lang/_app/_auth/runner/claim'
+      path: '/runner/claim'
+      fullPath: '/$lang/runner/claim'
+      preLoaderRoute: typeof LangAppAuthRunnerClaimRouteImport
+      parentRoute: typeof LangAppAuthRoute
+    }
     '/$lang/_app/_auth/settings/': {
       id: '/$lang/_app/_auth/settings/'
       path: '/'
@@ -476,11 +495,13 @@ const LangAppAuthSettingsRouteWithChildren =
 interface LangAppAuthRouteChildren {
   LangAppAuthDeviceRoute: typeof LangAppAuthDeviceRoute
   LangAppAuthSettingsRoute: typeof LangAppAuthSettingsRouteWithChildren
+  LangAppAuthRunnerClaimRoute: typeof LangAppAuthRunnerClaimRoute
 }
 
 const LangAppAuthRouteChildren: LangAppAuthRouteChildren = {
   LangAppAuthDeviceRoute: LangAppAuthDeviceRoute,
   LangAppAuthSettingsRoute: LangAppAuthSettingsRouteWithChildren,
+  LangAppAuthRunnerClaimRoute: LangAppAuthRunnerClaimRoute,
 }
 
 const LangAppAuthRouteWithChildren = LangAppAuthRoute._addFileChildren(

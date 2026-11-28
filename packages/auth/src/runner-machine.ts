@@ -92,10 +92,10 @@ export function digestRunnerMachineSecret(secret: string): string | null {
   return createHash("sha256").update(RUNNER_MACHINE_DIGEST_DOMAIN).update(secret).digest("hex");
 }
 
-async function requireRunnerMachineMintAuthority(
+export async function requireRunnerMachineMintAuthority(
   tx: RunnerMachineTransaction,
   session: RunnerMachineSession,
-): Promise<void> {
+) {
   const liveSession = await tx.session.findFirst({
     where: {
       id: session.sessionId,
@@ -109,6 +109,7 @@ async function requireRunnerMachineMintAuthority(
       user: {
         select: {
           id: true,
+          email: true,
           emailVerified: true,
           banned: true,
           banExpires: true,
@@ -132,6 +133,7 @@ async function requireRunnerMachineMintAuthority(
   ) {
     throw new RunnerMachineForbiddenError();
   }
+  return user;
 }
 
 /**
@@ -145,6 +147,7 @@ export async function mintRunnerMachineInTransaction(
   tx: RunnerMachineTransaction,
   session: RunnerMachineSession,
   input: MintRunnerMachineInput,
+  claimSecret?: string,
 ): Promise<{ machine: RunnerMachinePublic; secret: string }> {
   await lockCliCredentials(session.userId, tx);
   await requireRunnerMachineMintAuthority(tx, session);
@@ -163,9 +166,11 @@ export async function mintRunnerMachineInTransaction(
   const active = await tx.runnerMachine.count({
     where: { userId: session.userId, revokedAt: null, expiresAt: { gt: now } },
   });
-  if (active >= RUNNER_MACHINE_MAX_ACTIVE) throw new RunnerMachineLimitError();
+  if (!Number.isSafeInteger(active) || active < 0 || active >= RUNNER_MACHINE_MAX_ACTIVE)
+    throw new RunnerMachineLimitError();
 
   const secret =
+    claimSecret ??
     RUNNER_MACHINE_TOKEN_PREFIX + randomBytes(RUNNER_MACHINE_SECRET_BYTES).toString("hex");
   const credentialDigest = digestRunnerMachineSecret(secret);
   // A generated token always parses; do not allow a nullable digest into storage.

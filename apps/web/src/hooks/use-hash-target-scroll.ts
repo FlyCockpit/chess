@@ -17,8 +17,11 @@ const TAKEOVER_EVENTS = ["wheel", "touchstart", "keydown", "pointerdown"] as con
 export function hashTargetId(hash: string): string | null {
   const raw = hash.startsWith("#") ? hash.slice(1) : hash;
   if (!raw) return null;
+  // Runner claim fragments are credentials for the claim POST, never element IDs.
+  if (raw.startsWith("runner-claim=")) return null;
   try {
-    return decodeURIComponent(raw);
+    const decoded = decodeURIComponent(raw);
+    return decoded.replace(/^#/, "").startsWith("runner-claim=") ? null : decoded;
   } catch {
     return raw;
   }

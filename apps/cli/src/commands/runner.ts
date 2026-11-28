@@ -1,0 +1,32 @@
+import type { Command } from "commander";
+import { t } from "../chess-i18n";
+import { type RunnerStartupFlags, runRunnerStartup } from "../runner-start";
+
+/** The root action applies only when no explicit companion subcommand was selected. */
+export function registerRunner(program: Command): void {
+  program
+    .option(
+      "--resume <machineId>",
+      t("cli.runner.resumeHelp", {
+        defaultValue: "Resume an existing runner at this server without creating a claim",
+      }),
+    )
+    .option(
+      "--max-match-usd <usd>",
+      t("cli.runner.matchHelp", { defaultValue: "Local hard USD ceiling per match" }),
+      "25",
+    )
+    .option(
+      "--max-day-usd <usd>",
+      t("cli.runner.dayHelp", { defaultValue: "Local hard USD ceiling per day" }),
+      "100",
+    )
+    .option(
+      "--max-concurrency <count>",
+      t("cli.runner.concurrencyHelp", { defaultValue: "Local hard concurrency ceiling (1–64)" }),
+      "8",
+    )
+    .action(async () => {
+      await runRunnerStartup(program.opts<RunnerStartupFlags>());
+    });
+}

@@ -85,7 +85,24 @@
     "assetUnavailable": "Recurso local no disponible. Primero construye el cliente web local.",
     "secureEndpoint": "Utilice HTTPS para inferencia remota, sin credenciales, cadenas de consulta ni fragmentos en la URL del endpoint.",
     "engineUnavailable": "La evaluación del motor no está disponible en el binario compilado. Establece rules.engineEvaluation en \"off\" o ejecútalo desde el código fuente.",
-    "runFailed": "Una partida falló; la serie se detuvo. Se imprimieron los resultados completados y se guardó la partida fallida."
+    "runFailed": "Una partida falló; la serie se detuvo. Se imprimieron los resultados completados y se guardó la partida fallida.",
+    "runner": {
+      "description": "Cockpit Chess: conecta una ejecución o usa los comandos de la aplicación",
+      "resumeHelp": "Reanudar una ejecución existente en este servidor sin crear un enlace nuevo",
+      "matchHelp": "Límite local máximo en USD por partida",
+      "dayHelp": "Límite local máximo en USD por día",
+      "concurrencyHelp": "Límite local máximo de partidas simultáneas (1–64)",
+      "failed": "No se pudo iniciar la ejecución. Vuelve a intentarlo con una ejecución nueva o reanuda explícitamente una máquina existente.",
+      "invalidLimits": "Usa cantidades positivas en USD con un máximo de seis decimales y una concurrencia de 1 a 64.",
+      "ceilings": "Límites locales: {{match}}/partida, {{day}}/día, concurrencia {{concurrency}}.",
+      "missing": "No hay una credencial vigente para esta máquina en este servidor. Inicia una ejecución nueva.",
+      "claim": "Reclama esta ejecución en los próximos 10 minutos:\n{{url}}",
+      "claimed": "Reclamada por {{email}}. Controles: {{url}}",
+      "waiting": "Conectando el transporte de la ejecución. Este programa aún no permite ejecutar partidas.",
+      "limitsRejected": "Se rechazó la revisión {{revision}} de los límites operativos: este programa aún no permite actualizarlos.",
+      "terminal": "Inicia la ejecución desde una terminal privada para evitar que los enlaces y los datos de la cuenta se escriban en registros.",
+      "expired": "El enlace venció o no se pudo completar la conexión. Inicia una ejecución nueva."
+    }
   },
   "colors": {
     "w": "Blanco",

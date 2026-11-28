@@ -40,6 +40,7 @@ registered access levels; handler tests verify ownership and custom role rules.
 | Delete a user | implemented | none | none | full | `users.remove` | Self-delete refused; same last-admin guard; existing FK/cascade behavior retained |
 | Create an own CLI API key | implemented | none | own | own | `cliAccess.apiKeys.create` | Existing protected/forced-2FA gate; live session checked under credential lock before and after mint; revoked/expired session remains UNAUTHORIZED |
 | List own runner machines | implemented | none | own | own | `cliAccess.runners.list` | Cookie browser session only, protected/forced-2FA gate; fresh live non-impersonated browser session and ban check under the CLI-credential lock; cursor bounded; safe metadata only |
+| Claim a local runner run | implemented | none | own | own | `cliAccess.runners.claim` | Cookie session and CSRF only; live verified non-impersonated browser identity and forced-2FA checked under credential lock. Atomic first eligible account wins; foreign/expired links reveal no owner. Fragment secret grants no poll/exchange or machine authority |
 | Revoke an own runner machine | implemented | none | own | own | `cliAccess.runners.revoke` | Same live browser gate and lock; foreign IDs are NOT_FOUND; durable revocation increments generation and publishes transactional ID-only invalidation; revoked runners cannot resume |
 | Connect a paired runner transport | implemented | none | own | own | — | `GET /api/cli/runner/ws`: runner machine bearer only; no cookies, browser Origins, API keys or query credentials. Strict v1, owner/generation/lease checks on messages and heartbeat; independent fail-closed connect budgets. Simulation only; live upgrades remain 503 until D2a supplies its deletion predicate |
 | Play and simulate locally | implemented | full | full | full | — | Public random baseline and local-process provider lab; no hosted spending |
@@ -55,8 +56,18 @@ Route visibility never substitutes for procedure authorization. Public records
 must exclude keys, private inference context, owner account details, and drafts.
 CLI endpoints retain the access levels registered in the server.
 
-Runner enrollment is an internal helper for the later per-run claim/exchange
-surface; no public enrollment endpoint is enabled. It requires a live,
+Runner enrollment uses a per-run claim/exchange surface. Anonymous POSTs to
+`/api/cli/runner/begin`, `/poll` and `/exchange` have independent fail-closed IP
+budgets, strict bounded bodies and no cookie/bearer fallback. Begin stores
+separate purpose-bound link/proof digests with a ten-minute expiry; pending
+and retained recovery rows have a global cap and bounded expiration cleanup.
+Only the originating CLI's high-entropy proof can poll claimant identity or
+exchange authority. The browser receives no reusable runner secret. Exchanges
+derive one credential from that proof and the claim ID, so lost responses replay
+without minting another machine; expired claims, revoked machines and loss of
+the original approving session fail closed. A fresh invocation creates a new
+claim; explicit local resume restores only that origin's existing machine.
+Enrollment requires a live,
 non-impersonated browser session, a verified unbanned owner, the current forced
 second-factor policy, a finite expiry and a cap of 25 active machines under the
 same credential lock as reset. Only a purpose-bound digest and display prefix

@@ -41,6 +41,7 @@ const fixture = vi.hoisted(() => ({
   config: { signupEnabled: true, adminBootstrapSignupEnabled: false, emailEnabled: true },
   online: true,
   search: {} as Record<string, unknown>,
+  hash: "",
   /** The appConfig query's outcome flags, as TanStack Query reports them. */
   configState: "success" as "success" | "refetch-error" | "load-error",
 }));
@@ -68,6 +69,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   redirect: (options: unknown) => ({ redirect: options }),
   useNavigate: () => vi.fn(),
   useRouter: () => ({ invalidate: vi.fn() }),
+  useLocation: () => fixture.hash,
   useParams: () => ({ lang: "en-US" }),
   Link: ({ to, className, children }: { to: string; className?: string; children: ReactNode }) => (
     <a data-to={to} className={className ?? ""}>
@@ -144,6 +146,7 @@ beforeEach(() => {
   resetAuthSessionMemoryForTests();
   fixture.online = true;
   fixture.search = {};
+  fixture.hash = "";
   fixture.configState = "success";
 });
 afterEach(() => {
@@ -595,42 +598,57 @@ describe("sign-up page mounted in React DOM when the request cannot be sent", ()
     );
   });
 
-  it("keeps sign-in verification mail on Studio without the library redirecting a successful sign-in there", async () => {
-    fixture.snapshot = ANONYMOUS;
-    fixture.search = { redirectTo: "/en-US/?tab=studio" };
-    const assign = vi.fn();
-    Object.assign(window, { location: { assign } });
-    const answer = { redirect: true, url: "/en-US/verify-email?ok=1" };
-    signInEmail.mockImplementation(
-      async (options: {
-        fetchOptions: { onSuccess: (context: { data: typeof answer }) => void };
-      }) => {
-        options.fetchOptions.onSuccess({ data: answer });
-        return { data: answer, error: null };
-      },
-    );
-    const LoginPage = page(LoginRoute).component;
-    await act(async () => {
-      root.render(
-        <I18nextProvider i18n={i18n}>
-          <LoginPage />
-        </I18nextProvider>,
+  it.each([
+    {
+      target: "/en-US/?tab=studio",
+      hash: "",
+      callback: "/en-US/verify-email?ok=1&redirectTo=%2Fen-US%2F%3Ftab%3Dstudio",
+    },
+    {
+      target: "/en-US/runner/claim",
+      hash: `runner-claim=${"a".repeat(64)}`,
+      callback: "/en-US/verify-email?ok=1&redirectTo=%2Fen-US%2Frunner%2Fclaim",
+    },
+  ])(
+    "keeps sign-in callback clean and restores the final destination $target",
+    async ({ target, hash, callback }) => {
+      fixture.snapshot = ANONYMOUS;
+      fixture.search = { redirectTo: target };
+      fixture.hash = hash;
+      const assign = vi.fn();
+      Object.assign(window, { location: { assign } });
+      const answer = { redirect: true, url: "/en-US/verify-email?ok=1" };
+      signInEmail.mockImplementation(
+        async (options: {
+          fetchOptions: { onSuccess: (context: { data: typeof answer }) => void };
+        }) => {
+          options.fetchOptions.onSuccess({ data: answer });
+          return { data: answer, error: null };
+        },
       );
-    });
-    const [form] = [...formApis] as FormApi[];
-    await act(async () => {
-      form?.setFieldValue("email", "ada@example.com");
-      form?.setFieldValue("password", "correct horse battery");
-    });
-    await act(async () => {
-      await form?.handleSubmit();
-    });
-    expect(signInEmail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        callbackURL: "/en-US/verify-email?ok=1&redirectTo=%2Fen-US%2F%3Ftab%3Dstudio",
-      }),
-    );
-    expect(answer.redirect).toBe(false);
-    expect(assign).toHaveBeenCalledWith("/en-US/?tab=studio");
-  });
+      const LoginPage = page(LoginRoute).component;
+      await act(async () => {
+        root.render(
+          <I18nextProvider i18n={i18n}>
+            <LoginPage />
+          </I18nextProvider>,
+        );
+      });
+      const [form] = [...formApis] as FormApi[];
+      await act(async () => {
+        form?.setFieldValue("email", "ada@example.com");
+        form?.setFieldValue("password", "correct horse battery");
+      });
+      await act(async () => {
+        await form?.handleSubmit();
+      });
+      expect(signInEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          callbackURL: callback,
+        }),
+      );
+      expect(answer.redirect).toBe(false);
+      expect(assign).toHaveBeenCalledWith(`${target}${hash ? `#${hash}` : ""}`);
+    },
+  );
 });

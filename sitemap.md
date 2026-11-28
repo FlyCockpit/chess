@@ -29,6 +29,7 @@ All require an active session (enforced by the `_auth` layout).
 | `/{lang}/settings/cli` | Command-line access — a freshly minted copy-paste install/update command for the companion CLI (macOS/Linux/WSL and PowerShell; the embedded token expires after 15 minutes) and API key management (create shows the key once; revoke is type-to-confirm). See [packages/api/src/routers/cli.ts](./packages/api/src/routers/cli.ts). |
 | `/{lang}/settings/openrouter` | Connect your own OpenRouter account (OAuth PKCE; only when the operator enables user matches): suggested spend limit and expiry, OpenRouter's live limit/usage numbers, manage and activity links on OpenRouter, disconnect (type-to-confirm). The OAuth callback is the server route `/api/openrouter/callback`, which redirects back here. |
 | `/{lang}/device` | Approve or deny a `cockpit-chess login` device-flow request (`?user_code=` prefills the code; never auto-approved). Better-Auth's verification URL is the lang-less `/device`, which the `$lang` layout redirects here. |
+| `/{lang}/runner/claim` | Claim one local `npx @flycockpit/chess` run after sign-in and required two-factor setup. The single-use secret stays in the fragment through sign-in; a protected CSRF POST claims only after identity settles. No indexing, referrers or browser credential storage. Return to the terminal to verify the claiming account and active local ceilings. |
 
 ## Admin Routes
 

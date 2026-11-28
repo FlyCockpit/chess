@@ -7,12 +7,12 @@
 //      running scripts/compile.ts (CI reads the `COCKPIT_CHESS_DEFAULT_SERVER` repo
 //      variable). The compile script inlines it as __COCKPIT_CHESS_DEFAULT_SERVER__.
 //   2. Hardcoded: set HARDCODED_DEFAULT_SERVER below during the rebrand.
-// Left empty, a server must come from --server, COCKPIT_CHESS_SERVER, or the config
-// file (the install script writes the one it was downloaded from).
+// The public origin makes a fresh no-argument runner usable without configuration.
+// --server, COCKPIT_CHESS_SERVER and the local config still override this default.
 
 declare const __COCKPIT_CHESS_DEFAULT_SERVER__: string | undefined;
 
-const HARDCODED_DEFAULT_SERVER = "";
+const HARDCODED_DEFAULT_SERVER = "https://chess.flycockpit.app";
 
 /** The built-in default server, or undefined when the build has none. */
 export const DEFAULT_SERVER: string | undefined =

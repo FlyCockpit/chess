@@ -12,6 +12,16 @@ export function mountSecurityHeaders<E extends Env>(
   app: Hono<E>,
   { cspConnectSrc, themeInitCspHash }: SecurityHeadersOptions,
 ): void {
+  // Claim fragments never reach HTTP, and the utility page must not send
+  // referrers or be cached with its signed-in browser context.
+  app.use("/*", async (c, next) => {
+    await next();
+    if (/^\/[^/]+\/runner\/claim\/?$/i.test(c.req.path)) {
+      c.header("Referrer-Policy", "no-referrer");
+      c.header("Cache-Control", "no-store");
+      c.header("X-Robots-Tag", "noindex, nofollow");
+    }
+  });
   // Secure-headers — sets a battery of security headers (X-Content-Type-Options,
   // X-Frame-Options, Strict-Transport-Security, etc.) on every response.
   app.use(

@@ -122,7 +122,12 @@ describe("resolveServer", () => {
 
   it("explains how to configure a missing server", () => {
     vi.stubEnv("COCKPIT_CHESS_SERVER", undefined);
-    expect(() => resolveServer({}, undefined, undefined)).toThrow(/install command/);
+    expect(() => resolveServer({}, undefined, "")).toThrow(/install command/);
+  });
+
+  it("uses the public chess origin for a fresh no-argument startup", () => {
+    vi.stubEnv("COCKPIT_CHESS_SERVER", undefined);
+    expect(resolveServer({})).toBe("https://chess.flycockpit.app");
   });
 });
 

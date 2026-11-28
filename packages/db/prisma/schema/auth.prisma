@@ -29,6 +29,7 @@ model User {
   DeviceCodes          DeviceCode[]
   ApiKeys              ApiKey[]
   RunnerMachines       RunnerMachine[]
+  RunnerClaims         RunnerClaim[]
 
   @@unique([email])
   @@index([role])
@@ -42,22 +43,23 @@ model User {
 }
 
 model Session {
-  id                   String   @id @default(cuid(2))
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @default(now()) @updatedAt
+  id                   String        @id @default(cuid(2))
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @default(now()) @updatedAt
   expiresAt            DateTime
   token                String
   ipAddress            String?
   userAgent            String?
   userId               String
-  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   impersonatedBy       String?
   activeOrganizationId String?
   // How the session was issued: "sign-in" (browser/native cookie sessions) or
   // "device-flow" (`cockpit-chess login`, set by a Better-Auth session hook). The CLI
   // surface accepts only "device-flow" bearers, so a token copied from a
   // browser cookie is useless there. Inert if the CLI is removed.
-  origin               String   @default("sign-in")
+  origin               String        @default("sign-in")
+  RunnerClaims         RunnerClaim[]
 
   @@unique([token])
   @@index([userId])

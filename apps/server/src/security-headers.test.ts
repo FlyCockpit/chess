@@ -10,10 +10,20 @@ function buildApp(cspConnectSrc: string[] = ["'self'"]) {
     themeInitCspHash: "'sha256-test'",
   });
   app.get("/some-page", (c) => c.text("page"));
+  app.get("/en-US/runner/claim", (c) => c.text("claim"));
   return app;
 }
 
 describe("mountSecurityHeaders", () => {
+  it.each(["/en-US/runner/claim", "/en-US/Runner/Claim", "/en-US/runner/claim/"])(
+    "keeps claim utility response %s private and sends no referrer",
+    async (path) => {
+      const res = await buildApp().request(path);
+      expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    },
+  );
   it("serves the app CSP and security headers", async () => {
     const res = await buildApp().request("/some-page");
     expect(res.headers.get("content-security-policy")).toContain("default-src 'self'");

@@ -187,6 +187,39 @@ describe("internal runner enrollment", () => {
     expect(db.runnerMachine.create).not.toHaveBeenCalled();
   });
 
+  it.each([undefined, -1, NaN, 1.5])(
+    "fails closed on an invalid active-machine count %s",
+    async (count) => {
+      db.runnerMachine.count.mockResolvedValue(count);
+      await expect(
+        mintRunnerMachineInTransaction(tx, session, { displayName: "Laptop" }),
+      ).rejects.toBeInstanceOf(RunnerMachineLimitError);
+      expect(db.runnerMachine.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts a canonical internally derived claim credential and stores only its digest", async () => {
+    const result = await mintRunnerMachineInTransaction(
+      tx,
+      session,
+      { displayName: "Laptop" },
+      secret,
+    );
+    expect(result.secret).toBe(secret);
+    expect(db.runnerMachine.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ credentialDigest: digestRunnerMachineSecret(secret) }),
+      select: runnerMachinePublicSelect,
+    });
+    expect(JSON.stringify(db.runnerMachine.create.mock.calls)).not.toContain(secret);
+  });
+
+  it("rejects a malformed internally derived claim credential", async () => {
+    await expect(
+      mintRunnerMachineInTransaction(tx, session, { displayName: "Laptop" }, "general-api-key"),
+    ).rejects.toBeInstanceOf(RunnerMachineInputError);
+    expect(db.runnerMachine.create).not.toHaveBeenCalled();
+  });
+
   it.each([
     { emailVerified: false },
     { banned: true, banExpires: null },

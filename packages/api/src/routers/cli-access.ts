@@ -6,7 +6,18 @@ import {
   mintCliCredentialForSession,
   withCliCredentialLockSlot,
 } from "@cockpit-chess/auth/device-redemption-lock";
-import { revokeRunnerMachinesInTransaction } from "@cockpit-chess/auth/runner-machine";
+import {
+  RunnerClaimNotFoundError,
+  runnerClaimService,
+  runnerClaimTokenSchema,
+} from "@cockpit-chess/auth/runner-claim";
+import {
+  RunnerMachineForbiddenError,
+  RunnerMachineInputError,
+  RunnerMachineLimitError,
+  RunnerMachineSessionRevokedError,
+  revokeRunnerMachinesInTransaction,
+} from "@cockpit-chess/auth/runner-machine";
 import { CLI_INSTALL_AUTH_SCHEME } from "@cockpit-chess/config/cli";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { env } from "@cockpit-chess/env/server";
@@ -85,6 +96,27 @@ async function withRunnerBrowserSession<T>(
 
 export const cliAccessRouter = {
   runners: {
+    claim: protectedProcedure
+      .input(z.strictObject({ token: runnerClaimTokenSchema }))
+      .handler(async ({ input, context }) => {
+        if (context.credential !== undefined) throw new ORPCError("UNAUTHORIZED");
+        try {
+          return await runnerClaimService.claim(
+            { userId: context.session.user.id, sessionId: context.session.session.id },
+            input.token,
+          );
+        } catch (error) {
+          if (error instanceof RunnerClaimNotFoundError) throw new ORPCError("NOT_FOUND");
+          if (error instanceof RunnerMachineSessionRevokedError)
+            throw new ORPCError("UNAUTHORIZED");
+          if (error instanceof RunnerMachineForbiddenError) throw new ORPCError("FORBIDDEN");
+          if (error instanceof RunnerMachineLimitError) throw new ORPCError("TOO_MANY_REQUESTS");
+          if (error instanceof RunnerMachineInputError) throw new ORPCError("BAD_REQUEST");
+          // Storage errors may carry token-bearing SQL parameters. Never forward
+          // their cause to the shared oRPC error logger.
+          throw new ORPCError("SERVICE_UNAVAILABLE");
+        }
+      }),
     list: protectedProcedure.input(cursorPageInput).handler(({ input, context }) =>
       withRunnerBrowserSession(context, async (tx, userId) => {
         const rows = await tx.runnerMachine.findMany({

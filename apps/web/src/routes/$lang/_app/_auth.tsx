@@ -17,28 +17,38 @@ import { useTranslation } from "react-i18next";
 import { InlineRetry } from "@/components/inline-retry";
 import { RouteContentSkeleton } from "@/components/route-content-skeleton";
 import { TwoFactorSetupDetails } from "@/components/two-factor-setup-details";
+import { useRunnerClaimDisarm } from "@/hooks/use-runner-claim";
 import { authClient } from "@/lib/auth-client";
 import { resolveRouteSession } from "@/lib/route-session";
 import { decideProtectedRouteAccess } from "@/lib/route-session-access";
+import {
+  rememberRunnerClaim,
+  runnerClaimLoginTarget,
+  watchRunnerClaimIdentity,
+} from "@/lib/runner-claim-link";
 import { setSessionHint } from "@/lib/session-hint";
 import { codeFailureMessage, friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 import { twoFactorEnrollmentState } from "@/utils/two-factor-policy";
 
 export const Route = createFileRoute("/$lang/_app/_auth")({
-  beforeLoad: async ({ context, location, params }) => {
+  beforeLoad: async ({ context, location, params, preload }) => {
+    watchRunnerClaimIdentity(location.pathname, params.lang);
     const decision = decideProtectedRouteAccess(await resolveRouteSession());
     if (decision.kind === "error") throw new Error("Route session unavailable");
     if (decision.kind === "redirect-to-login") {
       // Keep the public pages' cookie hint in step with what this gate just
       // learned (lib/session-hint.ts), both ways.
       setSessionHint(context.queryClient, false);
+      const continuation = runnerClaimLoginTarget(location, params.lang);
       throw redirect({
         to: "/$lang/login",
         params: { lang: params.lang },
-        search: { redirectTo: location.href },
+        search: { redirectTo: continuation.redirectTo },
+        hash: continuation.hash,
       });
     }
+    if (!preload) rememberRunnerClaim(location, params.lang, decision.session.user.id);
     setSessionHint(context.queryClient, true);
     return { session: decision.session };
   },
@@ -47,6 +57,7 @@ export const Route = createFileRoute("/$lang/_app/_auth")({
 
 function AuthLayout() {
   const { session } = Route.useRouteContext();
+  useRunnerClaimDisarm(session.user.id);
   const {
     data: appSettings,
     isPending,
