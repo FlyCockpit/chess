@@ -1,8 +1,10 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 
 import { validateFen } from "chess.js";
 import { z } from "zod";
-import { MODEL_PROTOCOLS } from "./index";
+import { archiveSchema, Chess, MODEL_PROTOCOLS, matchConfigSchema } from "./index";
+import { promptVersionSchema } from "./prompts";
 
 export const RUNNER_PROTOCOL_VERSION = 1;
 export const RUNNER_MAX_FRAME_BYTES = 65_536;
@@ -78,6 +80,20 @@ function matchFrame<T extends string, P extends z.ZodType>(type: T, payload: P) 
   return frame(type, payload).extend({ matchId: identifier });
 }
 
+/** Current settings only. Fixed instructions are resolved locally, never accepted as text. */
+export const runnerMatchConfigSchema = matchConfigSchema.extend({
+  promptVersion: promptVersionSchema,
+});
+export type RunnerMatchConfig = z.infer<typeof runnerMatchConfigSchema>;
+
+/** A schema-ordered canonical digest, shared by the website controller and local executor. */
+export function runnerConfigDigest(input: RunnerMatchConfig): string {
+  const config = runnerMatchConfigSchema.parse(input);
+  config.initialFen = new Chess(config.initialFen).fen();
+  if (config.rules.illegalPolicy === "forfeit") delete config.rules.illegalPolicy;
+  return createHash("sha256").update(JSON.stringify(config)).digest("hex");
+}
+
 export const runnerClientMessageSchema = z.discriminatedUnion("type", [
   frame(
     "hello",
@@ -117,7 +133,16 @@ export const runnerClientMessageSchema = z.discriminatedUnion("type", [
   matchFrame("snapshot", z.object({ acceptedSeq: integer, fen, ply: integer }).strict()),
   matchFrame(
     "event",
-    z.object({ kind: z.enum(["started", "stopped", "completed", "interrupted"]) }).strict(),
+    z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("started") }).strict(),
+      z
+        .object({
+          kind: z.enum(["stopped", "completed", "interrupted"]),
+          result: archiveSchema.shape.result,
+          termination: archiveSchema.shape.termination,
+        })
+        .strict(),
+    ]),
   ),
   frame("ack", ack),
   frame("error", error),
@@ -136,10 +161,16 @@ export const runnerServerMessageSchema = z.discriminatedUnion("type", [
   ),
   frame("heartbeat", nonce),
   frame("pong", nonce),
-  // E2 is a simulation seam. E4 must extend this with a fixed, reviewed payload.
+  // No endpoint, key, path, prompt text or executable action can enter the offer.
   matchFrame(
     "offer",
-    z.object({ ...command, configDigest: z.string().regex(/^[a-fA-F0-9]{64}$/) }).strict(),
+    z
+      .object({
+        ...command,
+        configDigest: z.string().regex(/^[a-f0-9]{64}$/),
+        config: runnerMatchConfigSchema,
+      })
+      .strict(),
   ),
   matchFrame("start", z.object({ ...command, expectedSeq: integer }).strict()),
   matchFrame("stop", ack),

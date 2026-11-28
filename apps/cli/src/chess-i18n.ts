@@ -10,10 +10,20 @@ void instance.init({
     "en-US": {
       chess: messages,
       cli: {
+        runner: {
+          waiting: "Connecting runner transport. Local match execution is ready.",
+          failed:
+            "Runner startup failed. Retry with a new run, or explicitly resume an existing machine.",
+          limitsRejected:
+            "Operating limit revision {{revision}} rejected: updates are unavailable in this build.",
+          providerHelp: "Local inference endpoint (never sent to the server)",
+          modelsHelp: "Local model allowlist (narrows the locally fetched catalog)",
+          concurrencyHelp: "Local hard concurrency ceiling",
+        },
         requestTimeout: "Request timed out",
         networkTimeout: "Could not reach {{server}}: timed out",
         runnerConfig:
-          "Invalid local runner policy. Check runner-policy.json or the local startup flags.",
+          "Invalid local runner policy. Check runner-policy.json and startup flags. Set OPENROUTER_API_KEY in your private terminal, or select a local loopback model.",
         runnerModel:
           "This model is not permitted locally or has no supported price bound. Choose an available model.",
         runnerRequest:
@@ -30,10 +40,21 @@ void instance.init({
     },
     "es-MX": {
       cli: {
+        runner: {
+          waiting: "Conectando el ejecutor. La ejecución local de partidas está lista.",
+          failed:
+            "No se pudo iniciar el ejecutor. Inicia una nueva ejecución o reanuda una máquina existente de forma explícita.",
+          limitsRejected:
+            "Se rechazó la revisión {{revision}} de límites operativos: las actualizaciones no están disponibles en esta versión.",
+          providerHelp: "Endpoint de inferencia local (nunca se envía al servidor)",
+          modelsHelp:
+            "Lista local de modelos permitidos (restringe el catálogo obtenido localmente)",
+          concurrencyHelp: "Máximo local de partidas simultáneas",
+        },
         requestTimeout: "La solicitud agotó el tiempo de espera",
         networkTimeout: "No se pudo conectar con {{server}}: se agotó el tiempo de espera",
         runnerConfig:
-          "La política local del ejecutor no es válida. Revisa runner-policy.json o las opciones de inicio locales.",
+          "La política local del ejecutor no es válida. Revisa runner-policy.json y las opciones de inicio. Configura OPENROUTER_API_KEY en tu terminal privada o selecciona un modelo local de loopback.",
         runnerModel:
           "Este modelo no está permitido localmente o no tiene un límite de precio compatible. Elige un modelo disponible.",
         runnerRequest:

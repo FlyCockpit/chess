@@ -130,6 +130,9 @@ describe("local hard runner authority", () => {
     expect(policy.startupNotice()).toContain("prices checked right before each request");
     expect(policy.startupNotice()).toContain("exceed a limit once");
     expect(policy.startupNotice()).toContain("spend limit on the OpenRouter key");
+    expect(policy.journalScope()).toBe(spendingAuthorityId("synthetic-key"));
+    expect(JSON.stringify(policy.capabilities())).not.toContain(policy.journalScope());
+    expect(policy.startupNotice()).not.toContain(policy.journalScope());
     expect(JSON.stringify(policy.capabilities())).not.toMatch(
       /synthetic|openrouter.ai|apiKey|baseUrl/,
     );

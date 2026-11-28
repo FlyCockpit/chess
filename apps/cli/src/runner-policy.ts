@@ -362,6 +362,11 @@ export class RunnerPolicy {
     );
   }
 
+  /** Local journal identity only. Never put this fingerprint in capabilities or wire messages. */
+  journalScope(): string {
+    return spendingAuthorityId(this.startup.apiKey);
+  }
+
   /** Safe to advertise: no endpoint, credential, fingerprint, filesystem or environment. */
   capabilities() {
     return {

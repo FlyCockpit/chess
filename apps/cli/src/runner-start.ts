@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { RUNNER_WS_PATH } from "@cockpit-chess/chess/runner-protocol";
@@ -12,12 +13,17 @@ import { CliError, ExitCode } from "./exit";
 import { withNetworkDeadline } from "./network";
 import { configDir } from "./paths";
 import { RunnerConnection, type RunnerConnectionOptions } from "./runner-connection";
+import { probeRunnerEngine } from "./runner-engine";
+import { RunnerGameLoop } from "./runner-game";
+import { openRunnerJournal, type RunnerJournal } from "./runner-journal";
 import {
   RunnerLimitController,
+  type RunnerLimitPolicy,
   type RunnerLimitStore,
   runnerLimitFileStore,
 } from "./runner-limits";
 import { createNodeRunnerSocket } from "./runner-node-socket";
+import { RunnerPolicy, RunnerPolicyError, readLocalRunnerOptions } from "./runner-policy";
 
 const CLAIM_MS = 600_000;
 const REQUEST_MS = 10_000;
@@ -57,6 +63,8 @@ export type RunnerStartupFlags = {
   maxMatchUsd?: string;
   maxDayUsd?: string;
   maxConcurrency?: string;
+  providerUrl?: string;
+  allowModel?: string[];
 };
 export type RunnerCeilings = Readonly<{
   matchMicros: number;
@@ -69,7 +77,23 @@ export interface RunnerStore {
   loadCredential(origin: string, machineId: string): Promise<RunnerCredential | undefined>;
   removePending(run: PendingRunnerClaim): Promise<void>;
 }
+export interface RunnerExecution {
+  hardLimits: RunnerCeilings;
+  limitPolicy: RunnerLimitPolicy;
+  settleLimits(): Promise<void>;
+  startupNotice(): string;
+  open(
+    origin: string,
+    machineId: string,
+    send: ConstructorParameters<typeof RunnerGameLoop>[0]["send"],
+    signal: AbortSignal,
+  ): Promise<Pick<RunnerGameLoop, "hello" | "handle">>;
+  close(): Promise<void>;
+}
+
+/** Initialization is separate from pairing so tests never read provider keys or local state. */
 export interface RunnerStartupIO {
+  initialize(flags: RunnerStartupFlags, signal: AbortSignal): Promise<RunnerExecution>;
   fetch: typeof fetch;
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -79,12 +103,12 @@ export interface RunnerStartupIO {
   store: RunnerStore;
   connect(options: RunnerConnectionOptions): Pick<RunnerConnection, "start" | "stop" | "send">;
   signal: AbortSignal;
-  /** Test/executor seam; product startup persists per-origin/machine limit receipts. */
+  /** Tests use private stores; production persists per-origin/machine receipts. */
   limitsStore?: (origin: string, machineId: string) => Promise<RunnerLimitStore>;
 }
 
 function message(key: string, defaultValue: string, values: Record<string, string | number> = {}) {
-  return t(`cli.runner.${key}`, { defaultValue, ...values });
+  return t(`cli:runner.${key}`, { defaultValue, ...values });
 }
 function failure() {
   return new CliError(
@@ -95,7 +119,7 @@ function failure() {
   );
 }
 
-/** Integer micros, without accepting exponent syntax, Infinity, negatives or fractional micros. */
+/** Legacy E1L parser retained for its tests; startup authority comes only from RunnerPolicy. */
 export function parseRunnerCeilings(flags: RunnerStartupFlags): RunnerCeilings {
   const money = (value: string) => {
     if (!/^\d{1,10}(?:\.\d{1,6})?$/.test(value)) throw new Error();
@@ -281,22 +305,15 @@ export async function completeRunnerClaim(
 }
 
 export async function startRunner(origin: string, flags: RunnerStartupFlags, io: RunnerStartupIO) {
-  let localLimits: RunnerLimitController | undefined;
+  let execution: RunnerExecution | undefined;
+  let cleanup: (() => Promise<void>) | undefined;
   try {
     io.signal.throwIfAborted();
     if (resolveServer({}, origin) !== origin) throw failure();
-    const ceilings = parseRunnerCeilings(flags);
-    io.terminal(
-      message(
-        "ceilings",
-        "Local ceilings: {{match}}/match, {{day}}/day, concurrency {{concurrency}}.",
-        {
-          match: `$${ceilings.matchMicros / 1_000_000}`,
-          day: `$${ceilings.dayMicros / 1_000_000}`,
-          concurrency: ceilings.concurrency,
-        },
-      ),
-    );
+    execution = await io.initialize(flags, io.signal);
+    io.signal.throwIfAborted();
+    const startupNotice = execution.startupNotice();
+    io.terminal(startupNotice);
     let credential: RunnerCredential;
     if (flags.resume !== undefined) {
       if (!id.safeParse(flags.resume).success) throw failure();
@@ -350,82 +367,171 @@ export async function startRunner(origin: string, flags: RunnerStartupFlags, io:
         url: `${origin}${credential.controlPath}`,
       }),
     );
-    io.terminal(
-      message(
-        "waiting",
-        "Connecting runner transport. Match execution is not available in this build.",
-      ),
-    );
+    io.signal.throwIfAborted();
     const limits = await RunnerLimitController.open({
-      hard: ceilings,
+      hard: execution.hardLimits,
       store: await (io.limitsStore ?? runnerLimitFileStore)(origin, credential.machineId),
       terminal: io.terminal,
+      policy: execution.limitPolicy,
     });
-    localLimits = limits;
-    const url = new URL(RUNNER_WS_PATH, origin);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    const restoredNotice = execution.startupNotice();
+    if (restoredNotice !== startupNotice) io.terminal(restoredNotice);
+    // Construction cannot invoke send: E2 begins callbacks only after start().
+    let connection: ReturnType<RunnerStartupIO["connect"]> | undefined;
     let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    let closing: Promise<void> | undefined;
     let cancellation: Promise<void> | undefined;
-    const finish = async () => {
-      // Local cancellation is recorded before closing the transport, whose
-      // terminal callback can run immediately after disconnect.
-      await cancellation;
-      await limits.close(() => {
-        // Stay cancellable through every pending write and release prepare.
-        // Detach only at the store's synchronous successful unlock boundary.
-        clearTimeout(expiryTimer);
-        io.signal.removeEventListener("abort", stop);
-      });
-    };
-    function stop() {
-      cancellation ??= limits.stop();
+    let pendingLimits: Promise<void> = Promise.resolve();
+    let stopped = false;
+    let released = false;
+    let transportFailed = false;
+    let initialized = () => {};
+    const initialization = new Promise<void>((resolve) => {
+      initialized = resolve;
+    });
+    let resolveClosed = () => {};
+    let rejectClosed: (error: CliError) => void = () => {};
+    const closed = new Promise<void>((resolve, reject) => {
+      resolveClosed = resolve;
+      rejectClosed = reject;
+    });
+    void closed.catch(() => {});
+    const localExecution = execution;
+    const detach = () => {
+      released = true;
       clearTimeout(expiryTimer);
       io.signal.removeEventListener("abort", stop);
-      connection.stop();
-      void finish().catch(() => io.terminal(t("cli:runnerStorage")));
-    }
-    const connection = io.connect({
-      url: url.href,
-      credential: credential.credential,
-      allowLocalhostWs: url.protocol === "ws:",
-      socketFactory: createNodeRunnerSocket,
-      hello: () => ({ models: [], engine: false, ...limits.snapshot() }),
-      onTerminal: finish,
-      onMessage: async (incoming, signal) => {
-        if (incoming.type === "offer")
-          connection.send(
-            {
-              type: "reject",
-              matchId: incoming.matchId,
-              payload: { commandId: incoming.payload.commandId, reason: "unsupported" },
-            },
-            signal,
-          );
-        else if (incoming.type === "limits") {
-          const result = await limits.apply(incoming.payload);
-          if (!signal.aborted && !io.signal.aborted)
-            connection.send({ type: "limits-result", payload: result }, signal);
-        } else if (!["ack", "error"].includes(incoming.type)) {
-          connection.send({ type: "error", payload: { code: "UNSUPPORTED" } }, signal);
-        }
-      },
-    });
-    expiryTimer = setTimeout(
-      stop,
-      Math.min(2_147_483_647, Date.parse(credential.expiresAt) - io.now()),
-    );
-    expiryTimer.unref();
-    io.signal.addEventListener("abort", stop, { once: true });
-    if (io.signal.aborted) stop();
-    else connection.start();
-    return {
-      start: () => connection.start(),
-      send: (...args: Parameters<typeof connection.send>) => connection.send(...args),
-      stop,
     };
+    const finish = (): Promise<void> => {
+      if (closing) return closing;
+      stopped = true;
+      clearTimeout(expiryTimer);
+      // Yield until setup has either acquired all its handles or failed. In
+      // particular, never close a journal while execution.open is acquiring it.
+      closing = (async () => {
+        await initialization;
+        let limitFailure = false;
+        try {
+          await pendingLimits;
+        } catch {
+          limitFailure = true;
+        }
+        // Limits may still be applying to policy until the preceding work ends.
+        await localExecution.close();
+        if (limitFailure) throw failure();
+        await cancellation;
+        // Keep local cancellation installed through game writes AND release
+        // preparation. The store invokes detach synchronously after unlocking.
+        await limits.close(detach);
+        // A stop queued during close must settle before lifetime completion.
+        await cancellation;
+        await limits.close(detach);
+      })().catch(() => {
+        throw failure();
+      });
+      void closing.then(
+        () => (transportFailed ? rejectClosed(failure()) : resolveClosed()),
+        () => rejectClosed(failure()),
+      );
+      return closing;
+    };
+    function stop() {
+      if (released) return;
+      // Mark durable stop intent and abort policy synchronously, even when
+      // transport-terminal cleanup already started and is awaiting a write.
+      cancellation ??= limits.stop();
+      void cancellation.catch(() => {});
+      if (!stopped) {
+        stopped = true;
+        connection?.stop();
+      }
+      void finish().catch(() => {});
+    }
+    const terminal = () => {
+      if (!stopped) {
+        transportFailed = true;
+        stopped = true;
+        connection?.stop();
+      }
+      return finish();
+    };
+    cleanup = async () => {
+      stop();
+      await finish();
+    };
+    io.signal.addEventListener("abort", stop);
+    try {
+      if (io.signal.aborted) stop();
+      io.signal.throwIfAborted();
+      const game = await execution.open(
+        origin,
+        credential.machineId,
+        (action, signal) => connection?.send(action, signal) ?? false,
+        io.signal,
+      );
+      io.signal.throwIfAborted();
+      io.terminal(
+        message("waiting", "Connecting runner transport. Local match execution is ready."),
+      );
+      const url = new URL(RUNNER_WS_PATH, origin);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      connection = io.connect({
+        url: url.href,
+        credential: credential.credential,
+        allowLocalhostWs: url.protocol === "ws:",
+        socketFactory: createNodeRunnerSocket,
+        hello: () => ({ ...game.hello, ...limits.snapshot() }),
+        onTerminal: terminal,
+        onMessage: async (incoming, signal) => {
+          if (stopped || signal.aborted || io.signal.aborted) return;
+          if (incoming.type === "limits") {
+            const task = (async () => {
+              const result = await limits.apply(incoming.payload);
+              await localExecution.settleLimits();
+              if (!stopped && !signal.aborted && !io.signal.aborted)
+                connection?.send({ type: "limits-result", payload: result }, signal);
+            })();
+            pendingLimits = Promise.allSettled([pendingLimits, task]).then((results) => {
+              if (results.some((result) => result.status === "rejected")) throw failure();
+            });
+            void pendingLimits.catch(() => {});
+            try {
+              await task;
+            } catch {
+              throw failure();
+            }
+            return;
+          }
+          // Provider work remains background work owned by the game loop.
+          await game.handle(incoming, signal);
+        },
+        onState: (state) => {
+          if (state === "stopped") void terminal().catch(() => {});
+        },
+      });
+      const armExpiry = () => {
+        const remaining = Date.parse(credential.expiresAt) - io.now();
+        if (remaining <= 0) stop();
+        else {
+          expiryTimer = setTimeout(armExpiry, Math.min(2_147_483_647, remaining));
+          expiryTimer.unref();
+        }
+      };
+      armExpiry();
+      if (!stopped) connection.start();
+    } finally {
+      initialized();
+    }
+    return { stop, closed };
   } catch (error) {
-    await localLimits?.close().catch(() => {});
+    try {
+      if (cleanup) await cleanup();
+      else await execution?.close();
+    } catch {
+      throw failure();
+    }
     if (error instanceof CliError) throw error;
+    if (error instanceof RunnerPolicyError) throw new CliError(error.message);
     throw failure();
   }
 }
@@ -480,19 +586,116 @@ export function runnerFileStore(root = configDir()): RunnerStore {
   };
 }
 
-export async function runRunnerStartup(flags: RunnerStartupFlags): Promise<void> {
+/** Only explicitly supplied flags participate in the local file merge. */
+export function localRunnerOverrides(flags: RunnerStartupFlags) {
+  const overrides: Parameters<typeof readLocalRunnerOptions>[0] = {};
+  if (flags.providerUrl !== undefined) overrides.baseUrl = flags.providerUrl;
+  if (flags.allowModel !== undefined) overrides.allowModels = flags.allowModel;
+  if (flags.maxMatchUsd !== undefined) overrides.maxMatchUsd = flags.maxMatchUsd;
+  if (flags.maxDayUsd !== undefined) overrides.maxDayUsd = flags.maxDayUsd;
+  if (flags.maxConcurrency !== undefined) {
+    if (!/^\d+$/.test(flags.maxConcurrency) || !Number.isSafeInteger(Number(flags.maxConcurrency)))
+      throw new CliError(t("cli:runnerConfig"), ExitCode.Usage);
+    overrides.maxConcurrent = Number(flags.maxConcurrency);
+  }
+  return overrides;
+}
+
+/** The real local executor, kept behind the startup IO seam. */
+export async function initializeRunnerExecution(
+  flags: RunnerStartupFlags,
+  signal: AbortSignal,
+): Promise<RunnerExecution> {
+  const options = await readLocalRunnerOptions(localRunnerOverrides(flags));
+  signal.throwIfAborted();
+  const policy = await RunnerPolicy.open(options, { signal });
+  let journal: RunnerJournal | undefined;
+  let game: RunnerGameLoop | undefined;
+  let closing: Promise<void> | undefined;
+  let settlement: Promise<void> = Promise.resolve();
+  const stopActive = () => {
+    if (!game) return;
+    // stopActive aborts immediately, then joins the serialized journal fence.
+    settlement = Promise.allSettled([settlement, game.stopActive()]).then((results) => {
+      if (results.some((result) => result.status === "rejected")) throw failure();
+    });
+    void settlement.catch(() => {});
+  };
+  return {
+    hardLimits: Object.freeze(policy.capabilities().hard),
+    limitPolicy: {
+      restoreOperatingLimits: (limits) => policy.restoreOperatingLimits(limits),
+      applyOperatingLimits: (limits, revision) => {
+        const previous = policy.capabilities().operating;
+        policy.applyOperatingLimits(limits, revision);
+        if (
+          limits.matchMicros < previous.matchMicros ||
+          limits.dayMicros < previous.dayMicros ||
+          limits.concurrency < previous.concurrency
+        )
+          stopActive();
+      },
+      stopOperatingLimits: () => {
+        policy.stopOperatingLimits();
+        stopActive();
+      },
+    },
+    settleLimits: () => settlement,
+    startupNotice: () => policy.startupNotice(),
+    open: async (_origin, _machineId, send, sessionSignal) => {
+      sessionSignal.throwIfAborted();
+      // New claims, websites and config directories cannot erase a prior uncertain turn.
+      journal = await openRunnerJournal(
+        "local-spending-authority",
+        policy.journalScope(),
+        join(homedir(), ".cockpit-chess"),
+      );
+      sessionSignal.throwIfAborted();
+      const engine = await probeRunnerEngine(sessionSignal);
+      sessionSignal.throwIfAborted();
+      game = new RunnerGameLoop({ policy, journal, engine, send });
+      return game;
+    },
+    close: () =>
+      (closing ??= (async () => {
+        if (game) {
+          // The loop owns both handles once constructed, including failed shutdown.
+          try {
+            const results = await Promise.allSettled([settlement, game.close()]);
+            if (results.some((result) => result.status === "rejected")) throw failure();
+          } catch {
+            throw failure();
+          }
+          return;
+        }
+        const results = await Promise.allSettled([policy.close(), journal?.close()]);
+        if (results.some((result) => result.status === "rejected")) throw failure();
+      })()),
+  };
+}
+
+export interface RunnerStartupEnvironment {
+  isPrivateTerminal(): boolean;
+  origin(flags: RunnerStartupFlags): Promise<string>;
+  io: Omit<RunnerStartupIO, "signal">;
+}
+
+export async function runRunnerStartup(
+  flags: RunnerStartupFlags,
+  environment?: RunnerStartupEnvironment,
+): Promise<void> {
   const controller = new AbortController();
   const stop = () => controller.abort();
-  // Repeated signals must not restore the default process termination while
-  // permanent cancellation is still waiting for a durable write.
+  // Repeated signals remain handled until durable local release completes.
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   const cleanup = () => {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
   };
+  let releasePending = false;
   try {
-    if (!process.stderr.isTTY)
+    if (!(environment ? environment.isPrivateTerminal() : process.stderr.isTTY))
       throw new CliError(
         message(
           "terminal",
@@ -500,48 +703,55 @@ export async function runRunnerStartup(flags: RunnerStartupFlags): Promise<void>
         ),
         ExitCode.Usage,
       );
-    const config = await loadConfig();
-    const origin = resolveServer(config, flags.server);
-    const store = runnerFileStore();
-    await startRunner(origin, flags, {
-      fetch: (...args) => fetch(...args),
-      now: Date.now,
-      makeProof: () => randomBytes(32).toString("hex"),
-      sleep: (ms) =>
-        new Promise<void>((resolve) => {
-          const done = () => {
-            clearTimeout(timer);
-            controller.signal.removeEventListener("abort", done);
-            resolve();
-          };
-          const timer = setTimeout(done, ms);
-          controller.signal.addEventListener("abort", done, { once: true });
-          if (controller.signal.aborted) done();
-        }),
-      signal: controller.signal,
-      terminal: (value) => {
-        process.stderr.write(`${value}\n`);
-      },
-      store,
-      connect: (options) =>
-        new RunnerConnection({
-          ...options,
-          onTerminal: async () => {
-            try {
-              await options.onTerminal?.();
-            } catch {
-              // A failed durable release keeps cancellation handlers and the
-              // fail-closed store state; report only fixed local guidance.
-              process.stderr.write(`${t("cli:runnerStorage")}\n`);
-              throw new Error("RUNNER_LIMIT_STORAGE");
-            }
-            cleanup();
+    const origin = environment
+      ? await environment.origin(flags)
+      : resolveServer(await loadConfig(), flags.server);
+    const io: RunnerStartupIO = environment
+      ? { ...environment.io, signal: controller.signal }
+      : {
+          initialize: initializeRunnerExecution,
+          fetch: (...args) => fetch(...args),
+          now: Date.now,
+          makeProof: () => randomBytes(32).toString("hex"),
+          sleep: (ms) =>
+            new Promise<void>((resolve) => {
+              const done = () => {
+                clearTimeout(timer);
+                controller.signal.removeEventListener("abort", done);
+                resolve();
+              };
+              const timer = setTimeout(done, ms);
+              controller.signal.addEventListener("abort", done, { once: true });
+              if (controller.signal.aborted) done();
+            }),
+          signal: controller.signal,
+          terminal: (value) => {
+            process.stderr.write(`${value}\n`);
           },
-        }),
-    });
+          store: runnerFileStore(),
+          connect: (options) => new RunnerConnection(options),
+        };
+    const openLimitsStore = io.limitsStore ?? runnerLimitFileStore;
+    io.limitsStore = async (origin, machineId) => {
+      const store = await openLimitsStore(origin, machineId);
+      releasePending = true;
+      return {
+        ...store,
+        close: (beforeRelease, afterRelease) =>
+          store.close(beforeRelease, () => {
+            afterRelease?.();
+            releasePending = false;
+            cleanup();
+          }),
+      };
+    };
+    const runner = await startRunner(origin, flags, io);
+    await runner.closed;
   } catch (error) {
-    cleanup();
     if (error instanceof CliError) throw error;
+    if (error instanceof RunnerPolicyError) throw new CliError(error.message);
     throw failure();
+  } finally {
+    if (!releasePending) cleanup();
   }
 }

@@ -154,7 +154,8 @@ describe("runner outbound connection", () => {
       matchId: "m",
     });
     expect(h.socket.close).toHaveBeenCalledWith(4400);
-    expect(h.connection.getState()).toBe("disconnected");
+    expect(h.connection.getState()).toBe("stopped");
+    expect(h.onState.mock.calls.at(-1)?.[0]).toBe("stopped");
     expect(h.socket.clientFrames().map((frame) => frame.type)).toEqual(["hello"]);
     expect(vi.getTimerCount()).toBe(0);
     h.connection.stop();
@@ -504,7 +505,8 @@ describe("runner outbound connection", () => {
     }
     expect(delays).toEqual([999, 1999, 3999, 7999, 15999, 29999, 29999, 29999, 29999, 29999]);
     expect(h.socketFactory).toHaveBeenCalledTimes(11);
-    expect(h.connection.getState()).toBe("disconnected");
+    expect(h.connection.getState()).toBe("stopped");
+    expect(h.onState.mock.calls.at(-1)?.[0]).toBe("stopped");
     expect(onTerminal).toHaveBeenCalledOnce();
     h.connection.stop();
     await vi.advanceTimersByTimeAsync(0);
@@ -596,7 +598,8 @@ describe("runner outbound connection", () => {
     h.socket.message("start", { commandId: "c", expectedSeq: 0 }, 2, { matchId: "m" });
     await vi.advanceTimersByTimeAsync(mode === "stall" ? 10000 : 0);
     expect(signal?.aborted).toBe(true);
-    expect(h.connection.getState()).toBe("disconnected");
+    expect(h.connection.getState()).toBe("stopped");
+    expect(h.onState.mock.calls.at(-1)?.[0]).toBe("stopped");
     expect(h.socket.close).toHaveBeenCalledWith(4400);
     expect(vi.getTimerCount()).toBe(0);
     h.connection.stop();
@@ -751,7 +754,7 @@ describe("runner outbound connection", () => {
       throw new Error("private");
     });
     h.socket.welcome();
-    expect(h.connection.getState()).toBe("disconnected");
+    expect(h.connection.getState()).toBe("stopped");
     h.connection.stop();
     const factory = harness({
       socketFactory: () => {

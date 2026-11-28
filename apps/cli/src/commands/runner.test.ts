@@ -25,22 +25,14 @@ describe("default program action", () => {
     try {
       process.argv = ["node", "cockpit-chess"];
       await buildProgram().parseAsync();
-      expect(runRunnerStartup).toHaveBeenCalledExactlyOnceWith({
-        maxMatchUsd: "25",
-        maxDayUsd: "100",
-        maxConcurrency: "8",
-      });
+      expect(runRunnerStartup).toHaveBeenCalledExactlyOnceWith({});
     } finally {
       process.argv = previous;
     }
   });
   it("starts a runner on the exact no-argument executable invocation", async () => {
     await buildProgram().parseAsync(["node", "cockpit-chess"]);
-    expect(runRunnerStartup).toHaveBeenCalledExactlyOnceWith({
-      maxMatchUsd: "25",
-      maxDayUsd: "100",
-      maxConcurrency: "8",
-    });
+    expect(runRunnerStartup).toHaveBeenCalledExactlyOnceWith({});
   });
   it("passes explicit resume and local ceiling flags", async () => {
     await buildProgram().parseAsync([
@@ -63,6 +55,24 @@ describe("default program action", () => {
       maxMatchUsd: "30",
       maxDayUsd: "120",
       maxConcurrency: "12",
+    });
+  });
+  it("passes only explicitly selected local provider options", async () => {
+    await buildProgram().parseAsync([
+      "node",
+      "cockpit-chess",
+      "--provider-url",
+      "http://127.0.0.1:8000/v1",
+      "--allow-model",
+      "local/one",
+      "local/two",
+      "--max-day-usd",
+      "12",
+    ]);
+    expect(runRunnerStartup).toHaveBeenCalledExactlyOnceWith({
+      providerUrl: "http://127.0.0.1:8000/v1",
+      allowModel: ["local/one", "local/two"],
+      maxDayUsd: "12",
     });
   });
   it.each(["login", "chess", "config", "update"])(

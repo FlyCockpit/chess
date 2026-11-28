@@ -2,16 +2,17 @@
 
 The local runner policy is the spending boundary for the paired runner. The
 website never supplies keys, inference endpoints, filesystem paths, provider
-headers or hard limits. The E3a module supplies authority to the E3b game loop;
-it does not enable a remote game executor or change the standalone local lab.
+headers or hard limits. The policy supplies authority to the paired
+[local game loop](./runner-game-loop.md); the standalone local lab keeps its own
+existing local provider configuration.
 
 Startup uses `readLocalRunnerOptions()` and `RunnerPolicy.open()`. The local
 `runner-policy.json` in the CLI config directory may contain `baseUrl`,
 `allowModels`, `maxMatchUsd`, `maxDayUsd` and `maxConcurrent`. Startup flags with
 the same fields override that file. Dollar values are decimal strings with at
-most six decimal places. These options are never wire-message fields. Print
-`policy.startupNotice()` to stderr before pairing; the later CLI command owns
-flag registration and that startup flow.
+most six decimal places. These options are never wire-message fields. The default CLI command prints
+`policy.startupNotice()` to its private terminal before pairing and registers
+these startup options.
 
 Local price-checked ceiling defaults are **$25 per match, $100 per rolling 24 hours and 8 concurrent
 matches**. Operating defaults are **$1, $10 and 2**. Only local startup options

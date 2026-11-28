@@ -364,8 +364,8 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
       }),
     );
     await until(
-      "real PG revocation closes outbound client",
-      () => connection.getState() === "disconnected",
+      "real PG revocation permanently stops outbound client",
+      () => connection.getState() === "stopped",
     );
     connection.stop();
     const negative = await fixture();

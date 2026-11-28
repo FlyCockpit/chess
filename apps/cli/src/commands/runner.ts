@@ -7,24 +7,33 @@ export function registerRunner(program: Command): void {
   program
     .option(
       "--resume <machineId>",
-      t("cli.runner.resumeHelp", {
+      t("cli:runner.resumeHelp", {
         defaultValue: "Resume an existing runner at this server without creating a claim",
       }),
     )
     .option(
       "--max-match-usd <usd>",
-      t("cli.runner.matchHelp", { defaultValue: "Local hard USD ceiling per match" }),
-      "25",
+      t("cli:runner.matchHelp", { defaultValue: "Local hard USD ceiling per match" }),
     )
     .option(
       "--max-day-usd <usd>",
-      t("cli.runner.dayHelp", { defaultValue: "Local hard USD ceiling per day" }),
-      "100",
+      t("cli:runner.dayHelp", { defaultValue: "Local hard USD ceiling per day" }),
     )
     .option(
       "--max-concurrency <count>",
-      t("cli.runner.concurrencyHelp", { defaultValue: "Local hard concurrency ceiling (1–64)" }),
-      "8",
+      t("cli:runner.concurrencyHelp", { defaultValue: "Local hard concurrency ceiling" }),
+    )
+    .option(
+      "--provider-url <url>",
+      t("cli:runner.providerHelp", {
+        defaultValue: "Local inference endpoint (never sent to the server)",
+      }),
+    )
+    .option(
+      "--allow-model <ids...>",
+      t("cli:runner.modelsHelp", {
+        defaultValue: "Local model allowlist (narrows the locally fetched catalog)",
+      }),
     )
     .action(async () => {
       await runRunnerStartup(program.opts<RunnerStartupFlags>());

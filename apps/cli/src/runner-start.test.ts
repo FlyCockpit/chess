@@ -1,15 +1,25 @@
-import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { runnerConfigDigest, runnerMatchConfigSchema } from "@cockpit-chess/chess/runner-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RunnerConnectionOptions } from "./runner-connection";
+import { RunnerConnection, type RunnerConnectionOptions } from "./runner-connection";
+import * as engineModule from "./runner-engine";
+import type { RunnerGameLoop } from "./runner-game";
+import * as journalModule from "./runner-journal";
 import { type RunnerLimitState, runnerLimitFileStore } from "./runner-limits";
+import * as policyModule from "./runner-policy";
+import { RunnerPolicy, readLocalRunnerOptions } from "./runner-policy";
 import {
   completeRunnerClaim,
+  initializeRunnerExecution,
+  localRunnerOverrides,
   type PendingRunnerClaim,
   parseRunnerCeilings,
+  type RunnerExecution,
   type RunnerStartupIO,
   runnerFileStore,
+  runRunnerStartup,
   startRunner,
   terminalClaimant,
 } from "./runner-start";
@@ -34,6 +44,22 @@ const credential = {
   expiresAt: new Date(startTime + 3_600_000).toISOString(),
   ...owner,
 };
+const limitMessage = {
+  version: 1 as const,
+  generation: 1,
+  id: "limit-frame",
+  seq: 1,
+  ack: 0,
+  type: "limits" as const,
+  payload: {
+    commandId: "limit-command",
+    expectedRevision: 0,
+    revision: 1,
+    matchMicros: 2_000_000,
+    dayMicros: 20_000_000,
+    concurrency: 3,
+  },
+};
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 
@@ -54,7 +80,51 @@ function harness(responses: (Response | Error)[] = []) {
     removePending: vi.fn(async () => {}),
   };
   const connect = vi.fn((_options: RunnerConnectionOptions) => connection);
+  const hardLimits = { matchMicros: 25_000_000, dayMicros: 100_000_000, concurrency: 8 };
+  const limitPolicy = {
+    restoreOperatingLimits: vi.fn(),
+    applyOperatingLimits: vi.fn(),
+    stopOperatingLimits: vi.fn(),
+  };
+  const game = {
+    hello: {
+      hardLimits,
+      models: [{ id: "test/local-model", protocol: "openai-chat" as const }],
+      engine: true,
+      operatingLimits: {
+        matchMicros: 1_000_000,
+        dayMicros: 10_000_000,
+        concurrency: 2,
+        revision: 0,
+      },
+    },
+    handle: vi.fn<RunnerGameLoop["handle"]>(async () => {}),
+  };
+  const execution: RunnerExecution = {
+    hardLimits,
+    limitPolicy,
+    settleLimits: vi.fn(async () => {}),
+    startupNotice: vi.fn(
+      () =>
+        "Local price-checked ceilings: USD 25.00 per match, USD 100.00 per rolling 24 hours, 8 concurrent. Operating limits: USD 1.00 per match, USD 10.00 per rolling 24 hours, 2 concurrent.",
+    ),
+    open: vi.fn(async () => game),
+    close: vi.fn(async () => {}),
+  };
+  const initialize = vi.fn<RunnerStartupIO["initialize"]>(async (flags) => {
+    const hard = parseRunnerCeilings(flags);
+    execution.hardLimits = hard;
+    game.hello.hardLimits = hard;
+    game.hello.operatingLimits = {
+      matchMicros: Math.min(1_000_000, hard.matchMicros),
+      dayMicros: Math.min(10_000_000, hard.dayMicros),
+      concurrency: Math.min(2, hard.concurrency),
+      revision: 0,
+    };
+    return execution;
+  });
   const io: RunnerStartupIO = {
+    initialize,
     fetch: fetcher,
     now: () => time,
     sleep: vi.fn(async (ms) => {
@@ -74,10 +144,24 @@ function harness(responses: (Response | Error)[] = []) {
       },
     }),
   };
-  return { io, fetcher, store, connection, connect, controller };
+  return {
+    io,
+    fetcher,
+    store,
+    connection,
+    connect,
+    controller,
+    initialize,
+    execution,
+    game,
+    limitPolicy,
+  };
 }
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("runner startup", () => {
   it("creates a fresh claim, persists before exchange, prints only private links/identity and connects E2", async () => {
@@ -105,7 +189,18 @@ describe("runner startup", () => {
     expect(output).toContain(`${origin}/en-US/runner/claim#runner-claim=${token}`);
     expect(output).toContain("owner@example.com");
     expect(output).toContain(`${origin}/en-US/settings/cli`);
-    expect(output).toContain("$25/match, $100/day, concurrency 8");
+    expect(output).toContain("USD 25.00 per match, USD 100.00 per rolling 24 hours, 8 concurrent");
+    expect(h.initialize).toHaveBeenCalledExactlyOnceWith({}, h.controller.signal);
+    expect(h.initialize.mock.invocationCallOrder[0]).toBeLessThan(
+      h.store.savePending.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(vi.mocked(h.io.terminal).mock.calls[0]?.[0]).toBe(h.execution.startupNotice());
+    expect(h.execution.open).toHaveBeenCalledWith(
+      origin,
+      credential.machineId,
+      expect.any(Function),
+      h.controller.signal,
+    );
     expect(output).not.toContain(secretProof);
     expect(output).not.toContain(credential.credential);
     const options = h.connect.mock.calls[0]?.[0];
@@ -264,7 +359,7 @@ describe("runner startup", () => {
     expect(h.connect).not.toHaveBeenCalled();
   });
 
-  it("rejects execution and excessive operating limits while reporting the local ceiling", async () => {
+  it("delegates game execution and routes operating limits to the local controller", async () => {
     const h = harness();
     h.store.loadCredential.mockResolvedValue(credential);
     await startRunner(
@@ -280,16 +375,28 @@ describe("runner startup", () => {
         ...envelope,
         type: "offer",
         matchId: "match-1",
-        payload: { commandId: "offer-1", configDigest: "a".repeat(64) },
+        payload: {
+          commandId: "offer-1",
+          config: runnerMatchConfigSchema.parse({
+            white: { name: "White", model: "test/local-model", protocol: "openai-chat" },
+            black: { name: "Black", model: "random", protocol: "random" },
+            rules: {},
+            promptVersion: "1",
+          }),
+          configDigest: runnerConfigDigest(
+            runnerMatchConfigSchema.parse({
+              white: { name: "White", model: "test/local-model", protocol: "openai-chat" },
+              black: { name: "Black", model: "random", protocol: "random" },
+              rules: {},
+              promptVersion: "1",
+            }),
+          ),
+        },
       },
       signal,
     );
-    expect(h.connection.send).toHaveBeenLastCalledWith(
-      {
-        type: "reject",
-        matchId: "match-1",
-        payload: { commandId: "offer-1", reason: "unsupported" },
-      },
+    expect(h.game.handle).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "offer", matchId: "match-1" }),
       signal,
     );
     await options?.onMessage?.(
@@ -307,6 +414,7 @@ describe("runner startup", () => {
       },
       signal,
     );
+    expect(h.game.handle).toHaveBeenCalledTimes(1);
     expect(h.connection.send).toHaveBeenLastCalledWith(
       {
         type: "limits-result",
@@ -330,11 +438,55 @@ describe("runner startup", () => {
       },
       signal,
     );
-    expect(h.connection.send).toHaveBeenLastCalledWith(
-      { type: "error", payload: { code: "UNSUPPORTED" } },
+    expect(h.game.handle).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "start" }),
       signal,
     );
+    const send = vi.mocked(h.execution.open).mock.calls[0]?.[2];
+    const action = { type: "error" as const, payload: { code: "UNSUPPORTED" as const } };
+    expect(send?.(action, signal)).toBe(true);
+    expect(h.connection.send).toHaveBeenLastCalledWith(action, signal);
     h.controller.abort();
+  });
+
+  it("prints restored active limits after resume instead of leaving the default notice authoritative", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    h.io.limitsStore = async () => ({
+      load: async () => ({
+        version: 1,
+        stopped: false,
+        receipts: [],
+        operatingLimits: {
+          matchMicros: 2000000,
+          dayMicros: 20000000,
+          concurrency: 3,
+          revision: 4,
+        },
+      }),
+      save: async () => {},
+      close: async (before, after) => {
+        before?.();
+        after?.();
+      },
+    });
+    h.limitPolicy.restoreOperatingLimits.mockImplementationOnce(() => {
+      vi.mocked(h.execution.startupNotice).mockReturnValue(
+        "Restored limits: USD2/match, USD20/day, concurrency3.",
+      );
+    });
+    const runner = await startRunner(origin, { resume: "machine-1" }, h.io);
+    const notices = vi.mocked(h.io.terminal).mock.calls.map(([notice]) => notice);
+    expect(notices[0]).toContain("Operating limits: USD 1.00");
+    expect(notices).toContain("Restored limits: USD2/match, USD20/day, concurrency3.");
+    expect(
+      notices.indexOf("Restored limits: USD2/match, USD20/day, concurrency3."),
+    ).toBeGreaterThan(0);
+    const hello = h.connect.mock.calls[0]?.[0].hello;
+    const capabilities = typeof hello === "function" ? hello() : hello;
+    expect(capabilities?.operatingLimits).toMatchObject({ matchMicros: 2000000, revision: 4 });
+    runner.stop();
+    await runner.closed;
   });
 
   it("applies an operating command once and replays its ACK without changing local ceilings", async () => {
@@ -375,8 +527,192 @@ describe("runner startup", () => {
       signal,
     );
     const hello = typeof options?.hello === "function" ? options.hello() : options?.hello;
+    expect(hello?.models).toEqual(h.game.hello.models);
+    expect(hello?.engine).toBe(true);
     expect(hello?.operatingLimits).toMatchObject({ matchMicros: 2_000_000, revision: 1 });
+    expect(h.limitPolicy.applyOperatingLimits).toHaveBeenCalledExactlyOnceWith(
+      { matchMicros: 2_000_000, dayMicros: 20_000_000, concurrency: 3 },
+      1,
+    );
     runner.stop();
+    await runner.closed;
+  });
+
+  it("restores durable revisions before opening games using the resolved policy ceilings", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    const hard = { matchMicros: 7_000_000, dayMicros: 30_000_000, concurrency: 4 };
+    const restored = { matchMicros: 3_000_000, dayMicros: 15_000_000, concurrency: 3, revision: 7 };
+    h.execution.hardLimits = hard;
+    // These are the resolved file values, independently of the legacy parser defaults.
+    h.initialize.mockResolvedValue(h.execution);
+    h.io.limitsStore = async () => ({
+      load: async () => ({ version: 1, stopped: false, receipts: [], operatingLimits: restored }),
+      save: async () => {},
+      close: async (beforeRelease, afterRelease) => {
+        beforeRelease?.();
+        afterRelease?.();
+      },
+    });
+    const runner = await startRunner(origin, { resume: "machine-1" }, h.io);
+    expect(h.limitPolicy.restoreOperatingLimits).toHaveBeenCalledExactlyOnceWith(restored);
+    expect(h.limitPolicy.restoreOperatingLimits.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(h.execution.open).mock.invocationCallOrder[0] ?? 0,
+    );
+    const hello = h.connect.mock.calls[0]?.[0].hello;
+    expect(typeof hello === "function" ? hello() : hello).toMatchObject({
+      hardLimits: hard,
+      operatingLimits: restored,
+    });
+    runner.stop();
+    await runner.closed;
+  });
+
+  it("rejects above-ceiling commands without changing the policy or clamping the request", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    const runner = await startRunner(origin, { resume: "machine-1" }, h.io);
+    const signal = new AbortController().signal;
+    const update = {
+      ...limitMessage,
+      payload: { ...limitMessage.payload, matchMicros: 26_000_000 },
+    };
+    const options = h.connect.mock.calls[0]?.[0];
+    await options?.onMessage?.(update, signal);
+    expect(h.limitPolicy.applyOperatingLimits).not.toHaveBeenCalled();
+    expect(h.connection.send).toHaveBeenCalledExactlyOnceWith(
+      {
+        type: "limits-result",
+        payload: expect.objectContaining({
+          status: "rejected",
+          reason: "ceiling",
+          revision: 1,
+          operatingLimits: expect.objectContaining({ revision: 0, matchMicros: 1_000_000 }),
+          hardLimits: h.execution.hardLimits,
+        }),
+      },
+      signal,
+    );
+    expect(h.io.terminal).toHaveBeenCalledWith(expect.stringContaining("$26/match"));
+    runner.stop();
+    await runner.closed;
+  });
+
+  it("waits for limit settlement before ACK or game cleanup and suppresses a cancelled ACK", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    let settle = () => {};
+    vi.mocked(h.execution.settleLimits).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const runner = await startRunner(origin, { resume: "machine-1" }, h.io);
+    const options = h.connect.mock.calls[0]?.[0];
+    const session = new AbortController();
+    const pending = options?.onMessage?.(limitMessage, session.signal);
+    await vi.waitFor(() => expect(h.execution.settleLimits).toHaveBeenCalledOnce());
+    expect(h.limitPolicy.applyOperatingLimits).toHaveBeenCalledOnce();
+    expect(h.connection.send).not.toHaveBeenCalled();
+    session.abort();
+    const finishing = options?.onTerminal?.();
+    h.controller.abort();
+    expect(h.limitPolicy.stopOperatingLimits).toHaveBeenCalledOnce();
+    expect(h.execution.close).not.toHaveBeenCalled();
+    settle();
+    await pending;
+    await finishing;
+    await expect(runner.closed).rejects.toThrow(/^Runner startup failed/);
+    expect(h.execution.close).toHaveBeenCalledOnce();
+    expect(h.connection.send).not.toHaveBeenCalled();
+  });
+
+  it("retains the limits lock and abort listener through game cleanup and a late local stop", async () => {
+    const root = await mkdtemp(join(tmpdir(), "runner-game-drain-"));
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    h.io.limitsStore = (server, machine) => runnerLimitFileStore(server, machine, root);
+    let drain = () => {};
+    vi.mocked(h.execution.close).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          drain = resolve;
+        }),
+    );
+    const remove = vi.spyOn(h.controller.signal, "removeEventListener");
+    const runner = await startRunner(origin, { resume: "machine-1" }, h.io);
+    const options = h.connect.mock.calls[0]?.[0];
+    try {
+      const finishing = options?.onTerminal?.();
+      await vi.waitFor(() => expect(h.execution.close).toHaveBeenCalledOnce());
+      expect(remove).not.toHaveBeenCalled();
+      await expect(runnerLimitFileStore(origin, "machine-1", root)).rejects.toThrow();
+      h.controller.abort();
+      expect(h.limitPolicy.stopOperatingLimits).toHaveBeenCalledOnce();
+      expect(remove).not.toHaveBeenCalled();
+      await expect(runnerLimitFileStore(origin, "machine-1", root)).rejects.toThrow();
+      drain();
+      await finishing;
+      await expect(runner.closed).rejects.toThrow(/^Runner startup failed/);
+      expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+      const store = await runnerLimitFileStore(origin, "machine-1", root);
+      try {
+        expect(await store.load()).toMatchObject({ stopped: true });
+      } finally {
+        await store.close();
+      }
+      // A caller holding the old lifetime cannot write after unlock.
+      runner.stop();
+      expect(h.limitPolicy.stopOperatingLimits).toHaveBeenCalledOnce();
+    } finally {
+      drain();
+      await options?.onTerminal?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps cancellation live during release preparation and persists it before synchronous unlock", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    let state: RunnerLimitState | undefined;
+    let prepare = () => {};
+    let unlocked = false;
+    const remove = vi.spyOn(h.controller.signal, "removeEventListener");
+    const close = vi.fn(async (beforeRelease?: () => void, afterRelease?: () => void) => {
+      if (close.mock.calls.length === 1)
+        await new Promise<void>((resolve) => {
+          prepare = resolve;
+        });
+      expect(h.execution.close).toHaveBeenCalledOnce();
+      expect(remove).not.toHaveBeenCalled();
+      beforeRelease?.();
+      expect(state?.stopped).toBe(true);
+      unlocked = true;
+      afterRelease?.();
+      expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    });
+    h.io.limitsStore = async () => ({
+      load: async () => state,
+      save: async (next) => {
+        state = structuredClone(next);
+      },
+      close,
+    });
+    const runner = await startRunner(origin, { resume: "machine-1" }, h.io);
+    const options = h.connect.mock.calls[0]?.[0];
+    const finishing = options?.onTerminal?.();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(unlocked).toBe(false);
+    h.controller.abort();
+    expect(h.limitPolicy.stopOperatingLimits).toHaveBeenCalledOnce();
+    expect(remove).not.toHaveBeenCalled();
+    prepare();
+    await finishing;
+    await expect(runner.closed).rejects.toThrow(/^Runner startup failed/);
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(unlocked).toBe(true);
+    expect(state).toMatchObject({ stopped: true, operatingLimits: { revision: 0 } });
   });
 
   it.each([false, true])(
@@ -626,6 +962,479 @@ describe("runner startup", () => {
       { proof: "d".repeat(64) },
     ]);
     h.controller.abort();
+  });
+});
+
+describe("executable startup lifecycle", () => {
+  const resume = { resume: "machine-1" };
+  const sessionSignal = new AbortController().signal;
+
+  it("does not pair when local initialization fails and hides provider details", async () => {
+    const h = harness();
+    h.initialize.mockRejectedValue(new Error("private-key http://private-provider /private/path"));
+    await expect(startRunner(origin, {}, h.io)).rejects.toMatchObject({
+      name: "CliError",
+      message: expect.stringMatching(/^Runner startup failed/),
+    });
+    expect(h.fetcher).not.toHaveBeenCalled();
+    expect(h.store.savePending).not.toHaveBeenCalled();
+    expect(h.io.makeProof).not.toHaveBeenCalled();
+  });
+
+  it("closes the opened policy after a pairing failure exactly once", async () => {
+    const h = harness([new Error("private-provider-error")]);
+    await expect(startRunner(origin, {}, h.io)).rejects.toThrow(/^Runner startup failed/);
+    expect(h.execution.close).toHaveBeenCalledOnce();
+    expect(h.execution.open).not.toHaveBeenCalled();
+  });
+
+  it("closes initialization if cancellation arrives while it is opening", async () => {
+    const h = harness();
+    h.initialize.mockImplementationOnce(async () => {
+      h.controller.abort();
+      return h.execution;
+    });
+    await expect(startRunner(origin, {}, h.io)).rejects.toThrow(/^Runner startup failed/);
+    expect(h.execution.close).toHaveBeenCalledOnce();
+    expect(h.fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each(["open", "connect", "start"] as const)(
+    "cleans up once after %s fails without leaking details",
+    async (phase) => {
+      const h = harness();
+      h.store.loadCredential.mockResolvedValue(credential);
+      const fail = () => {
+        throw new Error("private provider key and local path");
+      };
+      if (phase === "open") vi.mocked(h.execution.open).mockImplementationOnce(async () => fail());
+      else if (phase === "connect") h.connect.mockImplementationOnce(fail);
+      else h.connection.start.mockImplementationOnce(fail);
+      await expect(startRunner(origin, resume, h.io)).rejects.toThrow(/^Runner startup failed/);
+      expect(h.execution.close).toHaveBeenCalledOnce();
+      if (phase === "start") expect(h.connection.stop).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["load", "save"] as const)(
+    "closes acquired handles once if limit %s fails",
+    async (phase) => {
+      const h = harness();
+      h.store.loadCredential.mockResolvedValue(credential);
+      const fail = async () => {
+        throw new Error("private limits path");
+      };
+      const close = vi.fn(async (beforeRelease?: () => void, afterRelease?: () => void) => {
+        beforeRelease?.();
+        afterRelease?.();
+      });
+      h.io.limitsStore = async () => ({
+        load: phase === "load" ? fail : async () => undefined,
+        save: phase === "save" ? fail : async () => {},
+        close,
+      });
+      await expect(startRunner(origin, resume, h.io)).rejects.toThrow(/^Runner startup failed/);
+      expect(close).toHaveBeenCalledOnce();
+      expect(h.execution.close).toHaveBeenCalledOnce();
+      expect(h.execution.open).not.toHaveBeenCalled();
+      expect(h.limitPolicy.stopOperatingLimits).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("waits for partially opened execution after cancellation before closing handles", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    let complete = () => {};
+    vi.mocked(h.execution.open).mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        complete = resolve;
+      });
+      return h.game;
+    });
+    const close = vi.fn(async (beforeRelease?: () => void, afterRelease?: () => void) => {
+      beforeRelease?.();
+      afterRelease?.();
+    });
+    h.io.limitsStore = async () => ({ load: async () => undefined, save: async () => {}, close });
+    const starting = expect(startRunner(origin, resume, h.io)).rejects.toThrow(
+      /^Runner startup failed/,
+    );
+    await vi.waitFor(() => expect(h.execution.open).toHaveBeenCalledOnce());
+    h.controller.abort();
+    expect(h.limitPolicy.stopOperatingLimits).toHaveBeenCalledOnce();
+    await Promise.resolve();
+    expect(h.execution.close).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    complete();
+    await starting;
+    expect(h.execution.close).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(h.connect).not.toHaveBeenCalled();
+  });
+
+  it("awaits game settlement on abort and makes stop idempotent", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    let settle = () => {};
+    vi.mocked(h.execution.close).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const runner = await startRunner(origin, resume, h.io);
+    let finished = false;
+    void runner.closed.then(() => {
+      finished = true;
+    });
+    h.controller.abort();
+    runner.stop();
+    await vi.waitFor(() => expect(h.execution.close).toHaveBeenCalledOnce());
+    expect(h.connection.stop).toHaveBeenCalledOnce();
+    expect(finished).toBe(false);
+    settle();
+    await runner.closed;
+    expect(finished).toBe(true);
+  });
+
+  it("settles and releases local execution when transport reports stopped", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    const runner = await startRunner(origin, resume, h.io);
+    await h.connect.mock.calls[0]?.[0].onState?.("stopped", sessionSignal);
+    await expect(runner.closed).rejects.toThrow(/^Runner startup failed/);
+    expect(h.connection.stop).toHaveBeenCalledOnce();
+    expect(h.execution.close).toHaveBeenCalledOnce();
+    expect(h.connection.stop.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(h.execution.close).mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("stops and closes on credential expiry", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue({
+      ...credential,
+      expiresAt: new Date(startTime + 1000).toISOString(),
+    });
+    h.io.now = () => startTime + (Date.now() - clockStart);
+    const clockStart = Date.now();
+    const runner = await startRunner(origin, resume, h.io);
+    await vi.advanceTimersByTimeAsync(1000);
+    await runner.closed;
+    expect(h.connection.stop).toHaveBeenCalledOnce();
+    expect(h.execution.close).toHaveBeenCalledOnce();
+  });
+
+  it("does not end a long-lived credential at the Node timer maximum", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const clockStart = Date.now();
+    h.io.now = () => startTime + (Date.now() - clockStart);
+    h.store.loadCredential.mockResolvedValue({
+      ...credential,
+      expiresAt: new Date(startTime + 2_147_483_647 + 1000).toISOString(),
+    });
+    const runner = await startRunner(origin, resume, h.io);
+    await vi.advanceTimersByTimeAsync(2_147_483_647);
+    expect(h.connection.stop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    await runner.closed;
+    expect(h.execution.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps execution open across transient disconnect and cleans up on terminal stopped", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    const runner = await startRunner(origin, resume, h.io);
+    const state = h.connect.mock.calls[0]?.[0].onState;
+    await state?.("disconnected", sessionSignal);
+    expect(h.execution.close).not.toHaveBeenCalled();
+    await state?.("connecting", sessionSignal);
+    await state?.("connected", sessionSignal);
+    expect(h.execution.close).not.toHaveBeenCalled();
+    await state?.("stopped", sessionSignal);
+    await expect(runner.closed).rejects.toThrow(/^Runner startup failed/);
+    expect(h.connection.stop).toHaveBeenCalledOnce();
+    expect(h.execution.close).toHaveBeenCalledOnce();
+  });
+
+  it.each([4400, 4401, 4409])(
+    "settles local execution after the real E2 terminal close %i",
+    async (code) => {
+      const h = harness();
+      h.store.loadCredential.mockResolvedValue(credential);
+      let sockets = 0;
+      h.io.connect = (options) =>
+        new RunnerConnection({
+          ...options,
+          sleep: async () => {},
+          socketFactory: () => {
+            sockets++;
+            return {
+              bufferedAmount: 0,
+              send: () => {},
+              close: () => {},
+              subscribe: (events) => {
+                queueMicrotask(() => events.close(code));
+                return () => {};
+              },
+            };
+          },
+        });
+      const runner = await startRunner(origin, resume, h.io);
+      await expect(runner.closed).rejects.toThrow(/^Runner startup failed/);
+      expect(sockets).toBe(code === 4409 ? 4 : 1);
+      expect(h.execution.close).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("settles local execution when the real E2 exhausts transport retries", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    let attempts = 0;
+    h.io.connect = (options) =>
+      new RunnerConnection({
+        ...options,
+        sleep: async () => {},
+        random: () => 0,
+        socketFactory: () => {
+          attempts++;
+          throw new Error("private transport detail");
+        },
+      });
+    const runner = await startRunner(origin, resume, h.io);
+    await expect(runner.closed).rejects.toThrow(/^Runner startup failed/);
+    expect(attempts).toBe(11);
+    expect(h.execution.close).toHaveBeenCalledOnce();
+  });
+
+  it("reports cleanup failures through a fixed CliError", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    vi.mocked(h.execution.close).mockRejectedValue(new Error("private path"));
+    const runner = await startRunner(origin, resume, h.io);
+    h.controller.abort();
+    await expect(runner.closed).rejects.toThrow(/^Runner startup failed/);
+    expect(h.execution.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the root action and signal listeners alive until cleanup settles", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    let settle = () => {};
+    vi.mocked(h.execution.close).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const beforeInt = process.listenerCount("SIGINT");
+    const beforeTerm = process.listenerCount("SIGTERM");
+    let finished = false;
+    const running = runRunnerStartup(resume, {
+      isPrivateTerminal: () => true,
+      origin: async () => origin,
+      io: h.io,
+    });
+    void running.then(() => {
+      finished = true;
+    });
+    await vi.waitFor(() => expect(h.connection.start).toHaveBeenCalledOnce());
+    expect(finished).toBe(false);
+    expect(process.listenerCount("SIGINT")).toBe(beforeInt + 1);
+    process.emit("SIGTERM");
+    expect(h.connection.stop).toHaveBeenCalledOnce();
+    expect(process.listenerCount("SIGINT")).toBe(beforeInt + 1);
+    expect(process.listenerCount("SIGTERM")).toBe(beforeTerm + 1);
+    expect(finished).toBe(false);
+    await vi.waitFor(() => expect(h.execution.close).toHaveBeenCalledOnce());
+    settle();
+    await running;
+    expect(finished).toBe(true);
+    expect(process.listenerCount("SIGINT")).toBe(beforeInt);
+    expect(process.listenerCount("SIGTERM")).toBe(beforeTerm);
+  });
+
+  it("refuses nonprivate terminals before local initialization or pairing", async () => {
+    const h = harness();
+    await expect(
+      runRunnerStartup(
+        {},
+        { isPrivateTerminal: () => false, origin: async () => origin, io: h.io },
+      ),
+    ).rejects.toMatchObject({ name: "CliError", exitCode: 2 });
+    expect(h.initialize).not.toHaveBeenCalled();
+    expect(h.fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe("local execution initialization", () => {
+  function localIO() {
+    const localOptions = {
+      baseUrl: "http://127.0.0.1:8000/v1",
+      allowModels: ["local/model"],
+      maxMatchUsd: "0.5",
+      maxDayUsd: "2",
+      maxConcurrent: 1,
+    };
+    const readOptions = vi
+      .spyOn(policyModule, "readLocalRunnerOptions")
+      .mockResolvedValue(localOptions);
+    const closePolicy = vi.fn(async () => {});
+    const capabilities = {
+      models: ["local/model"],
+      hard: { matchMicros: 500_000, dayMicros: 2_000_000, concurrency: 1 },
+      operating: { matchMicros: 500_000, dayMicros: 2_000_000, concurrency: 1 },
+      revision: 0,
+    };
+    const openPolicy = vi.spyOn(RunnerPolicy, "open");
+    vi.mocked(openPolicy, { partial: true }).mockResolvedValue({
+      capabilities: () => capabilities,
+      journalScope: () => "a".repeat(64),
+      startupNotice: () => "resolved policy notice",
+      applyOperatingLimits: vi.fn(),
+      restoreOperatingLimits: vi.fn(),
+      stopOperatingLimits: vi.fn(),
+      close: closePolicy,
+    });
+    const closeJournal = vi.fn(async () => {});
+    const journal = {
+      load: vi.fn(async () => undefined),
+      save: vi.fn(async () => {}),
+      close: closeJournal,
+    };
+    const openJournal = vi.spyOn(journalModule, "openRunnerJournal").mockResolvedValue(journal);
+    const probe = vi.spyOn(engineModule, "probeRunnerEngine").mockResolvedValue(true);
+    return {
+      readOptions,
+      localOptions,
+      openPolicy,
+      closePolicy,
+      closeJournal,
+      journal,
+      openJournal,
+      probe,
+    };
+  }
+
+  it("resolves file options once, opens policy with the signal and derives hello locally", async () => {
+    const h = localIO();
+    const signal = new AbortController().signal;
+    const execution = await initializeRunnerExecution(
+      { providerUrl: "http://127.0.0.1:8000/v1", allowModel: ["local/model"] },
+      signal,
+    );
+    expect(h.readOptions).toHaveBeenCalledExactlyOnceWith({
+      baseUrl: "http://127.0.0.1:8000/v1",
+      allowModels: ["local/model"],
+    });
+    expect(h.openPolicy).toHaveBeenCalledExactlyOnceWith(h.localOptions, { signal });
+    expect(execution.startupNotice()).toBe("resolved policy notice");
+    expect(h.openJournal).not.toHaveBeenCalled();
+    const game = await execution.open(origin, "machine-1", () => true, signal);
+    expect(h.openJournal).toHaveBeenCalledExactlyOnceWith(
+      "local-spending-authority",
+      "a".repeat(64),
+      join(homedir(), ".cockpit-chess"),
+    );
+    expect(JSON.stringify(game.hello)).not.toContain("a".repeat(64));
+    expect(h.probe).toHaveBeenCalledExactlyOnceWith(signal);
+    expect(game.hello).toEqual({
+      models: [{ id: "local/model", protocol: "openai-chat" }],
+      engine: true,
+      hardLimits: { matchMicros: 500_000, dayMicros: 2_000_000, concurrency: 1 },
+      operatingLimits: { matchMicros: 500_000, dayMicros: 2_000_000, concurrency: 1, revision: 0 },
+    });
+    expect(JSON.stringify(game.hello)).not.toMatch(/127\.0\.0\.1|baseUrl|credential|apiKey/);
+    await Promise.all([execution.close(), execution.close()]);
+    expect(h.closePolicy).toHaveBeenCalledOnce();
+    expect(h.closeJournal).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the same journal for a new claim, machine and website using the same local authority", async () => {
+    const h = localIO();
+    const signal = new AbortController().signal;
+    const first = await initializeRunnerExecution({}, signal);
+    await first.open(origin, "machine-1", () => true, signal);
+    await first.close();
+    const second = await initializeRunnerExecution({}, signal);
+    await second.open("https://another.example", "machine-2", () => true, signal);
+    await second.close();
+    expect(h.openJournal).toHaveBeenCalledTimes(2);
+    expect(h.openJournal.mock.calls[0]).toEqual(h.openJournal.mock.calls[1]);
+    expect(h.openJournal.mock.calls[1]?.[2]).toBe(join(homedir(), ".cockpit-chess"));
+  });
+
+  it.each(["journal", "probe", "game", "policy-close", "journal-close"])(
+    "releases each acquired handle once when %s fails",
+    async (phase) => {
+      const h = localIO();
+      if (phase === "journal") h.openJournal.mockRejectedValue(new Error("local path"));
+      if (phase === "probe") h.probe.mockRejectedValue(new Error("engine path"));
+      if (phase === "game")
+        vi.mocked(h.openPolicy, { partial: true }).mockResolvedValue({
+          journalScope: () => "a".repeat(64),
+          capabilities: vi
+            .fn()
+            .mockReturnValueOnce({
+              hard: { matchMicros: 500_000, dayMicros: 2_000_000, concurrency: 1 },
+            })
+            .mockImplementation(() => {
+              throw new Error("bad capability");
+            }),
+          startupNotice: () => "safe notice",
+          close: h.closePolicy,
+        });
+      if (phase === "policy-close") h.closePolicy.mockRejectedValue(new Error("ledger path"));
+      if (phase === "journal-close") h.closeJournal.mockRejectedValue(new Error("journal path"));
+      const execution = await initializeRunnerExecution({}, new AbortController().signal);
+      const opened = execution.open(origin, "machine-1", () => true, new AbortController().signal);
+      if (phase === "policy-close" || phase === "journal-close") await opened;
+      else await expect(opened).rejects.toThrow();
+      if (phase === "policy-close" || phase === "journal-close")
+        await expect(execution.close()).rejects.toThrow();
+      else await execution.close();
+      await execution.close().catch(() => {});
+      expect(h.closePolicy).toHaveBeenCalledOnce();
+      expect(h.closeJournal).toHaveBeenCalledTimes(phase === "journal" ? 0 : 1);
+    },
+  );
+
+  it("keeps file configuration when flags are absent and overrides only explicit fields", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "runner-options-"));
+    try {
+      const file = join(dir, "runner-policy.json");
+      const config = {
+        baseUrl: "http://127.0.0.1:8000/v1",
+        allowModels: ["local/file"],
+        maxMatchUsd: "7",
+        maxDayUsd: "20",
+        maxConcurrent: 3,
+      };
+      await writeFile(file, JSON.stringify(config));
+      expect(localRunnerOverrides({ server: origin, resume: "machine-1" })).toEqual({});
+      expect(await readLocalRunnerOptions(localRunnerOverrides({}), file)).toEqual(config);
+      expect(
+        await readLocalRunnerOptions(
+          localRunnerOverrides({
+            maxDayUsd: "40",
+            maxConcurrency: "4",
+            providerUrl: "http://localhost:9000/v1",
+            allowModel: ["local/flag"],
+          }),
+          file,
+        ),
+      ).toEqual({
+        ...config,
+        maxDayUsd: "40",
+        maxConcurrent: 4,
+        baseUrl: "http://localhost:9000/v1",
+        allowModels: ["local/flag"],
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

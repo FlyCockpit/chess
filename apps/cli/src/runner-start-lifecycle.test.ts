@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { RunnerConnection, RunnerSocketEvents } from "./runner-connection";
+import { RunnerConnection, type RunnerSocketEvents } from "./runner-connection";
 
 const fixture = vi.hoisted(() => ({
   connection: undefined as RunnerConnection | undefined,
@@ -66,7 +66,7 @@ vi.mock("./runner-limits", async (importOriginal) => {
 });
 
 import { runnerLimitFileStore } from "./runner-limits";
-import { runnerFileStore, runRunnerStartup } from "./runner-start";
+import { type RunnerExecution, runnerFileStore, runRunnerStartup } from "./runner-start";
 
 const origin = "https://runner.example.com";
 const machineId = "production-lifecycle";
@@ -82,18 +82,40 @@ describe("production runner shutdown wiring", () => {
     "keeps OS cancellation live through durable release ($signal, terminal first: $terminalFirst)",
     async ({ terminalFirst, signal }) => {
       const root = await mkdtemp(join(tmpdir(), "runner-production-lifecycle-"));
-      const oldTty = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
       const oldInterrupts = new Set(process.listeners("SIGINT"));
       const oldTerminates = new Set(process.listeners("SIGTERM"));
-      Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
-      vi.stubEnv("COCKPIT_CHESS_CONFIG_DIR", root);
-      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       fixture.connection = undefined;
       fixture.events = undefined;
       fixture.terminal = undefined;
       fixture.release = undefined;
       fixture.blockNext = false;
       fixture.sent.mockClear();
+      const execution: RunnerExecution = {
+        hardLimits: { matchMicros: 25_000_000, dayMicros: 100_000_000, concurrency: 8 },
+        limitPolicy: {
+          restoreOperatingLimits: vi.fn(),
+          applyOperatingLimits: vi.fn(),
+          stopOperatingLimits: vi.fn(),
+        },
+        settleLimits: async () => {},
+        startupNotice: () => "synthetic local policy",
+        open: async () => ({
+          hello: {
+            models: [],
+            engine: false,
+            hardLimits: { matchMicros: 25_000_000, dayMicros: 100_000_000, concurrency: 8 },
+            operatingLimits: {
+              matchMicros: 1_000_000,
+              dayMicros: 10_000_000,
+              concurrency: 2,
+              revision: 0,
+            },
+          },
+          handle: async () => {},
+        }),
+        close: vi.fn(async () => {}),
+      };
+      let running: Promise<unknown> | undefined;
       try {
         await runnerFileStore(root).saveCredential(origin, {
           machineId,
@@ -102,7 +124,34 @@ describe("production runner shutdown wiring", () => {
           claimant: { email: "owner@example.com" },
           controlPath: "/en-US/settings/cli",
         });
-        await runRunnerStartup({ server: origin, resume: machineId });
+        // Start the real entry lifetime, then drive E2 while it remains pending.
+        // Only local execution initialization and socket IO are synthetic.
+        running = runRunnerStartup(
+          { server: origin, resume: machineId },
+          {
+            isPrivateTerminal: () => true,
+            origin: async () => origin,
+            io: {
+              initialize: async () => execution,
+              fetch: vi.fn<typeof fetch>(async () => {
+                throw new Error("unexpected network");
+              }),
+              now: Date.now,
+              sleep: async () => {},
+              makeProof: () => {
+                throw new Error("unexpected pairing");
+              },
+              terminal: vi.fn(),
+              store: runnerFileStore(root),
+              limitsStore: (server, machine) => runnerLimitFileStore(server, machine, root),
+              connect: (options) => new RunnerConnection(options),
+            },
+          },
+        ).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        await vi.waitFor(() => expect(fixture.events).toBeDefined());
         expect(process.listenerCount("SIGINT")).toBe(oldInterrupts.size + 1);
         expect(process.listenerCount("SIGTERM")).toBe(oldTerminates.size + 1);
         const events = currentFixture().events;
@@ -153,6 +202,12 @@ describe("production runner shutdown wiring", () => {
         await expect(runnerLimitFileStore(origin, machineId, root)).rejects.toThrow();
         currentFixture().release?.();
         await fixture.terminal;
+        const result = await running;
+        if (terminalFirst) expect(result).toMatchObject({ name: "CliError" });
+        else expect(result).toBeUndefined();
+        expect(execution.close).toHaveBeenCalledOnce();
+        expect(execution.limitPolicy.stopOperatingLimits).toHaveBeenCalled();
+        expect(execution.limitPolicy.applyOperatingLimits).not.toHaveBeenCalled();
         expect(process.listenerCount("SIGINT")).toBe(oldInterrupts.size);
         expect(process.listenerCount("SIGTERM")).toBe(oldTerminates.size);
         const store = await runnerLimitFileStore(origin, machineId, root);
@@ -172,14 +227,11 @@ describe("production runner shutdown wiring", () => {
         currentFixture().release?.();
         currentFixture().connection?.stop();
         await currentFixture().terminal?.catch(() => {});
+        await running;
         for (const listener of process.listeners("SIGINT"))
           if (!oldInterrupts.has(listener)) process.removeListener("SIGINT", listener);
         for (const listener of process.listeners("SIGTERM"))
           if (!oldTerminates.has(listener)) process.removeListener("SIGTERM", listener);
-        stderr.mockRestore();
-        if (oldTty) Object.defineProperty(process.stderr, "isTTY", oldTty);
-        else Reflect.deleteProperty(process.stderr, "isTTY");
-        vi.unstubAllEnvs();
         await rm(root, { recursive: true, force: true });
       }
     },

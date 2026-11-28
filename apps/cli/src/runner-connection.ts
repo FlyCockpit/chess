@@ -526,6 +526,7 @@ export class RunnerConnection {
     if (code === 4400 || code === 4401 || !reconnect) this.markTerminal();
     if (code === 4409 && ++this.replacements > MAX_REPLACEMENTS) this.markTerminal();
     if (!this.terminal) this.retry();
+    else this.stop();
   }
 
   private retry(): void {
@@ -533,6 +534,7 @@ export class RunnerConnection {
     this.setState("disconnected");
     if (this.terminal || this.reconnects >= MAX_RECONNECTS) {
       this.markTerminal();
+      this.stop();
       return;
     }
     const cap = Math.min(30_000, 1000 * 2 ** this.reconnects++);
@@ -546,10 +548,14 @@ export class RunnerConnection {
           if (!this.terminal && !this.lifetime.signal.aborted) this.connect();
         })
         .catch(() => {
-          if (!this.lifetime.signal.aborted) this.markTerminal();
+          if (!this.lifetime.signal.aborted) {
+            this.markTerminal();
+            this.stop();
+          }
         });
     } catch {
       this.markTerminal();
+      this.stop();
     }
   }
 
