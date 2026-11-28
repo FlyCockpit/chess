@@ -518,13 +518,16 @@ export async function chessHumanCheck() {
       false,
     );
 
-    console.log("chess-human: stop/move races in both database lock orders");
-    const blockedUpdates = async () => {
-      const { rows } = await observer.query(`SELECT count(*)::int AS n FROM pg_stat_activity
-        WHERE datname = current_database() AND pid <> pg_backend_pid()
-          AND cardinality(pg_blocking_pids(pid)) > 0
-          AND query ~* 'UPDATE .*chess_match'`);
-      return rows[0].n;
+    console.log("chess-human: stop/move races in both credential-lock acquisition orders");
+    const blockedUpdates = async (holderPid) => {
+      const { rows } = await observer.query(
+        `SELECT pid FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND $1::int = ANY(pg_blocking_pids(pid))
+            AND query ~* 'UPDATE .*chess_match'`,
+        [holderPid],
+      );
+      return rows;
     };
     for (const moveFirst of [true, false]) {
       const raceOwner = await person();
@@ -539,15 +542,32 @@ export async function chessHumanCheck() {
         const stopping = () => raceOwner.api.stop({ slug: racing.slug });
         // Observe failures immediately, including while the other call is staged.
         pending.push(Promise.allSettled([(moveFirst ? moving : stopping)()]));
-        await bounded(
-          "first stop/move waits at row CAS",
-          async () => (await blockedUpdates()) >= 1,
-        );
+        let firstPid;
+        await bounded("first stop/move waits at its held match row", async () => {
+          const writers = await blockedUpdates(holder.processID);
+          if (writers.length !== 1) return false;
+          firstPid = writers[0].pid;
+          return true;
+        });
         pending.push(Promise.allSettled([(moveFirst ? stopping : moving)()]));
-        await bounded(
-          "second stop/move waits at row CAS",
-          async () => (await blockedUpdates()) >= 2,
-        );
+        // Both controls take the owner's credential lock before the match CAS.
+        // Keep the first writer blocked on our row while proving that the second
+        // request waits on that exact writer's advisory lock, not another row.
+        await bounded("second stop/move waits behind the first credential holder", async () => {
+          const { rows } = await observer.query(
+            `SELECT waiting.pid FROM pg_stat_activity waiting
+              JOIN pg_stat_activity writer ON writer.pid = $1::int
+              WHERE waiting.datname = current_database()
+                AND waiting.pid <> writer.pid
+                AND waiting.wait_event = 'advisory'
+                AND waiting.query ~* 'pg_advisory_xact_lock'
+                AND writer.query ~* 'UPDATE .*chess_match'
+                AND $2::int = ANY(pg_blocking_pids(writer.pid))
+                AND writer.pid = ANY(pg_blocking_pids(waiting.pid))`,
+            [firstPid, holder.processID],
+          );
+          return rows.length === 1;
+        });
         await holder.query("COMMIT");
       } finally {
         await holder.query("ROLLBACK");
@@ -558,14 +578,19 @@ export async function chessHumanCheck() {
       const stopResult = results[moveFirst ? 1 : 0];
       const moveResult = results[moveFirst ? 0 : 1];
       assert.equal(stopResult.status, "fulfilled");
-      if (!moveFirst) {
+      assert.equal(stopResult.value.stopped, true);
+      if (moveFirst) {
+        assert.equal(moveResult.status, "fulfilled");
+        assert.equal(moveResult.value.status, "queued");
+      } else {
         assert.equal(moveResult.status, "rejected");
         assert.equal(moveResult.reason.code, "CONFLICT");
       }
       const stopped = await coherent(racing);
       assert.equal(stopped.status, "stopped");
-      assert.ok(
-        stopped.archive.events.filter((e) => e.type === "attempt" && e.accepted).length <= 1,
+      assert.equal(
+        stopped.archive.events.filter((e) => e.type === "attempt" && e.accepted).length,
+        moveFirst ? 1 : 0,
       );
       const before = requests.length;
       await run(stopped);

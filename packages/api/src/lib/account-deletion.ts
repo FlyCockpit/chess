@@ -9,6 +9,8 @@ import prisma, { Prisma } from "@cockpit-chess/db";
 import { ORPCError } from "@orpc/server";
 import { type AdminMutationActor, withAdminRemovalGuard } from "./admin-presence";
 import { CHESS_CREATE_LOCK } from "./chess-locks";
+import { forEachPage, keysetWhere } from "./pagination";
+import { isTwoFactorPolicySatisfied } from "./two-factor-policy";
 
 const REAUTH_AGE_MS = 5 * 60_000;
 const TRANSACTION_TIMEOUT_MS = 30_000;
@@ -52,8 +54,10 @@ async function assertRecentBrowserSession(
  * D2b resumes the bounded physical cleanup from deletionState/deletionCursor.
  *
  * Acquire password -> CLI credentials -> setup -> admission BEFORE starting
- * the Serializable admin-removal snapshot. A waiting Serializable transaction
- * would otherwise miss a credential or match committed by the previous holder.
+ * the Serializable admin-removal snapshot. That short transaction commits the
+ * marker and credential revocations without reading or writing hot match rows.
+ * Settle matches on this ReadCommitted client afterwards: a crash still leaves
+ * a durable pending fence and cannot roll access/spending authority back.
  */
 export async function requestAccountDeletion(
   userId: string,
@@ -69,9 +73,9 @@ export async function requestAccountDeletion(
           await lockCliCredentials(userId, locks);
           await lockSetPasswordLinks(userId, locks);
           await locks.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CHESS_CREATE_LOCK}))::text AS locked`;
-          // A worker may persist an admitted move/heartbeat after the Serializable
-          // snapshot starts. Retry that snapshot, retaining every outer lock so
-          // no new dispatch, credential or admission can enter between attempts.
+          // Only authority contention can invalidate the short snapshot. Hot
+          // match writes are deliberately outside it. Retain the original bounded
+          // retry/deadline and all locks until ReadCommitted settlement completes.
           for (let attempt = 1; ; attempt++) {
             try {
               const remaining = Math.floor(deadline - performance.now());
@@ -79,7 +83,7 @@ export async function requestAccountDeletion(
                 throw new ORPCError("SERVICE_UNAVAILABLE", {
                   message: "Account security is still updating. Try again shortly.",
                 });
-              return await withAdminRemovalGuard(
+              const accepted = await withAdminRemovalGuard<DeletionStatus>(
                 userId,
                 async (tx, target) => {
                   const user = await tx.user.findUniqueOrThrow({
@@ -87,6 +91,9 @@ export async function requestAccountDeletion(
                     select: {
                       deletionRequestedAt: true,
                       deletionState: true,
+                      role: true,
+                      twoFactorEnabled: true,
+                      createdAt: true,
                       banned: true,
                       banExpires: true,
                     },
@@ -107,31 +114,26 @@ export async function requestAccountDeletion(
                         data: { reason: "ADMIN_TRANSFER_REQUIRED" },
                       });
                     await assertRecentBrowserSession(tx, userId, authority.sessionId, now);
+                    // The route's policy snapshot predates the owner-lock wait.
+                    // Read current policy on this authority transaction, not a
+                    // cached/global client, before committing destructive intent.
+                    if (!(await isTwoFactorPolicySatisfied(user, tx)))
+                      throw new ORPCError("FORBIDDEN", {
+                        message: "Two-factor authentication setup is required.",
+                      });
                   }
                   await tx.user.update({
                     where: { id: userId },
                     data: { deletionRequestedAt: now, deletionState: "pending" },
                     select: { id: true },
                   });
-                  // Set deletion's cause before the generic reset revoker settles
-                  // anything: the official ledger's first terminal write is final.
-                  await tx.chessMatch.updateMany({
-                    where: { ownerId: userId, status: { in: ["queued", "running"] } },
-                    data: {
-                      status: "stopped",
-                      runToken: null,
-                      terminalCause: "owner-delete",
-                      ending: { kind: "cancelled" },
-                      turnType: "idle",
-                      turnId: null,
-                      turnSide: null,
-                      turnExpectedSeq: null,
-                      turnStartedAt: null,
-                      turnDeadline: null,
-                      pendingMove: Prisma.DbNull,
-                    },
+                  // Match writes belong to the outer ReadCommitted transaction,
+                  // never this authority snapshot. The pending marker is the
+                  // durable refusal for every future credential/spend action;
+                  // worker effect writes take our credential lock before checking it.
+                  await revokeCredentialsInTransaction(tx, userId, {
+                    activeMatches: "deletion-pending",
                   });
-                  await revokeCredentialsInTransaction(tx, userId);
                   await tx.openRouterConnection.deleteMany({ where: { userId } });
                   return { status: "pending", requestedAt: now, phase: "pending", complete: false };
                 },
@@ -139,6 +141,82 @@ export async function requestAccountDeletion(
                 undefined,
                 Math.min(20_000, remaining),
               );
+              // The fence and revocations are durable now. Finish the active
+              // matches in ReadCommitted before releasing any lock or
+              // answering. A failure leaves pending intent for safe cleanup retry.
+              await locks.chessMatch.updateMany({
+                where: {
+                  ownerId: userId,
+                  source: { not: "runner" },
+                  status: { in: ["queued", "running"] },
+                },
+                data: {
+                  status: "stopped",
+                  runToken: null,
+                  terminalCause: "owner-delete",
+                  ending: { kind: "cancelled" },
+                  turnType: "idle",
+                  turnId: null,
+                  turnSide: null,
+                  turnExpectedSeq: null,
+                  turnStartedAt: null,
+                  turnDeadline: null,
+                  pendingMove: Prisma.DbNull,
+                },
+              });
+              // Runner state and its outbox share the terminal transition. A
+              // bounded keyset scan preserves the existing per-match CAS and
+              // cancels commands only for rows this request actually stopped.
+              await forEachPage(
+                ({ take, afterId }) =>
+                  locks.chessMatch.findMany({
+                    where: {
+                      ownerId: userId,
+                      source: "runner",
+                      status: { in: ["queued", "running"] },
+                      ...keysetWhere(afterId),
+                    },
+                    select: { id: true },
+                    orderBy: { id: "asc" },
+                    take,
+                  }),
+                50,
+                async (rows) => {
+                  for (const row of rows) {
+                    const stopped = await locks.chessMatch.updateMany({
+                      where: {
+                        id: row.id,
+                        ownerId: userId,
+                        source: "runner",
+                        status: { in: ["queued", "running"] },
+                      },
+                      data: {
+                        status: "stopped",
+                        runToken: null,
+                        terminalCause: "owner-delete",
+                        ending: { kind: "cancelled" },
+                        turnType: "idle",
+                        turnId: null,
+                        turnSide: null,
+                        turnExpectedSeq: null,
+                        turnStartedAt: null,
+                        turnDeadline: null,
+                        pendingMove: Prisma.DbNull,
+                        runnerState: "stopped",
+                        runnerGeneration: null,
+                        runnerResumeDeadline: null,
+                        runnerRevision: { increment: 1 },
+                      },
+                    });
+                    if (stopped.count === 1)
+                      await locks.runnerCommand.updateMany({
+                        where: { matchId: row.id, ackedAt: null, cancelledAt: null },
+                        data: { cancelledAt: new Date() },
+                      });
+                  }
+                },
+              );
+              return accepted;
             } catch (error) {
               if (
                 attempt >= DELETION_ATTEMPTS ||

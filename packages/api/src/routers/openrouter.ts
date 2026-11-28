@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { dispatchForActiveOwner } from "@cockpit-chess/auth/account-deletion";
+import {
+  lockCliCredentials,
+  withCliCredentialLockSlot,
+} from "@cockpit-chess/auth/device-redemption-lock";
 import prisma, { type Prisma } from "@cockpit-chess/db";
 import { redisConnection } from "@cockpit-chess/queue";
 import {
@@ -75,6 +80,7 @@ async function readLiveInfo(userId: string, keyHash: string): Promise<Live> {
   // is cut off before the lease could run out.
   const holder = randomUUID();
   const leasedAt = Date.now();
+  const leasedMono = performance.now();
   const leased = await holdChessKeyLease(redisConnection, userId, holder).then(
     () => true,
     () => false,
@@ -85,7 +91,19 @@ async function readLiveInfo(userId: string, keyHash: string): Promise<Live> {
     const left = leasedAt + CHESS_KEY_LEASE_FENCE_MS - Date.now();
     if (key.state === "ok" && key.keyHash === keyHash && left > 1000) {
       try {
-        info = await fetchOpenRouterKeyInfo(key.apiKey, fetch, AbortSignal.timeout(left));
+        // A loaded key and its lease do not authorize a request after deletion.
+        // Recheck both authority and the original deadlines at the actual send.
+        const ownerFetch: typeof fetch = (input, init) =>
+          dispatchForActiveOwner(userId, () => {
+            init?.signal?.throwIfAborted();
+            if (
+              Date.now() >= leasedAt + CHESS_KEY_LEASE_FENCE_MS ||
+              performance.now() - leasedMono >= CHESS_KEY_LEASE_FENCE_MS
+            )
+              throw new OpenRouterAccountError("unavailable");
+            return fetch(input, init);
+          });
+        info = await fetchOpenRouterKeyInfo(key.apiKey, ownerFetch, AbortSignal.timeout(left));
       } catch (error) {
         if (error instanceof OpenRouterAccountError && error.code === "rejected") {
           rejected = true;
@@ -262,61 +280,75 @@ export const openrouterRouter = {
       });
     // Everything before the wait gets at most half the deadline; a transaction that runs
     // out rolls back (nothing deleted) and the user tries again.
-    const transaction = prisma.$transaction(
-      async (tx) => {
-        // The create lock: no own-key match is queued for this user after the cancel
-        // below (create re-checks the connection under it).
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CHESS_CREATE_LOCK}))::text AS locked`;
-        const found = await tx.openRouterConnection.findUnique({
-          where: { userId },
-          select: { keyHash: true },
-        });
-        // Lock before making revocation visible outside this transaction. Otherwise
-        // a worker can observe Redis revocation and settle an account error while
-        // Disconnect is still trying to acquire the row for owner withdrawal.
-        // pagination:audited — admission permits one active own-key match per owner;
-        // lock any surviving active rows, without returning match data to the caller.
-        await tx.$queryRaw`SELECT "id" FROM "chess_match"
+    const transaction = withCliCredentialLockSlot(() => {
+      // A queued lock-slot waiter must not begin effects after the caller's
+      // bounded transaction window has already expired.
+      if (Date.now() >= deadline - DISCONNECT_DEADLINE_MS / 2) throw unavailable();
+      return prisma.$transaction(
+        async (tx) => {
+          // Keep credential -> admission -> match ordering shared with deletion.
+          await lockCliCredentials(userId, tx);
+          const owner = await tx.user.findUnique({
+            where: { id: userId },
+            select: { deletionRequestedAt: true },
+          });
+          if (!owner) throw new ORPCError("UNAUTHORIZED");
+          // The create lock: no own-key match is queued for this user after the cancel
+          // below (create re-checks the connection under it).
+          await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CHESS_CREATE_LOCK}))::text AS locked`;
+          const found = await tx.openRouterConnection.findUnique({
+            where: { userId },
+            select: { keyHash: true },
+          });
+          // Lock before making revocation visible outside this transaction. Otherwise
+          // a worker can observe Redis revocation and settle an account error while
+          // Disconnect is still trying to acquire the row for owner withdrawal.
+          // pagination:audited — admission permits one active own-key match per owner;
+          // lock any surviving active rows, without returning match data to the caller.
+          await tx.$queryRaw`SELECT "id" FROM "chess_match"
           WHERE "ownerId" = ${userId} AND "credentialSource" = 'owner-openrouter'
             AND "status" IN ('queued', 'running')
           ORDER BY "id" FOR UPDATE`;
-        // Revoked before the row goes: a run that loaded the key before the delete
-        // commits finds it on this list. Without the list nothing is deleted.
-        const recorded = await within(
-          () => recordChessKeyRevoked(redisConnection, userId, found?.keyHash ?? null),
-          Math.min(deadline, Date.now() + 2000),
-        );
-        if (!recorded) throw unavailable();
-        // That exact key: one connected meanwhile (another tab's callback) stays.
-        if (found)
-          await tx.openRouterConnection.deleteMany({ where: { userId, keyHash: found.keyHash } });
-        const after = await tx.openRouterConnection.findUnique({
-          where: { userId },
-          select: { keyHash: true },
-        });
-        // Disconnect is an owner withdrawal, including running starts. Clear the
-        // claim now so a late provider reply cannot replace the durable withdrawal.
-        // Key-use leases below still determine when the stop can be confirmed.
-        if (!after)
-          await tx.chessMatch.updateMany({
-            where: {
-              ownerId: userId,
-              source: "hosted",
-              credentialSource: "owner-openrouter",
-              status: { in: ["queued", "running"] },
-            },
-            data: {
-              status: "error",
-              runToken: null,
-              ...chessTurnData({ type: "idle" }),
-              ending: CREDENTIAL_REVOKED_ENDING,
-              terminalCause: "owner-disconnect",
-            },
+          // Revoked before the row goes: a run that loaded the key before the delete
+          // commits finds it on this list. Without the list nothing is deleted.
+          const recorded = await within(
+            () => recordChessKeyRevoked(redisConnection, userId, found?.keyHash ?? null),
+            Math.min(deadline, Date.now() + 2000),
+          );
+          if (!recorded) throw unavailable();
+          // That exact key: one connected meanwhile (another tab's callback) stays.
+          if (found)
+            await tx.openRouterConnection.deleteMany({ where: { userId, keyHash: found.keyHash } });
+          const after = await tx.openRouterConnection.findUnique({
+            where: { userId },
+            select: { keyHash: true },
           });
-        return { found, revoked: recorded, connected: after?.keyHash ?? null };
-      },
-      { maxWait: DISCONNECT_DEADLINE_MS / 4, timeout: DISCONNECT_DEADLINE_MS / 2 },
-    );
+          // Disconnect is an owner withdrawal, including running starts. Clear the
+          // claim now so a late provider reply cannot replace the durable withdrawal.
+          // Key-use leases below still determine when the stop can be confirmed.
+          if (!after)
+            await tx.chessMatch.updateMany({
+              where: {
+                ownerId: userId,
+                source: "hosted",
+                credentialSource: "owner-openrouter",
+                status: { in: ["queued", "running"] },
+              },
+              data: {
+                status: owner.deletionRequestedAt ? "stopped" : "error",
+                runToken: null,
+                ...chessTurnData({ type: "idle" }),
+                ending: owner.deletionRequestedAt
+                  ? { kind: "cancelled" }
+                  : CREDENTIAL_REVOKED_ENDING,
+                terminalCause: owner.deletionRequestedAt ? "owner-delete" : "owner-disconnect",
+              },
+            });
+          return { found, revoked: recorded, connected: after?.keyHash ?? null };
+        },
+        { maxWait: DISCONNECT_DEADLINE_MS / 4, timeout: DISCONNECT_DEADLINE_MS / 2 },
+      );
+    });
     transaction.catch(() => undefined);
     // A database that stalls past half the deadline leaves the outcome unknown: say so
     // (trying again repeats everything) instead of hanging.

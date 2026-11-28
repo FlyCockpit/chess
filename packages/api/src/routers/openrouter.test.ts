@@ -13,7 +13,7 @@ const { env } = vi.hoisted(() => ({
   env: {
     OPENROUTER_ORIGIN: "https://openrouter.test",
     CHESS_PROVIDER_KEY_SECRET: "11".repeat(32) as string | undefined,
-    CHESS_PROVIDER_KEY_SECRET_PREVIOUS: undefined,
+    CHESS_PROVIDER_KEY_SECRET_PREVIOUS: undefined as string | undefined,
     CHESS_HOSTED_ENABLED: true,
     CHESS_USER_MATCHES_ENABLED: true,
   },
@@ -98,6 +98,9 @@ beforeEach(() => {
   resetOpenRouterStatusCache();
   invalidateForceTwoFactorSettingsCache();
   db.appSetting.findMany.mockResolvedValue([]);
+  db.$transaction.mockImplementation((async (run: (tx: typeof db) => unknown) => run(db)) as never);
+  db.user.findUnique.mockResolvedValue({ deletionRequestedAt: null } as never);
+  env.CHESS_PROVIDER_KEY_SECRET_PREVIOUS = undefined;
   env.CHESS_USER_MATCHES_ENABLED = true;
 });
 
@@ -132,6 +135,99 @@ describe("openrouter.status", () => {
     // Cached: a second read within a minute does not call OpenRouter again.
     await client().status();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("never uses a captured key after deletion commits while its re-seal is waiting", async () => {
+    env.CHESS_PROVIDER_KEY_SECRET_PREVIOUS = "33".repeat(32);
+    db.openRouterConnection.findUnique.mockResolvedValue({
+      ...stored("user-a"),
+      ...sealProviderKey("user-a", CANARY, env.CHESS_PROVIDER_KEY_SECRET_PREVIOUS),
+    } as never);
+    let release: (result: { count: number }) => void = () => undefined;
+    const resealing = new Promise<{ count: number }>((resolve) => {
+      release = resolve;
+    });
+    db.openRouterConnection.updateMany.mockImplementationOnce(() => resealing as never);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(keyResponse());
+    const reading = client().status();
+    await vi.waitFor(() => expect(db.openRouterConnection.updateMany).toHaveBeenCalledOnce());
+    // The loader holds a decrypted key but has not reached the actual-send gate.
+    expect(db.user.findUnique).not.toHaveBeenCalled();
+    db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() } as never);
+    db.openRouterConnection.findUnique.mockResolvedValue(null);
+    release({ count: 0 });
+    expect(await reading).toMatchObject({ live: false, label: "Cockpit Chess (stored)" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(db.openRouterConnection.updateMany).toHaveBeenCalledOnce();
+    expect([
+      ...(fake.valkey.sets.get("cockpit-chess:openrouter-key-use:user-a")?.keys() ?? []),
+    ]).toEqual([]);
+  });
+
+  it("does not start introspection after its lease expires waiting for the owner lock", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      db.openRouterConnection.findUnique.mockResolvedValue(stored("user-a") as never);
+      let release: () => void = () => undefined;
+      const locked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      db.$executeRaw.mockResolvedValueOnce(0).mockImplementationOnce(() => locked as never);
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(keyResponse());
+      const reading = client().status();
+      await vi.waitFor(() => expect(db.$executeRaw).toHaveBeenCalledTimes(2));
+      expect(fetchSpy).not.toHaveBeenCalled();
+      // Native AbortSignal.timeout is independent of this fake clock. The lease's
+      // original wall deadline must also be rechecked after the lock wait.
+      await vi.advanceTimersByTimeAsync(20_001);
+      release();
+      expect(await reading).toMatchObject({ live: false });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not extend the status key lease when wall time moves backward during the owner wait", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      let mono = 100;
+      vi.spyOn(performance, "now").mockImplementation(() => mono);
+      db.openRouterConnection.findUnique.mockResolvedValue(stored("user-a") as never);
+      let release: () => void = () => undefined;
+      const locked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      db.$executeRaw.mockResolvedValueOnce(0).mockImplementationOnce(() => locked as never);
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(keyResponse());
+      const reading = client().status();
+      await vi.waitFor(() => expect(db.$executeRaw).toHaveBeenCalledTimes(2));
+      vi.setSystemTime(Date.now() - 60_000);
+      mono += 20_001;
+      release();
+      expect(await reading).toMatchObject({ live: false });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rechecks an aborted provider deadline inside the actual introspection dispatch", async () => {
+    db.openRouterConnection.findUnique.mockResolvedValue(stored("user-a") as never);
+    const deadline = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+    let release: () => void = () => undefined;
+    const locked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    db.$executeRaw.mockResolvedValueOnce(0).mockImplementationOnce(() => locked as never);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(keyResponse());
+    const reading = client().status();
+    await vi.waitFor(() => expect(db.$executeRaw).toHaveBeenCalledTimes(2));
+    deadline.abort();
+    release();
+    expect(await reading).toMatchObject({ live: false });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("only ever reads the caller's own row", async () => {
@@ -249,6 +345,7 @@ describe("openrouter.disconnect", () => {
       .mockResolvedValue(null);
     db.openRouterConnection.deleteMany.mockResolvedValue({ count: 1 });
     db.chessMatch.updateMany.mockResolvedValue({ count: 0 });
+    db.user.findUnique.mockResolvedValue({ deletionRequestedAt: null } as never);
   });
 
   it("records the key as revoked, deletes that exact key and tells every worker", async () => {
@@ -284,6 +381,46 @@ describe("openrouter.disconnect", () => {
     expect(fake.valkey.sets.get(`${REVOKED}user-c`)?.has(HASH)).toBe(true);
   });
 
+  it("orders a delayed disconnect behind the credential fence and preserves owner-delete", async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    db.$executeRaw.mockImplementationOnce(() => held as never);
+    const disconnecting = client("user-c").disconnect();
+    await vi.waitFor(() => expect(db.$executeRaw).toHaveBeenCalledTimes(1));
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+    expect(db.user.findUnique).not.toHaveBeenCalled();
+    expect(fake.valkey.sets.get(`${REVOKED}user-c`)).toBeUndefined();
+    db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() } as never);
+    release();
+    await expect(disconnecting).resolves.toMatchObject({ disconnected: true });
+    expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: {
+        ownerId: "user-c",
+        source: "hosted",
+        credentialSource: "owner-openrouter",
+        status: { in: ["queued", "running"] },
+      },
+      data: {
+        status: "stopped",
+        runToken: null,
+        turnType: "idle",
+        turnId: null,
+        turnSide: null,
+        turnExpectedSeq: null,
+        turnStartedAt: null,
+        turnDeadline: null,
+        pendingMove: expect.anything(),
+        ending: { kind: "cancelled" },
+        terminalCause: "owner-delete",
+      },
+    });
+    expect(db.$executeRaw.mock.calls[0]?.slice(1)).toEqual(["cli-credentials:user-c"]);
+    expect(db.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      db.$queryRaw.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
   it("fences queued and running own-key matches as owner withdrawals in the delete's transaction", async () => {
     await client("user-c").disconnect();
     expect(db.$transaction).toHaveBeenCalledTimes(1);
@@ -313,7 +450,7 @@ describe("openrouter.disconnect", () => {
     );
   });
 
-  it("takes the create lock before reading or deleting anything", async () => {
+  it("takes the credential lock before admission and reads connection state after admission", async () => {
     db.$queryRaw.mockResolvedValue([{ locked: "" }] as never);
     await client("user-c").disconnect();
     const lock = db.$queryRaw.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];

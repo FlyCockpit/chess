@@ -19,7 +19,14 @@ const store = vi.hoisted(() => ({
     emailVerified: false,
     banned: false as boolean,
     banExpires: null as Date | null,
+    deletionRequestedAt: null as Date | null,
   },
+  matches: [] as {
+    ownerId: string;
+    source: "hosted";
+    status: "queued" | "running" | "completed" | "stopped";
+    terminalCause: string | null;
+  }[],
   verifications: [] as Verification[],
   password: "initial",
   locks: new Map<string, Promise<void>>(),
@@ -123,8 +130,16 @@ const db = vi.hoisted(() => {
   };
   const none = () => statement(async () => ({ count: 0 }));
   const cancelMatches = async (args: unknown, ctx: TxContext) => {
+    const pending =
+      (args as { where: { Owner: { deletionRequestedAt: null | { not: null } } } }).where.Owner
+        .deletionRequestedAt !== null;
     expect(args).toEqual({
-      where: { ownerId: store.user.id, source: "hosted", status: { in: ["queued", "running"] } },
+      where: {
+        ownerId: store.user.id,
+        source: "hosted",
+        status: { in: ["queued", "running"] },
+        Owner: { deletionRequestedAt: pending ? { not: null } : null },
+      },
       data: {
         status: "stopped",
         runToken: null,
@@ -135,12 +150,23 @@ const db = vi.hoisted(() => {
         turnStartedAt: null,
         turnDeadline: null,
         pendingMove: expect.anything(),
-        terminalCause: "owner-reset",
+        terminalCause: pending ? "owner-delete" : "owner-reset",
         ending: { kind: "cancelled" },
       },
     });
     expect(ctx.keys.has(`cli-credentials:${store.user.id}`)).toBe(true);
-    return { count: 0 };
+    const matches = store.matches.filter(
+      (row) =>
+        row.ownerId === store.user.id &&
+        row.source === "hosted" &&
+        ["queued", "running"].includes(row.status) &&
+        (store.user.deletionRequestedAt !== null) === pending,
+    );
+    for (const row of matches) {
+      row.status = "stopped";
+      row.terminalCause = pending ? "owner-delete" : "owner-reset";
+    }
+    return { count: matches.length };
   };
   const interactive = (ctx: TxContext) => ({
     runnerMachine: { updateMany: async () => ({ count: 0 }) },
@@ -270,7 +296,9 @@ beforeEach(() => {
     emailVerified: false,
     banned: false,
     banExpires: null,
+    deletionRequestedAt: null,
   };
+  store.matches.length = 0;
   store.verifications.length = 0;
   store.password = "initial";
   store.locks.clear();
@@ -279,6 +307,38 @@ beforeEach(() => {
 });
 
 describe("invite resend vs a finishing password reset", () => {
+  it.each([false, true])(
+    "reset cancellation classifies pending=%s without changing terminal or foreign matches",
+    async (pending) => {
+      store.user.deletionRequestedAt = pending ? new Date() : null;
+      store.matches.push(
+        { ownerId: USER, source: "hosted", status: "queued", terminalCause: null },
+        { ownerId: USER, source: "hosted", status: "running", terminalCause: null },
+        { ownerId: USER, source: "hosted", status: "completed", terminalCause: "checkmate" },
+        { ownerId: "other", source: "hosted", status: "running", terminalCause: null },
+      );
+
+      await revokeCredentialsAfterPasswordReset(USER);
+
+      expect(store.matches).toEqual([
+        {
+          ownerId: USER,
+          source: "hosted",
+          status: "stopped",
+          terminalCause: pending ? "owner-delete" : "owner-reset",
+        },
+        {
+          ownerId: USER,
+          source: "hosted",
+          status: "stopped",
+          terminalCause: pending ? "owner-delete" : "owner-reset",
+        },
+        { ownerId: USER, source: "hosted", status: "completed", terminalCause: "checkmate" },
+        { ownerId: "other", source: "hosted", status: "running", terminalCause: null },
+      ]);
+      expect(store.locks.size).toBe(0);
+    },
+  );
   it("revokes reset-side 2FA rows while preserving other users and unrelated verifications", async () => {
     const expiresAt = new Date(Date.now() + 60_000);
     const revoked = [

@@ -30,6 +30,19 @@ afterEach(() => {
 });
 
 describe("shared chess heartbeat", () => {
+  it("ends a pending owner's claim even if request-side match cancellation did not commit", async () => {
+    const pending = claim("pending");
+    leave = [registerHeartbeat(pending)];
+    db.chessMatch.updateMany.mockResolvedValue({ count: 0 });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ Owner: { deletionRequestedAt: null } }),
+      }),
+    );
+    expect(pending.onLost).toHaveBeenCalledOnce();
+  });
+
   it("uses monotonic elapsed time when the wall clock goes backwards", () => {
     const one = claim("rollback");
     const done = registerHeartbeat(one);
@@ -86,6 +99,7 @@ describe("shared chess heartbeat", () => {
         where: {
           source: "hosted",
           status: "running",
+          Owner: { deletionRequestedAt: null },
           OR: [{ id: "fresh", runToken: "token-fresh" }],
         },
       }),

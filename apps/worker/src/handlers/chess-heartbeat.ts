@@ -49,6 +49,7 @@ async function checkClaims(current: HeartbeatClaim[]) {
     where: {
       source: "hosted",
       status: "running",
+      Owner: { deletionRequestedAt: null },
       OR: current.map((claim) => ({ id: claim.matchId, runToken: claim.runToken })),
     },
     data: { heartbeatAt: new Date() },
@@ -61,6 +62,7 @@ async function checkClaims(current: HeartbeatClaim[]) {
       where: {
         source: "hosted",
         status: "running",
+        Owner: { deletionRequestedAt: null },
         OR: current.map((claim) => ({ id: claim.matchId, runToken: claim.runToken })),
       },
       select: { id: true, runToken: true },

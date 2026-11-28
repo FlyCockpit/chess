@@ -49,32 +49,41 @@ function cliCredentialRevocationWrites(userId: string, revokeAllSessions = false
     // Recovery/reset revokes machine authority. An ordinary signed-in
     // password change deliberately retains paired runners and hosted matches.
     ...(revokeAllSessions
-      ? [...runnerMachineRevocationWrites(userId), cancelActiveHostedMatchesWrite(userId)]
+      ? [...runnerMachineRevocationWrites(userId), ...cancelActiveHostedMatchesWrites(userId)]
       : []),
   ] as const;
 }
 
 /** Fences worker claims and settles pending official entries in this credential transaction. */
-function cancelActiveHostedMatchesWrite(
+function cancelActiveHostedMatchesWrites(
   userId: string,
   db: Pick<Prisma.TransactionClient, "chessMatch"> = prisma,
 ) {
-  return db.chessMatch.updateMany({
-    where: { ownerId: userId, source: "hosted", status: { in: ["queued", "running"] } },
-    data: {
-      status: "stopped",
-      runToken: null,
-      turnType: "idle",
-      turnId: null,
-      turnSide: null,
-      turnExpectedSeq: null,
-      turnStartedAt: null,
-      turnDeadline: null,
-      pendingMove: DbNull,
-      terminalCause: "owner-reset",
-      ending: { kind: "cancelled" },
-    },
-  });
+  // All callers hold the credential lock, so deletion cannot change the owner
+  // between these disjoint writes. A prior durable fence owns the terminal cause.
+  return ([true, false] as const).map((pending) =>
+    db.chessMatch.updateMany({
+      where: {
+        ownerId: userId,
+        source: "hosted",
+        status: { in: ["queued", "running"] },
+        Owner: { deletionRequestedAt: pending ? { not: null } : null },
+      },
+      data: {
+        status: "stopped",
+        runToken: null,
+        turnType: "idle",
+        turnId: null,
+        turnSide: null,
+        turnExpectedSeq: null,
+        turnStartedAt: null,
+        turnDeadline: null,
+        pendingMove: DbNull,
+        terminalCause: pending ? "owner-delete" : "owner-reset",
+        ending: { kind: "cancelled" },
+      },
+    }),
+  );
 }
 
 /**
@@ -378,10 +387,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** Reuse the activation/reset transaction; its credential lock is already held. */
-export async function revokeCredentialsInTransaction(tx: Prisma.TransactionClient, userId: string) {
+/**
+ * Reuse the activation/reset transaction; its credential lock is already held.
+ * Deletion alone defers hot match writes: it commits its pending authority fence
+ * here, then settles matches in its outer ReadCommitted transaction.
+ */
+export async function revokeCredentialsInTransaction(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  { activeMatches = "cancel" }: { activeMatches?: "cancel" | "deletion-pending" } = {},
+) {
   for (const write of runnerMachineRevocationWrites(userId, tx)) await write;
-  await cancelActiveHostedMatchesWrite(userId, tx);
+  if (activeMatches === "cancel")
+    for (const write of cancelActiveHostedMatchesWrites(userId, tx)) await write;
   await tx.apiKey.deleteMany({ where: { referenceId: userId } });
   await tx.deviceCode.deleteMany({ where: { userId } });
   await tx.session.deleteMany({ where: { OR: [{ userId }, { impersonatedBy: userId }] } });

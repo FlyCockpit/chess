@@ -135,6 +135,7 @@ describe("revokeCredentialsBeforePasswordReset", () => {
       "runnerMachine.updateMany",
       "runnerMachine.notify",
       "chessMatch.updateMany",
+      "chessMatch.updateMany",
       "twoFactor.deleteMany",
     ]);
     expect(db.user.updateMany).not.toHaveBeenCalled();
@@ -152,6 +153,7 @@ describe("revokeCredentialsAfterPasswordReset", () => {
       "deviceCode.deleteMany",
       "runnerMachine.updateMany",
       "runnerMachine.notify",
+      "chessMatch.updateMany",
       "chessMatch.updateMany",
       "twoFactor.deleteMany",
     ]);
@@ -180,7 +182,7 @@ describe("revokeCredentialsAfterPasswordReset", () => {
     expect(sleeps).toEqual([100, 400]);
     // Each sweep gets fresh promises. Finalization runs once, after the retries.
     expect(db.apiKey.deleteMany).toHaveBeenCalledTimes(3);
-    expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(3);
+    expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(6);
     expect(db.user.updateMany).not.toHaveBeenCalled();
     expect(db.verification.deleteMany).toHaveBeenCalledExactlyOnceWith({
       where: { value: "u1", identifier: { startsWith: "reset-password:" } },
@@ -430,6 +432,72 @@ describe("impersonator credential revocation", () => {
 });
 
 describe("activation revocation on the bound client", () => {
+  it("deletion revokes every standing credential without touching the hot match table", async () => {
+    const tx = {
+      runnerMachine: { updateMany: vi.fn() },
+      chessMatch: { updateMany: vi.fn() },
+      apiKey: { deleteMany: vi.fn() },
+      deviceCode: { deleteMany: vi.fn() },
+      session: { deleteMany: vi.fn() },
+      $executeRaw: vi.fn(),
+    };
+    await revokeCredentialsInTransaction(
+      tx as unknown as Parameters<typeof revokeCredentialsInTransaction>[0],
+      "deleting",
+      { activeMatches: "deletion-pending" },
+    );
+    expect(tx.chessMatch.updateMany).not.toHaveBeenCalled();
+    expect(tx.runnerMachine.updateMany).toHaveBeenCalledWith({
+      where: { userId: "deleting", revokedAt: null },
+      data: { revokedAt: expect.any(Date), connectionGeneration: { increment: 1 } },
+    });
+    expect(tx.apiKey.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: { referenceId: "deleting" },
+    });
+    expect(tx.deviceCode.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: { userId: "deleting" },
+    });
+    expect(tx.session.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: { OR: [{ userId: "deleting" }, { impersonatedBy: "deleting" }] },
+    });
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(db.$transaction).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "reset cancellation preserves the pending deletion cause (pending=%s)",
+    async (pending) => {
+      let status = "running";
+      let cause: unknown;
+      const archive = { acceptedMoves: ["e2e4"] };
+      db.chessMatch.updateMany.mockImplementation((write) => {
+        const matchesOwner = write.where.Owner.deletionRequestedAt === null ? !pending : pending;
+        if (matchesOwner && write.where.status.in.includes(status)) {
+          status = write.data.status;
+          cause = write.data.terminalCause;
+        }
+        expect(write.data).not.toHaveProperty("archive");
+        return "chessMatch.updateMany";
+      });
+      await revokeCredentialsInTransaction(
+        db as unknown as Parameters<typeof revokeCredentialsInTransaction>[0],
+        "owner",
+      );
+      expect(status).toBe("stopped");
+      expect(cause).toBe(pending ? "owner-delete" : "owner-reset");
+      expect(archive).toEqual({ acceptedMoves: ["e2e4"] });
+      // A repeated reset cannot overwrite any pre-existing terminal outcome.
+      db.chessMatch.updateMany.mockClear();
+      status = "completed";
+      cause = "checkmate";
+      await revokeCredentialsInTransaction(
+        db as unknown as Parameters<typeof revokeCredentialsInTransaction>[0],
+        "owner",
+      );
+      expect(status).toBe("completed");
+      expect(cause).toBe("checkmate");
+    },
+  );
   it("uses only the existing transaction for all Chess standing credentials and 2FA", async () => {
     const tx = {
       runnerMachine: { updateMany: vi.fn() },
@@ -456,8 +524,14 @@ describe("activation revocation on the bound client", () => {
       where: { userId: "invitee", revokedAt: null },
       data: { revokedAt: expect.any(Date), connectionGeneration: { increment: 1 } },
     });
-    expect(tx.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
-      where: { ownerId: "invitee", source: "hosted", status: { in: ["queued", "running"] } },
+    expect(tx.chessMatch.updateMany).toHaveBeenCalledTimes(2);
+    expect(tx.chessMatch.updateMany).toHaveBeenCalledWith({
+      where: {
+        ownerId: "invitee",
+        source: "hosted",
+        status: { in: ["queued", "running"] },
+        Owner: { deletionRequestedAt: null },
+      },
       data: {
         status: "stopped",
         runToken: null,
@@ -573,8 +647,14 @@ describe("hosted match recovery cancellation", () => {
           sleep: async () => {},
         });
       // No billing filter: operator-billed admin matches must be fenced too.
-      expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
-        where: { ownerId: "owner", source: "hosted", status: { in: ["queued", "running"] } },
+      expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(2);
+      expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
+        where: {
+          ownerId: "owner",
+          source: "hosted",
+          status: { in: ["queued", "running"] },
+          Owner: { deletionRequestedAt: null },
+        },
         data: {
           status: "stopped",
           runToken: null,
@@ -598,6 +678,7 @@ describe("hosted match recovery cancellation", () => {
         "deviceCode.deleteMany",
         "runnerMachine.updateMany",
         "runnerMachine.notify",
+        "chessMatch.updateMany",
         "chessMatch.updateMany",
         ...(kind === "quarantine" ? ["session.deleteMany"] : []),
         "twoFactor.deleteMany",

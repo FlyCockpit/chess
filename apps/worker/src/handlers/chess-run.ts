@@ -13,6 +13,8 @@ import {
 } from "@cockpit-chess/api/lib/provider-key";
 import { dispatchForActiveOwner } from "@cockpit-chess/auth/account-deletion";
 import { isAccountDeletionPending } from "@cockpit-chess/auth/account-state";
+import { lockCliCredentials } from "@cockpit-chess/auth/device-redemption-lock";
+import { withLockSlot } from "@cockpit-chess/auth/lock-slots";
 import { isAdminRole } from "@cockpit-chess/auth/roles";
 import {
   beginHostedTurn,
@@ -31,7 +33,7 @@ import {
   runMatch,
 } from "@cockpit-chess/chess/runner";
 import { storedSpectatorEvaluations } from "@cockpit-chess/chess/spectator";
-import prisma from "@cockpit-chess/db";
+import prisma, { type Prisma } from "@cockpit-chess/db";
 import { env } from "@cockpit-chess/env/shared";
 import {
   type ChessReconcileJobData,
@@ -58,7 +60,124 @@ const TERMINAL_WRITE_ATTEMPTS = 3;
 // Per worker process: advance past live queued jobs, then wrap to revisit them.
 let queuedReconcileCursor: { id: string; heartbeatAt: Date } | undefined;
 let humanReconcileCursor: { id: string; turnDeadline: Date } | undefined;
+let deletionReconcileCursor: string | undefined;
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * A snapshot/result must not cross a deletion fence, including when the outer
+ * deletion stop rolls back after its durable marker committed. The credential
+ * lock orders both paths before any match-row lock. Pending-owner work settles
+ * the existing claim as a withdrawal instead of writing the stale archive.
+ */
+async function writeOwnedMatch(
+  ownerId: string | null,
+  write: Omit<Prisma.ChessMatchUpdateManyArgs, "data"> & {
+    data: Prisma.ChessMatchUpdateManyArgs["data"] | (() => Prisma.ChessMatchUpdateManyArgs["data"]);
+  },
+) {
+  if (!ownerId) return { count: 0 };
+  return withLockSlot(() =>
+    prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT set_config('statement_timeout', '25000ms', true)`;
+        await lockCliCredentials(ownerId, tx);
+        const owner = await tx.user.findUnique({
+          where: { id: ownerId },
+          select: { deletionRequestedAt: true },
+        });
+        if (!owner || isAccountDeletionPending(owner)) {
+          await tx.chessMatch.updateMany({
+            where: {
+              AND: [write.where ?? {}, { status: { in: ["queued", "running"] } }],
+              ownerId,
+              source: "hosted",
+            },
+            data: {
+              status: "stopped",
+              runToken: null,
+              terminalCause: "owner-delete",
+              ...chessTurnData({ type: "idle" }),
+              ending: { kind: "cancelled" },
+            },
+          });
+          return { count: 0 };
+        }
+        return tx.chessMatch.updateMany({
+          ...write,
+          // A newly published human clock starts after all owner-gate waits.
+          data: typeof write.data === "function" ? write.data() : write.data,
+        });
+      },
+      { isolationLevel: "ReadCommitted", timeout: 30_000 },
+    ),
+  );
+}
+
+/**
+ * The deletion marker is permanent. Recover its active rows before archive/Redis
+ * inspection, including queued human continuations and runner rows whose live
+ * authority was revoked by the fence. Recheck marker and active status in each
+ * write; a completed result or active owner is never changed by this sweep.
+ */
+async function settlePendingDeletionMatches(matchId?: string) {
+  const pendingOwner = {
+    OR: [{ Owner: { deletionRequestedAt: { not: null } } }, { ownerId: null }],
+  } satisfies Prisma.ChessMatchWhereInput;
+  const eligible = {
+    source: { in: ["hosted", "runner"] },
+    status: { in: ["queued", "running"] },
+    ...pendingOwner,
+  } satisfies Prisma.ChessMatchWhereInput;
+  const rows = await prisma.chessMatch.findMany({
+    where: {
+      ...eligible,
+      ...(matchId
+        ? { id: matchId }
+        : deletionReconcileCursor
+          ? { id: { gt: deletionReconcileCursor } }
+          : {}),
+    },
+    select: { id: true, source: true },
+    orderBy: { id: "asc" },
+    take: matchId ? 1 : RECONCILE_BATCH,
+  });
+  if (!matchId)
+    deletionReconcileCursor = rows.length === RECONCILE_BATCH ? rows.at(-1)?.id : undefined;
+  for (const row of rows) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        const result = await tx.chessMatch.updateMany({
+          where: { ...eligible, id: row.id, source: row.source },
+          data: {
+            status: "stopped",
+            runToken: null,
+            terminalCause: "owner-delete",
+            ...chessTurnData({ type: "idle" }),
+            ending: { kind: "cancelled" },
+            ...(row.source === "runner"
+              ? {
+                  runnerState: "stopped",
+                  runnerGeneration: null,
+                  runnerResumeDeadline: null,
+                  runnerRevision: { increment: 1 },
+                }
+              : {}),
+          },
+        });
+        if (row.source === "runner" && result.count === 1)
+          await tx.runnerCommand.updateMany({
+            where: { matchId: row.id, ackedAt: null, cancelledAt: null },
+            data: { cancelledAt: new Date() },
+          });
+      });
+    } catch (error) {
+      console.error("[chess-reconcile] Failed pending deletion settlement", {
+        matchId: row.id,
+        error: message(error),
+      });
+    }
+  }
+}
 
 /**
  * Error hosted matches that can no longer finish.
@@ -81,8 +200,15 @@ export async function handleChessReconcileJob(
   const data = chessReconcileJobSchema.parse(job.data);
   if (data.reason === "spectator")
     return backfillSpectatorEvaluations(data.matchId, data.fromPly, data.access, signal);
+  await settlePendingDeletionMatches();
   const cutoff = new Date(Date.now() - STALE_HEARTBEAT_MS);
-  const select = { id: true, status: true, heartbeatAt: true, archive: true } as const;
+  const select = {
+    id: true,
+    ownerId: true,
+    status: true,
+    heartbeatAt: true,
+    archive: true,
+  } as const;
   const orderBy = [{ heartbeatAt: "asc" }, { id: "asc" }] as const;
   // Separate bounded scans: queued rows with live jobs are legitimately old and
   // must not crowd dead running rows out of the batch.
@@ -146,7 +272,7 @@ export async function handleChessReconcileJob(
           continue;
         }
       }
-      const result = await prisma.chessMatch.updateMany({
+      const result = await writeOwnedMatch(row.ownerId, {
         where: { id: row.id, source: "hosted", status: row.status, heartbeatAt: row.heartbeatAt },
         data: {
           status: "error",
@@ -183,7 +309,14 @@ export async function handleChessReconcileJob(
           }
         : {}),
     },
-    select: { id: true, archive: true, turnId: true, turnExpectedSeq: true, turnDeadline: true },
+    select: {
+      id: true,
+      ownerId: true,
+      archive: true,
+      turnId: true,
+      turnExpectedSeq: true,
+      turnDeadline: true,
+    },
     orderBy: [{ turnDeadline: "asc" }, { id: "asc" }],
     take: RECONCILE_BATCH,
   });
@@ -205,7 +338,7 @@ export async function handleChessReconcileJob(
       const now = new Date();
       playHostedHumanTurn(archive, now);
       if (archive.status === "running") continue;
-      const result = await prisma.chessMatch.updateMany({
+      const result = await writeOwnedMatch(row.ownerId, {
         where: {
           id: row.id,
           source: "hosted",
@@ -326,10 +459,20 @@ export async function handleChessRunJob(
   const matchId = data.matchId;
   const runToken = crypto.randomUUID();
   const claimed = await prisma.chessMatch.updateMany({
-    where: { id: matchId, status: "queued", source: "hosted" },
+    where: {
+      id: matchId,
+      status: "queued",
+      source: "hosted",
+      Owner: { deletionRequestedAt: null },
+    },
     data: { status: "running", runToken, heartbeatAt: new Date() },
   });
-  if (claimed.count !== 1) return;
+  if (claimed.count !== 1) {
+    // Pending owners cannot claim, but their queued continuation must still
+    // terminalize if the request died after committing the durable fence.
+    await settlePendingDeletionMatches(matchId);
+    return;
+  }
   const row = await prisma.chessMatch.findUnique({
     where: { id: matchId },
     select: {
@@ -380,7 +523,7 @@ export async function handleChessRunJob(
       matchId,
       error: message(error),
     });
-    await prisma.chessMatch.updateMany({
+    await writeOwnedMatch(ownerId, {
       where: { id: matchId, source: "hosted", status: "running", runToken },
       data: {
         status: "error",
@@ -395,17 +538,20 @@ export async function handleChessRunJob(
   // Parking happens before loading a key, catalog, engine or heartbeat. Returning
   // releases this BullMQ slot; the database owns the finite human deadline.
   if (humanGame) {
-    beginHostedTurn(match);
-    const parked = match.turn.type === "human";
-    const prepared = await prisma.chessMatch.updateMany({
+    let parked = false;
+    const prepared = await writeOwnedMatch(ownerId, {
       where: { id: matchId, source: "hosted", status: "running", runToken },
-      data: {
-        archive: match,
-        ...chessTurnData(match.turn),
-        ...(parked ? { runToken: null } : {}),
-        ...(match.status !== "running"
-          ? { status: match.status, runToken: null, ...chessStatsColumns(match) }
-          : {}),
+      data: () => {
+        beginHostedTurn(match);
+        parked = match.turn.type === "human";
+        return {
+          archive: match,
+          ...chessTurnData(match.turn),
+          ...(parked ? { runToken: null } : {}),
+          ...(match.status !== "running"
+            ? { status: match.status, runToken: null, ...chessStatsColumns(match) }
+            : {}),
+        };
       },
     });
     if (prepared.count !== 1) return;
@@ -460,25 +606,27 @@ export async function handleChessRunJob(
   async function persist(archive: MatchArchive) {
     if (ownershipEnded) throw new MatchOwnershipEndedError();
     if (terminalPersisted || parkedPersisted) return;
-    // A model's successful move ends its claim. The next human interval starts
-    // at this durable commit, never when a browser happened to poll it.
-    if (
+    // Defer a new human interval until the owner gate is held. Already visible
+    // human intervals and retries retain their original deadline unchanged.
+    const handoff =
       humanGame &&
       archive.status === "running" &&
       archive.turn.type === "model" &&
-      boardAt(archive).turn() !== archive.turn.side
-    ) {
-      archive.turn = { type: "idle" };
-      beginHostedTurn(archive);
-    }
-    const parking = humanGame && archive.status === "running" && archive.turn.type === "human";
-    const digest = snapshotDigest(JSON.stringify(archive));
+      boardAt(archive).turn() !== archive.turn.side;
+    let parking = humanGame && archive.status === "running" && archive.turn.type === "human";
+    let digest = snapshotDigest(JSON.stringify(archive));
     if (archive.status === "running" && digest === lastWritten) return;
     if (archive.status !== "running") terminalWriteAttempts += 1;
-    const result = await prisma.chessMatch
-      .updateMany({
-        where: { id: matchId, source: "hosted", status: "running", runToken },
-        data: {
+    const result = await writeOwnedMatch(ownerId, {
+      where: { id: matchId, source: "hosted", status: "running", runToken },
+      data: () => {
+        if (handoff) {
+          archive.turn = { type: "idle" };
+          beginHostedTurn(archive);
+        }
+        parking = humanGame && archive.status === "running" && archive.turn.type === "human";
+        digest = snapshotDigest(JSON.stringify(archive));
+        return {
           archive,
           ...chessUsageColumns(archive),
           heartbeatAt: new Date(),
@@ -487,13 +635,13 @@ export async function handleChessRunJob(
           ...(archive.status !== "running"
             ? { status: archive.status, runToken: null, ...chessStatsColumns(archive) }
             : {}),
-        },
-      })
-      .catch((error: unknown) => {
-        // Snapshot failures belong to our infrastructure, not the model provider.
-        abort();
-        throw error;
-      });
+        };
+      },
+    }).catch((error: unknown) => {
+      // Snapshot failures belong to our infrastructure, not the model provider.
+      abort();
+      throw error;
+    });
     if (result.count !== 1) {
       ownershipEnded = true;
       abort();

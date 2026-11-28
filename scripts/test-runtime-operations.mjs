@@ -2337,7 +2337,17 @@ async function main() {
           OPENROUTER_ORIGIN: "https://openrouter.example.test",
         },
       ],
-      ["account-deletion-pool3", { ...inviteEnv, DATABASE_POOL_MAX: "3" }],
+      [
+        "account-deletion-pool3",
+        {
+          ...inviteEnv,
+          DATABASE_POOL_MAX: "3",
+          CHESS_PROVIDER_KEY_SECRET: "ab".repeat(32),
+          CHESS_HOSTED_ENABLED: "true",
+          CHESS_USER_MATCHES_ENABLED: "true",
+          OPENROUTER_ORIGIN: "https://openrouter.example.test",
+        },
+      ],
       [
         "chess-official",
         {
@@ -2390,23 +2400,27 @@ async function main() {
             ...extra,
             RUNTIME_OPERATIONS_CHILD: "owned-disposable-services",
           },
-          timeout: [
-            "chess-official",
-            "chess-human",
-            "chess-moderation",
-            "account-deletion",
-            "account-export",
-            "chess-runner",
-          ].includes(mode)
-            ? 120_000
+          // Forty independent slow-stream deletion/heartbeat trials need their
+          // own bound; all other existing mode deadlines remain unchanged.
+          timeout: mode.startsWith("account-deletion")
+            ? 600_000
             : [
-                  "runner-machines",
-                  "runner-claims",
-                  "runner-limits",
-                  "password-signin-race",
+                  "chess-official",
+                  "chess-human",
+                  "chess-moderation",
+                  "account-deletion",
+                  "account-export",
+                  "chess-runner",
                 ].includes(mode)
-              ? 60_000
-              : 45_000,
+              ? 120_000
+              : [
+                    "runner-machines",
+                    "runner-claims",
+                    "runner-limits",
+                    "password-signin-race",
+                  ].includes(mode)
+                ? 60_000
+                : 45_000,
           stdio: [
             "chess-admission",
             "chess-official",

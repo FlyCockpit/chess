@@ -14,11 +14,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type DeviceCodeRow = { deviceCode: string; userId: string | null; status: string };
 type SessionRow = { id: string; userId: string; origin: string; expiresAt?: Date };
+type MatchRow = {
+  ownerId: string;
+  source: "hosted" | "local";
+  status: "queued" | "running" | "completed" | "stopped";
+  terminalCause: string | null;
+};
 
 const store = vi.hoisted(() => ({
   deviceCodes: [] as DeviceCodeRow[],
   sessions: [] as SessionRow[],
   apiKeys: [] as { id: string; referenceId: string }[],
+  deletionRequestedAt: null as Date | null,
+  matches: [] as MatchRow[],
   /** Advisory locks held, by key → release of the holding transaction. */
   locks: new Map<string, Promise<void>>(),
 }));
@@ -126,8 +134,16 @@ const db = vi.hoisted(() => {
     chessMatch: {
       updateMany: (args: unknown) =>
         statement(async (ctx) => {
+          const pending =
+            (args as { where: { Owner: { deletionRequestedAt: null | { not: null } } } }).where
+              .Owner.deletionRequestedAt !== null;
           expect(args).toEqual({
-            where: { ownerId: USER, source: "hosted", status: { in: ["queued", "running"] } },
+            where: {
+              ownerId: USER,
+              source: "hosted",
+              status: { in: ["queued", "running"] },
+              Owner: { deletionRequestedAt: pending ? { not: null } : null },
+            },
             data: {
               status: "stopped",
               runToken: null,
@@ -138,12 +154,23 @@ const db = vi.hoisted(() => {
               turnStartedAt: null,
               turnDeadline: null,
               pendingMove: expect.anything(),
-              terminalCause: "owner-reset",
+              terminalCause: pending ? "owner-delete" : "owner-reset",
               ending: { kind: "cancelled" },
             },
           });
           expect(ctx.held).toContain(`cli-credentials:${USER}`);
-          return { count: 0 };
+          const matches = store.matches.filter(
+            (row) =>
+              row.ownerId === USER &&
+              row.source === "hosted" &&
+              ["queued", "running"].includes(row.status) &&
+              (store.deletionRequestedAt !== null) === pending,
+          );
+          for (const row of matches) {
+            row.status = "stopped";
+            row.terminalCause = pending ? "owner-delete" : "owner-reset";
+          }
+          return { count: matches.length };
         }),
     },
     deviceCode: {
@@ -266,10 +293,37 @@ beforeEach(() => {
   store.deviceCodes.length = 0;
   store.sessions.length = 0;
   store.apiKeys.length = 0;
+  store.deletionRequestedAt = null;
+  store.matches.length = 0;
   store.locks.clear();
 });
 
 describe("device-flow redemption vs password-reset revocation", () => {
+  it.each([false, true])(
+    "preserves active/pending cancellation and unrelated matches (pending=%s)",
+    async (pending) => {
+      store.deletionRequestedAt = pending ? new Date() : null;
+      store.matches.push(
+        { ownerId: USER, source: "hosted", status: "running", terminalCause: null },
+        { ownerId: USER, source: "hosted", status: "completed", terminalCause: "completed" },
+        { ownerId: "other", source: "hosted", status: "running", terminalCause: null },
+        { ownerId: USER, source: "local", status: "running", terminalCause: null },
+      );
+      await revokeCredentialsAfterPasswordReset(USER);
+      expect(store.matches).toEqual([
+        {
+          ownerId: USER,
+          source: "hosted",
+          status: "stopped",
+          terminalCause: pending ? "owner-delete" : "owner-reset",
+        },
+        { ownerId: USER, source: "hosted", status: "completed", terminalCause: "completed" },
+        { ownerId: "other", source: "hosted", status: "running", terminalCause: null },
+        { ownerId: USER, source: "local", status: "running", terminalCause: null },
+      ]);
+    },
+  );
+
   it("a normal login mints one CLI session", async () => {
     approve("dc-ok");
     const response = await redeem("dc-ok");

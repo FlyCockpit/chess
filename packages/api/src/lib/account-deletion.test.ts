@@ -23,26 +23,35 @@ const { revokeCredentialsInTransaction } = await import(
   "@cockpit-chess/auth/credential-revocation"
 );
 const { requestAccountDeletion } = await import("./account-deletion");
+const { invalidateForceTwoFactorSettingsCache, isTwoFactorPolicySatisfied } = await import(
+  "./two-factor-policy"
+);
 const tx = mockDeep<Prisma.TransactionClient>();
+const locks = mockDeep<Prisma.TransactionClient>();
 const timeline: string[] = [];
 const admin = { kind: "admin", userId: "admin", sessionId: "admin-session" } as const;
 const db = vi.mocked(prisma);
 
 beforeEach(() => {
   mockReset(tx);
+  mockReset(locks);
+  mockReset(db);
   vi.mocked(revokeCredentialsInTransaction).mockReset();
   vi.clearAllMocks();
   timeline.length = 0;
-  tx.chessMatch.updateMany.mockImplementation(async () => {
+  invalidateForceTwoFactorSettingsCache();
+  tx.appSetting.findMany.mockResolvedValue([]);
+  locks.chessMatch.findMany.mockResolvedValue([]);
+  locks.chessMatch.updateMany.mockImplementation(async () => {
     timeline.push("settle");
     return { count: 0 };
   });
   vi.mocked(revokeCredentialsInTransaction).mockImplementation(async () => {
     timeline.push("revoke");
   });
-  db.$transaction.mockImplementation(async (run) => {
+  db.$transaction.mockImplementation(async (run, options) => {
     if (typeof run !== "function") throw new Error("Expected interactive transaction");
-    return run(tx);
+    return run(options?.isolationLevel === "ReadCommitted" ? locks : tx);
   });
   tx.user.findUnique.mockResolvedValue({
     id: "u1",
@@ -55,6 +64,9 @@ beforeEach(() => {
   tx.user.findUniqueOrThrow.mockResolvedValue({
     deletionRequestedAt: null,
     deletionState: "active",
+    role: "user",
+    twoFactorEnabled: true,
+    createdAt: new Date(),
     banned: false,
     banExpires: null,
   } as never);
@@ -74,7 +86,7 @@ beforeEach(() => {
 });
 
 describe("requestAccountDeletion", () => {
-  it("commits a pending access fence with deletion settlement before revocation and no physical delete", async () => {
+  it("commits the credential fence before ReadCommitted settlement without physical deletion", async () => {
     const answer = await requestAccountDeletion("u1", { kind: "self", sessionId: "s1" });
     expect(answer).toEqual({
       status: "pending",
@@ -87,9 +99,13 @@ describe("requestAccountDeletion", () => {
       data: { deletionRequestedAt: answer.requestedAt, deletionState: "pending" },
       select: { id: true },
     });
-    expect(tx.chessMatch.updateMany).toHaveBeenCalledWith(
+    expect(locks.chessMatch.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { ownerId: "u1", status: { in: ["queued", "running"] } },
+        where: {
+          ownerId: "u1",
+          source: { not: "runner" },
+          status: { in: ["queued", "running"] },
+        },
         data: expect.objectContaining({
           terminalCause: "owner-delete",
           turnType: "idle",
@@ -97,8 +113,12 @@ describe("requestAccountDeletion", () => {
         }),
       }),
     );
-    expect(timeline).toEqual(["settle", "revoke"]);
-    expect(revokeCredentialsInTransaction).toHaveBeenCalledWith(tx, "u1");
+    expect(timeline).toEqual(["revoke", "settle"]);
+    expect(tx.chessMatch.updateMany).not.toHaveBeenCalled();
+    expect(locks.chessMatch.updateMany.mock.calls[0]?.[0].data).not.toHaveProperty("runnerState");
+    expect(revokeCredentialsInTransaction).toHaveBeenCalledWith(tx, "u1", {
+      activeMatches: "deletion-pending",
+    });
     expect(tx.openRouterConnection.deleteMany).toHaveBeenCalledWith({ where: { userId: "u1" } });
     expect(tx.user.delete).not.toHaveBeenCalled();
     expect(tx.chessMatch.deleteMany).not.toHaveBeenCalled();
@@ -111,6 +131,59 @@ describe("requestAccountDeletion", () => {
       expect.any(Function),
       expect.objectContaining({ isolationLevel: "Serializable" }),
     );
+  });
+
+  it("atomically fences active owned runner state and its outstanding commands", async () => {
+    locks.chessMatch.findMany.mockResolvedValueOnce([{ id: "runner-active" }] as never);
+    locks.chessMatch.updateMany.mockResolvedValue({ count: 1 });
+    await requestAccountDeletion("u1", admin);
+    expect(locks.chessMatch.findMany).toHaveBeenCalledWith({
+      where: { ownerId: "u1", source: "runner", status: { in: ["queued", "running"] } },
+      select: { id: true },
+      orderBy: { id: "asc" },
+      take: 50,
+    });
+    expect(locks.chessMatch.updateMany).toHaveBeenLastCalledWith({
+      where: {
+        id: "runner-active",
+        ownerId: "u1",
+        source: "runner",
+        status: { in: ["queued", "running"] },
+      },
+      data: expect.objectContaining({
+        status: "stopped",
+        terminalCause: "owner-delete",
+        runToken: null,
+        turnType: "idle",
+        runnerState: "stopped",
+        runnerGeneration: null,
+        runnerResumeDeadline: null,
+        runnerRevision: { increment: 1 },
+      }),
+    });
+    expect(locks.runnerCommand.updateMany).toHaveBeenCalledWith({
+      where: { matchId: "runner-active", ackedAt: null, cancelledAt: null },
+      data: { cancelledAt: expect.any(Date) },
+    });
+    expect(tx.runnerCommand.updateMany).not.toHaveBeenCalled();
+    expect(tx.chessMatch.findMany).not.toHaveBeenCalled();
+  });
+
+  it("spares a runner that became terminal before its stop CAS and leaves its commands untouched", async () => {
+    locks.chessMatch.findMany.mockResolvedValueOnce([{ id: "runner-finished" }] as never);
+    locks.chessMatch.updateMany.mockResolvedValue({ count: 0 });
+    await requestAccountDeletion("u1", admin);
+    expect(locks.chessMatch.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: {
+          id: "runner-finished",
+          ownerId: "u1",
+          source: "runner",
+          status: { in: ["queued", "running"] },
+        },
+      }),
+    );
+    expect(locks.runnerCommand.updateMany).not.toHaveBeenCalled();
   });
 
   it("requires a fresh, live, nonimpersonated browser session for password or SSO", async () => {
@@ -142,6 +215,91 @@ describe("requestAccountDeletion", () => {
     expect(tx.user.update).not.toHaveBeenCalled();
     expect(revokeCredentialsInTransaction).not.toHaveBeenCalled();
   });
+
+  it("rechecks forced 2FA inside the authority transaction after the credential-lock wait", async () => {
+    const user = {
+      deletionRequestedAt: null,
+      deletionState: "active",
+      role: "user",
+      twoFactorEnabled: false,
+      createdAt: new Date(Date.now() - 172_800_000),
+      banned: false,
+      banExpires: null,
+    };
+    tx.user.findUniqueOrThrow.mockResolvedValue(user as never);
+    db.appSetting.findMany.mockResolvedValue([{ key: "force2faPublicUsers", value: "false" }]);
+    // Simulate the protected route's successful, cached check before locking.
+    expect(await isTwoFactorPolicySatisfied(user)).toBe(true);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { lockCliCredentials } = await import("@cockpit-chess/auth/device-redemption-lock");
+    let waiting = false;
+    vi.mocked(lockCliCredentials).mockImplementationOnce(() => {
+      waiting = true;
+      return gate as never;
+    });
+    const removing = requestAccountDeletion("u1", { kind: "self", sessionId: "s1" });
+    const refused = expect(removing).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await vi.waitFor(() => expect(waiting).toBe(true));
+    expect(tx.user.findUniqueOrThrow).not.toHaveBeenCalled();
+    tx.appSetting.findMany.mockResolvedValue([{ key: "force2faPublicUsers", value: "true" }]);
+    release();
+    await refused;
+    expect(tx.appSetting.findMany).toHaveBeenCalledWith({
+      where: { key: { in: ["force2faPublicUsers", "force2faInternalUsers"] } },
+      select: { key: true, value: true },
+      take: 2,
+    });
+    expect(db.appSetting.findMany).toHaveBeenCalledTimes(1);
+    expect(locks.appSetting.findMany).not.toHaveBeenCalled();
+    expect(tx.user.findUniqueOrThrow).toHaveBeenCalledWith({
+      where: { id: "u1" },
+      select: {
+        deletionRequestedAt: true,
+        deletionState: true,
+        role: true,
+        twoFactorEnabled: true,
+        createdAt: true,
+        banned: true,
+        banExpires: true,
+      },
+    });
+    expect(tx.user.update).not.toHaveBeenCalled();
+    expect(revokeCredentialsInTransaction).not.toHaveBeenCalled();
+    expect(tx.openRouterConnection.deleteMany).not.toHaveBeenCalled();
+    expect(locks.chessMatch.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "unforced", forced: false, enrolled: false, age: 172_800_000 },
+    { label: "enrollment grace", forced: true, enrolled: false, age: 1000 },
+    { label: "enrolled", forced: true, enrolled: true, age: 172_800_000 },
+  ])(
+    "preserves self-deletion for an eligible $label account",
+    async ({ forced, enrolled, age }) => {
+      tx.user.findUniqueOrThrow.mockResolvedValue({
+        deletionRequestedAt: null,
+        deletionState: "active",
+        role: "user",
+        twoFactorEnabled: enrolled,
+        createdAt: new Date(Date.now() - age),
+        banned: false,
+        banExpires: null,
+      } as never);
+      tx.appSetting.findMany.mockResolvedValue([
+        { key: "force2faPublicUsers", value: String(forced) },
+      ]);
+      await expect(
+        requestAccountDeletion("u1", { kind: "self", sessionId: "s1" }),
+      ).resolves.toMatchObject({ status: "pending", complete: false });
+      expect(tx.user.update).toHaveBeenCalledOnce();
+      expect(revokeCredentialsInTransaction).toHaveBeenCalledOnce();
+      expect(db.appSetting.findMany).not.toHaveBeenCalled();
+      expect(locks.appSetting.findMany).not.toHaveBeenCalled();
+    },
+  );
 
   it("returns the durable request unchanged on admin/retry without resetting cleanup progress", async () => {
     const requestedAt = new Date("2026-11-27T20:00:00Z");
@@ -208,7 +366,7 @@ describe("active-worker serialization retry", () => {
         await run(tx);
         throw Object.assign(new Error("worker wrote after snapshot"), { code: "P2034" });
       }
-      return run(tx);
+      return run(options?.isolationLevel === "ReadCommitted" ? locks : tx);
     });
     await expect(requestAccountDeletion("u1", admin)).resolves.toMatchObject({
       status: "pending",
@@ -221,10 +379,10 @@ describe("active-worker serialization retry", () => {
     ]);
     // Each attempt rechecks the live actor; only the outer scope takes the four locks.
     expect(tx.session.findFirst).toHaveBeenCalledTimes(2);
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
-    expect(tx.$executeRaw.mock.calls.filter(([, key]) => key === "password-write:u1")).toHaveLength(
-      1,
-    );
+    expect(locks.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(
+      locks.$executeRaw.mock.calls.filter(([, key]) => key === "password-write:u1"),
+    ).toHaveLength(1);
     const { lockCliCredentials } = await import("@cockpit-chess/auth/device-redemption-lock");
     const { lockSetPasswordLinks } = await import("@cockpit-chess/auth/set-password-link-lock");
     expect(lockCliCredentials).toHaveBeenCalledOnce();
@@ -236,7 +394,7 @@ describe("active-worker serialization retry", () => {
       if (typeof run !== "function") throw new Error("Expected interactive transaction");
       if (options?.isolationLevel === "Serializable")
         throw Object.assign(new Error("concurrent worker"), { code: "P2034" });
-      return run(tx);
+      return run(options?.isolationLevel === "ReadCommitted" ? locks : tx);
     });
     await expect(requestAccountDeletion("u1", admin)).rejects.toMatchObject({
       code: "CONFLICT",
@@ -264,7 +422,7 @@ describe("active-worker serialization retry", () => {
         tx.session.findFirst.mockResolvedValue(null);
         throw Object.assign(new Error("worker write"), { code: "P2034" });
       }
-      return run(tx);
+      return run(options?.isolationLevel === "ReadCommitted" ? locks : tx);
     });
     await expect(requestAccountDeletion("u1", admin)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(tx.session.findFirst).toHaveBeenCalledTimes(2);
@@ -280,7 +438,7 @@ describe("active-worker serialization retry", () => {
         clock.mockReturnValue(25_001);
         throw Object.assign(new Error("worker write"), { code: "P2034" });
       }
-      return run(tx);
+      return run(options?.isolationLevel === "ReadCommitted" ? locks : tx);
     });
     try {
       await expect(requestAccountDeletion("u1", admin)).rejects.toMatchObject({

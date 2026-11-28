@@ -672,6 +672,45 @@ describe("chess public projection and operator boundaries", () => {
       terminalCause: "owner-stop",
     });
   });
+  it("classifies a delayed pre-revocation stop after the credential fence as owner deletion", async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    db.$executeRaw.mockImplementationOnce(() => held as never);
+    db.chessMatch.findFirst.mockResolvedValue(row());
+    const stopping = client().stop({ slug: "test-game" });
+    await vi.waitFor(() => expect(db.$executeRaw).toHaveBeenCalledTimes(1));
+    expect(db.user.findUnique).not.toHaveBeenCalled();
+    expect(db.chessMatch.findFirst).not.toHaveBeenCalled();
+    db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() } as never);
+    release();
+    await expect(stopping).resolves.toEqual({ stopped: true });
+    expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: {
+        id: "id",
+        ownerId: "owner",
+        source: "hosted",
+        status: { in: ["queued", "running"] },
+      },
+      data: {
+        status: "stopped",
+        runToken: null,
+        ...chessTurnColumns({ type: "idle" }),
+        pendingMove: DbNull,
+        ending: { kind: "cancelled" },
+        terminalCause: "owner-delete",
+      },
+    });
+    expect(db.$executeRaw.mock.calls[0]?.slice(1)).toEqual(["cli-credentials:owner"]);
+  });
+  it("does not apply a stale stop when its owner no longer exists", async () => {
+    db.user.findUnique.mockResolvedValue(null);
+    await expect(client().stop({ slug: "test-game" })).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+  });
   it("refuses runner matches through the hosted stop endpoint without changing their control state", async () => {
     const runner = {
       ...row(),

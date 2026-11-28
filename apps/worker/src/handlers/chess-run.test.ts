@@ -4,6 +4,7 @@ import {
   boardAt,
   createMatch,
   finishMatch,
+  playHostedHumanTurn,
   submitMove,
   validateArchive,
 } from "@cockpit-chess/chess";
@@ -228,7 +229,12 @@ describe("durable chess worker", () => {
     await handleChessRunJob({ data: { matchId: "match-id" } });
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "match-id", status: "queued", source: "hosted" },
+        where: {
+          id: "match-id",
+          status: "queued",
+          source: "hosted",
+          Owner: { deletionRequestedAt: null },
+        },
         data: expect.objectContaining({ status: "running", runToken: expect.any(String) }),
       }),
     );
@@ -293,7 +299,7 @@ describe("durable chess worker", () => {
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: "completed" }) }),
     );
-    expect(db.$executeRaw).not.toHaveBeenCalled();
+    expect(updates()).toHaveLength(0);
     expect(evaluatePosition).toHaveBeenCalledTimes(1);
     // The gap goes to a backfill job instead of holding the run.
     expect(ensureJob).toHaveBeenCalledWith(
@@ -311,7 +317,10 @@ describe("durable chess worker", () => {
   });
   it("never lets a failing or hanging spectator write hold up the game", async () => {
     // A rejected write: the game and its terminal write go on; the gap is handed off.
-    db.$transaction.mockRejectedValue(new Error("deadlock"));
+    db.$transaction.mockImplementation(async (run) => {
+      if (typeof run !== "function") throw new Error("deadlock");
+      return run(db);
+    });
     let result = await handleChessRunJob({ data: { matchId: "match-id" } });
     expect(result).toMatchObject({ termination: "draw" });
     expect(ensureJob).toHaveBeenCalledTimes(1);
@@ -323,9 +332,14 @@ describe("durable chess worker", () => {
     db.chessMatch.findUnique.mockResolvedValue(row());
     db.chessMatch.findFirst.mockResolvedValue(row());
     db.$queryRaw.mockResolvedValue([{ id: "match-id" }]);
+    db.$executeRaw.mockResolvedValue(1);
+    db.user.findUnique.mockResolvedValue({ deletionRequestedAt: null } as never);
     ensureJob.mockResolvedValue({});
     evaluatePosition.mockImplementation(async (fen: string) => score(fen));
-    db.$transaction.mockImplementation(() => new Promise(() => {}));
+    db.$transaction.mockImplementation(async (run) => {
+      if (typeof run !== "function") return new Promise(() => {});
+      return run(db);
+    });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     const running = handleChessRunJob({ data: { matchId: "match-id" } });
     for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(1000);
@@ -334,7 +348,7 @@ describe("durable chess worker", () => {
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: "completed" }) }),
     );
-    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(db.$transaction.mock.calls.filter(([run]) => typeof run !== "function")).toHaveLength(1);
     expect(ensureJob).toHaveBeenCalledWith(
       {},
       "chess-spectator",
@@ -349,7 +363,10 @@ describe("durable chess worker", () => {
     );
   });
   it("keeps heartbeating and playing while a spectator write hangs", async () => {
-    db.$transaction.mockImplementation(() => new Promise(() => {}));
+    db.$transaction.mockImplementation(async (run) => {
+      if (typeof run !== "function") return new Promise(() => {});
+      return run(db);
+    });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     let heartbeatsDuringGame = 0;
     const gameOver = Promise.withResolvers<void>();
@@ -370,7 +387,7 @@ describe("durable chess worker", () => {
     const result = await running;
     expect(heartbeatsDuringGame).toBeGreaterThanOrEqual(3);
     expect(result).toMatchObject({ result: "1/2-1/2", termination: "draw" });
-    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(db.$transaction.mock.calls.filter(([run]) => typeof run !== "function")).toHaveLength(1);
   });
   it("routes a spectator backfill job to the backfill", async () => {
     db.chessMatch.findUnique.mockResolvedValue({ ...row(), status: "running" });
@@ -856,19 +873,79 @@ describe("durable chess worker", () => {
     );
   });
 });
+describe("durable pending-owner worker fence", () => {
+  it.each(["running", "completed"] as const)(
+    "settles owner-delete instead of writing an admitted %s snapshot after the fence",
+    async (status) => {
+      db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() } as never);
+      runner.override = async (match, options) => {
+        if (status === "completed") finishMatch(match, "1-0", "resignation");
+        await options?.onUpdate?.(match);
+      };
+      expect(await handleChessRunJob({ data: { matchId: "match-id" } })).toBeUndefined();
+      const writes = db.chessMatch.updateMany.mock.calls.map(([input]) => input);
+      expect(writes).toHaveLength(2); // claim, then safe pending-owner settlement
+      expect(writes[1]).toMatchObject({
+        where: {
+          ownerId: "owner",
+          source: "hosted",
+          AND: [
+            { id: "match-id", source: "hosted", status: "running", runToken: expect.any(String) },
+            { status: { in: ["queued", "running"] } },
+          ],
+        },
+        data: {
+          status: "stopped",
+          runToken: null,
+          terminalCause: "owner-delete",
+          turnType: "idle",
+        },
+      });
+      expect(writes[1]?.data).not.toHaveProperty("archive");
+      expect(db.$executeRaw.mock.calls.some(([, key]) => key === "cli-credentials:owner")).toBe(
+        true,
+      );
+    },
+  );
+
+  it("fails closed on an unavailable owner instead of writing a stale terminal result", async () => {
+    db.user.findUnique.mockResolvedValue(null);
+    runner.override = async (match, options) => {
+      finishMatch(match, "1-0", "resignation");
+      await options?.onUpdate?.(match);
+    };
+    expect(await handleChessRunJob({ data: { matchId: "match-id" } })).toBeUndefined();
+    expect(db.chessMatch.updateMany.mock.calls.some(([input]) => "archive" in input.data)).toBe(
+      false,
+    );
+    expect(db.chessMatch.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ terminalCause: "owner-delete" }),
+      }),
+    );
+  });
+});
+
 describe("chess reconcile sweep", () => {
   const stale = (status: "running" | "queued", id = `${status}-id`) => ({
     id,
+    ownerId: "owner",
     status,
     heartbeatAt: new Date(Date.now() - 600000),
     archive: archive(),
   });
   function rows(running: ReturnType<typeof stale>[], queued: ReturnType<typeof stale>[]) {
     db.chessMatch.findMany.mockImplementation(((args: {
-      where: { status: string; turnType?: string };
+      where: { status: string | { in: string[] }; turnType?: string };
     }) =>
       Promise.resolve(
-        args.where.turnType === "human" ? [] : args.where.status === "running" ? running : queued,
+        typeof args.where.status !== "string"
+          ? []
+          : args.where.turnType === "human"
+            ? []
+            : args.where.status === "running"
+              ? running
+              : queued,
       )) as never);
   }
   it("errors stale running records with a bounded, ordered heartbeat compare-and-set", async () => {
@@ -885,7 +962,7 @@ describe("chess reconcile sweep", () => {
           turnType: { notIn: ["human", "human-move"] },
           heartbeatAt: { lt: expect.any(Date) },
         },
-        select: { id: true, status: true, heartbeatAt: true, archive: true },
+        select: { id: true, ownerId: true, status: true, heartbeatAt: true, archive: true },
       }),
     );
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
@@ -899,6 +976,29 @@ describe("chess reconcile sweep", () => {
       },
     });
     expect(getJob).not.toHaveBeenCalled();
+  });
+  it("repairs a durable pending fence as owner-delete after request-side settlement failed", async () => {
+    const record = stale("running");
+    rows([record], []);
+    db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() } as never);
+    await handleChessReconcileJob({ data: { reason: "cron" } });
+    expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: {
+        AND: [
+          { id: record.id, source: "hosted", status: "running", heartbeatAt: record.heartbeatAt },
+          { status: { in: ["queued", "running"] } },
+        ],
+        ownerId: "owner",
+        source: "hosted",
+      },
+      data: {
+        status: "stopped",
+        runToken: null,
+        terminalCause: "owner-delete",
+        ...chessTurnData({ type: "idle" }),
+        ending: { kind: "cancelled" },
+      },
+    });
   });
   it("leaves a queued match alone while its job is still live", async () => {
     rows([], [stale("queued")]);
@@ -964,13 +1064,18 @@ describe("chess reconcile sweep", () => {
       const orphan = { ...row(), id: "queued-50", status: "queued", heartbeatAt };
       db.chessMatch.findMany
         .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce(live)
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([orphan])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce(live)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
@@ -986,7 +1091,7 @@ describe("chess reconcile sweep", () => {
       const sweep = () => handleChessReconcileJob({ data: { reason: "cron" } });
       expect(await sweep()).toEqual({ scanned: 50, errored: 0 });
       expect(await sweep()).toEqual({ scanned: 1, errored: 1 });
-      expect(db.chessMatch.findMany.mock.calls[4]?.[0]).toMatchObject({
+      expect(db.chessMatch.findMany.mock.calls[6]?.[0]).toMatchObject({
         where: {
           status: "queued",
           heartbeatAt: { lt: expect.any(Date) },
@@ -1006,12 +1111,12 @@ describe("chess reconcile sweep", () => {
         },
       });
       await sweep();
-      expect(db.chessMatch.findMany.mock.calls[7]?.[0]?.where?.OR).toBeUndefined();
+      expect(db.chessMatch.findMany.mock.calls[10]?.[0]?.where?.OR).toBeUndefined();
       // An empty page at the end also wraps, without a second query in that sweep.
       expect(await sweep()).toEqual({ scanned: 0, errored: 0 });
       await sweep();
-      expect(db.chessMatch.findMany.mock.calls[13]?.[0]?.where?.OR).toBeUndefined();
-      expect(db.chessMatch.findMany).toHaveBeenCalledTimes(15);
+      expect(db.chessMatch.findMany.mock.calls[18]?.[0]?.where?.OR).toBeUndefined();
+      expect(db.chessMatch.findMany).toHaveBeenCalledTimes(20);
       for (const [query] of db.chessMatch.findMany.mock.calls) expect(query?.take).toBe(50);
     },
   );
@@ -1032,6 +1137,77 @@ describe("chess reconcile sweep", () => {
       matchId: "queued-id",
       error: "redis down",
     });
+  });
+});
+
+describe("pending deletion recovery before gameplay inspection", () => {
+  it.each(["queued-human", "invalid-archive", "redis-unavailable", "runner"])(
+    "settles %s without validating archives or repairing a revoked owner's job",
+    async (kind) => {
+      const pending = { id: "pending-recovery", source: kind === "runner" ? "runner" : "hosted" };
+      db.chessMatch.findMany.mockResolvedValueOnce([pending] as never);
+      getJob.mockRejectedValue(new Error("Redis unavailable"));
+      await handleChessReconcileJob({ data: { reason: "cron" } });
+      const write = db.chessMatch.updateMany.mock.calls.at(0)?.[0];
+      expect(write?.where).toMatchObject({
+        id: pending.id,
+        source: pending.source,
+        status: { in: ["queued", "running"] },
+        OR: [{ Owner: { deletionRequestedAt: { not: null } } }, { ownerId: null }],
+      });
+      expect(write?.data).toMatchObject({
+        status: "stopped",
+        runToken: null,
+        terminalCause: "owner-delete",
+        turnType: "idle",
+        pendingMove: expect.anything(),
+      });
+      expect(write?.data).not.toHaveProperty("archive");
+      expect(getJob).not.toHaveBeenCalled();
+      expect(ensureJob).not.toHaveBeenCalled();
+      if (kind === "runner") {
+        expect(write?.data).toMatchObject({
+          runnerState: "stopped",
+          runnerGeneration: null,
+          runnerResumeDeadline: null,
+          runnerRevision: { increment: 1 },
+        });
+        expect(db.runnerCommand.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { matchId: pending.id, ackedAt: null, cancelledAt: null },
+          }),
+        );
+      } else expect(write?.data).not.toHaveProperty("runnerState");
+      const query = db.chessMatch.findMany.mock.calls[0]?.[0];
+      expect(query).toMatchObject({ take: 50, orderBy: { id: "asc" } });
+      expect(query?.where).not.toHaveProperty("heartbeatAt");
+      expect(query?.where).not.toHaveProperty("turnDeadline");
+    },
+  );
+  it("does not cancel runner delivery after a lost active-state or pending-owner CAS", async () => {
+    db.chessMatch.findMany.mockResolvedValueOnce([
+      { id: "already-terminal", source: "runner" },
+    ] as never);
+    db.chessMatch.updateMany.mockResolvedValue({ count: 0 });
+    await handleChessReconcileJob({ data: { reason: "cron" } });
+    expect(db.runnerCommand.updateMany).not.toHaveBeenCalled();
+  });
+  it("settles a pending queued continuation when normal claim refuses its owner", async () => {
+    db.chessMatch.updateMany.mockResolvedValueOnce({ count: 0 }).mockResolvedValue({ count: 1 });
+    db.chessMatch.findMany.mockResolvedValueOnce([{ id: "match-id", source: "hosted" }] as never);
+    await handleChessRunJob({ data: { matchId: "match-id" } });
+    expect(db.chessMatch.findUnique).not.toHaveBeenCalled();
+    expect(db.chessMatch.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 1,
+        where: expect.objectContaining({ id: "match-id" }),
+      }),
+    );
+    expect(db.chessMatch.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "stopped", terminalCause: "owner-delete" }),
+      }),
+    );
   });
 });
 
@@ -1383,14 +1559,14 @@ describe("hosted matches billed to the owner's own OpenRouter key", () => {
 });
 
 describe("hosted human worker parking and repair", () => {
-  function humanMatch(first: "w" | "b" = "w") {
+  function humanMatch(first: "w" | "b" = "w", turnTimeoutMs = 60000) {
     const human = { name: "Human", model: "human", protocol: "human" as const };
     const model = { name: "Model", model: "fixture/model", protocol: "openai-chat" as const };
     return createMatch(
       {
         white: first === "w" ? human : model,
         black: first === "b" ? human : model,
-        rules: { context: "fresh", engineEvaluation: "off" },
+        rules: { context: "fresh", engineEvaluation: "off", turnTimeoutMs },
       },
       "hosted",
     );
@@ -1465,6 +1641,61 @@ describe("hosted human worker parking and repair", () => {
     });
     fetcher.mockRestore();
   });
+  it.each(["initial", "handoff"] as const)(
+    "publishes the full new human interval after credential admission (%s)",
+    async (path) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const before = new Date("2026-11-28T05:00:00.000Z");
+      const publishedAt = new Date(before.getTime() + 5000);
+      vi.setSystemTime(before);
+      env.CHESS_HOSTED_ENABLED = true;
+      env.OPENROUTER_API_KEY = "fixture-only";
+      const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        Response.json({
+          data: [{ id: "fixture/model", pricing: { prompt: "0", completion: "0" } }],
+        }),
+      );
+      const match = humanMatch(path === "initial" ? "w" : "b", 1000);
+      db.chessMatch.findUnique.mockResolvedValue({ ...row(), archive: match });
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let waits = 0;
+      let blocked = false;
+      db.$executeRaw.mockImplementation((async (_query: unknown, key: unknown) => {
+        if (key === "cli-credentials:owner" && ++waits === (path === "initial" ? 1 : 2)) {
+          blocked = true;
+          await gate;
+        }
+        return 1;
+      }) as never);
+      if (path === "handoff")
+        runner.override = async (archive, options) => {
+          submitMove(archive, boardAt(archive), "e2e4");
+          await options?.onUpdate?.(archive);
+        };
+      const running = handleChessRunJob({ data: { matchId: "match-id" } });
+      await vi.waitFor(() => expect(blocked).toBe(true));
+      vi.setSystemTime(publishedAt);
+      release();
+      const result = await running;
+      expect(vi.mocked(console.error).mock.calls).toEqual([]);
+      expect(result).toMatchObject({ parked: true });
+      const persisted = validateArchive(
+        db.chessMatch.updateMany.mock.calls.at(-1)?.[0]?.data.archive,
+      );
+      expect(persisted.turn).toMatchObject({
+        type: "human",
+        startedAt: publishedAt.toISOString(),
+        deadline: new Date(publishedAt.getTime() + 1000).toISOString(),
+      });
+      playHostedHumanTurn(persisted, publishedAt, path === "initial" ? "e2e4" : "e7e5");
+      expect(persisted.status).toBe("running");
+      expect(persisted.events.at(-1)).toMatchObject({ type: "attempt", accepted: true });
+      fetcher.mockRestore();
+    },
+  );
   it("repairs an accepted human continuation whose deterministic wake was lost", async () => {
     const match = humanMatch();
     beginHostedTurn(match);
@@ -1479,6 +1710,7 @@ describe("hosted human worker parking and repair", () => {
       heartbeatAt: new Date(0),
     };
     db.chessMatch.findMany
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([queued])
       .mockResolvedValueOnce([]);
@@ -1501,6 +1733,7 @@ describe("hosted human worker parking and repair", () => {
     const turn = match.turn;
     if (turn.type !== "human") throw new Error("Expected human turn");
     db.chessMatch.findMany
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([

@@ -976,24 +976,39 @@ export const chessRouter = {
   }),
   stop: protectedProcedure.input(slugInput).handler(async ({ input, context }) => {
     const ownerId = context.session.user.id;
-    const row = await prisma.chessMatch.findFirst({
-      where: { slug: input.slug, ownerId, source: "hosted" },
-      select: ownIdSelect,
-    });
-    if (!row) throw new ORPCError("NOT_FOUND");
-    await prisma.chessMatch.updateMany({
-      where: { id: row.id, ownerId, source: "hosted", status: { in: ["queued", "running"] } },
-      // Leave the last durable event snapshot intact: a read-modify-write here
-      // could erase a move persisted between the lookup and cancellation.
-      data: {
-        status: "stopped",
-        runToken: null,
-        ...chessTurnData({ type: "idle" }),
-        ending: STOPPED_ENDING,
-        terminalCause: "owner-stop",
-      },
-    });
-    return { stopped: true };
+    return withCliCredentialLockSlot(() =>
+      prisma.$transaction(
+        async (tx) => {
+          await lockCliCredentials(ownerId, tx);
+          // A request admitted before revocation may resume after the durable
+          // deletion fence. Classify its effect under that same owner lock.
+          const owner = await tx.user.findUnique({
+            where: { id: ownerId },
+            select: { deletionRequestedAt: true },
+          });
+          if (!owner) throw new ORPCError("UNAUTHORIZED");
+          const row = await tx.chessMatch.findFirst({
+            where: { slug: input.slug, ownerId, source: "hosted" },
+            select: ownIdSelect,
+          });
+          if (!row) throw new ORPCError("NOT_FOUND");
+          await tx.chessMatch.updateMany({
+            where: { id: row.id, ownerId, source: "hosted", status: { in: ["queued", "running"] } },
+            // Leave the last durable event snapshot intact: a read-modify-write
+            // could erase a move committed between the lookup and cancellation.
+            data: {
+              status: "stopped",
+              runToken: null,
+              ...chessTurnData({ type: "idle" }),
+              ending: STOPPED_ENDING,
+              terminalCause: owner.deletionRequestedAt ? "owner-delete" : "owner-stop",
+            },
+          });
+          return { stopped: true };
+        },
+        { isolationLevel: "ReadCommitted", timeout: 30_000 },
+      ),
+    );
   }),
   officialEntries: publicProcedure.input(officialFilterInput).handler(async ({ input }) => {
     const rows = await prisma.chessOfficialEntry.findMany({

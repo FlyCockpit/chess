@@ -894,6 +894,7 @@ export async function accountDeletionPoolCheck() {
     console.log(
       "Admin effects: minimum pool3, transaction policy read, unchanged fresh-admin grace and overdue 2FA refusal passed.",
     );
+    await (await import("./account-deletion-active-check.mjs")).accountDeletionActiveCheck(1);
   } finally {
     await prisma.user.deleteMany({ where: { id: { in: owners } } });
     if (prior)
