@@ -30,6 +30,7 @@ import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
+import { ACCOUNT_EXPORT_PATH, mountAccountExportRoutes } from "./account-export-routes.js";
 import { apiReferenceAdminGate } from "./api-reference-admin-gate.js";
 import { betterAuthAdminGate } from "./better-auth-admin-gate.js";
 import { readBuildCommit } from "./build-commit.js";
@@ -53,6 +54,8 @@ import {
 } from "./locale-modulepreload.js";
 import { mountOpenRouterRoutes } from "./openrouter-routes.js";
 import {
+  accountExportIpLimiter,
+  accountExportLimiter,
   authLimiter,
   createRateLimiterMiddleware,
   credentialBurstLimiter,
@@ -533,6 +536,19 @@ mountOpenRouterRoutes(app, {
   publicOrigin: env.BETTER_AUTH_URL,
   webOrigin: env.CORS_ORIGIN ?? env.BETTER_AUTH_URL,
   openRouterOrigin: env.OPENROUTER_ORIGIN,
+});
+
+app.use(
+  ACCOUNT_EXPORT_PATH,
+  createRateLimiterMiddleware(accountExportIpLimiter, {
+    failClosed: true,
+    resolveKey: resolveClientIp,
+  }),
+);
+app.use(ACCOUNT_EXPORT_PATH, sessionMiddleware);
+app.use(ACCOUNT_EXPORT_PATH, expectedIdentity);
+mountAccountExportRoutes(app, {
+  budget: createRateLimiterMiddleware(accountExportLimiter, { failClosed: true }),
 });
 
 // Always validate the header sent by SimpleCsrfProtectionLinkPlugin. Without

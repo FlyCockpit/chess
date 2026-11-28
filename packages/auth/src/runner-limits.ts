@@ -56,6 +56,9 @@ const stateSchema = z.strictObject({
   lastResult: resultSchema.nullable(),
 });
 type State = z.infer<typeof stateSchema>;
+
+export { stateSchema as runnerLimitStateSchema };
+
 const requestShape = {
   id: z.string().min(1).max(64),
   expectedRevision: integer,

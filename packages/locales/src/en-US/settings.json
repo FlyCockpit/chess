@@ -273,5 +273,23 @@
       "pending": "Disconnecting…"
     },
     "unreadableDescription": "This server can't open your saved key, usually because its encryption secret changed. Connect again to keep running hosted matches, or ask the operator to check CHESS_PROVIDER_KEY_SECRET."
+  },
+  "export": {
+    "title": "Export your account data",
+    "description": "Download account and connection metadata, your private and published matches, runner machines and reports. JSON includes all exportable data; PGN contains your games. Passwords, keys and authentication proofs are excluded.",
+    "freshSignIn": "For your privacy, sign in again before exporting if your last sign-in was more than five minutes ago.",
+    "json": "Download JSON",
+    "pgn": "Download PGN",
+    "preparing": "Preparing…",
+    "keepOpen": "Keep this page open while your download is prepared.",
+    "downloaded": "Your download is ready. Store it somewhere private.",
+    "signInAgain": "Sign out and sign in again",
+    "errors": {
+      "reauth": "Sign out and sign in again, then return here to download within five minutes.",
+      "rateLimit": "You have requested several exports. Wait before trying again.",
+      "forbidden": "Your account cannot export right now. Check your security settings or contact support.",
+      "tooLarge": "This export exceeds the download limit. Contact support to request your data.",
+      "unavailable": "The download could not finish. Try again; if it keeps failing, contact support."
+    }
   }
 }

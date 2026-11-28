@@ -19,6 +19,7 @@ import { useTranslation } from "react-i18next";
 import z from "zod";
 import { ConsentPreferencesSection } from "@/components/consent/consent-preferences-section";
 import { QueryBoundary } from "@/components/query-boundary";
+import { AccountExportSection } from "@/components/settings/account-export-section";
 import { authClient } from "@/lib/auth-client";
 import { friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
@@ -42,6 +43,7 @@ function hasAdminRole(role: string | null | undefined): boolean {
 }
 
 function ProfileSettings() {
+  const { lang } = Route.useParams();
   const { session } = Route.useRouteContext();
   const { t } = useTranslation(["settings", "auth", "common"]);
   const queryClient = useQueryClient();
@@ -172,6 +174,7 @@ function ProfileSettings() {
         ) : null}
 
         <ConsentPreferencesSection />
+        <AccountExportSection lang={lang} />
       </CardContent>
     </Card>
   );

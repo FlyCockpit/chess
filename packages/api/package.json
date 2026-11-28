@@ -28,6 +28,9 @@
     "./lib/chess-spectator-access": {
       "default": "./src/lib/chess-spectator-access.ts"
     },
+    "./lib/account-export": {
+      "default": "./src/lib/account-export.ts"
+    },
     "./lib/build-commit": {
       "default": "./src/lib/build-commit.ts"
     },

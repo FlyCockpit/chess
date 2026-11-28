@@ -2096,6 +2096,19 @@ async function main() {
     else if (process.argv[3] === "runner-claims") {
       const { runnerClaimsCheck } = await import("./lib/runner-claim-check.ts");
       await runnerClaimsCheck();
+    } else if (process.argv[3] === "account-export") {
+      try {
+        await (await import("./lib/account-export-check.mjs")).accountExportCheck();
+      } finally {
+        await (await import("../packages/db/src/index.ts")).default.$disconnect();
+        const queues = await import("../packages/queue/src/index.ts");
+        await Promise.all(
+          Object.values(queues)
+            .filter((value) => value instanceof queues.Queue)
+            .map((queue) => queue.close()),
+        );
+        queues.redisConnection.disconnect();
+      }
     } else if (["account-deletion", "account-deletion-pool3"].includes(process.argv[3])) {
       try {
         if (process.argv[3] === "account-deletion-pool3")
@@ -2138,6 +2151,7 @@ async function main() {
       "--runner-claims-only",
       "--account-deletion-only",
       "--runner-limits-only",
+      "--account-export-only",
     ].includes(process.argv[3]),
   );
   // Container names only. TEST_CONTAINER_PREFIX (shared with backup:test and
@@ -2292,6 +2306,7 @@ async function main() {
       ["runner-claims", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-limits", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-transport", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
+      ["account-export", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       [
         "account-deletion",
         { ...inviteEnv, DATABASE_POOL_MAX: "8", CHESS_PROVIDER_KEY_SECRET: "ab".repeat(32) },
@@ -2327,6 +2342,7 @@ async function main() {
       if (process.argv[3] === "--chess-human-only" && mode !== "chess-human") continue;
       if (process.argv[3] === "--runner-transport-only" && mode !== "runner-transport") continue;
       if (process.argv[3] === "--runner-claims-only" && mode !== "runner-claims") continue;
+      if (process.argv[3] === "--account-export-only" && mode !== "account-export") continue;
       if (process.argv[3] === "--account-deletion-only" && !mode.startsWith("account-deletion"))
         continue;
       if (process.argv[3] === "--runner-limits-only" && mode !== "runner-limits") continue;
@@ -2350,6 +2366,7 @@ async function main() {
             "chess-human",
             "chess-moderation",
             "account-deletion",
+            "account-export",
           ].includes(mode)
             ? 120_000
             : [

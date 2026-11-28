@@ -273,5 +273,23 @@
       "pending": "Desconectando…"
     },
     "unreadableDescription": "Este servidor no puede abrir tu clave guardada, normalmente porque cambió su secreto de cifrado. Conéctala de nuevo para seguir jugando partidas alojadas o pide al operador que revise CHESS_PROVIDER_KEY_SECRET."
+  },
+  "export": {
+    "title": "Exporta los datos de tu cuenta",
+    "description": "Descarga los datos de tu cuenta y conexiones, tus partidas privadas y publicadas, tus equipos ejecutores y los reportes que enviaste. JSON incluye todos los datos exportables; PGN contiene tus partidas. Se excluyen las contraseñas, las claves y las pruebas de autenticación.",
+    "freshSignIn": "Por tu privacidad, vuelve a iniciar sesión antes de exportar si tu último inicio de sesión fue hace más de cinco minutos.",
+    "json": "Descargar JSON",
+    "pgn": "Descargar PGN",
+    "preparing": "Preparando…",
+    "keepOpen": "Mantén esta página abierta mientras se prepara la descarga.",
+    "downloaded": "Tu descarga está lista. Guárdala en un lugar privado.",
+    "signInAgain": "Cerrar sesión y volver a iniciar sesión",
+    "errors": {
+      "reauth": "Cierra sesión y vuelve a iniciarla. Luego regresa aquí para descargar los datos en los próximos cinco minutos.",
+      "rateLimit": "Has solicitado varias exportaciones. Espera antes de volver a intentarlo.",
+      "forbidden": "Tu cuenta no puede exportar datos en este momento. Revisa tu configuración de seguridad o contacta a soporte.",
+      "tooLarge": "Esta exportación supera el límite de descarga. Contacta a soporte para solicitar tus datos.",
+      "unavailable": "No se pudo completar la descarga. Vuelve a intentarlo; si el problema continúa, contacta a soporte."
+    }
   }
 }

@@ -105,6 +105,8 @@ vi.mock("./openrouter-routes.js", () => ({ mountOpenRouterRoutes: vi.fn() }));
 vi.mock("./seo.js", () => ({ registerSeoRoutes: vi.fn() }));
 vi.mock("./ssr-cache.js", () => ({ handleSsrRequest: vi.fn() }));
 vi.mock("./rate-limit.js", () => ({
+  accountExportIpLimiter: {},
+  accountExportLimiter: {},
   authLimiter: {},
   credentialBurstLimiter: {},
   credentialLimiter: {},

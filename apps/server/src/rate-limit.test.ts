@@ -54,6 +54,28 @@ describe("runner claim surface budgets", () => {
   });
 });
 
+describe("account export budget", () => {
+  it("protects pre-authentication traffic with a separate fail-closed IP bucket", async () => {
+    const { accountExportIpLimiter, accountExportLimiter } = await import("./rate-limit");
+    expect(accountExportIpLimiter.keyPrefix).toBe("rl:account-export-ip");
+    expect(accountExportIpLimiter.points).toBe(120);
+    expect(accountExportIpLimiter.duration).toBe(60);
+    expect(Reflect.get(accountExportIpLimiter, "options")).not.toHaveProperty("insuranceLimiter");
+    expect(accountExportIpLimiter.keyPrefix).not.toBe(accountExportLimiter.keyPrefix);
+  });
+  it("has an independent fail-closed three-per-hour bucket", async () => {
+    const { accountExportLimiter, rpcLimiter, openrouterLimiter } = await import("./rate-limit");
+    expect(accountExportLimiter.keyPrefix).toBe("rl:account-export");
+    expect(accountExportLimiter.points).toBe(3);
+    expect(accountExportLimiter.duration).toBe(3600);
+    expect(Reflect.get(accountExportLimiter, "options")).not.toHaveProperty("insuranceLimiter");
+    expect(
+      new Set([accountExportLimiter.keyPrefix, rpcLimiter.keyPrefix, openrouterLimiter.keyPrefix])
+        .size,
+    ).toBe(3);
+  });
+});
+
 const mockGetConnInfo = vi.fn(() => ({ remote: { address: "10.0.0.1" } }));
 
 vi.mock("@hono/node-server/conninfo", () => ({

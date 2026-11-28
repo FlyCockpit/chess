@@ -9,13 +9,11 @@ import {
   beginHostedTurn,
   boardAt,
   createMatch,
-  finishMatch,
   isOldRulesVersion,
   MAX_ARCHIVE_BYTES,
   type MatchArchive,
   MODEL_PROTOCOLS,
   matchConfigSchema,
-  parseArchive,
   playHostedHumanTurn,
   utf8ByteLength,
   validateArchive,
@@ -47,6 +45,7 @@ import {
   neutralArchiveId,
   UNKNOWN_MODEL,
 } from "../lib/chess-anonymization";
+import { readStoredArchive } from "../lib/chess-archive";
 import { chessTurnData, wakeHostedMatch } from "../lib/chess-human";
 import { admitHostedMatch, CHESS_CREATE_LOCK } from "../lib/chess-locks";
 import { getModelCatalog } from "../lib/chess-models";
@@ -278,18 +277,7 @@ function checkedArchive(
   ending?: Prisma.JsonValue,
 ) {
   try {
-    const archive = replay ? validateArchive(input) : parseArchive(input);
-    if (status === "stopped") {
-      finishMatch(archive, "*", "cancelled", "stopped");
-    }
-    const parsedEnding =
-      status === "error" && ending !== undefined ? cardEnding.parse(ending) : null;
-    if (status === "error" && parsedEnding?.kind === "credential-revoked") {
-      finishMatch(archive, "*", "credential-revoked", "error");
-    } else if (status === "error" && archive.status === "running") {
-      finishMatch(archive, "*", "interrupted", "error");
-    }
-    return archive;
+    return replay ? validateArchive(input) : readStoredArchive(input, status, ending);
   } catch (error) {
     throw new ORPCError("BAD_REQUEST", {
       message:

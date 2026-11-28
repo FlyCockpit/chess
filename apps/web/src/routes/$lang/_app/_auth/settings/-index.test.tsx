@@ -24,6 +24,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   createFileRoute: () => (options: unknown) => ({
     options,
+    useParams: () => ({ lang: "en-US" }),
     useRouteContext: () => ({
       session: { user: { id: "admin", name: "Admin", email: "admin@example.test", role: "admin" } },
     }),
@@ -40,6 +41,9 @@ vi.mock("@/utils/orpc", () => ({
 }));
 vi.mock("@/components/consent/consent-preferences-section", () => ({
   ConsentPreferencesSection: () => null,
+}));
+vi.mock("@/components/settings/account-export-section", () => ({
+  AccountExportSection: () => null,
 }));
 
 import { Route } from "./index";

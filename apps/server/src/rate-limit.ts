@@ -80,6 +80,8 @@ const runnerClaimExchangeBudget = rpcRateFamily({ points: 120, windowSeconds: 60
 const cliDownloadBudget = rpcRateFamily({ points: 20, windowSeconds: 60 });
 const devicePollBudget = rpcRateFamily({ points: 30, windowSeconds: 60 });
 const openrouterBudget = rpcRateFamily({ points: 20, windowSeconds: 600 });
+const accountExportBudget = rpcRateFamily({ points: 3, windowSeconds: 3600 });
+const accountExportIpBudget = rpcRateFamily({ points: 120, windowSeconds: 60 });
 
 /**
  * Credential limiter — the credential-stuffing defense. Applied ONLY to the
@@ -622,6 +624,20 @@ export const devicePollLimiter = createSurfaceLimiter("device-poll", devicePollB
 export const openrouterLimiter = createSurfaceLimiter("openrouter", openrouterBudget, {
   insurance: false,
 });
+
+// JSON and PGN downloads plus one retry per hour, independent of normal RPC.
+// No insurance: exports fail closed when the shared rate store is unavailable.
+export const accountExportLimiter = createSurfaceLimiter("account-export", accountExportBudget, {
+  insurance: false,
+});
+// Protect cookie-session lookup even when requests fail cheap export validation.
+export const accountExportIpLimiter = createSurfaceLimiter(
+  "account-export-ip",
+  accountExportIpBudget,
+  {
+    insurance: false,
+  },
+);
 
 /**
  * Readiness limiter — /ready.
