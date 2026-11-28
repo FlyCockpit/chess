@@ -12,6 +12,8 @@ export const RUNNER_HEARTBEAT_MS = 25_000;
 export const RUNNER_LIVENESS_MS = 60_000;
 export const RUNNER_RESUME_GRACE_MS = 120_000;
 export const RUNNER_MAX_BUFFERED_BYTES = 262_144;
+/** Per-socket chess command credit, with headroom for liveness and limit replies. */
+export const RUNNER_COMMAND_WINDOW = 4;
 export const RUNNER_WS_PATH = "/api/cli/runner/ws";
 
 const identifier = z
@@ -183,6 +185,12 @@ export const runnerServerMessageSchema = z.discriminatedUnion("type", [
 
 export type RunnerClientMessage = z.infer<typeof runnerClientMessageSchema>;
 export type RunnerServerMessage = z.infer<typeof runnerServerMessageSchema>;
+/** Typed, envelope-free delivery. Persisted command IDs survive socket replacement. */
+export type RunnerDelivery = RunnerServerMessage extends infer Message
+  ? Message extends RunnerServerMessage
+    ? Omit<Message, "version" | "generation" | "id" | "seq" | "ack">
+    : never
+  : never;
 
 function parseFrame<T>(input: string, schema: z.ZodType<T>): T {
   try {

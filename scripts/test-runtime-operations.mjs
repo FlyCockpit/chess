@@ -5,6 +5,7 @@
  * B2 gate: append --chess-official-only (durable official starts and settlement).
  * C1b gate: append --chess-human-only (durable human turns and worker release).
  * E3S gate: append --runner-limits-only (step-up proof and limit revision races).
+ * E4a gate: append --chess-runner-only (durable runner controls and source fences).
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -2090,6 +2091,8 @@ async function main() {
       await (await import("./test-chess-moderation.mjs")).chessModerationCheck();
     else if (process.argv[3] === "chess-human")
       await (await import("./test-chess-human.mjs")).chessHumanCheck();
+    else if (process.argv[3] === "chess-runner")
+      await (await import("./test-chess-runner.mjs")).chessRunnerCheck();
     else if (process.argv[3] === "invite-race") await inviteRaceCheck();
     else if (process.argv[3] === "password-signin-race") await passwordSignInRaceCheck();
     else if (process.argv[3] === "runner-machines") await runnerMachinesCheck();
@@ -2146,6 +2149,7 @@ async function main() {
       "--chess-official-only",
       "--chess-moderation-only",
       "--chess-human-only",
+      "--chess-runner-only",
       "--runner-machines-only",
       "--runner-transport-only",
       "--runner-claims-only",
@@ -2330,6 +2334,7 @@ async function main() {
       ],
       ["chess-admission", {}],
       ["chess-moderation", { ...inviteEnv, DATABASE_POOL_MAX: "8" }],
+      ["chess-runner", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       [
         "chess-human",
         {
@@ -2347,6 +2352,7 @@ async function main() {
       if (process.argv[3] === "--chess-official-only" && mode !== "chess-official") continue;
       if (process.argv[3] === "--chess-moderation-only" && mode !== "chess-moderation") continue;
       if (process.argv[3] === "--chess-human-only" && mode !== "chess-human") continue;
+      if (process.argv[3] === "--chess-runner-only" && mode !== "chess-runner") continue;
       if (process.argv[3] === "--runner-transport-only" && mode !== "runner-transport") continue;
       if (process.argv[3] === "--runner-claims-only" && mode !== "runner-claims") continue;
       if (process.argv[3] === "--account-export-only" && mode !== "account-export") continue;
@@ -2374,6 +2380,7 @@ async function main() {
             "chess-moderation",
             "account-deletion",
             "account-export",
+            "chess-runner",
           ].includes(mode)
             ? 120_000
             : [
@@ -2390,6 +2397,7 @@ async function main() {
             "chess-human",
             "chess-moderation",
             "account-deletion",
+            "chess-runner",
           ].includes(mode)
             ? "inherit"
             : ["ignore", "pipe", "pipe"],
@@ -2403,6 +2411,7 @@ async function main() {
           "chess-human",
           "chess-moderation",
           "account-deletion",
+          "chess-runner",
         ].includes(mode)
       )
         process.stdout.write(result);

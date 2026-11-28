@@ -202,13 +202,39 @@ afterEach(async () => {
 });
 
 describe("durable runner game journal", () => {
+  it("persists an exact cancellation tombstone across reopen and refuses a later offered game", async () => {
+    const { root, journal, file } = await fixture();
+    await journal.save("match-1", { phase: "cancelled" });
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ phase: "cancelled" });
+    await journal.close();
+    const restored = track(await openRunnerJournal(origin, machine, root));
+    expect(await restored.load("match-1")).toEqual({ phase: "cancelled" });
+    await restored.save("match-1", { phase: "cancelled" });
+    await expect(restored.save("match-1", record())).rejects.toThrow("RUNNER_JOURNAL_INVALID");
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ phase: "cancelled" });
+  });
+
+  it("rejects extra cancellation fields and cannot erase a known archive with a bare tombstone", async () => {
+    const first = await fixture();
+    await expect(
+      first.journal.save("match-1", { phase: "cancelled", command: "extra" } as never),
+    ).rejects.toThrow("RUNNER_JOURNAL_INVALID");
+    const second = await fixture();
+    const known = record();
+    await second.journal.save("match-1", known);
+    await expect(second.journal.save("match-1", { phase: "cancelled" })).rejects.toThrow(
+      "RUNNER_JOURNAL_INVALID",
+    );
+    expect(JSON.parse(await readFile(second.file, "utf8"))).toEqual(known);
+  });
+
   it("never lets a delayed ready snapshot reopen a durable stop fence", async () => {
     const f = await fixture();
     const ready = { ...record(), phase: "ready" as const };
     await f.journal.save("match-1", ready);
     await f.journal.save("match-1", { ...ready, phase: "terminal" });
     // A fence can retain the in-flight running archive until the loop has settled.
-    expect((await f.journal.load("match-1"))?.archive.status).toBe("running");
+    expect(await f.journal.load("match-1")).toMatchObject({ archive: { status: "running" } });
     await expect(f.journal.save("match-1", ready)).rejects.toThrow("RUNNER_JOURNAL_INVALID");
     expect(JSON.parse(await readFile(f.file, "utf8")).phase).toBe("terminal");
   });
@@ -288,13 +314,15 @@ describe("durable runner game journal", () => {
     await Promise.all([first, second, closed]);
     const detached = await loaded;
     expect(detached).toEqual(offered);
+    if (detached?.phase === "cancelled") throw new Error("Expected game record");
     if (detached) detached.archive.config.white.name = "returned mutation";
     await expect(journal.load("match-1")).rejects.toThrow("RUNNER_JOURNAL_STORAGE");
     const restored = track(await openRunnerJournal(origin, machine, root));
     expect(await restored.load("match-1")).toEqual({ ...offered, phase: "ready" });
     const again = await restored.load("match-1");
+    if (again?.phase === "cancelled") throw new Error("Expected game record");
     if (again) again.digest = "c".repeat(64);
-    expect((await restored.load("match-1"))?.digest).toBe(offered.digest);
+    expect(await restored.load("match-1")).toMatchObject({ digest: offered.digest });
   });
 
   it.each(["../escape", "/absolute", "a/b", "a\\b", ".", "", "a\n", "x".repeat(129)])(

@@ -1,3 +1,8 @@
+import {
+  handleRunnerControl,
+  RUNNER_COMMAND_CHANNEL,
+  runnerOutbox,
+} from "@cockpit-chess/api/lib/chess-runner";
 import { runnerLimitsService } from "@cockpit-chess/auth/runner-limits";
 import {
   RUNNER_MAX_BUFFERED_BYTES,
@@ -39,6 +44,7 @@ export function createRunnerWebSocketRuntime(options: { isOwnerActive: RunnerOwn
         leases: createRunnerLeaseStore(redisConnection),
         isAvailable,
         limits: runnerLimitsService,
+        controls: { outbox: runnerOutbox, handle: handleRunnerControl },
       })
     : null;
   if (transport) {
@@ -46,6 +52,8 @@ export function createRunnerWebSocketRuntime(options: { isOwnerActive: RunnerOwn
       subscriber: createRedisConnection({ maxRetriesPerRequest: 1, commandTimeout: 5000 }),
       startNotifications: startRunnerMachineNotifications,
       invalidate: transport.invalidate,
+      commandChannel: RUNNER_COMMAND_CHANNEL,
+      wake: transport.wake,
     });
   }
   const runtime =

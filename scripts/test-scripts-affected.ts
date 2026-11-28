@@ -152,6 +152,7 @@ export const RULES: readonly Rule[] = [
       "scripts/test-chess-official.mjs",
       "scripts/test-chess-moderation.mjs",
       "scripts/test-chess-human.mjs",
+      "scripts/test-chess-runner.mjs",
       "scripts/translate-locale-bundles.ts",
       "scripts/trufflehog-pr-scan.sh",
       "scripts/verify-dokploy-deployment.mjs",

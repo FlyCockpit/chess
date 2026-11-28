@@ -147,7 +147,7 @@ export async function handleChessReconcileJob(
         }
       }
       const result = await prisma.chessMatch.updateMany({
-        where: { id: row.id, status: row.status, heartbeatAt: row.heartbeatAt },
+        where: { id: row.id, source: "hosted", status: row.status, heartbeatAt: row.heartbeatAt },
         data: {
           status: "error",
           runToken: null,
@@ -344,7 +344,7 @@ export async function handleChessRunJob(
   if (!row) return;
   if (!row.ownerId || !row.Owner || isAccountDeletionPending(row.Owner)) {
     await prisma.chessMatch.updateMany({
-      where: { id: matchId, status: "running", runToken },
+      where: { id: matchId, source: "hosted", status: "running", runToken },
       data: {
         status: "stopped",
         runToken: null,
@@ -381,7 +381,7 @@ export async function handleChessRunJob(
       error: message(error),
     });
     await prisma.chessMatch.updateMany({
-      where: { id: matchId, status: "running", runToken },
+      where: { id: matchId, source: "hosted", status: "running", runToken },
       data: {
         status: "error",
         runToken: null,
@@ -477,7 +477,7 @@ export async function handleChessRunJob(
     if (archive.status !== "running") terminalWriteAttempts += 1;
     const result = await prisma.chessMatch
       .updateMany({
-        where: { id: matchId, status: "running", runToken },
+        where: { id: matchId, source: "hosted", status: "running", runToken },
         data: {
           archive,
           ...chessUsageColumns(archive),

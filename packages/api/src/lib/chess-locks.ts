@@ -21,7 +21,9 @@ export async function admitHostedMatch(
 ) {
   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${CHESS_CREATE_LOCK}))::text AS locked`;
   if (!(await ownerActiveInTransaction(tx, input.ownerId))) throw new ORPCError("UNAUTHORIZED");
-  if ((await tx.chessMatch.count({ where: { status: "queued" } })) >= input.queueMax)
+  if (
+    (await tx.chessMatch.count({ where: { source: "hosted", status: "queued" } })) >= input.queueMax
+  )
     throw new ORPCError("TOO_MANY_REQUESTS", {
       message: "The match queue is full",
       data: { reason: "queue-full" },
@@ -45,6 +47,7 @@ export async function admitHostedMatch(
   const active = await tx.chessMatch.count({
     where: {
       ownerId: input.ownerId,
+      source: "hosted",
       credentialSource: "owner-openrouter",
       status: { in: ["queued", "running"] },
     },
@@ -57,6 +60,7 @@ export async function admitHostedMatch(
   const today = await tx.chessMatch.count({
     where: {
       ownerId: input.ownerId,
+      source: "hosted",
       credentialSource: "owner-openrouter",
       createdAt: { gte: new Date(now.getTime() - 86_400_000) },
     },

@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { createRunnerInvalidationMonitor } from "./runner-ws-invalidation.js";
 
-function harness() {
+function harness(commands = false) {
   const events = new Map<string, (...args: string[]) => void>();
   const invalidate = vi.fn();
+  const wake = vi.fn();
   const subscriber = {
     on: vi.fn((event: string, callback: (...args: string[]) => void) => {
       events.set(event, callback);
@@ -13,7 +14,12 @@ function harness() {
   };
   const pgStop = vi.fn().mockResolvedValue(undefined);
   const startNotifications = vi.fn((_callbacks) => ({ stop: pgStop }));
-  const monitor = createRunnerInvalidationMonitor({ subscriber, startNotifications, invalidate });
+  const monitor = createRunnerInvalidationMonitor({
+    subscriber,
+    startNotifications,
+    invalidate,
+    ...(commands ? { commandChannel: "chess_runner_command", wake } : {}),
+  });
   const pg = startNotifications.mock.calls[0]?.[0];
   if (!pg) throw new Error("Missing notifications callbacks");
   return {
@@ -21,12 +27,39 @@ function harness() {
     subscriber,
     pg,
     invalidate,
+    wake,
     pgStop,
     emit: (event: string, ...args: string[]) => events.get(event)?.(...args),
   };
 }
 
 describe("runner cross-replica invalidation monitor", () => {
+  it("routes only bounded ID-only wake hints and never grants authority from pubsub", async () => {
+    const h = harness(true);
+    h.emit("ready");
+    h.pg.onReady();
+    await Promise.resolve();
+    expect(h.subscriber.subscribe).toHaveBeenCalledWith(
+      "runner_ws_replaced",
+      "chess_runner_command",
+    );
+    h.emit("message", "chess_runner_command", JSON.stringify({ machineId: "machine1" }));
+    expect(h.wake).toHaveBeenCalledWith("machine1");
+    expect(h.invalidate).not.toHaveBeenCalled();
+    h.wake.mockClear();
+    for (const input of [
+      "{",
+      "x".repeat(1025),
+      JSON.stringify({ machineId: "machine1", payload: "execute" }),
+      JSON.stringify({ machineId: "invalid/id" }),
+    ])
+      h.emit("message", "chess_runner_command", input);
+    h.emit("message", "other_channel", JSON.stringify({ machineId: "machine1" }));
+    expect(h.wake).not.toHaveBeenCalled();
+    await h.monitor.stop();
+    h.emit("message", "chess_runner_command", JSON.stringify({ machineId: "machine1" }));
+    expect(h.wake).not.toHaveBeenCalled();
+  });
   it("denies handshakes until both channels have confirmed subscription", async () => {
     const h = harness();
     expect(h.monitor.isAvailable()).toBe(false);

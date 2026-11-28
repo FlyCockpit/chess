@@ -1705,6 +1705,18 @@ describe("spectator evaluation", () => {
     expect(turnPrompt(match, "w")).not.toContain("987654");
     expect(turnPrompt(match, "w")).not.toMatch(/evaluation|centipawn/i);
   });
+  it("waits for the source fence before engine use and stops on denial", async () => {
+    const fence = Promise.withResolvers<void>();
+    const record = vi.fn();
+    const feed = spectatorFeed({ record, beforeEvaluate: () => fence.promise });
+    feed.update(createMatch({ white: random, black: random, rules: {} }));
+    expect(evaluatePosition).not.toHaveBeenCalled();
+    fence.reject(new Error("source denied"));
+    await feed.drain();
+    expect(feed.failed).toBe(true);
+    expect(evaluatePosition).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+  });
   it("stops at the first engine failure without touching the game", async () => {
     evaluatePosition.mockRejectedValue(new Error("Engine could not start"));
     const record = vi.fn();

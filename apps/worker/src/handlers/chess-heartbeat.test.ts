@@ -83,7 +83,11 @@ describe("shared chess heartbeat", () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(db.chessMatch.updateMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        where: { status: "running", OR: [{ id: "fresh", runToken: "token-fresh" }] },
+        where: {
+          source: "hosted",
+          status: "running",
+          OR: [{ id: "fresh", runToken: "token-fresh" }],
+        },
       }),
     );
     expect(() => freshDone.assertUsable()).not.toThrow();

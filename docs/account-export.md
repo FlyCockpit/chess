@@ -42,6 +42,10 @@ about owned replays. PGN is the portable game representation; JSON carries the a
 account data. Unsupported prerelease archives are identified explicitly rather than
 accepted as an older archive format.
 
+Runner delivery envelopes and idempotency receipts are internal control records
+and are excluded. Their duplicated game configuration is available through the
+owned game archive; runner machine inventory is exported separately.
+
 `runnerLimitStates` includes current stored operating/hard limits, pending revision
 and last acknowledgement for each owned machine. The export reuses the runner's
 strict current-state parser and checks exact owner/machine binding. Expired settings

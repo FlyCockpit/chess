@@ -158,7 +158,7 @@ describe("runner transport durable authority", () => {
     const authority = createRunnerAuthority(async () => true);
     expect(await authority.ownsMatch(identity, "foreign")).toBe(false);
     expect(state.match).toHaveBeenCalledWith({
-      where: { id: "foreign", ownerId: "owner1", source: "runner" },
+      where: { id: "foreign", ownerId: "owner1", source: "runner", runnerMachineId: "machine1" },
       select: { id: true },
     });
     state.match.mockResolvedValue({ id: "owned" });

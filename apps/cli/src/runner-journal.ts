@@ -20,9 +20,15 @@ export interface RunnerGameRecord {
   confirmedPly: number;
 }
 
+/** A stop may arrive before any config was delivered; never invent a game archive. */
+export interface RunnerCancelledRecord {
+  phase: "cancelled";
+}
+export type RunnerJournalRecord = RunnerGameRecord | RunnerCancelledRecord;
+
 export interface RunnerJournal {
-  load(matchId: string): Promise<RunnerGameRecord | undefined>;
-  save(matchId: string, record: RunnerGameRecord): Promise<void>;
+  load(matchId: string): Promise<RunnerJournalRecord | undefined>;
+  save(matchId: string, record: RunnerJournalRecord): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -46,8 +52,18 @@ class JournalError extends Error {
   }
 }
 
-function validateRecord(input: unknown): RunnerGameRecord {
-  const record = recordSchema.parse(input);
+const journalRecordSchema = z.union([
+  recordSchema,
+  z.strictObject({ phase: z.literal("cancelled") }),
+]);
+
+function recordDigest(record: RunnerJournalRecord): string {
+  return record.phase === "cancelled" ? "cancelled" : record.digest;
+}
+
+function validateRecord(input: unknown): RunnerJournalRecord {
+  const record = journalRecordSchema.parse(input);
+  if (record.phase === "cancelled") return record;
   if (archiveByteLength(record.archive) > MAX_ARCHIVE_BYTES) throw new JournalError("INVALID");
   record.archive = validateArchive(record.archive);
   const moves = record.archive.events.filter(
@@ -153,7 +169,7 @@ class FileRunnerJournal implements RunnerJournal {
     return join(this.directory, `${matchId}.json`);
   }
 
-  private async read(matchId: string): Promise<RunnerGameRecord | undefined> {
+  private async read(matchId: string): Promise<RunnerJournalRecord | undefined> {
     const file = this.file(matchId);
     let stat: Stats;
     try {
@@ -169,7 +185,7 @@ class FileRunnerJournal implements RunnerJournal {
       file,
       constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
     );
-    let record: RunnerGameRecord;
+    let record: RunnerJournalRecord;
     try {
       const opened = await handle.stat();
       privateStat(opened, false);
@@ -191,18 +207,18 @@ class FileRunnerJournal implements RunnerJournal {
       await handle.close();
     }
     const known = this.digests.get(matchId);
-    if (known !== undefined && known !== record.digest) throw new JournalError("STORAGE");
-    this.digests.set(matchId, record.digest);
+    if (known !== undefined && known !== recordDigest(record)) throw new JournalError("STORAGE");
+    this.digests.set(matchId, recordDigest(record));
     return record;
   }
 
-  load(matchId: string): Promise<RunnerGameRecord | undefined> {
+  load(matchId: string): Promise<RunnerJournalRecord | undefined> {
     return this.enqueue(() => this.read(matchId));
   }
 
-  save(matchId: string, record: RunnerGameRecord): Promise<void> {
+  save(matchId: string, record: RunnerJournalRecord): Promise<void> {
     // Zod creates a detached deep snapshot synchronously, before the queue can yield.
-    let snapshot: RunnerGameRecord | undefined;
+    let snapshot: RunnerJournalRecord | undefined;
     try {
       snapshot = validateRecord(record);
     } catch {
@@ -214,7 +230,7 @@ class FileRunnerJournal implements RunnerJournal {
       const previous = await this.read(matchId);
       if (
         previous &&
-        (previous.digest !== snapshot.digest ||
+        (recordDigest(previous) !== recordDigest(snapshot) ||
           (previous.phase === "terminal" && snapshot.phase !== "terminal"))
       )
         throw new JournalError("INVALID");
@@ -234,7 +250,7 @@ class FileRunnerJournal implements RunnerJournal {
         await rename(temporary, file);
         renamed = true;
         await syncDirectory(this.directory);
-        this.digests.set(matchId, snapshot.digest);
+        this.digests.set(matchId, recordDigest(snapshot));
       } finally {
         if (created && !renamed) await unlink(temporary);
       }

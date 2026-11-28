@@ -127,6 +127,13 @@ function row() {
     moderationVersion: 0,
     official: true,
     source: "hosted",
+    runnerMachineId: null,
+    runnerGeneration: null,
+    runnerState: null,
+    runnerRevision: 0,
+    runnerAcceptedSeq: 0,
+    runnerLastContactAt: null,
+    runnerResumeDeadline: null,
     rulesKey: "rules",
     rulesVersion: "cockpit-v1",
     promptVersion: match.config.prompt.version,
@@ -169,6 +176,7 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "info").mockImplementation(() => {});
   db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
+  db.chessMatch.findFirst.mockResolvedValue({ id: "match-id" } as never);
   db.chessMatch.findUnique.mockResolvedValue(row());
   db.chessMatch.findFirst.mockResolvedValue(row());
   db.$queryRaw.mockResolvedValue([{ id: "match-id" }]);
@@ -439,7 +447,12 @@ describe("durable chess worker", () => {
     expect(result).toBeUndefined();
     const claim = db.chessMatch.updateMany.mock.calls[0]?.[0];
     expect(db.chessMatch.updateMany).toHaveBeenLastCalledWith({
-      where: { id: "match-id", status: "running", runToken: claim?.data.runToken },
+      where: {
+        id: "match-id",
+        source: "hosted",
+        status: "running",
+        runToken: claim?.data.runToken,
+      },
       data: {
         status: "error",
         runToken: null,
@@ -458,7 +471,12 @@ describe("durable chess worker", () => {
     await handleChessRunJob({ data: { matchId: "match-id" } });
     const claim = db.chessMatch.updateMany.mock.calls[0]?.[0];
     expect(db.chessMatch.updateMany).toHaveBeenLastCalledWith({
-      where: { id: "match-id", status: "running", runToken: claim?.data.runToken },
+      where: {
+        id: "match-id",
+        source: "hosted",
+        status: "running",
+        runToken: claim?.data.runToken,
+      },
       data: {
         status: "error",
         runToken: null,
@@ -501,7 +519,12 @@ describe("durable chess worker", () => {
         });
         const claim = db.chessMatch.updateMany.mock.calls[0]?.[0];
         expect(db.chessMatch.updateMany).toHaveBeenLastCalledWith({
-          where: { id: "match-id", status: "running", runToken: claim?.data.runToken },
+          where: {
+            id: "match-id",
+            source: "hosted",
+            status: "running",
+            runToken: claim?.data.runToken,
+          },
           data: {
             status: "error",
             runToken: null,
@@ -866,7 +889,7 @@ describe("chess reconcile sweep", () => {
       }),
     );
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
-      where: { id: row.id, status: "running", heartbeatAt: row.heartbeatAt },
+      where: { id: row.id, source: "hosted", status: "running", heartbeatAt: row.heartbeatAt },
       data: {
         status: "error",
         runToken: null,
@@ -897,7 +920,7 @@ describe("chess reconcile sweep", () => {
         errored: 0,
       });
       expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
-        where: { id: row.id, status, heartbeatAt: row.heartbeatAt },
+        where: { id: row.id, source: "hosted", status, heartbeatAt: row.heartbeatAt },
         data: {
           status: "error",
           runToken: null,
@@ -918,7 +941,7 @@ describe("chess reconcile sweep", () => {
     getJob.mockResolvedValue(job);
     await handleChessReconcileJob({ data: { reason: "cron" } });
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
-      where: { id: row.id, status: "queued", heartbeatAt: row.heartbeatAt },
+      where: { id: row.id, source: "hosted", status: "queued", heartbeatAt: row.heartbeatAt },
       data: {
         status: "error",
         runToken: null,
@@ -973,7 +996,7 @@ describe("chess reconcile sweep", () => {
         take: 50,
       });
       expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
-        where: { id: orphan.id, status: "queued", heartbeatAt },
+        where: { id: orphan.id, source: "hosted", status: "queued", heartbeatAt },
         data: {
           status: "error",
           runToken: null,
@@ -1525,7 +1548,7 @@ describe("pending owner after a hosted claim", () => {
     } as never);
     await handleChessRunJob({ data: { matchId: "match-id" } });
     expect(db.chessMatch.updateMany.mock.calls.at(-1)?.[0]).toMatchObject({
-      where: { id: "match-id", status: "running", runToken: expect.any(String) },
+      where: { id: "match-id", source: "hosted", status: "running", runToken: expect.any(String) },
       data: {
         status: "stopped",
         runToken: null,

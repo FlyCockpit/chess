@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 
 vi.mock("@cockpit-chess/auth/runner-limits", () => ({
+  RunnerLimitsError: class extends Error {},
   runnerLimitsService: {
     hello: vi.fn(async () => null),
     pending: vi.fn(async () => null),
@@ -17,7 +18,14 @@ const state = vi.hoisted(() => ({
   authority: vi.fn(),
   store: vi.fn(),
   monitor: vi.fn(),
+  outbox: vi.fn().mockResolvedValue([]),
+  handle: vi.fn().mockResolvedValue([]),
   events: undefined as WSEvents<WebSocket> | undefined,
+}));
+vi.mock("@cockpit-chess/api/lib/chess-runner", () => ({
+  RUNNER_COMMAND_CHANNEL: "chess_runner_command",
+  runnerOutbox: state.outbox,
+  handleRunnerControl: state.handle,
 }));
 vi.mock("@cockpit-chess/queue", () => ({
   createRedisConnection: state.redis,

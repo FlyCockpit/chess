@@ -19,7 +19,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunnerClientAction } from "./runner-connection";
 import { RunnerGameLoop } from "./runner-game";
-import type { RunnerGameRecord, RunnerJournal } from "./runner-journal";
+import type { RunnerGameRecord, RunnerJournal, RunnerJournalRecord } from "./runner-journal";
 import { RunnerLimitController } from "./runner-limits";
 import { RunnerPolicy } from "./runner-policy";
 import { RunnerSpend } from "./runner-spend";
@@ -107,8 +107,8 @@ async function fixture(
     now?: () => number;
   } = {},
 ) {
-  const records = new Map<string, RunnerGameRecord>();
-  const saves: RunnerGameRecord[] = [];
+  const records = new Map<string, RunnerJournalRecord>();
+  const saves: RunnerJournalRecord[] = [];
   const journal: RunnerJournal = {
     load: vi.fn(async (id) => {
       const record = records.get(id);
@@ -153,7 +153,8 @@ async function fixture(
   const handle = (input: Input, signal = controller.signal) => loop.handle(input, signal);
   const record = () => {
     const stored = records.get(matchId);
-    if (!stored) throw new Error("Missing test journal record");
+    if (!stored || stored.phase === "cancelled")
+      throw new Error("Missing test game journal record");
     return stored;
   };
   const idle = async (ply: number) => {
@@ -309,6 +310,305 @@ describe("paired runner game loop", () => {
     await f.handle(start(1));
     expect(f.sent.at(-1)).toEqual({ type: "error", payload: { code: "STALE" } });
     expect(f.advance).toHaveBeenCalledTimes(1);
+  });
+
+  it("acknowledges a first resume only after durable reconciliation, then sends its snapshot", async () => {
+    const f = await fixture();
+    await f.handle(offer());
+    const command = resume(f.record().archive, "first_resume");
+    const entered = gate();
+    const saving = gate();
+    const save = vi.mocked(f.journal.save).getMockImplementation();
+    if (!save) throw new Error("Missing journal seam");
+    vi.mocked(f.journal.save).mockImplementationOnce(async (id, record) => {
+      entered.release();
+      await saving.promise;
+      await save(id, record);
+    });
+    const before = f.sent.length;
+    const handling = f.handle(command);
+    await entered.promise;
+    expect(f.sent).toHaveLength(before);
+    saving.release();
+    await handling;
+    expect(f.sent.slice(before)).toEqual([
+      { type: "ack", payload: { commandId: "first_resume" } },
+      {
+        type: "snapshot",
+        matchId,
+        payload: { acceptedSeq: 0, ply: 0, fen: boardAt(f.record().archive).fen() },
+      },
+    ]);
+    expect(f.record()).toMatchObject({ phase: "ready", confirmedPly: 0 });
+    const saved = f.saves.length;
+    const after = f.sent.length;
+    await f.handle(command);
+    expect(f.sent.slice(after)).toEqual([{ type: "ack", payload: { commandId: "first_resume" } }]);
+    expect(f.saves).toHaveLength(saved);
+    expect(f.advance).not.toHaveBeenCalled();
+    expect(f.spend.reserve).not.toHaveBeenCalled();
+    expect(evaluatePosition).not.toHaveBeenCalled();
+  });
+
+  it.each(["same-process", "new-instance"] as const)(
+    "rebinds a %s reconnect by fresh offer and acknowledges its durable resume",
+    async (mode) => {
+      const first = await fixture();
+      const settings = config();
+      await first.handle(offer(settings));
+      await first.handle(resume(first.record().archive, "initial_resume"));
+      const archive = structuredClone(first.record().archive);
+      first.controller.abort();
+      const next = mode === "same-process" ? first : await fixture();
+      if (mode === "new-instance") {
+        next.records.set(matchId, structuredClone(first.record()));
+        await first.loop.close();
+      }
+      const reconnected = new AbortController();
+      const reoffer = { ...offer(settings), generation: 2 };
+      const beginning = next.sent.length;
+      await next.handle(reoffer, reconnected.signal);
+      if (reoffer.type !== "offer") throw new Error("Expected reoffer");
+      expect(next.sent.slice(beginning)).toEqual([
+        { type: "accept", matchId, payload: { commandId: reoffer.payload.commandId } },
+        {
+          type: "snapshot",
+          matchId,
+          payload: { acceptedSeq: 0, ply: 0, fen: boardAt(archive).fen() },
+        },
+      ]);
+      const confirming = { ...resume(archive, "replacement_resume"), generation: 2 };
+      const before = next.sent.length;
+      await next.handle(confirming, reconnected.signal);
+      expect(next.sent.slice(before)).toEqual([
+        { type: "ack", payload: { commandId: "replacement_resume" } },
+        {
+          type: "snapshot",
+          matchId,
+          payload: { acceptedSeq: 0, ply: 0, fen: boardAt(archive).fen() },
+        },
+      ]);
+      expect(next.record()).toMatchObject({ phase: "ready", confirmedPly: 0 });
+      expect(next.record().archive).toEqual(archive);
+      expect(first.advance).not.toHaveBeenCalled();
+      expect(next.advance).not.toHaveBeenCalled();
+      expect(next.spend.reserve).not.toHaveBeenCalled();
+      expect(evaluatePosition).not.toHaveBeenCalled();
+    },
+  );
+
+  it("persists stop-before-offer tombstones before ACK and keeps later offers usable", async () => {
+    const f = await fixture();
+    const begin = vi.spyOn(f.policy, "beginMatch");
+    const entered = gate();
+    const released = gate();
+    const save = vi.mocked(f.journal.save).getMockImplementation();
+    if (!save) throw new Error("Missing journal seam");
+    vi.mocked(f.journal.save).mockImplementationOnce(async (id, record) => {
+      entered.release();
+      await released.promise;
+      await save(id, record);
+    });
+    const command = message("stop", { commandId: "stop_unknown_0" }, "unknown0");
+    const handling = f.handle(command);
+    await entered.promise;
+    expect(f.sent).toEqual([]);
+    expect(begin).not.toHaveBeenCalled();
+    released.release();
+    await handling;
+    expect(f.records.get("unknown0")).toEqual({ phase: "cancelled" });
+    expect(f.sent).toEqual([{ type: "ack", payload: { commandId: "stop_unknown_0" } }]);
+    const saved = f.saves.length;
+    await f.handle(command);
+    await f.handle(message("stop", { commandId: "repeat_new_id" }, "unknown0"));
+    expect(f.saves).toHaveLength(saved);
+    for (let index = 1; index < 4; index++)
+      await f.handle(message("stop", { commandId: `stop_unknown_${index}` }, `unknown${index}`));
+    expect(f.sent.filter((item) => item.type === "ack")).toHaveLength(6);
+    expect(begin).not.toHaveBeenCalled();
+    await f.handle(offer(config(), "unknown0"));
+    expect(f.sent.at(-1)).toMatchObject({ type: "reject", payload: { reason: "policy" } });
+    await f.handle(offer());
+    expect(f.sent).toContainEqual(expect.objectContaining({ type: "accept", matchId }));
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(f.advance).not.toHaveBeenCalled();
+    expect(f.spend.reserve).not.toHaveBeenCalled();
+    expect(evaluatePosition).not.toHaveBeenCalled();
+  });
+
+  it.each(["ready", "uncertain"] as const)(
+    "terminalizes a restored %s record before stop ACK without acquiring execution authority",
+    async (phase) => {
+      const f = await fixture();
+      const settings = config();
+      const archive = createMatch(settings);
+      f.records.set(matchId, {
+        digest: runnerConfigDigest(settings),
+        phase,
+        confirmedPly: 0,
+        archive,
+      });
+      const begin = vi.spyOn(f.policy, "beginMatch");
+      await f.handle(message("stop", { commandId: "restored_stop" }));
+      expect(f.record()).toMatchObject({
+        digest: runnerConfigDigest(settings),
+        phase: "terminal",
+        archive: { status: "stopped", termination: "cancelled" },
+      });
+      expect(f.sent).toEqual([{ type: "ack", payload: { commandId: "restored_stop" } }]);
+      expect(begin).not.toHaveBeenCalled();
+      await f.handle(offer(settings));
+      expect(f.sent.at(-1)).toMatchObject({ type: "reject", payload: { reason: "policy" } });
+      expect(f.advance).not.toHaveBeenCalled();
+      expect(f.spend.reserve).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fences an old-session game and ACKs stop only on the new originating signal", async () => {
+    const f = await fixture();
+    const begin = vi.spyOn(f.policy, "beginMatch");
+    await f.handle(offer());
+    f.controller.abort();
+    const connection = new AbortController();
+    const before = f.sent.length;
+    await f.handle(message("stop", { commandId: "offline_stop" }), connection.signal);
+    expect(f.record()).toMatchObject({ phase: "terminal", archive: { status: "stopped" } });
+    expect(f.sent.slice(before)).toEqual([
+      {
+        type: "event",
+        matchId,
+        payload: { kind: "stopped", result: "*", termination: "cancelled" },
+      },
+      { type: "ack", payload: { commandId: "offline_stop" } },
+    ]);
+    expect(
+      f.send.mock.calls.slice(before).every(([, signal]) => signal === connection.signal),
+    ).toBe(true);
+    expect(begin).toHaveBeenCalledTimes(1);
+    await f.handle(start());
+    expect(f.advance).not.toHaveBeenCalled();
+    await f.handle(offer(), connection.signal);
+    expect(f.sent.at(-1)).toMatchObject({ type: "reject", payload: { reason: "busy" } });
+  });
+
+  it("does not ACK an aborted stop session even when its cancellation becomes durable", async () => {
+    const f = await fixture();
+    const entered = gate();
+    const released = gate();
+    const save = vi.mocked(f.journal.save).getMockImplementation();
+    if (!save) throw new Error("Missing journal seam");
+    vi.mocked(f.journal.save).mockImplementationOnce(async (id, record) => {
+      entered.release();
+      await released.promise;
+      await save(id, record);
+    });
+    const stopped = f.handle(message("stop", { commandId: "lost_stop_ack" }));
+    await entered.promise;
+    f.controller.abort();
+    released.release();
+    await stopped;
+    expect(f.sent).toEqual([]);
+    expect(f.records.get(matchId)).toEqual({ phase: "cancelled" });
+    const current = new AbortController();
+    await f.handle(message("stop", { commandId: "lost_stop_ack" }), current.signal);
+    expect(f.sent).toEqual([{ type: "ack", payload: { commandId: "lost_stop_ack" } }]);
+    expect(f.send.mock.calls.at(-1)?.[1]).toBe(current.signal);
+    expect(f.advance).not.toHaveBeenCalled();
+  });
+
+  it("keeps an offline stop terminal when old-session work settles late", async () => {
+    const entered = gate();
+    const released = gate();
+    const f = await fixture({
+      advance: async (archive) => {
+        entered.release();
+        await released.promise;
+        return play(archive);
+      },
+    });
+    await f.handle(offer());
+    await f.handle(start());
+    await entered.promise;
+    f.controller.abort();
+    const current = new AbortController();
+    await f.handle(message("stop", { commandId: "stop_old_work" }), current.signal);
+    expect(f.record().phase).toBe("terminal");
+    expect(f.sent.at(-1)).toEqual({ type: "ack", payload: { commandId: "stop_old_work" } });
+    released.release();
+    await vi.waitFor(() => expect(f.record().archive.status).toBe("stopped"));
+    expect(f.record().phase).toBe("terminal");
+    expect(f.sent.some((item) => item.type === "move")).toBe(false);
+    await f.handle(offer(), current.signal);
+    expect(f.sent.at(-1)).toMatchObject({ type: "reject", payload: { reason: "busy" } });
+    expect(f.advance).toHaveBeenCalledTimes(1);
+    expect(f.spend.reserve).not.toHaveBeenCalled();
+  });
+
+  it("retains unknown cancellation across a new loop and bounds cancellation memory", async () => {
+    const first = await fixture();
+    await first.handle(message("stop", { commandId: "before_offer" }));
+    const restored = await fixture();
+    restored.records.set(matchId, structuredClone(first.records.get(matchId)!));
+    const begin = vi.spyOn(restored.policy, "beginMatch");
+    await restored.handle(offer());
+    expect(restored.sent.at(-1)).toMatchObject({ type: "reject", payload: { reason: "policy" } });
+    await restored.handle(message("stop", { commandId: "restored_unknown_stop" }));
+    expect(restored.sent.at(-1)).toEqual({
+      type: "ack",
+      payload: { commandId: "restored_unknown_stop" },
+    });
+    for (let index = 0; index < 255; index++)
+      await restored.handle(message("stop", { commandId: `cancel_${index}` }, `cancelled${index}`));
+    expect(restored.records.size).toBe(256);
+    const saved = restored.saves.length;
+    await restored.handle(message("stop", { commandId: "over_cancel_capacity" }, "new_overflow"));
+    expect(restored.sent.at(-1)).toEqual({ type: "error", payload: { code: "BUSY" } });
+    expect(restored.saves).toHaveLength(saved);
+    await restored.handle(message("stop", { commandId: "duplicate_at_capacity" }));
+    expect(restored.sent.at(-1)).toEqual({
+      type: "ack",
+      payload: { commandId: "duplicate_at_capacity" },
+    });
+    expect(begin).not.toHaveBeenCalled();
+    expect(restored.advance).not.toHaveBeenCalled();
+  });
+
+  it("reserves one terminal stop after normal command capacity without growing on repeats", async () => {
+    const f = await fixture();
+    await f.handle(offer());
+    const archive = structuredClone(f.record().archive);
+    // One offer plus4095 distinct normal commands fills the real public loop.
+    for (let index = 0; index < 4095; index++) await f.handle(resume(archive, `fill_${index}`));
+    const full = f.sent.length;
+    await f.handle(resume(archive, "over_normal_capacity"));
+    expect(f.sent.slice(full)).toEqual([{ type: "error", payload: { code: "BUSY" } }]);
+    expect(f.record().phase).toBe("ready");
+    const stop = message("stop", { commandId: "reserved_terminal_stop" });
+    await f.handle(stop);
+    expect(f.record()).toMatchObject({
+      phase: "terminal",
+      archive: { status: "stopped", termination: "cancelled" },
+    });
+    expect(f.sent.at(-1)).toEqual({
+      type: "ack",
+      payload: { commandId: "reserved_terminal_stop" },
+    });
+    const saved = f.saves.length;
+    const beforeDuplicate = f.sent.length;
+    await f.handle(stop);
+    expect(f.sent.slice(beforeDuplicate)).toEqual([
+      { type: "ack", payload: { commandId: "reserved_terminal_stop" } },
+    ]);
+    expect(f.saves).toHaveLength(saved);
+    await f.handle(message("stop", { commandId: "second_terminal_stop" }));
+    expect(f.sent.at(-1)).toEqual({ type: "error", payload: { code: "BUSY" } });
+    expect(f.saves).toHaveLength(saved);
+    await f.handle(resume(archive, "after_terminal_capacity"));
+    expect(f.sent.at(-1)).toEqual({ type: "error", payload: { code: "BUSY" } });
+    expect(f.saves).toHaveLength(saved);
+    expect(f.advance).not.toHaveBeenCalled();
+    expect(f.spend.reserve).not.toHaveBeenCalled();
+    expect(evaluatePosition).not.toHaveBeenCalled();
   });
 
   it("permits one next turn only after resume confirms exact accepted sequence, FEN and ply", async () => {
@@ -1145,6 +1445,7 @@ describe("common human turns and real model runner", () => {
       const save = vi.mocked(f.journal.save).getMockImplementation();
       if (!save) throw new Error("Missing journal fixture");
       vi.mocked(f.journal.save).mockImplementation(async (id, record) => {
+        if (record.phase === "cancelled") throw new Error("Expected human game record");
         validateArchive(record.archive);
         if (record.phase === "uncertain") now += 1001;
         await save(id, record);

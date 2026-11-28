@@ -29,8 +29,10 @@ sequence. A move carries its resulting one-based `ply` and resulting `fen`.
 Each `start` runs at most one automatic turn; a human `start` arms the common
 bounded human turn and waits for `human-move`. Before another automatic turn,
 `resume` must confirm the exact local move count and FEN. A snapshot distinguishes
-the locally computed ply from the last confirmed server sequence. Transport ACKs
-alone never authorize another paid turn. E4 supplies durable server commands and
+the locally computed ply from the last confirmed server sequence. After durably
+saving a valid resume, the executor ACKs that command and sends its snapshot;
+a repeated resume command receives only its ACK. Transport ACKs alone never
+authorize another paid turn. E4 supplies durable server commands and
 checks every move against the authoritative board; client scores and completion
 events are advisory and never official.
 
@@ -38,7 +40,10 @@ The journal follows the selected local spending authority under the OS user's
 `~/.cockpit-chess/runner-games/` directory. New machine claims, website origins and
 CLI config overrides do not reset it; its local scope fingerprint never goes on
 the wire. The private journal records `offered`, `ready`, `uncertain` or `terminal`, the
-archive, config digest and confirmed move count. Before automatic execution it
+archive, config digest and confirmed move count. A stop received before any offer
+stores an exact `cancelled` tombstone without inventing config or an archive;
+later offers for that match are refused. An existing saved game is terminalized
+without acquiring new execution authority. Before automatic execution it
 persists `uncertain`; only after execution settles does it persist a known result.
 An unresolved inference is never retried after reconnect or restart. A stop is
 acknowledged only after a durable terminal fence; the final archive may settle

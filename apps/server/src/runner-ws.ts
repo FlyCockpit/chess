@@ -1,20 +1,28 @@
 import { randomUUID } from "node:crypto";
-import type { createRunnerLimitsService } from "@cockpit-chess/auth/runner-limits";
+import {
+  type createRunnerLimitsService,
+  RunnerLimitsError,
+} from "@cockpit-chess/auth/runner-limits";
 import {
   parseRunnerClientFrame,
+  RUNNER_COMMAND_WINDOW,
   RUNNER_HEARTBEAT_MS,
   RUNNER_LIVENESS_MS,
   RUNNER_MAX_BUFFERED_BYTES,
   RUNNER_MAX_FRAME_BYTES,
   RUNNER_RESUME_GRACE_MS,
-  type RunnerServerMessage,
+  type RunnerClientMessage,
+  type RunnerDelivery,
   runnerServerMessageSchema,
 } from "@cockpit-chess/chess/runner-protocol";
+import { ORPCError } from "@orpc/server";
 import type { RunnerMachineIdentity } from "./runner-session.js";
 import type { RunnerAuthority } from "./runner-ws-authority.js";
 import type { RunnerLease, RunnerLeaseStore } from "./runner-ws-store.js";
 
-const RUNNER_MAX_PENDING_MESSAGES = 8;
+// Four commands each produce a semantic reply and snapshot. Reserve four more
+// slots for concurrent heartbeat/pong and operating-limit replies.
+const RUNNER_MAX_PENDING_MESSAGES = RUNNER_COMMAND_WINDOW * 2 + 4;
 export const RUNNER_MAX_LOCAL_CONNECTIONS = 128;
 const IO_TIMEOUT_MS = 5000;
 
@@ -41,17 +49,37 @@ async function withRunnerDeadline<T>(operation: Promise<T>): Promise<T> {
   }
 }
 
+function failureClose(error: unknown): [number, string] {
+  if (
+    (error instanceof ORPCError &&
+      ["UNAUTHORIZED", "FORBIDDEN", "NOT_FOUND"].includes(error.code)) ||
+    (error instanceof RunnerLimitsError && ["NOT_FOUND", "FORBIDDEN"].includes(error.code))
+  )
+    return [4401, "UNAUTHORIZED"];
+  return [1012, "UNAVAILABLE"];
+}
+
 type Options = {
   authority: RunnerAuthority;
   leases: RunnerLeaseStore;
   isAvailable: () => boolean;
   now?: () => number;
   limits?: Pick<ReturnType<typeof createRunnerLimitsService>, "hello" | "pending" | "result">;
+  controls?: {
+    outbox(
+      identity: RunnerMachineIdentity,
+      outstandingIds: readonly string[],
+    ): Promise<RunnerDelivery[]>;
+    handle(
+      identity: RunnerMachineIdentity,
+      message: RunnerClientMessage,
+    ): Promise<RunnerDelivery[]>;
+  };
 };
 
 /**
- * Transport simulation only. E4 owns durable command delivery and move CAS.
- * Valid match actions are scope-checked then answered UNSUPPORTED, never run.
+ * Durable control delivery shares the transport's authority, bounds and drain.
+ * Gameplay handlers remain unavailable until authoritative move CAS is installed.
  */
 export function createRunnerTransport(options: Options) {
   const now = options.now ?? (() => performance.now());
@@ -78,7 +106,7 @@ export function createRunnerTransport(options: Options) {
     lease: RunnerLease,
     action: boolean,
   ) {
-    if (draining || !options.isAvailable()) return "unauthorized";
+    if (draining || !options.isAvailable()) return "unavailable";
     const classify = (current: RunnerMachineIdentity | null) => {
       if (
         !current ||
@@ -115,6 +143,9 @@ export function createRunnerTransport(options: Options) {
     let lastHeartbeat = now();
     let ticking = false;
     let processing = Promise.resolve();
+    let pumping = false;
+    let deliveryEpoch = 0;
+    const delivered = new Set<string>();
     let terminating: ReturnType<typeof setTimeout> | undefined;
     let windowStart = now();
     let frames = 0;
@@ -142,13 +173,22 @@ export function createRunnerTransport(options: Options) {
       if (closed) return false;
       const result = await checkAuthority(authorization, identity, lease, action);
       if (result === "replaced") close(4409, "REPLACED");
+      if (result === "unavailable") close(1012, "UNAVAILABLE");
       return !closed && result === "ok";
     }
 
-    function send(
-      message: Omit<RunnerServerMessage, "version" | "generation" | "id" | "seq" | "ack">,
-    ) {
+    function durableCommandId(message: RunnerDelivery) {
+      return ["offer", "start", "stop", "resume", "human-move"].includes(message.type) &&
+        "commandId" in message.payload
+        ? message.payload.commandId
+        : null;
+    }
+
+    function send(message: RunnerDelivery) {
       if (closed) return;
+      const commandId = durableCommandId(message);
+      if (commandId && (delivered.has(commandId) || delivered.size >= RUNNER_COMMAND_WINDOW))
+        return;
       if (socket.bufferedAmount > RUNNER_MAX_BUFFERED_BYTES) {
         close(4408, "BACKPRESSURE");
         return;
@@ -158,7 +198,7 @@ export function createRunnerTransport(options: Options) {
           ...message,
           version: 1,
           generation: lease.generation,
-          id: randomUUID(),
+          id: "commandId" in message.payload ? message.payload.commandId : randomUUID(),
           seq: ++sent,
           ack: received,
         }),
@@ -169,7 +209,36 @@ export function createRunnerTransport(options: Options) {
         close(4408, "BACKPRESSURE");
         return;
       }
+      if (commandId) delivered.add(commandId);
       socket.send(frame);
+    }
+
+    async function deliver() {
+      if (closed || !hello || pumping || !options.controls) return;
+      pumping = true;
+      try {
+        if (!(await authorized(false))) {
+          close();
+          return;
+        }
+        const epoch = deliveryEpoch;
+        const messages = await run(options.controls.outbox(identity, [...delivered]));
+        if (messages.length > 32) throw new Error("Runner delivery bound");
+        if (!(await authorized(false))) {
+          close();
+          return;
+        }
+        // A semantic ACK can commit while the poll/auth reads are pending. Never
+        // replay that stale snapshot after its delivery slot was released.
+        if (epoch !== deliveryEpoch) return;
+        const pendingIds = new Set(messages.map(durableCommandId));
+        // The helper independently checks our outstanding IDs, including direct
+        // replies beyond the FIFO page. Absence proves cancellation/ACK/expiry.
+        for (const id of delivered) if (!pendingIds.has(id)) delivered.delete(id);
+        for (const message of messages) send(message);
+      } finally {
+        pumping = false;
+      }
     }
 
     async function tick() {
@@ -185,6 +254,9 @@ export function createRunnerTransport(options: Options) {
           return;
         }
         if (!hello) return;
+        // A missed Redis wake never loses a committed command. Poll the bounded
+        // durable outbox while the connection is live, also on reconnect hello.
+        await deliver();
         if (!(await authorized(false))) {
           close();
           return;
@@ -201,13 +273,18 @@ export function createRunnerTransport(options: Options) {
         heartbeatNonces.set(nonce, now() + RUNNER_LIVENESS_MS);
         send({ type: "heartbeat", payload: { nonce } });
         socket.ping();
-      } catch {
-        close();
+      } catch (error) {
+        close(...failureClose(error));
       } finally {
         ticking = false;
       }
     }
-    const timer = setInterval(() => void tick(), 5000);
+    // Track the whole callback, including the gaps between its storage reads,
+    // so drain/idle cannot observe a temporarily empty IO set mid-tick.
+    const timer = setInterval(
+      () => void run(tick()).catch((error) => close(...failureClose(error))),
+      5000,
+    );
     timer.unref?.();
     const helloTimeout = setTimeout(() => close(4408, "HANDSHAKE"), IO_TIMEOUT_MS);
     helloTimeout.unref?.();
@@ -292,15 +369,62 @@ export function createRunnerTransport(options: Options) {
               if (command) send({ type: "limits", payload: command });
             }
             send({ type: "ack", payload: { commandId: message.id } });
-          } else if (message.type === "limits-result" && options.limits) {
-            await run(options.limits.result(identity, message.payload));
-            if (closed) return;
-            send({ type: "ack", payload: { commandId: message.payload.commandId } });
+            await deliver();
+          } else if (message.type === "limits-result") {
+            if (options.limits) {
+              await run(options.limits.result(identity, message.payload));
+              if (closed) return;
+              send({ type: "ack", payload: { commandId: message.payload.commandId } });
+            } else send({ type: "error", payload: { code: "UNSUPPORTED" } });
           } else {
-            send({ type: "error", payload: { code: "UNSUPPORTED" } });
+            if (options.controls) {
+              let replies: RunnerDelivery[];
+              try {
+                replies = await run(options.controls.handle(identity, message));
+              } catch (error) {
+                if (error instanceof ORPCError && error.code === "UNAUTHORIZED") {
+                  close();
+                  return;
+                }
+                const code =
+                  error instanceof ORPCError
+                    ? error.code === "CONFLICT"
+                      ? "STALE"
+                      : error.code === "TOO_MANY_REQUESTS"
+                        ? "BUSY"
+                        : error.code === "BAD_REQUEST"
+                          ? "UNSUPPORTED"
+                          : null
+                    : null;
+                if (!code) {
+                  close(...failureClose(error));
+                  return;
+                }
+                // The failed semantic write releases no slot. Re-read authority
+                // and the authoritative outbox after a normal per-match race.
+                ++deliveryEpoch;
+                if (!(await authorized(false))) {
+                  close();
+                  return;
+                }
+                send({ type: "error", payload: { code } });
+                await deliver();
+                return;
+              }
+              ++deliveryEpoch;
+              if (message.type === "accept" || message.type === "reject" || message.type === "ack")
+                delivered.delete(message.payload.commandId);
+              if (replies.length > 32) throw new Error("Runner response bound");
+              if (!(await authorized(false))) {
+                close();
+                return;
+              }
+              for (const reply of replies) send(reply);
+              await deliver();
+            } else send({ type: "error", payload: { code: "UNSUPPORTED" } });
           }
         })
-        .catch(() => close())
+        .catch((error) => close(...failureClose(error)))
         .finally(() => --pending);
     }
     const api = {
@@ -317,6 +441,7 @@ export function createRunnerTransport(options: Options) {
       },
       idle: () => processing,
       tick,
+      deliver,
       isClosed: () => closed,
     };
     try {
@@ -407,8 +532,12 @@ export function createRunnerTransport(options: Options) {
                 !options.isAvailable()
               ) {
                 await release(
-                  authority === "replaced" ? 4409 : 4401,
-                  authority === "replaced" ? "REPLACED" : "UNAUTHORIZED",
+                  authority === "replaced" ? 4409 : authority === "unavailable" ? 1012 : 4401,
+                  authority === "replaced"
+                    ? "REPLACED"
+                    : authority === "unavailable"
+                      ? "UNAVAILABLE"
+                      : "UNAUTHORIZED",
                 );
                 return null;
               }
@@ -432,8 +561,8 @@ export function createRunnerTransport(options: Options) {
               const active = connection(socket, authorization, identity, lease);
               if (!active.isClosed()) connections.add(active);
               return active;
-            } catch {
-              await release();
+            } catch (error) {
+              await release(...failureClose(error));
               return null;
             }
           },
@@ -472,6 +601,16 @@ export function createRunnerTransport(options: Options) {
             generation === undefined ? "UNAUTHORIZED" : "REPLACED",
           );
       }
+    },
+    wake(machineId: string) {
+      for (const active of connections) {
+        if (active.identity.machineId === machineId)
+          void run(active.deliver()).catch((error) => active.close(...failureClose(error)));
+      }
+    },
+    /** Join already-started transport work without retiring live authority. */
+    async idle() {
+      while (inflight.size) await withRunnerDeadline(Promise.allSettled([...inflight]));
     },
     async drain() {
       draining = true;

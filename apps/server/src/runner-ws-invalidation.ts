@@ -11,11 +11,12 @@ const replacement = z
     generation: z.number().int().min(1).max(2_147_483_647),
   })
   .strict();
+const commandWake = replacement.pick({ machineId: true });
 
 interface Subscriber {
   on(event: "ready" | "close" | "error", listener: () => void): unknown;
   on(event: "message", listener: (channel: string, message: string) => void): unknown;
-  subscribe(channel: string): Promise<unknown>;
+  subscribe(...channels: string[]): Promise<unknown>;
   disconnect(): void;
 }
 type Notifications = {
@@ -29,6 +30,8 @@ export function createRunnerInvalidationMonitor(options: {
   subscriber: Subscriber;
   startNotifications: (callbacks: Notifications) => { stop: () => Promise<void> };
   invalidate: (userId?: string, machineId?: string, generation?: number) => void;
+  commandChannel?: string;
+  wake?: (machineId: string) => void;
 }) {
   let stopped = false;
   let pgReady = false;
@@ -42,7 +45,10 @@ export function createRunnerInvalidationMonitor(options: {
     const attempt = ++revision;
     redisReady = false;
     subscribing = options.subscriber
-      .subscribe(RUNNER_REPLACEMENT_CHANNEL)
+      .subscribe(
+        RUNNER_REPLACEMENT_CHANNEL,
+        ...(options.commandChannel ? [options.commandChannel] : []),
+      )
       .then(() => {
         if (!stopped && attempt === revision) redisReady = true;
       })
@@ -60,11 +66,15 @@ export function createRunnerInvalidationMonitor(options: {
     });
   }
   options.subscriber.on("message", (channel, message) => {
-    if (stopped || channel !== RUNNER_REPLACEMENT_CHANNEL || Buffer.byteLength(message) > 1024)
-      return;
+    if (stopped || Buffer.byteLength(message) > 1024) return;
     try {
-      const data = replacement.parse(JSON.parse(message));
-      options.invalidate(undefined, data.machineId, data.generation);
+      if (channel === RUNNER_REPLACEMENT_CHANNEL) {
+        const data = replacement.parse(JSON.parse(message));
+        options.invalidate(undefined, data.machineId, data.generation);
+      } else if (channel === options.commandChannel) {
+        const data = commandWake.parse(JSON.parse(message));
+        options.wake?.(data.machineId);
+      }
     } catch {
       // Do not echo untrusted pubsub bodies or parse errors into operational logs.
     }

@@ -47,6 +47,7 @@ export function runningChessMatches() {
 async function checkClaims(current: HeartbeatClaim[]) {
   const result = await prisma.chessMatch.updateMany({
     where: {
+      source: "hosted",
       status: "running",
       OR: current.map((claim) => ({ id: claim.matchId, runToken: claim.runToken })),
     },
@@ -58,6 +59,7 @@ async function checkClaims(current: HeartbeatClaim[]) {
     // pagination:audited — bounded by this process's claims (CHESS_RUN_CONCURRENCY).
     const owned = await prisma.chessMatch.findMany({
       where: {
+        source: "hosted",
         status: "running",
         OR: current.map((claim) => ({ id: claim.matchId, runToken: claim.runToken })),
       },

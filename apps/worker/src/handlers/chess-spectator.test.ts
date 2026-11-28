@@ -26,9 +26,12 @@ vi.mock("@cockpit-chess/queue", async () => {
 vi.mock("../../../../packages/chess/src/engine", () => ({ evaluatePosition }));
 const { default: prisma } = await import("@cockpit-chess/db");
 const db = prisma as DeepMockProxy<typeof prismaInstance>;
-const { backfillSpectatorEvaluations, matchSpectatorFeed, settleSpectatorFeed } = await import(
-  "./chess-spectator"
-);
+const {
+  backfillSpectatorEvaluations,
+  matchSpectatorFeed,
+  requestSpectatorBackfill,
+  settleSpectatorFeed,
+} = await import("./chess-spectator");
 
 const access = { purpose: "public", version: 0 } as const;
 const ownerAccess = { purpose: "owner", ownerId: "owner" } as const;
@@ -91,6 +94,45 @@ beforeEach(() => {
 });
 
 describe("spectator evaluation of hosted games", () => {
+  it.each(["runner", "local", "forged", ""])(
+    "refuses %s source before backfill engine or writes",
+    async (source) => {
+      db.chessMatch.findFirst.mockResolvedValue(row({ source }));
+      await expect(
+        backfillSpectatorEvaluations("match-id", 0, { purpose: "owner", ownerId: "owner" }),
+      ).resolves.toEqual({
+        evaluated: false,
+      });
+      expect(evaluatePosition).not.toHaveBeenCalled();
+      expect(db.$executeRaw).not.toHaveBeenCalled();
+      expect(ensureJob).not.toHaveBeenCalled();
+    },
+  );
+  it("refuses stale backfill hints and completion handoffs for runner rows", async () => {
+    db.$queryRaw.mockResolvedValue([]);
+    await requestSpectatorBackfill("match-id", 0, { purpose: "owner", ownerId: "owner" });
+    const stop = new AbortController();
+    const feed = matchSpectatorFeed("match-id", null, "owner", stop.signal);
+    feed.update(finished());
+    await feed.drain();
+    expect(feed.failed).toBe(true);
+    await settleSpectatorFeed("match-id", feed, stop, "owner");
+    expect(evaluatePosition).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
+    expect(ensureJob).not.toHaveBeenCalled();
+    for (const call of db.$queryRaw.mock.calls)
+      expect((call[0] as TemplateStringsArray).join("?")).toContain("AND ? LIMIT 1");
+  });
+  it("checks durable source independently before every engine evaluation", async () => {
+    db.$queryRaw.mockResolvedValueOnce([{ id: "match-id" }]).mockResolvedValue([]);
+    const feed = matchSpectatorFeed("match-id", null, "owner");
+    feed.update(finished());
+    await feed.drain();
+    expect(evaluatePosition).toHaveBeenCalledTimes(1);
+    expect(writtenPlies()).toEqual([0]);
+    expect(feed.failed).toBe(true);
+    expect(db.$queryRaw).toHaveBeenCalledTimes(2);
+  });
   it("merges one ply per write into the spectator column only", async () => {
     const feed = matchSpectatorFeed("match-id", null, "owner");
     feed.update(finished());

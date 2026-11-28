@@ -67,11 +67,14 @@ export function createRunnerAuthority(isOwnerActive: RunnerOwnerActive) {
       );
     },
     async ownsMatch(identity: RunnerMachineIdentity, matchId: string): Promise<boolean> {
-      // E4 adds the runner-machine association and the authoritative match CAS.
-      // E2 never executes/persists match commands; this is only a disclosure gate.
       return (
         (await prisma.chessMatch.findFirst({
-          where: { id: matchId, ownerId: identity.userId, source: "runner" },
+          where: {
+            id: matchId,
+            ownerId: identity.userId,
+            source: "runner",
+            runnerMachineId: identity.machineId,
+          },
           select: { id: true },
         })) !== null
       );

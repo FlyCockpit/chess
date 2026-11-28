@@ -85,6 +85,16 @@ export const accountExportModelPolicy: Readonly<
     disposition: "exported",
     reason: "Pairing timestamps and linked machine metadata, never claim or CLI proof digests.",
   },
+  RunnerCommand: {
+    disposition: "excluded",
+    reason:
+      "Internal delivery envelopes duplicate authoritative owned match configuration; match content and machine inventory are exported from their own records.",
+  },
+  RunnerEvent: {
+    disposition: "excluded",
+    reason:
+      "Internal idempotency digests and delivery receipts contain no independent profile or transcript; authoritative owned games are exported separately.",
+  },
   ChessCreation: {
     disposition: "excluded",
     reason: "Purpose-bound idempotency digests; contains no account profile or transcript.",

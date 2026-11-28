@@ -2,6 +2,9 @@ import { type Context, Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRunnerTransport } from "./runner-ws.js";
 
+vi.mock("@cockpit-chess/auth/runner-limits", () => ({
+  RunnerLimitsError: class extends Error {},
+}));
 vi.mock("./client-ip.js", () => ({ resolveClientIp: () => "203.0.113.100" }));
 const { mountRunnerWsRoutes } = await import("./runner-ws-routes.js");
 const path = "/api/cli/runner/ws";

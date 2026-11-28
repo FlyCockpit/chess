@@ -26,7 +26,7 @@ import {
 import { localCredentials } from "./chess-provider";
 import type { RunnerClientAction } from "./runner-connection";
 import { evaluateRunnerPosition } from "./runner-engine";
-import type { RunnerGameRecord, RunnerJournal } from "./runner-journal";
+import type { RunnerGameRecord, RunnerJournal, RunnerJournalRecord } from "./runner-journal";
 import type { RunnerMatchAuthority, RunnerPolicy } from "./runner-policy";
 
 type Message = Exclude<RunnerServerMessage, { type: "welcome" | "heartbeat" | "pong" }>;
@@ -48,6 +48,7 @@ export type RunnerHello = Extract<RunnerClientMessage, { type: "hello" }>["paylo
 export class RunnerGameLoop {
   readonly hello: RunnerHello;
   private readonly games = new Map<string, Game>();
+  private readonly cancelled = new Set<string>();
   private readonly tasks = new Set<Promise<void>>();
   private closed = false;
   private closing?: Promise<void>;
@@ -157,6 +158,10 @@ export class RunnerGameLoop {
       await this.offer(message, signal);
       return;
     }
+    if (message.type === "stop") {
+      await this.stop(message.matchId, message.payload.commandId, signal);
+      return;
+    }
     const game = this.games.get(message.matchId);
     if (!game || game.signal !== signal) {
       this.send({ type: "error", payload: { code: "STALE" } }, signal);
@@ -169,21 +174,6 @@ export class RunnerGameLoop {
     if (game.commands.size >= 4096) {
       game.authority.stop();
       this.send({ type: "error", payload: { code: "BUSY" } }, signal);
-      return;
-    }
-    if (message.type === "stop") {
-      game.commands.add(message.payload.commandId);
-      clearTimeout(game.timer);
-      game.stopRequested = true;
-      game.spectator?.abort();
-      game.authority.stop();
-      if (game.task) {
-        // The journal serializes this behind any pending result write. Once acknowledged,
-        // even a crash before loop settlement can restore only this non-resumable fence.
-        // Aborted tasks cannot enqueue a later ready write.
-        await this.persist(message.matchId, game, { ...game.record, phase: "terminal" });
-      } else await this.terminal(message.matchId, game, "stopped");
-      this.send({ type: "ack", payload: { commandId: message.payload.commandId } }, signal, game);
       return;
     }
     if (game.task || game.record.phase === "uncertain") {
@@ -207,6 +197,10 @@ export class RunnerGameLoop {
       game.record.confirmedPly = ply;
       this.armHumanTimer(message.matchId, game);
       await this.persist(message.matchId, game);
+      if (
+        !this.send({ type: "ack", payload: { commandId: message.payload.commandId } }, signal, game)
+      )
+        return;
       this.snapshot(message.matchId, game);
       return;
     }
@@ -262,6 +256,58 @@ export class RunnerGameLoop {
     this.launchTurn(message.matchId, game, ply);
   }
 
+  private async stop(matchId: string, commandId: string, signal: AbortSignal): Promise<void> {
+    const game = this.games.get(matchId);
+    if (game) {
+      if (game.commands.has(commandId)) {
+        this.send({ type: "ack", payload: { commandId } }, signal, game);
+        return;
+      }
+      const reserved =
+        game.commands.size === 4096 && !game.stopRequested && game.record.phase !== "terminal";
+      if (game.commands.size >= 4096 && !reserved) {
+        game.authority.stop();
+        this.send({ type: "error", payload: { code: "BUSY" } }, signal);
+        return;
+      }
+      game.commands.add(commandId);
+      clearTimeout(game.timer);
+      game.stopRequested = true;
+      game.spectator?.abort();
+      game.authority.stop();
+      if (game.task) {
+        // Serial journal writes cannot revive the terminal fence after late old work.
+        await this.persist(matchId, game, { ...game.record, phase: "terminal" });
+      } else await this.terminal(matchId, game, "stopped", signal);
+      this.send({ type: "ack", payload: { commandId } }, signal, game);
+      return;
+    }
+    if (this.cancelled.has(matchId)) {
+      this.send({ type: "ack", payload: { commandId } }, signal);
+      return;
+    }
+    if (this.games.size + this.cancelled.size >= 256) {
+      this.send({ type: "error", payload: { code: "BUSY" } }, signal);
+      return;
+    }
+    try {
+      const stored = await this.options.journal.load(matchId);
+      let terminal: RunnerJournalRecord;
+      if (stored && stored.phase !== "cancelled") {
+        if (stored.archive.status === "running")
+          finishMatch(stored.archive, "*", "cancelled", "stopped");
+        terminal = { ...stored, phase: "terminal" };
+      } else terminal = { phase: "cancelled" };
+      await this.options.journal.save(matchId, terminal);
+      this.cancelled.add(matchId);
+      this.send({ type: "ack", payload: { commandId } }, signal);
+    } catch {
+      this.poisoned = true;
+      for (const item of this.games.values()) item.authority.stop();
+      throw new Error("RUNNER_GAME_STORAGE");
+    }
+  }
+
   private async offer(message: Extract<Message, { type: "offer" }>, signal: AbortSignal) {
     const { config, configDigest, commandId } = message.payload;
     const reject = (reason: "busy" | "policy" | "unsupported") =>
@@ -288,6 +334,7 @@ export class RunnerGameLoop {
       (!this.hello.engine && config.rules.engineEvaluation !== "off")
     )
       return reject("unsupported");
+    if (this.cancelled.has(message.matchId)) return reject("policy");
     let game = this.games.get(message.matchId);
     if (game) {
       if (
@@ -311,10 +358,12 @@ export class RunnerGameLoop {
       return;
     }
     // Bound in-memory tombstones too. Disk tombstones are never silently discarded.
-    if (this.games.size >= 256) return reject("busy");
+    if (this.games.size + this.cancelled.size >= 256) return reject("busy");
     let stored: RunnerGameRecord | undefined;
     try {
-      stored = await this.options.journal.load(message.matchId);
+      const loaded = await this.options.journal.load(message.matchId);
+      if (loaded?.phase === "cancelled") return reject("policy");
+      stored = loaded;
     } catch {
       this.poisoned = true;
       for (const item of this.games.values()) item.authority.stop();
@@ -584,6 +633,7 @@ export class RunnerGameLoop {
     matchId: string,
     game: Game,
     kind: "interrupted" | "stopped" | "completed",
+    signal = game.signal,
   ) {
     clearTimeout(game.timer);
     game.spectator?.abort();
@@ -606,7 +656,7 @@ export class RunnerGameLoop {
           termination: game.record.archive.termination,
         },
       },
-      game.signal,
+      signal,
       game,
     );
     game.authority.finish();

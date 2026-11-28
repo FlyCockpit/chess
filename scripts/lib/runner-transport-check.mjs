@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { mock } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
@@ -298,18 +299,28 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
   const { default: WebSocket } = await import(
     createRequire(new URL("../../apps/cli/package.json", import.meta.url)).resolve("ws")
   );
-  const runtime = createRunnerWebSocketRuntime({
-    isOwnerActive: async (userId) => userId === ownerId,
-  });
-  const app = mountRunnerWsRoutes(new Hono(), {
-    ipBudget: async (_context, next) => next(),
-    machineBudget: async () => {},
-    runtime: runtime.runtime,
-  });
+  // Advance only the heartbeat clock, while the actual Hono/ws, PostgreSQL and
+  // Redis operations keep using real IO. Waiting 25s on a loaded Boat VM gave
+  // the interval callbacks a 5s scheduling margin against a 30s wall deadline.
+  // The cadence is still the production 25s; time does not race VM scheduling.
+  const ioSetTimeout = globalThis.setTimeout;
+  const ioClearTimeout = globalThis.clearTimeout;
+  let heartbeatNow = 0;
+  const performanceNow = mock.method(performance, "now", () => heartbeatNow);
+  mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  let runtime;
   let http;
   let connection;
   const peers = [];
   try {
+    runtime = createRunnerWebSocketRuntime({
+      isOwnerActive: async (userId) => userId === ownerId,
+    });
+    const app = mountRunnerWsRoutes(new Hono(), {
+      ipBudget: async (_context, next) => next(),
+      machineBudget: async () => {},
+      runtime: runtime.runtime,
+    });
     await until("live socket subscriptions", () => runtime.runtime.isAvailable());
     let fromClientPing = 0;
     let fromClientPong = 0;
@@ -335,6 +346,7 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
       allowLocalhostWs: true,
       credential: live.secret,
       socketFactory: createNodeRunnerSocket,
+      now: () => heartbeatNow,
       hello: {
         models: [],
         engine: false,
@@ -348,8 +360,25 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
     connection.start();
     await until("real outbound hello acknowledgement", () => observed.includes("ack"));
     assert.equal(connection.getState(), "connected");
+    await runtime.runtime.transport.idle();
+    // Nothing may send a heartbeat early. Mock timers run interval callbacks
+    // at their production periods; all socket reads/writes below remain real.
+    // Join every 5s poll before advancing again: its production 5s storage
+    // deadlines must not elapse while actual IO is waiting for the event loop.
+    for (const step of [5_000, 5_000, 5_000, 5_000, 4_999]) {
+      heartbeatNow += step;
+      mock.timers.tick(step);
+      await runtime.runtime.transport.idle();
+    }
+    assert.equal(fromClientPing, 0);
+    assert.equal(fromClientPong, 0);
+    assert.equal(applicationTypes.has("heartbeat"), false);
+    assert.equal(applicationTypes.has("pong"), false);
+    heartbeatNow = 25_000;
+    mock.timers.tick(1);
+    await runtime.runtime.transport.idle();
     await until(
-      "real 25s bidirectional native and application heartbeat",
+      "controlled 25s bidirectional native and application heartbeat",
       () =>
         fromClientPing > 0 &&
         fromClientPong > 0 &&
@@ -377,18 +406,18 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
           handshakeTimeout: 3000,
         });
         peers.push(peer);
-        const timer = setTimeout(() => {
+        const timer = ioSetTimeout(() => {
           peer.terminate();
           reject(new Error("Expected HTTP upgrade refusal"));
         }, 4000);
         peer.on("error", () => {});
         peer.on("open", () => {
-          clearTimeout(timer);
+          ioClearTimeout(timer);
           peer.terminate();
           reject(new Error("Unexpected authorized upgrade"));
         });
         peer.on("unexpected-response", (request, response) => {
-          clearTimeout(timer);
+          ioClearTimeout(timer);
           try {
             assert.equal(response.statusCode, status);
             resolve();
@@ -422,14 +451,14 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
           perMessageDeflate: false,
         });
         peers.push(peer);
-        const timer = setTimeout(() => {
+        const timer = ioSetTimeout(() => {
           peer.terminate();
           reject(new Error("Expected malformed frame close"));
         }, 4000);
         peer.on("error", () => {});
         peer.once("message", () => peer.send(data, { binary }));
         peer.on("close", (code) => {
-          clearTimeout(timer);
+          ioClearTimeout(timer);
           try {
             assert.equal(code, expected);
             resolve();
@@ -452,15 +481,20 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
     await runtime.stop();
     assert.equal(await restarting, 1012);
     console.log(
-      "Runner socket: real Hono upgrades, Authorization-only outbound ws, 25s native/application ping/pong, PG revoke, rejected browser/query/API key credentials, binary/64KiB limits and 1012 drain passed.",
+      "Runner socket: real Hono upgrades, Authorization-only outbound ws, controlled 25s native/application ping/pong, PG revoke, rejected browser/query/API key credentials, binary/64KiB limits and 1012 drain passed.",
     );
   } finally {
-    connection?.stop();
-    for (const peer of peers) peer.terminate();
-    await runtime.stop();
-    if (http) {
-      http.closeAllConnections?.();
-      await new Promise((resolve) => http.close(resolve));
+    try {
+      connection?.stop();
+      for (const peer of peers) peer.terminate();
+      await runtime?.stop();
+      if (http) {
+        http.closeAllConnections?.();
+        await new Promise((resolve) => http.close(resolve));
+      }
+    } finally {
+      mock.timers.reset();
+      performanceNow.mock.restore();
     }
   }
 }

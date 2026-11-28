@@ -290,6 +290,7 @@ describe("openrouter.disconnect", () => {
     expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
       where: {
         ownerId: "user-c",
+        source: "hosted",
         credentialSource: "owner-openrouter",
         status: { in: ["queued", "running"] },
       },

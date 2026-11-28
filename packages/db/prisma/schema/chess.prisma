@@ -23,6 +23,17 @@ model ChessMatch {
   OfficialEntry        ChessOfficialEntry?
   Creation             ChessCreation?
   source               String                  @default("hosted")
+  /// Stable local machine binding. A new socket replaces only runnerGeneration.
+  runnerMachineId      String?
+  RunnerMachine        RunnerMachine?          @relation(fields: [runnerMachineId], references: [id], onDelete: SetNull)
+  runnerGeneration     Int?
+  runnerState          String?
+  runnerRevision       Int                     @default(0)
+  runnerAcceptedSeq    Int                     @default(0)
+  runnerLastContactAt  DateTime?
+  runnerResumeDeadline DateTime?
+  RunnerCommands       RunnerCommand[]
+  RunnerEvents         RunnerEvent[]
   rulesKey             String
   /// Current archives use cockpit-v1. Unsupported versions have no replay.
   rulesVersion         String?
@@ -85,7 +96,42 @@ model ChessMatch {
   @@index([status, heartbeatAt])
   @@index([turnType, turnDeadline, id])
   @@index([status, createdAt])
+  @@index([runnerMachineId, runnerState, id])
+  @@index([source, status, createdAt])
+  @@index([source, runnerResumeDeadline, id])
   @@map("chess_match")
+}
+
+/// Durable owner control/outbox. A delivery is a hint until its exact ID is acknowledged.
+model RunnerCommand {
+  id          String     @id
+  matchId     String
+  Match       ChessMatch @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  kind        String
+  revision    Int
+  payload     Json
+  createdAt   DateTime   @default(now())
+  expiresAt   DateTime
+  ackedAt     DateTime?
+  cancelledAt DateTime?
+
+  @@unique([matchId, revision])
+  @@index([matchId, ackedAt, cancelledAt, expiresAt])
+  @@index([expiresAt, id])
+  @@map("runner_command")
+}
+
+/// Bounded per-match inbound receipts. IDs cannot be reused with a different payload.
+model RunnerEvent {
+  id            String     @id
+  matchId       String
+  Match         ChessMatch @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  payloadDigest String
+  createdAt     DateTime   @default(now())
+
+  @@index([createdAt, id])
+  @@index([matchId])
+  @@map("runner_event")
 }
 
 /// Private idempotency receipt. Its id hashes owner + random creation key; no raw owner,

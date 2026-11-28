@@ -1,8 +1,16 @@
 import { createMatch, type TurnState } from "@cockpit-chess/chess";
+import type prismaInstance from "@cockpit-chess/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { type DeepMockProxy, mockReset } from "vitest-mock-extended";
 import { DbNull } from "../../../db/prisma/generated/internal/prismaNamespace";
 import { chessTurnFromColumns } from "./chess-turn";
 
+vi.mock("@cockpit-chess/db", async () => {
+  const { mockDeep } = await import("vitest-mock-extended");
+  return { default: mockDeep<typeof prismaInstance>() };
+});
+const { default: prisma } = await import("@cockpit-chess/db");
+const db = prisma as DeepMockProxy<typeof prismaInstance>;
 const { enqueue } = vi.hoisted(() => ({ enqueue: vi.fn() }));
 vi.mock("@cockpit-chess/queue", () => ({ chessRunQueue: {}, ensureRunnableJob: enqueue }));
 const { chessRunJobId, chessTurnData, wakeHostedMatch } = await import("./chess-human");
@@ -11,6 +19,8 @@ const match = () => createMatch({ white: baseline, black: baseline, rules: {} },
 
 beforeEach(() => {
   enqueue.mockReset().mockResolvedValue({});
+  mockReset(db);
+  db.chessMatch.findUnique.mockResolvedValue({ source: "hosted", status: "queued" } as never);
 });
 
 describe("hosted human persistence helpers", () => {
@@ -59,6 +69,22 @@ describe("hosted human persistence helpers", () => {
     expect(
       chessTurnData({ type: "human-move", ...active, pendingMove: pending }).pendingMove,
     ).toEqual(pending);
+  });
+
+  it("refuses runner archives and forged hosted snapshots before queueing hosted work", async () => {
+    const local = createMatch({ white: baseline, black: baseline, rules: {} }, "local");
+    await wakeHostedMatch("id", local);
+    expect(db.chessMatch.findUnique).not.toHaveBeenCalled();
+    for (const current of [
+      null,
+      { source: "runner", status: "queued" },
+      { source: "local", status: "queued" },
+      { source: "hosted", status: "stopped" },
+    ]) {
+      db.chessMatch.findUnique.mockResolvedValue(current as never);
+      await wakeHostedMatch("id", match());
+    }
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it("bounds wake logging to fixed metadata and preserves an accepted write on hint loss", async () => {

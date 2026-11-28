@@ -152,6 +152,13 @@ function row() {
     ModerationActions: [],
     OfficialEntry: null,
     source: "local",
+    runnerMachineId: null,
+    runnerGeneration: null,
+    runnerState: null,
+    runnerRevision: 0,
+    runnerAcceptedSeq: 0,
+    runnerLastContactAt: null,
+    runnerResumeDeadline: null,
     rulesKey: "rules",
     rulesVersion: "cockpit-v1",
     contextMode: "fresh",
@@ -253,6 +260,7 @@ beforeEach(() => {
   db.$transaction.mockImplementation(((fn: (tx: typeof db) => unknown) => fn(db)) as never);
   db.$queryRaw.mockResolvedValue([] as never);
   db.chessMatch.count.mockResolvedValue(0);
+  db.chessMatch.findUnique.mockResolvedValue({ source: "hosted", status: "queued" } as never);
   db.openRouterConnection.findUnique.mockResolvedValue(null);
   db.chessCreation.findUnique.mockResolvedValue(null);
   db.chessOfficialEntry.count.mockResolvedValue(0);
@@ -646,9 +654,15 @@ describe("chess public projection and operator boundaries", () => {
     db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
     await client().stop({ slug: "test-game" });
     expect(db.chessMatch.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { slug: "test-game", ownerId: "owner" } }),
+      expect.objectContaining({ where: { slug: "test-game", ownerId: "owner", source: "hosted" } }),
     );
     const args = db.chessMatch.updateMany.mock.calls[0]?.[0];
+    expect(args?.where).toEqual({
+      id: "id",
+      ownerId: "owner",
+      source: "hosted",
+      status: { in: ["queued", "running"] },
+    });
     expect(args?.data).toEqual({
       status: "stopped",
       runToken: null,
@@ -657,6 +671,27 @@ describe("chess public projection and operator boundaries", () => {
       ending: { kind: "cancelled" },
       terminalCause: "owner-stop",
     });
+  });
+  it("refuses runner matches through the hosted stop endpoint without changing their control state", async () => {
+    const runner = {
+      ...row(),
+      source: "runner",
+      status: "queued",
+      runnerState: "offered",
+      runnerGeneration: 3,
+    };
+    const before = structuredClone(runner);
+    db.chessMatch.findFirst.mockImplementation(async (input) =>
+      input?.where?.source === runner.source ? runner : null,
+    );
+    await expect(client().stop({ slug: runner.slug })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(db.chessMatch.findFirst).toHaveBeenCalledExactlyOnceWith({
+      where: { slug: runner.slug, ownerId: "owner", source: "hosted" },
+      select: { id: true },
+    });
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+    expect(runner).toEqual(before);
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
   });
   it("reads the full official ledger publicly without scanning match archives", async () => {
     db.$queryRaw.mockResolvedValue([]);
@@ -997,6 +1032,7 @@ describe("hosted matches on the user's own OpenRouter key", () => {
     expect(db.chessMatch.count).toHaveBeenCalledWith({
       where: {
         ownerId: "user-1",
+        source: "hosted",
         credentialSource: "owner-openrouter",
         status: { in: ["queued", "running"] },
       },
@@ -1113,20 +1149,29 @@ describe("hosted matches on the user's own OpenRouter key", () => {
       code: "NOT_FOUND",
     });
     await expect(api.stop({ slug: "someone-else" })).rejects.toMatchObject({ code: "NOT_FOUND" });
-    for (const call of db.chessMatch.findFirst.mock.calls)
-      expect(call[0]?.where).toEqual({ slug: "someone-else", ownerId: "user-2" });
+    expect(db.chessMatch.findFirst.mock.calls.map(([input]) => input?.where)).toEqual([
+      { slug: "someone-else", ownerId: "user-2" },
+      { slug: "someone-else", ownerId: "user-2" },
+      { slug: "someone-else", ownerId: "user-2", source: "hosted" },
+    ]);
     expect(db.chessMatch.update).not.toHaveBeenCalled();
     expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
   });
 
   it("reports a queued match's position and who pays", async () => {
-    const queued = { ...row(), status: "queued", credentialSource: "owner-openrouter" };
+    const queued = {
+      ...row(),
+      source: "hosted",
+      status: "queued",
+      credentialSource: "owner-openrouter",
+    };
     db.chessMatch.findFirst.mockResolvedValue(queued as never);
     db.chessMatch.count.mockResolvedValue(2);
     const result = await userClient("owner").inspect({ slug: "test-game" });
     expect(result).toMatchObject({ queuePosition: 3, credentialSource: "openrouter" });
     expect(db.chessMatch.count).toHaveBeenCalledWith({
       where: {
+        source: "hosted",
         status: "queued",
         OR: [
           { createdAt: { lt: queued.createdAt } },
@@ -1134,6 +1179,31 @@ describe("hosted matches on the user's own OpenRouter key", () => {
         ],
       },
     });
+  });
+
+  it("keeps runner queue state and billing out of hosted queues and engine work", async () => {
+    const archive = match();
+    finishMatch(archive, "*", "cancelled", "stopped");
+    for (const status of ["queued", "stopped", "completed"]) {
+      db.chessMatch.findFirst.mockResolvedValue({
+        ...row(),
+        id: `runner-${status}`,
+        source: "runner",
+        credentialSource: "runner-local",
+        status,
+        archive,
+      } as never);
+      const result = await userClient("owner").inspect({ slug: "test-game" });
+      expect(result).toMatchObject({
+        queuePosition: null,
+        credentialSource: "runner-local",
+        spectatorEvaluations: null,
+      });
+      await client(null).get({ slug: "test-game" });
+    }
+    await Promise.resolve();
+    expect(db.chessMatch.count).not.toHaveBeenCalled();
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
   });
 
   it("retires setOfficial entirely for every caller", () => {
@@ -1167,6 +1237,14 @@ describe("hosted matches on the user's own OpenRouter key", () => {
     expect(db.chessMatch.count).toHaveBeenCalledWith({
       where: { source: "hosted", status: "running", runToken: { not: null } },
     });
+    expect(db.chessMatch.count).toHaveBeenCalledWith({
+      where: { source: "hosted", status: "queued" },
+    });
+    expect(db.chessMatch.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { source: "hosted", status: { in: ["running", "queued"] } },
+      }),
+    );
     expect(result).toEqual({
       running: 7,
       concurrencyLimit: 512,
@@ -1662,6 +1740,7 @@ describe("hosted human creation", () => {
     expect(db.chessMatch.count).toHaveBeenCalledWith({
       where: {
         ownerId: "owner",
+        source: "hosted",
         credentialSource: "owner-openrouter",
         status: { in: ["queued", "running"] },
       },
@@ -2399,7 +2478,7 @@ describe("deletion replay visibility and stale admission", () => {
   it.each(["session", "owner"] as const)(
     "refuses private inspect after %s revocation during queued assembly",
     async (revoked) => {
-      const record = { ...row(), status: "queued" };
+      const record = { ...row(), source: "hosted", status: "queued" };
       db.chessMatch.findFirst.mockResolvedValue(record as never);
       db.chessMatch.count.mockImplementationOnce(async () => {
         if (revoked === "session") db.session.findFirst.mockResolvedValue(null);

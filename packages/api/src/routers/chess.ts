@@ -69,6 +69,7 @@ import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagina
 import { createProcedureBudget } from "../lib/procedure-budget";
 import { openOwnerOpenRouterKey, providerKeySecrets } from "../lib/provider-key";
 import { slugify } from "../lib/slug";
+import { chessRunnerRouter } from "./chess-runner";
 
 const summary = {
   ...chessTurnSelect,
@@ -394,9 +395,10 @@ async function inspectOwnMatch(slug: string, ownerId: string, sessionId: string)
     throw new ORPCError("BAD_REQUEST", { message: OLD_RULES_MESSAGE });
   const archive = checkedArchive(row.archive, row.status, false, row.ending);
   const queuePosition =
-    row.status === "queued"
+    row.source === "hosted" && row.status === "queued"
       ? (await prisma.chessMatch.count({
           where: {
+            source: "hosted",
             status: "queued",
             OR: [
               { createdAt: { lt: row.createdAt } },
@@ -413,7 +415,12 @@ async function inspectOwnMatch(slug: string, ownerId: string, sessionId: string)
     status: row.status,
     published: row.published,
     official: row.OfficialEntry !== null,
-    credentialSource: row.credentialSource === "owner-openrouter" ? "openrouter" : "operator",
+    credentialSource:
+      row.source === "runner"
+        ? "runner-local"
+        : row.credentialSource === "owner-openrouter"
+          ? "openrouter"
+          : "operator",
     queuePosition,
     hiddenAt: row.hiddenAt,
     moderationReason: row.moderationReason,
@@ -453,6 +460,7 @@ const CAPACITY_LIST = 50;
 const isP2002 = (error: unknown) =>
   typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 export const chessRouter = {
+  ...chessRunnerRouter,
   info: publicProcedure.handler(() => ({
     hostedEnabled: env.CHESS_HOSTED_ENABLED,
     /** Signed-in users may connect OpenRouter and run hosted matches on their own key. */
@@ -937,9 +945,9 @@ export const chessRouter = {
       prisma.chessMatch.count({
         where: { source: "hosted", status: "running", runToken: { not: null } },
       }),
-      prisma.chessMatch.count({ where: { status: "queued" } }),
+      prisma.chessMatch.count({ where: { source: "hosted", status: "queued" } }),
       prisma.chessMatch.findMany({
-        where: { status: { in: ["running", "queued"] } },
+        where: { source: "hosted", status: { in: ["running", "queued"] } },
         select: capacityMatchSelect,
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         take: CAPACITY_LIST,
@@ -967,9 +975,14 @@ export const chessRouter = {
     };
   }),
   stop: protectedProcedure.input(slugInput).handler(async ({ input, context }) => {
-    const row = await ownDraft(input.slug, context.session.user.id, ownIdSelect);
+    const ownerId = context.session.user.id;
+    const row = await prisma.chessMatch.findFirst({
+      where: { slug: input.slug, ownerId, source: "hosted" },
+      select: ownIdSelect,
+    });
+    if (!row) throw new ORPCError("NOT_FOUND");
     await prisma.chessMatch.updateMany({
-      where: { id: row.id, status: { in: ["queued", "running"] } },
+      where: { id: row.id, ownerId, source: "hosted", status: { in: ["queued", "running"] } },
       // Leave the last durable event snapshot intact: a read-modify-write here
       // could erase a move persisted between the lookup and cancellation.
       data: {

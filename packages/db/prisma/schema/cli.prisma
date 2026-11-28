@@ -85,6 +85,7 @@ model RunnerMachine {
   lastSeenAt           DateTime?
   connectionGeneration Int          @default(0)
   Claim                RunnerClaim?
+  Matches              ChessMatch[]
 
   @@index([userId, id])
   @@index([expiresAt])

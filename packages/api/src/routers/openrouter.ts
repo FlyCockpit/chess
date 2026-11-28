@@ -301,6 +301,7 @@ export const openrouterRouter = {
           await tx.chessMatch.updateMany({
             where: {
               ownerId: userId,
+              source: "hosted",
               credentialSource: "owner-openrouter",
               status: { in: ["queued", "running"] },
             },

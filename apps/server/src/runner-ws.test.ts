@@ -1,3 +1,10 @@
+import { RunnerLimitsError } from "@cockpit-chess/auth/runner-limits";
+import {
+  type RunnerClientMessage,
+  runnerConfigDigest,
+  runnerMatchConfigSchema,
+} from "@cockpit-chess/chess/runner-protocol";
+import { ORPCError } from "@orpc/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunnerMachineIdentity } from "./runner-session.js";
 import {
@@ -7,7 +14,16 @@ import {
 } from "./runner-ws.js";
 import type { RunnerLease } from "./runner-ws-store.js";
 
-function harness() {
+vi.mock("@cockpit-chess/auth/runner-limits", () => ({
+  RunnerLimitsError: class extends Error {
+    constructor(readonly code: string) {
+      super(code);
+      this.name = "RunnerLimitsError";
+    }
+  },
+}));
+
+function harness(controls?: Parameters<typeof createRunnerTransport>[0]["controls"]) {
   const live = new Map<string, RunnerMachineIdentity>();
   const leases = new Map<string, RunnerLease>();
   let available = true;
@@ -51,6 +67,7 @@ function harness() {
       isAvailable: () => available,
       now: Date.now,
       limits,
+      controls,
     });
   return {
     live,
@@ -123,6 +140,391 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
+});
+
+describe("durable runner transport controls", () => {
+  const stop = { type: "stop", matchId: "owned", payload: { commandId: "durable1" } } as const;
+
+  it("recovers a missed wake by polling and preserves command IDs only through reconnect redelivery", async () => {
+    const outbox = vi.fn().mockResolvedValue([]);
+    const handle = vi.fn().mockResolvedValue([]);
+    const h = harness({ outbox, handle });
+    const { active, sent, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    expect(sent).toHaveLength(2);
+    outbox.mockResolvedValue([stop]);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sent.at(-1)).toMatchObject({ ...stop, id: "durable1", generation: 1, seq: 3 });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sent.filter((message) => message.type === "stop")).toHaveLength(1);
+    const replacement = await connect(h, transport);
+    replacement.active.receive(hello(2));
+    await replacement.active.idle();
+    expect(replacement.sent.at(-1)).toMatchObject({ ...stop, id: "durable1", generation: 2 });
+    expect(outbox).toHaveBeenCalledWith(
+      expect.objectContaining({ machineId: "machine1", connectionGeneration: 1 }),
+      expect.any(Array),
+    );
+    await transport.drain();
+  });
+
+  it("windows durable commands and never floods a slow live consumer with repeated callbacks", async () => {
+    const pending = Array.from({ length: 16 }, (_, index) => ({
+      ...stop,
+      payload: { commandId: `command${index}` },
+    }));
+    const outbox = vi.fn(async () => [...pending]);
+    const handle = vi.fn(async () => {
+      pending.shift();
+      return [];
+    });
+    const h = harness({ outbox, handle });
+    const { active, peer, sent, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    expect(sent.filter((message) => message.type === "stop")).toHaveLength(4);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await transport.idle();
+    expect(sent.filter((message) => message.type === "stop")).toHaveLength(4);
+    expect(peer.close).not.toHaveBeenCalled();
+    active.receive(frame("ack", 2, { commandId: "command0" }));
+    await active.idle();
+    expect(sent.filter((message) => message.type === "stop")).toHaveLength(5);
+    expect(sent.at(-1)).toMatchObject({ type: "stop", payload: { commandId: "command4" } });
+    await transport.drain();
+  });
+
+  it("reclaims cancelled offer slots for stop commands without replaying other offers", async () => {
+    const config = runnerMatchConfigSchema.parse({
+      promptVersion: "1",
+      white: { name: "White", model: "test/white", protocol: "openai-chat" },
+      black: { name: "Black", model: "test/black", protocol: "openai-chat" },
+      rules: {},
+    });
+    const offers = Array.from({ length: 4 }, (_, index) => ({
+      type: "offer" as const,
+      matchId: "owned",
+      payload: { commandId: `offer${index}`, config, configDigest: runnerConfigDigest(config) },
+    }));
+    const outbox = vi.fn().mockResolvedValue(offers);
+    const h = harness({ outbox, handle: vi.fn().mockResolvedValue([]) });
+    const { active, sent, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    outbox.mockResolvedValue([...offers.slice(1), stop]);
+    await vi.advanceTimersByTimeAsync(5000);
+    await transport.idle();
+    expect(sent.filter((message) => message.type === "offer")).toHaveLength(4);
+    expect(sent.at(-1)).toMatchObject({ type: "stop", payload: stop.payload });
+    await transport.drain();
+  });
+
+  it("does not replay a stale poll snapshot after a semantic ACK commits", async () => {
+    const outbox = vi.fn().mockResolvedValue([stop]);
+    const h = harness({ outbox, handle: vi.fn().mockResolvedValue([]) });
+    const { active, sent, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    const poll = Promise.withResolvers<(typeof stop)[]>();
+    outbox.mockReturnValueOnce(poll.promise).mockResolvedValue([]);
+    const delivering = active.deliver();
+    for (let i = 0; i < 20 && outbox.mock.calls.length < 2; ++i) await Promise.resolve();
+    active.receive(frame("ack", 2, { commandId: "durable1" }));
+    await active.idle();
+    poll.resolve([stop]);
+    await delivering;
+    expect(sent.filter((message) => message.type === "stop")).toHaveLength(1);
+    expect(active.isClosed()).toBe(false);
+    await transport.drain();
+  });
+
+  it("tracks direct durable snapshot replies so the following poll cannot redeliver them", async () => {
+    const resume = {
+      type: "resume",
+      matchId: "owned",
+      payload: {
+        commandId: "resume1",
+        acceptedSeq: 0,
+        fen: "8/8/8/8/8/8/5k2/7K w - - 0 1",
+        ply: 0,
+      },
+    } as const;
+    const outbox = vi.fn().mockResolvedValue([]);
+    const handle = vi.fn(async () => {
+      outbox.mockResolvedValue([resume]);
+      return [resume];
+    });
+    const h = harness({ outbox, handle });
+    const { active, sent, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    active.receive(
+      frame(
+        "snapshot",
+        2,
+        { acceptedSeq: 0, fen: resume.payload.fen, ply: 0 },
+        { matchId: "owned" },
+      ),
+    );
+    await active.idle();
+    expect(sent.filter((message) => message.type === "resume")).toHaveLength(1);
+    await transport.drain();
+  });
+
+  it.each([
+    ["CONFLICT", "STALE"],
+    ["TOO_MANY_REQUESTS", "BUSY"],
+    ["BAD_REQUEST", "UNSUPPORTED"],
+  ] as const)("keeps a live machine after a typed %s control race", async (code, wireCode) => {
+    const outbox = vi.fn().mockResolvedValue([]);
+    const handle = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        outbox.mockResolvedValue([stop]);
+        throw new ORPCError(code, { message: "private exception detail" });
+      })
+      .mockResolvedValue([]);
+    const h = harness({ outbox, handle });
+    const { active, peer, sent, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    active.receive(frame("accept", 2, { commandId: "cancelled-offer" }, { matchId: "owned" }));
+    await active.idle();
+    expect(sent).toContainEqual(
+      expect.objectContaining({ type: "error", payload: { code: wireCode } }),
+    );
+    expect(sent.at(-1)).toMatchObject({ type: "stop", payload: stop.payload });
+    expect(peer.close).not.toHaveBeenCalled();
+    expect(JSON.stringify(sent)).not.toContain("private exception detail");
+    active.receive(frame("accept", 3, { commandId: "other-offer" }, { matchId: "owned" }));
+    await active.idle();
+    expect(handle).toHaveBeenCalledTimes(2);
+    expect(active.isClosed()).toBe(false);
+    await transport.drain();
+  });
+
+  it("rechecks authority before exposing a recoverable control error", async () => {
+    const handle = vi.fn();
+    const h = harness({ outbox: vi.fn().mockResolvedValue([]), handle });
+    handle.mockImplementation(async () => {
+      h.live.clear();
+      throw new ORPCError("CONFLICT");
+    });
+    const { active, sent, peer, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    active.receive(frame("accept", 2, { commandId: "offer1" }, { matchId: "owned" }));
+    await active.idle();
+    expect(sent.some((message) => message.type === "error")).toBe(false);
+    expect(peer.close).toHaveBeenCalledWith(4401, "UNAUTHORIZED");
+    await transport.drain();
+  });
+
+  it.each(["UNAUTHORIZED", "FORBIDDEN", "NOT_FOUND"] as const)(
+    "keeps actual typed %s control denial terminal",
+    async (code) => {
+      const h = harness({
+        outbox: vi.fn().mockResolvedValue([]),
+        handle: vi.fn().mockRejectedValue(new ORPCError(code)),
+      });
+      const { active, peer, transport } = await connect(h);
+      active.receive(hello());
+      await active.idle();
+      active.receive(frame("accept", 2, { commandId: "offer1" }, { matchId: "owned" }));
+      await active.idle();
+      expect(peer.close).toHaveBeenCalledWith(4401, "UNAUTHORIZED");
+      await transport.drain();
+    },
+  );
+
+  it("keeps a failed semantic command charged until the outbox proves resolution", async () => {
+    const commands = Array.from({ length: 5 }, (_, index) => ({
+      ...stop,
+      payload: { commandId: `charge${index}` },
+    }));
+    const outbox = vi.fn().mockResolvedValue(commands);
+    const h = harness({ outbox, handle: vi.fn().mockRejectedValue(new ORPCError("CONFLICT")) });
+    const { active, sent, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    active.receive(frame("ack", 2, { commandId: "charge0" }));
+    await active.idle();
+    expect(sent.filter((message) => message.type === "stop")).toHaveLength(4);
+    expect(outbox).toHaveBeenLastCalledWith(expect.anything(), [
+      "charge0",
+      "charge1",
+      "charge2",
+      "charge3",
+    ]);
+    expect(active.isClosed()).toBe(false);
+    await transport.drain();
+  });
+
+  it("retains direct replies beyond the FIFO page while an older poll races ACKs", async () => {
+    const older = Array.from({ length: 33 }, (_, index) => ({
+      ...stop,
+      payload: { commandId: `old${index}` },
+    }));
+    const resume = {
+      type: "resume",
+      matchId: "owned",
+      payload: {
+        commandId: "offpage-resume",
+        acceptedSeq: 0,
+        fen: "8/8/8/8/8/8/5k2/7K w - - 0 1",
+        ply: 0,
+      },
+    } as const;
+    let pending: Array<(typeof older)[number] | typeof resume> = [...older];
+    const page = (ids: readonly string[]) => {
+      const pinned = pending.filter((message) => ids.includes(message.payload.commandId));
+      return [
+        ...pinned,
+        ...pending.filter((message) => !ids.includes(message.payload.commandId)),
+      ].slice(0, 32);
+    };
+    const outbox = vi.fn(async (_identity: RunnerMachineIdentity, ids: readonly string[]) =>
+      page(ids),
+    );
+    const handle = vi.fn(async (_identity: RunnerMachineIdentity, message: RunnerClientMessage) => {
+      if (message.type === "ack")
+        pending = pending.filter(
+          (command) => command.payload.commandId !== message.payload.commandId,
+        );
+      if (message.type === "snapshot") {
+        pending.push(resume);
+        return [resume];
+      }
+      return [];
+    });
+    const h = harness({ outbox, handle });
+    const { active, sent, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    const authority = Promise.withResolvers<RunnerMachineIdentity>();
+    let blocked = false;
+    outbox.mockImplementationOnce(async (_identity, ids) => {
+      h.authority.resolve.mockImplementationOnce(() => {
+        blocked = true;
+        return authority.promise;
+      });
+      return page(ids);
+    });
+    const stalePoll = active.deliver();
+    for (let i = 0; i < 40 && !blocked; ++i) await Promise.resolve();
+    expect(blocked).toBe(true);
+    active.receive(frame("ack", 2, { commandId: "old0" }));
+    await active.idle();
+    active.receive(
+      frame(
+        "snapshot",
+        3,
+        { acceptedSeq: 0, fen: resume.payload.fen, ply: 0 },
+        { matchId: "owned" },
+      ),
+    );
+    await active.idle();
+    authority.resolve(h.live.get("Bearer secret")!);
+    await stalePoll;
+    await active.deliver();
+    await active.deliver();
+    expect(outbox).toHaveBeenLastCalledWith(expect.anything(), [
+      "old1",
+      "old2",
+      "old3",
+      "offpage-resume",
+    ]);
+    expect(
+      sent.filter((message) => ["stop", "resume"].includes(String(message.type))),
+    ).toHaveLength(5);
+    expect(sent.filter((message) => message.type === "resume")).toHaveLength(1);
+    expect(
+      sent.some((message) => (message.payload as { commandId?: string })?.commandId === "old4"),
+    ).toBe(false);
+    await transport.drain();
+  });
+
+  it("closes transient outbox failures resumably and suppresses late frames", async () => {
+    const outbox = vi.fn().mockResolvedValue([]);
+    const h = harness({ outbox, handle: vi.fn().mockResolvedValue([]) });
+    const { active, sent, peer, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    const pending = Promise.withResolvers<(typeof stop)[]>();
+    outbox.mockReturnValueOnce(pending.promise);
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect(peer.close).toHaveBeenCalledWith(1012, "UNAVAILABLE");
+    pending.resolve([stop]);
+    await transport.idle();
+    expect(sent.some((message) => message.type === "stop")).toBe(false);
+    const replacement = await connect(h, transport);
+    replacement.active.receive(hello(2));
+    await replacement.active.idle();
+    expect(replacement.active.isClosed()).toBe(false);
+    await transport.drain();
+  });
+
+  it("routes only authorized match controls and returns their schema-fixed acknowledgement", async () => {
+    const handle = vi.fn().mockResolvedValue([{ type: "ack", payload: { commandId: "message2" } }]);
+    const h = harness({ outbox: vi.fn().mockResolvedValue([]), handle });
+    const { active, sent, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    active.receive(frame("accept", 2, { commandId: "offer1" }, { matchId: "owned" }));
+    await active.idle();
+    expect(handle).toHaveBeenCalledWith(
+      expect.objectContaining({ machineId: "machine1" }),
+      expect.objectContaining({ type: "accept", matchId: "owned" }),
+    );
+    expect(sent.at(-1)).toMatchObject({ type: "ack", payload: { commandId: "message2" }, ack: 2 });
+    active.receive(frame("accept", 3, { commandId: "offer1" }, { matchId: "foreign" }));
+    await active.idle();
+    expect(handle).toHaveBeenCalledOnce();
+    expect(active.isClosed()).toBe(true);
+    await transport.drain();
+  });
+
+  it("rechecks current generation after a pending outbox read before sending", async () => {
+    let finish: ((value: (typeof stop)[]) => void) | undefined;
+    const h = harness({
+      outbox: vi.fn(
+        () =>
+          new Promise<(typeof stop)[]>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+      handle: vi.fn().mockResolvedValue([]),
+    });
+    const { active, sent, transport } = await connect(h);
+    active.receive(hello());
+    for (let i = 0; i < 20 && !finish; i++) await Promise.resolve();
+    expect(finish).toBeDefined();
+    h.live.set("Bearer secret", { ...h.identity, connectionGeneration: 2 });
+    finish?.([stop]);
+    await active.idle();
+    expect(sent.some((message) => message.type === "stop")).toBe(false);
+    expect(active.isClosed()).toBe(true);
+    await transport.drain();
+  });
+
+  it("bounds pending durable deliveries and closes on invalid stored payloads", async () => {
+    for (const deliveries of [
+      Array.from({ length: 33 }, () => stop),
+      [{ ...stop, payload: { commandId: "bad/id" } }],
+    ]) {
+      const h = harness({
+        outbox: vi.fn().mockResolvedValue(deliveries),
+        handle: vi.fn().mockResolvedValue([]),
+      });
+      const { active, sent, transport } = await connect(h);
+      active.receive(hello());
+      await active.idle();
+      expect(active.isClosed()).toBe(true);
+      expect(sent.some((message) => message.type === "stop")).toBe(false);
+      await transport.drain();
+    }
+  });
 });
 
 describe("runner transport simulation", () => {
@@ -314,7 +716,7 @@ describe("runner transport simulation", () => {
     if (kind === "subscriber") h.unavailable();
     active.receive(hello());
     await active.idle();
-    expect(peer.close).toHaveBeenCalledWith(4401, "UNAUTHORIZED");
+    expect(peer.close).toHaveBeenCalledWith(1012, "UNAVAILABLE");
     expect(peer.close).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining("private"),
@@ -330,9 +732,9 @@ describe("runner transport simulation", () => {
     first.active.receive(frame("heartbeat", 2, { nonce: "nonce" }));
     await vi.advanceTimersByTimeAsync(5001);
     await first.active.idle();
-    expect(first.peer.close).toHaveBeenCalledWith(4401, "UNAUTHORIZED");
+    expect(first.peer.close).toHaveBeenCalledWith(1012, "UNAVAILABLE");
     const second = await connect(h);
-    for (let i = 0; i < 9; i++) second.active.receive(hello(2));
+    for (let i = 0; i < 13; i++) second.active.receive(hello(2));
     expect(second.peer.close).toHaveBeenCalledWith(4400, "INVALID");
   });
 
@@ -513,6 +915,90 @@ describe("durable operating-limit transport", () => {
     expect(sent.at(-1)).toMatchObject({ type: "ack", payload: { commandId: command.commandId } });
     await transport.drain();
   });
+  it("keeps limit delivery independent from a full chess window and routes results exclusively", async () => {
+    const stops = Array.from({ length: 5 }, (_, index) => ({
+      type: "stop" as const,
+      matchId: "owned",
+      payload: { commandId: `chess${index}` },
+    }));
+    const handle = vi.fn().mockResolvedValue([]);
+    const h = harness({ outbox: vi.fn().mockResolvedValue(stops), handle });
+    const limits = backend();
+    const { active, sent, transport } = await connect(h, h.transport(limits));
+    active.receive(hello());
+    await active.idle();
+    expect(sent.filter((message) => message.type === "stop")).toHaveLength(4);
+    expect(sent.filter((message) => message.type === "limits")).toHaveLength(1);
+    vi.setSystemTime(Date.now() + 5000);
+    await active.tick();
+    expect(sent.filter((message) => message.type === "stop")).toHaveLength(4);
+    expect(sent.filter((message) => message.type === "limits")).toHaveLength(2);
+    active.receive(frame("limits-result", 2, result));
+    await active.idle();
+    expect(limits.result).toHaveBeenCalledOnce();
+    expect(handle).not.toHaveBeenCalled();
+    active.receive(frame("accept", 3, { commandId: "offer1" }, { matchId: "owned" }));
+    await active.idle();
+    expect(handle).toHaveBeenCalledOnce();
+    expect(limits.result).toHaveBeenCalledOnce();
+    await transport.drain();
+  });
+  it("admits two replies per command with concurrent liveness and limit traffic", async () => {
+    const blocked = Promise.withResolvers<void>();
+    const handle = vi.fn(async () => {
+      await blocked.promise;
+      return [];
+    });
+    const h = harness({ outbox: vi.fn().mockResolvedValue([]), handle });
+    const limits = backend();
+    const { active, peer, transport } = await connect(h, h.transport(limits));
+    active.receive(hello());
+    await active.idle();
+    for (let seq = 2; seq <= 9; seq++)
+      active.receive(frame("ack", seq, { commandId: `command${seq}` }));
+    active.receive(frame("heartbeat", 10, { nonce: "parallel-heartbeat" }));
+    active.receive(frame("limits-result", 11, result));
+    expect(peer.close).not.toHaveBeenCalled();
+    blocked.resolve();
+    await active.idle();
+    expect(handle).toHaveBeenCalledTimes(8);
+    expect(limits.result).toHaveBeenCalledOnce();
+    expect(peer.close).not.toHaveBeenCalled();
+    await transport.drain();
+  });
+  it("refuses limit results without a limit service without forwarding them to chess controls", async () => {
+    const handle = vi.fn().mockResolvedValue([]);
+    const h = harness({ outbox: vi.fn().mockResolvedValue([]), handle });
+    const { active, sent, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    active.receive(frame("limits-result", 2, result));
+    await active.idle();
+    expect(handle).not.toHaveBeenCalled();
+    expect(sent.at(-1)).toMatchObject({ type: "error", payload: { code: "UNSUPPORTED" } });
+    expect(active.isClosed()).toBe(false);
+    await transport.drain();
+  });
+  it.each([
+    new ORPCError("UNAUTHORIZED"),
+    new RunnerLimitsError("NOT_FOUND"),
+    new RunnerLimitsError("FORBIDDEN"),
+  ])("keeps typed limit authority denial terminal", async (error) => {
+    const h = harness();
+    const limits = backend();
+    limits.result.mockRejectedValue(error);
+    const { active, peer, sent, transport } = await connect(h, h.transport(limits));
+    active.receive(hello());
+    await active.idle();
+    active.receive(frame("limits-result", 2, result));
+    await active.idle();
+    expect(peer.close).toHaveBeenCalledWith(4401, "UNAUTHORIZED");
+    expect(sent.at(-1)).not.toMatchObject({
+      type: "ack",
+      payload: { commandId: result.commandId },
+    });
+    await transport.drain();
+  });
   it("never delivers pending commands after revocation or storage validation failure", async () => {
     const h = harness();
     const limits = backend();
@@ -535,7 +1021,53 @@ describe("durable operating-limit transport", () => {
     await active.idle();
     vi.setSystemTime(Date.now() + 5000);
     await active.tick();
-    expect(peer.close).toHaveBeenCalledWith(4401, "UNAUTHORIZED");
+    expect(peer.close).toHaveBeenCalledWith(1012, "UNAVAILABLE");
+    await transport.drain();
+  });
+});
+
+describe("scheduled runner transport work", () => {
+  it("joins a delayed outbox tick before advancing the heartbeat clock", async () => {
+    const h = harness();
+    const outbox = vi.fn(async () => []);
+    const transport = createRunnerTransport({
+      authority: h.authority,
+      leases: h.store,
+      isAvailable: () => true,
+      now: Date.now,
+      controls: { outbox, handle: async () => [] },
+    });
+    const { active, peer, sent } = await connect(h, transport);
+    active.receive(hello());
+    await active.idle();
+    await transport.idle();
+    let finish: (() => void) | undefined;
+    outbox.mockImplementationOnce(
+      () =>
+        new Promise<never[]>((resolve) => {
+          finish = () => resolve([]);
+        }),
+    );
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(finish).toBeTypeOf("function");
+    let joined = false;
+    const joining = transport.idle().then(() => {
+      joined = true;
+    });
+    await Promise.resolve();
+    expect(joined).toBe(false);
+    finish?.();
+    await joining;
+    for (const step of [5000, 5000, 5000, 4999]) {
+      await vi.advanceTimersByTimeAsync(step);
+      await transport.idle();
+    }
+    expect(peer.ping).not.toHaveBeenCalled();
+    expect(peer.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await transport.idle();
+    expect(peer.ping).toHaveBeenCalledOnce();
+    expect(sent.at(-1)).toMatchObject({ type: "heartbeat" });
     await transport.drain();
   });
 });

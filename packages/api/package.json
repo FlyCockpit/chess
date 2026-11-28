@@ -31,6 +31,9 @@
     "./lib/account-export": {
       "default": "./src/lib/account-export.ts"
     },
+    "./lib/chess-runner": {
+      "default": "./src/lib/chess-runner.ts"
+    },
     "./lib/build-commit": {
       "default": "./src/lib/build-commit.ts"
     },
