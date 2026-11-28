@@ -331,7 +331,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
               )}
               {detail.archive.source === "hosted" && humanTurn.humanSide && (
                 <HostedHumanPlay
-                  key={detail.archive.id}
+                  key={`play:${detail.archive.id}`}
                   match={detail.archive}
                   controls={humanTurn}
                   queued={detail.status === "queued"}
@@ -341,7 +341,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                 />
               )}
               <MatchReplay
-                key={detail.archive.id}
+                key={`replay:${detail.archive.id}`}
                 match={detail.archive}
                 live={detail.archive.status === "running"}
                 spectator={{ evaluations: detail.spectatorEvaluations }}
