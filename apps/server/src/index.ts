@@ -34,6 +34,7 @@ import { ACCOUNT_EXPORT_PATH, mountAccountExportRoutes } from "./account-export-
 import { apiReferenceAdminGate } from "./api-reference-admin-gate.js";
 import { betterAuthAdminGate } from "./better-auth-admin-gate.js";
 import { readBuildCommit } from "./build-commit.js";
+import { mountCacheControl } from "./cache-control.js";
 import { mountCliRoutes } from "./cli-routes.js";
 import { resolveClientIp } from "./client-ip.js";
 import { CORS_ALLOW_HEADERS, CORS_EXPOSE_HEADERS } from "./cors-headers.js";
@@ -127,6 +128,7 @@ type AppVariables = {
 };
 
 const app = new Hono<{ Variables: AppVariables }>();
+mountCacheControl(app);
 
 // Security headers apply to every response. Browser connections use the app
 // origin and, when configured, the explicit frontend origin.

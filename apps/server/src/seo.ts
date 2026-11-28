@@ -1,6 +1,7 @@
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES } from "@cockpit-chess/config/locales";
 import { env, resolveAppName } from "@cockpit-chess/env/server";
 import type { Env, Hono } from "hono";
+import { PUBLIC_FILE_CACHE_CONTROL } from "./cache-control.js";
 
 /**
  * SEO / discoverability endpoints: `/robots.txt`, `/sitemap.xml`, `/llms.txt`.
@@ -126,21 +127,21 @@ export function registerSeoRoutes<E extends Env>(app: Hono<E>): Hono<E> {
   app.get("/robots.txt", (c) =>
     c.text(renderRobots(baseUrl()), 200, {
       "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": PUBLIC_FILE_CACHE_CONTROL,
     }),
   );
 
   app.get("/sitemap.xml", (c) =>
     c.body(renderSitemap(baseUrl()), 200, {
       "Content-Type": "application/xml; charset=utf-8",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": PUBLIC_FILE_CACHE_CONTROL,
     }),
   );
 
   app.get("/llms.txt", (c) =>
     c.text(renderLlms(baseUrl()), 200, {
       "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": PUBLIC_FILE_CACHE_CONTROL,
     }),
   );
 

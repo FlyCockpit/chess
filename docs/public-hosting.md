@@ -418,12 +418,29 @@ redispatch uncertain inference. Password reset, revoke and deletion fence
 immediately without granting reconnect grace. Preserve the dedicated pre-auth
 canonical-IP and post-auth machine connection/action budgets.
 
-At Cloudflare bypass cache for HTML, localized pages, `/api/*`, `/rpc/*`, auth,
+The origin enforces `Cache-Control: private, no-store` for every HTML document
+(anonymous and signed-in, including internal SSR cache hits), `/api` and `/rpc`
+responses, `/ready`, `/health`, `version.json`, redirects and errors. Responses
+carrying `Set-Cookie` are always private/no-store, even on a static URL. Stricter
+route directives such as `no-cache` and `max-age=0` are retained. The bounded
+anonymous SSR cache remains internal to the server; its HTTP responses cannot
+be stored by browsers or shared caches.
+
+Successful content-fingerprinted `/assets/*` files retain
+`public, max-age=31536000, immutable`. Non-fingerprinted public files, including
+`robots.txt`, `sitemap.xml`, `llms.txt`, the Stockfish source archive and adjacent
+licence/checksum files, use `public, max-age=300, must-revalidate`: five minutes
+allows shared delivery while bounding deploy staleness; stale copies must be
+revalidated rather than served during an origin outage. Missing assets are
+uncached 404s. `index.html` and `version.json` are never cached.
+
+Keep the Cloudflare bypass rule as a second layer of protection even though
+the origin now supplies these headers. Bypass cache for HTML, localized pages, `/api/*`, `/rpc/*`, auth,
 claim/control, export/download responses, `/ready`, `/health` and `version.json`.
 Keep query strings/Authorization/cookies out of cache keys by **not caching these
-responses at all**. Do not add a Cache Everything rule. Only content-hashed
-`/assets/*` and the public version-specific third-party downloads may use shared
-static caching. Respect origin `no-store`, MIME types and security headers;
+responses at all**. Do not add a Cache Everything rule. Only the public static
+files described above may use shared caching within their origin TTLs.
+Respect origin `no-store`, MIME types and security headers;
 never strip or replace the app's nonce/hash CSP or add unsafe directives.
 No browser engine, third-party script or extra CSP permission is needed.
 

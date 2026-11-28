@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
+import { mountCacheControl } from "./cache-control.js";
 
 vi.mock("@cockpit-chess/env/server", () => ({
   env: {
@@ -15,6 +16,19 @@ const { registerSeoRoutes } = await import("./seo.js");
 const protectedRouteFragments = ["/admin", "/dashboard", "/settings", "/portal"];
 
 describe("SEO routes", () => {
+  it.each(["/robots.txt", "/sitemap.xml", "/llms.txt"])(
+    "uses short public caching with revalidation for %s",
+    async (path) => {
+      const app = new Hono();
+      mountCacheControl(app);
+      registerSeoRoutes(app);
+      for (const method of ["GET", "HEAD"]) {
+        const res = await app.request(path, { method });
+        expect(res.status).toBe(200);
+        expect(res.headers.get("cache-control")).toBe("public, max-age=300, must-revalidate");
+      }
+    },
+  );
   it("discovers every localized legal page without exposing private utilities", async () => {
     const app = new Hono();
     registerSeoRoutes(app);

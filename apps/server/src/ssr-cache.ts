@@ -165,8 +165,8 @@ export async function handleSsrRequest({
     // Revisit the whitelist if the renderer starts emitting perf headers.
     const headers = new Headers({ "Content-Type": hit.contentType, "X-SSR-Cache": "hit" });
     if (hit.contentLanguage) headers.set("Content-Language", hit.contentLanguage);
-    // Deliberately no Cache-Control and no CSP here: the outer secureHeaders
-    // middleware applies the per-request CSP as this response flows back out.
+    // The outer cache-control middleware makes HTTP responses private/no-store;
+    // secureHeaders applies the per-request CSP as this response flows back out.
     return new Response(html, { status: 200, headers });
   }
 

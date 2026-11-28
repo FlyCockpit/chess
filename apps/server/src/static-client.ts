@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
 import type { Env, Hono } from "hono";
+import { PUBLIC_FILE_CACHE_CONTROL } from "./cache-control.js";
 
 /**
  * Production static file routes for the built web client (`apps/web/dist/client`).
@@ -7,24 +10,51 @@ import type { Env, Hono } from "hono";
  * falls through to it.
  */
 export function mountStaticClient<E extends Env>(app: Hono<E>, clientDir: string): void {
-  // Vite/rolldown content-hashes every file under /assets, so each URL is
-  // immutable: a code change produces a new filename, never a new body at the
-  // same URL. Safe to cache for a year. This middleware runs before the
-  // serveStatic below (sets the header, then defers to it).
-  // IMPORTANT: do NOT add long caching to the catch-all /* serveStatic or the
-  // SSR shell — index.html and version.json must stay revalidated so new
-  // deploys are picked up.
+  const serveClientFile = serveStatic<E>({ root: clientDir });
+  const immutableAssets = new Set<string>();
+  try {
+    const manifest: unknown = JSON.parse(
+      readFileSync(join(clientDir, ".vite/manifest.json"), "utf8"),
+    );
+    if (typeof manifest === "object" && manifest !== null && !Array.isArray(manifest)) {
+      for (const chunk of Object.values(manifest)) {
+        if (typeof chunk !== "object" || chunk === null) continue;
+        for (const field of ["file", "css", "assets"]) {
+          const value: unknown = Reflect.get(chunk, field);
+          const files: unknown[] = Array.isArray(value) ? value : [value];
+          for (const file of files) {
+            // Public-directory copies are not in Vite's emitted-file manifest.
+            // Only build-emitted, fingerprint-shaped URLs are immutable.
+            if (typeof file === "string" && /^assets\/[^?#]+-[\w-]{8,}\.[^./]+$/.test(file)) {
+              immutableAssets.add(`/${file}`);
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // An incomplete/missing manifest degrades safely to short public caching.
+  }
+  // Only successful content-fingerprinted assets get a year. Unfingerprinted
+  // files revalidate after five minutes; missing assets never get cached.
   app.use("/assets/*", async (c, next) => {
-    c.header("Cache-Control", "public, max-age=31536000, immutable");
-    await next();
+    const response = await serveClientFile(c, next);
+    if (response instanceof Response) {
+      response.headers.set(
+        "Cache-Control",
+        immutableAssets.has(c.req.path)
+          ? "public, max-age=31536000, immutable"
+          : PUBLIC_FILE_CACHE_CONTROL,
+      );
+      return response;
+    }
   });
-  app.use("/assets/*", serveStatic({ root: clientDir }));
   // A file under /assets that does not exist (a chunk from another build, a
   // typo, a probe) is a plain 404. Without this it would fall through to the
   // SSR catch-all, whose locale redirect answers 307 → /<lang>/assets/... and
   // then renders the app's 404 page as HTML — a module script loader then
-  // reports a MIME error instead of a missing file, and the year-long
-  // immutable header above would be attached to that redirect. Not cached:
+  // reports a MIME error instead of a missing file, and the
+  // redirect could be cached instead of the file. Not cached:
   // the file may exist on the next deploy.
   app.all("/assets/*", (c) => {
     c.header("Cache-Control", "no-store");
@@ -41,5 +71,19 @@ export function mountStaticClient<E extends Env>(app: Hono<E>, clientDir: string
   // the catch-all static handler can find it. See locale-modulepreload.ts.
   app.all("/.vite/*", (c) => c.text("Not Found", 404));
 
-  app.use("/*", serveStatic({ root: clientDir }));
+  app.use("/*", async (c, next) => {
+    const response = await serveClientFile(c, next);
+    if (response instanceof Response) {
+      // The shell and deploy version must never outlive their build. The
+      // outer middleware also protects HTML, API paths and Set-Cookie.
+      response.headers.set(
+        "Cache-Control",
+        /\/(?:index\.html|version\.json)$/.test(c.req.path) ||
+          response.headers.get("Content-Type")?.startsWith("text/html")
+          ? "private, no-store"
+          : PUBLIC_FILE_CACHE_CONTROL,
+      );
+      return response;
+    }
+  });
 }

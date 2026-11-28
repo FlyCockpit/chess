@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
   addTransportDrain: vi.fn<(drain: () => Promise<void>) => void>(),
   websocket: undefined as { server: unknown } | undefined,
   runnerBegin: vi.fn(),
+  shuttingDown: false,
 }));
 
 // Import the real app/handlers without loading dotenv, starting a listener,
@@ -88,6 +89,7 @@ vi.mock("./lifecycle.js", () => ({
   createServerLifecycle: () => ({
     start: async (listen: () => unknown) => listen(),
     addTransportDrain: state.addTransportDrain,
+    isShuttingDown: () => state.shuttingDown,
   }),
 }));
 vi.mock("./runner-ws-runtime.js", () => ({
@@ -183,6 +185,7 @@ beforeEach(() => {
   });
   state.authHandler.mockImplementation(() => new Response("auth ok"));
   state.order.length = 0;
+  state.shuttingDown = false;
   state.runnerBegin.mockResolvedValue({ claimId: "run", claimToken: "b".repeat(64) });
   state.withDeviceRedemptionLock.mockImplementation(
     async (request: Request, run: () => Promise<Response>) => {
@@ -224,6 +227,41 @@ it("awaits password pepper synchronization before listening", async () => {
   expect(pepperSyncCalls).toEqual([[prisma, state.passwordPepper]]);
   expect(listenerBeforePepperSyncCompleted).toBeUndefined();
   expect(state.fetch).toBeDefined();
+});
+
+it("enforces private/no-store on the real app's readiness failure and health responses", async () => {
+  const { default: prisma } = await import("@cockpit-chess/db");
+  vi.mocked(prisma.$queryRaw).mockRejectedValueOnce(new Error("disposable readiness outage"));
+  const unavailable = await request("/ready");
+  expect(unavailable.status).toBe(503);
+  expect(unavailable.headers.get("cache-control")).toBe("private, no-store");
+  state.shuttingDown = true;
+  const draining = await request("/ready");
+  expect(draining.status).toBe(503);
+  expect(draining.headers.get("cache-control")).toBe("private, no-store");
+  const healthy = await request("/health");
+  expect(healthy.status).toBe(200);
+  expect(healthy.headers.get("cache-control")).toBe("private, no-store");
+});
+
+it("protects the real app's early global body rejection and auth Set-Cookie", async () => {
+  const oversized = await request("/api/auth/get-session", {
+    method: "POST",
+    headers: { "content-length": String(11 * 1024 * 1024) },
+    body: "fixture",
+  });
+  expect(oversized.status).toBe(413);
+  expect(oversized.headers.get("cache-control")).toBe("private, no-store");
+  expect(state.authHandler).not.toHaveBeenCalled();
+  state.authHandler.mockImplementation(
+    () =>
+      new Response("auth ok", {
+        headers: { "Set-Cookie": "fixture=test; HttpOnly", "Cache-Control": "public, max-age=600" },
+      }),
+  );
+  const session = await request("/api/auth/get-session");
+  expect(session.status).toBe(200);
+  expect(session.headers.get("cache-control")).toBe("private, no-store");
 });
 
 it("registers the runner upgrade adapter and drain with the authoritative deletion fence", async () => {
