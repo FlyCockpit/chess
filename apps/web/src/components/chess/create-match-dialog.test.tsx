@@ -2,6 +2,8 @@ import type { MatchConfig } from "@cockpit-chess/chess";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
 import enErrors from "@cockpit-chess/locales/src/en-US/errors.json";
+import esChess from "@cockpit-chess/locales/src/es-MX/chess.json";
+import esCommon from "@cockpit-chess/locales/src/es-MX/common.json";
 import { useForm } from "@tanstack/react-form";
 import { createInstance } from "i18next";
 import type { ReactNode } from "react";
@@ -195,6 +197,7 @@ beforeAll(async () => {
   await i18n.init({
     lng: "en-US",
     resources: {
+      "es-MX": { chess: esChess, common: esCommon },
       "en-US": {
         chess: enChess,
         common: enCommon,
@@ -804,3 +807,27 @@ it("keeps loaded runner limits during a transient failure and masks them after a
   expect(hidden).not.toContain("My laptop");
   expect(hidden).not.toContain("Confirmed operating limits");
 });
+
+it.each(["en-US", "es-MX"])(
+  "uses terminal-policy typed model hints only for self-run matches in %s",
+  async (language) => {
+    const previous = catalog.state;
+    catalog.state = {
+      data: { models: [], stale: false },
+      isError: false,
+      refetch: () => undefined,
+    };
+    await i18n.changeLanguage(language);
+    try {
+      const local = renderRunner();
+      expect(local).toContain(i18n.t("create.runner.unknownModel"));
+      expect(local).not.toContain(i18n.t("create.unknownModel"));
+      const hosted = render();
+      expect(hosted).toContain(i18n.t("create.unknownModel"));
+      expect(hosted).not.toContain(i18n.t("create.runner.unknownModel"));
+    } finally {
+      catalog.state = previous;
+      await i18n.changeLanguage("en-US");
+    }
+  },
+);

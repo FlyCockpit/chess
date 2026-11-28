@@ -24,7 +24,7 @@ import {
   Pause,
   Play,
 } from "lucide-react";
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { memo, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMountEffect } from "@/hooks/use-mount-effect";
 import { useNow } from "@/hooks/use-now";
@@ -86,14 +86,15 @@ function RemarkButton({
 }: {
   remark: Remark;
   className: string;
-  onSelect: (remark: Remark) => void;
+  onSelect?: (remark: Remark) => void;
 }) {
   const { t } = useTranslation("chess");
   return (
     <button
       type="button"
       className={`${className} cc-remark-${remark.side}`}
-      onClick={() => onSelect(remark)}
+      disabled={!onSelect}
+      onClick={() => onSelect?.(remark)}
     >
       <span className="cc-remark-meta">
         <span aria-hidden="true" className={`cc-swatch cc-swatch-${remark.side}`} />
@@ -284,7 +285,7 @@ const TimelineRow = memo(function TimelineRow({
   index: number;
   current: boolean;
   last: boolean;
-  onSelect: (target: number | null) => void;
+  onSelect?: (target: number | null) => void;
 }) {
   const { t } = useTranslation("chess");
   return (
@@ -292,7 +293,8 @@ const TimelineRow = memo(function TimelineRow({
       <button
         type="button"
         className={`${current ? "cc-current-event" : ""} ${entry.type === "attempt" && !entry.accepted ? "cc-rejected-event" : ""}`}
-        onClick={() => onSelect(last ? null : index)}
+        disabled={!onSelect}
+        onClick={() => onSelect?.(last ? null : index)}
       >
         <span className="cc-event-num">{String(index + 1).padStart(2, "0")}</span>
         <span>
@@ -365,8 +367,14 @@ export function MatchReplay({
   spectator,
   beforeExport,
   executionSource,
+  board,
+  endingNotice,
 }: {
   match: MatchArchive;
+  /** Compose owner play with the shared details; history stays at the current position. */
+  board?: ReactNode;
+  /** Owner controls can explain a runner cancellation without inventing an operator stop. */
+  endingNotice?: string;
   anonymized?: boolean;
   live?: boolean;
   /**
@@ -440,7 +448,7 @@ export function MatchReplay({
   const [flipped, setFlipped] = useState(false);
   // With remarks on, the chat log is what most viewers come for; the move list is one tab away.
   const [tab, setTab] = useState<"moves" | "chat">(
-    match.config.rules.remarks === "off" ? "moves" : "chat",
+    board || match.config.rules.remarks === "off" ? "moves" : "chat",
   );
   const lastIndex = match.events.length - 1;
   const index = cursor === null ? lastIndex : Math.min(cursor, lastIndex);
@@ -537,7 +545,12 @@ export function MatchReplay({
   // The board catches up with `index` one animated step at a time (single steps and
   // autoplay; new events of a followed game play in order, the poll that ends it
   // included); everything else follows `index` at once.
-  const playback = useBoardPlayback(index, cursor === null, source, scrubbed);
+  const playback = useBoardPlayback(
+    index,
+    !board && cursor === null,
+    source,
+    scrubbed || Boolean(board),
+  );
   const finishPlayback = playback.finish;
   const selectEvent = useCallback(
     (target: number | null) => {
@@ -555,14 +568,16 @@ export function MatchReplay({
   // The bar shows only an evaluation of the very position on the board; the
   // graph cursor marks the latest evaluation reached so far.
   const evalPoint = pointForPosition(series, boardIndex, boardFrame.fen);
-  const graphPoint = graphCursor(graph, evalPoint, boardIndex);
+  // During play the graph is a history overview, without a cursor tied to the
+  // independently animated GameBoard. Replay keeps its position-bound cursor.
+  const graphPoint = board ? undefined : graphCursor(graph, evalPoint, boardIndex);
   const showEval = series.length > 0;
   const tone = match.config.rules.remarks;
   const commentary = tone !== "off";
   const movesHidden = commentary && tab !== "moves";
   const describeEnding = useCallback(
-    (ending: MatchEnding) => endingLabel(t, i18n.language, ending),
-    [t, i18n.language],
+    (ending: MatchEnding) => endingNotice ?? endingLabel(t, i18n.language, ending),
+    [t, i18n.language, endingNotice],
   );
   const structuredEnding = useMemo(() => matchEnding(match), [match]);
   const ending = describeEnding(structuredEnding);
@@ -631,136 +646,152 @@ export function MatchReplay({
   return (
     <div className="cc-replay-grid">
       <section className="cc-board-panel">
-        {/* The result, above the board where it is seen first; the final position stays visible. */}
-        {finished && (
-          <div className={`cc-result-banner cc-result-${outcome}`} role="status">
-            <strong>{endingHeadlineLabel(t, summary)}</strong>
-            {endingDetailLabel(t, i18n.language, structuredEnding) && (
-              <span>{endingDetailLabel(t, i18n.language, structuredEnding)}</span>
+        {board ? (
+          board
+        ) : (
+          <>
+            {/* The result, above the board where it is seen first; the final position stays visible. */}
+            {finished && (
+              <div className={`cc-result-banner cc-result-${outcome}`} role="status">
+                <strong>{endingNotice ?? endingHeadlineLabel(t, summary)}</strong>
+                {endingDetailLabel(t, i18n.language, structuredEnding) && (
+                  <span>{endingDetailLabel(t, i18n.language, structuredEnding)}</span>
+                )}
+                {sideStats.some(([, side]) => side.illegalAttempts > 0) && (
+                  <span className="cc-result-illegal">
+                    {t("replay.illegalBySide", {
+                      white: t("colors.w"),
+                      w: sideStats[0][1].illegalAttempts,
+                      black: t("colors.b"),
+                      b: sideStats[1][1].illegalAttempts,
+                    })}
+                  </span>
+                )}
+                {sideStats.some(([, side]) => side.truncatedAttempts > 0) && (
+                  <span className="cc-result-illegal">
+                    {t("replay.truncatedBySide", {
+                      white: t("colors.w"),
+                      w: sideStats[0][1].truncatedAttempts,
+                      black: t("colors.b"),
+                      b: sideStats[1][1].truncatedAttempts,
+                    })}
+                  </span>
+                )}
+                <span className="cc-result-score">{match.result}</span>
+              </div>
             )}
-            {sideStats.some(([, side]) => side.illegalAttempts > 0) && (
-              <span className="cc-result-illegal">
-                {t("replay.illegalBySide", {
-                  white: t("colors.w"),
-                  w: sideStats[0][1].illegalAttempts,
-                  black: t("colors.b"),
-                  b: sideStats[1][1].illegalAttempts,
-                })}
-              </span>
-            )}
-            {sideStats.some(([, side]) => side.truncatedAttempts > 0) && (
-              <span className="cc-result-illegal">
-                {t("replay.truncatedBySide", {
-                  white: t("colors.w"),
-                  w: sideStats[0][1].truncatedAttempts,
-                  black: t("colors.b"),
-                  b: sideStats[1][1].truncatedAttempts,
-                })}
-              </span>
-            )}
-            <span className="cc-result-score">{match.result}</span>
-          </div>
-        )}
-        {row(top, "top")}
-        <div className={showEval ? "cc-board-row" : undefined}>
-          {showEval && <EvalBar point={evalPoint} flipped={flipped} />}
-          <div className="cc-board-cell">
-            <ChessBoard
-              fen={boardFrame.fen}
-              flipped={flipped}
-              lastMove={boardFrame.lastMove}
-              lookup={boardOverlay}
-              motion={playback.motion}
-              motionMs={playback.ms}
-              onMotionEnd={playback.onMotionEnd}
-              illegal={rejected?.board ?? null}
-              // The board announces each rejected attempt as it plays (the Moves caption,
-              // which follows the newest event, leaves them to it).
-              announce
-            />
-          </div>
-        </div>
-        {row(bottom, "bottom")}
-        {/* The board's lookup in words, right under the board (whichever sidebar tab is
+            {row(top, "top")}
+            <div className={showEval ? "cc-board-row" : undefined}>
+              {showEval && <EvalBar point={evalPoint} flipped={flipped} />}
+              <div className="cc-board-cell">
+                <ChessBoard
+                  fen={boardFrame.fen}
+                  flipped={flipped}
+                  lastMove={boardFrame.lastMove}
+                  lookup={boardOverlay}
+                  motion={playback.motion}
+                  motionMs={playback.ms}
+                  onMotionEnd={playback.onMotionEnd}
+                  illegal={rejected?.board ?? null}
+                  // The board announces each rejected attempt as it plays (the Moves caption,
+                  // which follows the newest event, leaves them to it).
+                  announce
+                />
+              </div>
+            </div>
+            {row(bottom, "bottom")}
+            {/* The board's lookup in words, right under the board (whichever sidebar tab is
             open). Announced only while the Moves panel, whose caption announces it, is hidden. */}
-        {match.config.rules.legalMoves === "tool" && (
-          <LookupNote
-            lookup={lookup}
-            side={toolEvent?.side ?? frame.turn}
-            marks={!!overlay}
-            live={movesHidden}
-          />
+            {match.config.rules.legalMoves === "tool" && (
+              <LookupNote
+                lookup={lookup}
+                side={toolEvent?.side ?? frame.turn}
+                marks={!!overlay}
+                live={movesHidden}
+              />
+            )}
+            <div className="cc-replay-controls">
+              <button
+                type="button"
+                aria-label={t("replay.first")}
+                onClick={() => {
+                  setCursor(-1);
+                  setPlaying(false);
+                }}
+              >
+                <ChevronFirst size={18} />
+              </button>
+              <button
+                type="button"
+                aria-label={t("replay.previous")}
+                disabled={index < 0}
+                onClick={() => {
+                  seek(Math.max(-1, index - 1));
+                  setPlaying(false);
+                }}
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <button
+                type="button"
+                aria-label={t(playing ? "replay.pause" : "replay.play")}
+                onClick={() => {
+                  if (index >= lastIndex) setCursor(-1);
+                  setPlaying(!playing);
+                }}
+              >
+                {playing ? <Pause size={18} /> : <Play size={18} />}
+              </button>
+              <button
+                type="button"
+                aria-label={t("replay.next")}
+                disabled={index >= lastIndex}
+                onClick={() => {
+                  seek(index + 1);
+                  setPlaying(false);
+                }}
+              >
+                <ChevronRight size={18} />
+              </button>
+              <button
+                type="button"
+                aria-label={t("replay.latest")}
+                onClick={() => selectEvent(null)}
+              >
+                <ChevronLast size={18} />
+              </button>
+              <span className="cc-replay-counter">
+                {t("replay.event", { current: index + 1, total: match.events.length })}
+              </span>
+              <button
+                type="button"
+                aria-label={t("replay.flip")}
+                onClick={() => setFlipped(!flipped)}
+              >
+                <FlipVertical2 size={18} />
+              </button>
+            </div>
+            <input
+              className="cc-scrubber"
+              type="range"
+              min={-1}
+              max={Math.max(-1, lastIndex)}
+              value={index}
+              aria-label={t("replay.scrub")}
+              onChange={(e) => {
+                seek(Number(e.target.value), true);
+                setPlaying(false);
+              }}
+            />
+          </>
         )}
-        <div className="cc-replay-controls">
-          <button
-            type="button"
-            aria-label={t("replay.first")}
-            onClick={() => {
-              setCursor(-1);
-              setPlaying(false);
-            }}
-          >
-            <ChevronFirst size={18} />
-          </button>
-          <button
-            type="button"
-            aria-label={t("replay.previous")}
-            disabled={index < 0}
-            onClick={() => {
-              seek(Math.max(-1, index - 1));
-              setPlaying(false);
-            }}
-          >
-            <ChevronLeft size={18} />
-          </button>
-          <button
-            type="button"
-            aria-label={t(playing ? "replay.pause" : "replay.play")}
-            onClick={() => {
-              if (index >= lastIndex) setCursor(-1);
-              setPlaying(!playing);
-            }}
-          >
-            {playing ? <Pause size={18} /> : <Play size={18} />}
-          </button>
-          <button
-            type="button"
-            aria-label={t("replay.next")}
-            disabled={index >= lastIndex}
-            onClick={() => {
-              seek(index + 1);
-              setPlaying(false);
-            }}
-          >
-            <ChevronRight size={18} />
-          </button>
-          <button type="button" aria-label={t("replay.latest")} onClick={() => selectEvent(null)}>
-            <ChevronLast size={18} />
-          </button>
-          <span className="cc-replay-counter">
-            {t("replay.event", { current: index + 1, total: match.events.length })}
-          </span>
-          <button type="button" aria-label={t("replay.flip")} onClick={() => setFlipped(!flipped)}>
-            <FlipVertical2 size={18} />
-          </button>
-        </div>
-        <input
-          className="cc-scrubber"
-          type="range"
-          min={-1}
-          max={Math.max(-1, lastIndex)}
-          value={index}
-          aria-label={t("replay.scrub")}
-          onChange={(e) => {
-            seek(Number(e.target.value), true);
-            setPlaying(false);
-          }}
-        />
         {series.length > 0 ? (
           <EvalGraph
             series={graph}
             current={graphPoint}
-            onSelect={(target) => selectEvent(target >= lastIndex ? null : target)}
+            onSelect={
+              board ? undefined : (target) => selectEvent(target >= lastIndex ? null : target)
+            }
           />
         ) : (
           <p className="cc-muted cc-eval-note">
@@ -938,7 +969,7 @@ export function MatchReplay({
                     <RemarkButton
                       remark={remark}
                       className={`cc-remark ${remark === currentRemark ? "cc-current-remark" : ""}`}
-                      onSelect={selectRemark}
+                      onSelect={board ? undefined : selectRemark}
                     />
                   </li>
                 ))}
@@ -994,7 +1025,7 @@ export function MatchReplay({
                   index={i}
                   current={i === index}
                   last={i === lastIndex}
-                  onSelect={selectEvent}
+                  onSelect={board ? undefined : selectEvent}
                 />
               ))}
             </ol>

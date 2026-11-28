@@ -744,6 +744,7 @@ export function CreateMatchDialog({
                             onRetry={() => void retryCatalog()}
                             errors={field.state.meta.errors}
                             needsTools={needsTools}
+                            typedHint={runner ? t("create.runner.unknownModel") : undefined}
                           />
                         )
                       }

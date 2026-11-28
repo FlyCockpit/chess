@@ -52,7 +52,7 @@ export function EvalGraph({
 }: {
   series: readonly EvalPoint[];
   current: EvalPoint | undefined;
-  onSelect: (index: number) => void;
+  onSelect?: (index: number) => void;
 }) {
   const { t } = useTranslation("chess");
   if (series.length === 0) return null;
@@ -65,7 +65,11 @@ export function EvalGraph({
   const position = current ? series.indexOf(current) : -1;
   const selected = series[Math.max(0, position)];
   return (
-    <div className="cc-eval-graph">
+    <div
+      className="cc-eval-graph"
+      role={!onSelect ? "img" : undefined}
+      aria-label={!onSelect ? t("replay.evalGraph") : undefined}
+    >
       <svg viewBox={`0 0 ${width} 100`} preserveAspectRatio="none" aria-hidden="true">
         <rect x="0" y="0" width={width} height="100" className="cc-eval-graph-black" />
         <polygon points={area} className="cc-eval-graph-white" />
@@ -84,34 +88,36 @@ export function EvalGraph({
           </>
         )}
       </svg>
-      <input
-        type="range"
-        min={0}
-        max={series.length - 1}
-        step={1}
-        value={Math.max(0, position)}
-        aria-label={t("replay.evalGraph")}
-        aria-valuetext={
-          selected
-            ? t("replay.evalGraphPoint", { move: selected.move, score: scoreText(selected, t) })
-            : undefined
-        }
-        onChange={(event) => {
-          const point = series[Number(event.target.value)];
-          if (point) onSelect(point.index);
-        }}
-        // A click on the point the range already holds (or on a one-point graph)
-        // changes no value, so clicks and Enter select explicitly as well.
-        onClick={(event) => {
-          const point = series[Number(event.currentTarget.value)];
-          if (point) onSelect(point.index);
-        }}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter") return;
-          const point = series[Number(event.currentTarget.value)];
-          if (point) onSelect(point.index);
-        }}
-      />
+      {onSelect && (
+        <input
+          type="range"
+          min={0}
+          max={series.length - 1}
+          step={1}
+          value={Math.max(0, position)}
+          aria-label={t("replay.evalGraph")}
+          aria-valuetext={
+            selected
+              ? t("replay.evalGraphPoint", { move: selected.move, score: scoreText(selected, t) })
+              : undefined
+          }
+          onChange={(event) => {
+            const point = series[Number(event.target.value)];
+            if (point) onSelect?.(point.index);
+          }}
+          // A click on the point the range already holds (or on a one-point graph)
+          // changes no value, so clicks and Enter select explicitly as well.
+          onClick={(event) => {
+            const point = series[Number(event.currentTarget.value)];
+            if (point) onSelect?.(point.index);
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            const point = series[Number(event.currentTarget.value)];
+            if (point) onSelect?.(point.index);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -1,6 +1,14 @@
-import { beginHostedTurn, createMatch } from "@cockpit-chess/chess";
+import {
+  beginHostedTurn,
+  boardAt,
+  createMatch,
+  finishMatch,
+  submitMove,
+} from "@cockpit-chess/chess";
+import { gamePositions } from "@cockpit-chess/chess/spectator";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
+import esChess from "@cockpit-chess/locales/src/es-MX/chess.json";
 import { createInstance } from "i18next";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -8,8 +16,10 @@ import { I18nextProvider } from "react-i18next";
 import { beforeAll, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
+  realBoards: false,
   moveDenied: false,
   runnerDenied: false,
+  runnerState: undefined as string | undefined,
   executionSource: undefined as string | undefined,
   humanBlocked: false,
   humanPhase: undefined as "pending" | "uncertain" | undefined,
@@ -78,10 +88,26 @@ vi.mock("@/utils/orpc", () => ({
 vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => fixture.auth }));
 vi.mock("@/hooks/use-document-admits", () => ({ useDocumentAdmits: () => fixture.admitted }));
 vi.mock("@/hooks/use-runner-controls", () => ({
-  useRunnerControls: ({ enabled }: { enabled: boolean }) => {
+  useRunnerControls: ({
+    enabled,
+    match,
+  }: {
+    enabled: boolean;
+    match?: { config: { white: { protocol: string }; black: { protocol: string } } };
+  }) => {
     fixture.enabled.push(enabled);
     return {
-      state: undefined,
+      state: fixture.runnerState ? { state: fixture.runnerState, status: "stopped" } : undefined,
+      humanSide:
+        match?.config.white.protocol === "human"
+          ? "w"
+          : match?.config.black.protocol === "human"
+            ? "b"
+            : undefined,
+      disabled: !enabled,
+      playable: enabled,
+      submit: vi.fn(),
+      stop: vi.fn(),
       query: {},
       accessDenied: fixture.runnerDenied,
       online: true,
@@ -116,21 +142,34 @@ vi.mock("@/hooks/use-hosted-human-turn", () => ({
     };
   },
 }));
-vi.mock("./game-board", () => ({
-  GameBoard: ({ disabled, flipped }: { disabled: boolean; flipped: boolean }) => (
-    <div data-play-board data-disabled={String(disabled)} data-flipped={String(flipped)} />
-  ),
-}));
+vi.mock("./game-board", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./game-board")>();
+  return {
+    GameBoard: (props: Parameters<typeof real.GameBoard>[0]) =>
+      fixture.realBoards ? (
+        <real.GameBoard {...props} />
+      ) : (
+        <div
+          data-play-board
+          data-disabled={String(props.disabled)}
+          data-flipped={String(props.flipped)}
+        />
+      ),
+  };
+});
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ to, children }: { to: string; children: ReactNode }) => <a data-to={to}>{children}</a>,
 }));
 vi.mock("@/hooks/use-entity-mutation", () => ({
   useEntityMutation: () => ({ isPending: false, isError: false, mutate: vi.fn() }),
 }));
-vi.mock("react", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("react")>()),
-  useState: (initial: unknown) => [initial === "" ? "selected" : initial, vi.fn()],
-}));
+vi.mock("react", async (importOriginal) => {
+  const real = await importOriginal<typeof import("react")>();
+  return {
+    ...real,
+    useState: (initial: unknown) => real.useState(initial === "" ? "selected" : initial),
+  };
+});
 vi.mock("./create-match-dialog", () => ({
   CreateMatchDialog: ({
     billingOptions,
@@ -150,18 +189,22 @@ vi.mock("./create-match-dialog", () => ({
     />
   ),
 }));
-vi.mock("./replay", () => ({
-  MatchReplay: ({
-    match,
-    executionSource,
-  }: {
-    match: { config: { title: string } };
-    executionSource?: string;
-  }) => {
-    fixture.executionSource = executionSource;
-    return <div>{match.config.title}</div>;
-  },
-}));
+vi.mock("./replay", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./replay")>();
+  return {
+    MatchReplay: (props: Parameters<typeof real.MatchReplay>[0]) => {
+      fixture.executionSource = props.executionSource;
+      return fixture.realBoards ? (
+        <real.MatchReplay {...props} />
+      ) : (
+        <div>
+          {props.match.config.title}
+          {props.board}
+        </div>
+      );
+    },
+  };
+});
 
 import { Studio } from "./studio";
 
@@ -169,7 +212,10 @@ const i18n = createInstance();
 beforeAll(async () => {
   await i18n.init({
     lng: "en-US",
-    resources: { "en-US": { chess: enChess, common: enCommon } },
+    resources: {
+      "en-US": { chess: enChess, common: enCommon },
+      "es-MX": { chess: esChess, common: enCommon },
+    },
     defaultNS: "chess",
     react: { useSuspense: false },
   });
@@ -731,3 +777,157 @@ it("hides an own runner preview on authoritative control denial and offers runne
     fixture.runnerDenied = false;
   }
 });
+
+it.each(["en-US", "es-MX"])(
+  "renders one real board with moves, evaluations and exports through hosted/runner human termination in %s",
+  async (language) => {
+    const previous = fixture.detail;
+    fixture.realBoards = true;
+    await i18n.changeLanguage(language);
+    try {
+      const human = { name: "Human", model: "human", protocol: "human" as const };
+      const model = { name: "Model", model: "test/model", protocol: "openai-chat" as const };
+      for (const source of ["hosted", "runner"] as const) {
+        for (const humanSide of ["white", "black"] as const) {
+          const archive = createMatch(
+            {
+              title: `${source} human game`,
+              white: humanSide === "white" ? human : model,
+              black: humanSide === "black" ? human : model,
+              rules: { remarks: "commentary" },
+            },
+            source === "hosted" ? "hosted" : "local",
+          );
+          submitMove(archive, boardAt(archive), "e2e4");
+          beginHostedTurn(archive);
+          const spectatorEvaluations = Object.fromEntries(
+            gamePositions(archive).map((fen, ply) => [
+              String(ply),
+              {
+                engine: "stockfish-19-lite-single",
+                fen,
+                depth: 10,
+                nodes: 10000,
+                cp: 45,
+                mate: null,
+                bestMove: null,
+              },
+            ]),
+          );
+          const data = {
+            archive,
+            credentialSource: source === "runner" ? "runner-local" : "operator",
+            published: false,
+            queuePosition: null,
+            status: "running",
+            spectatorEvaluations,
+          };
+          fixture.detail = {
+            ...previous,
+            data,
+            isPending: false,
+            isError: false,
+            error: undefined,
+          };
+          const html = render();
+          expect(html.match(/class="cc-board(?: cc-playable-board)? ?"/g)).toHaveLength(1);
+          expect(html.match(/class="cc-square /g)).toHaveLength(64);
+          expect(html).toContain(`aria-label="${i18n.t("human.playTitle")}"`);
+          expect(html).toContain(i18n.t("human.moveLabel"));
+          expect(html).toContain('class="cc-timeline"');
+          expect(html).toContain('id="' + archive.id + '-panel-moves"');
+          expect(html).not.toContain(
+            `id="${archive.id}-panel-moves" aria-labelledby="${archive.id}-tab-moves" hidden`,
+          );
+          expect(html).toContain("e4");
+          expect(html).toContain('class="cc-eval-graph"');
+          expect(html).not.toContain("cc-eval-bar");
+          expect(html).not.toContain("cc-eval-graph-cursor");
+          expect(html).not.toContain('type="range"');
+          expect(html).toContain(`role="img" aria-label="${i18n.t("replay.evalGraph")}"`);
+          expect(html).toContain(i18n.t("replay.json"));
+          expect(html).toContain(i18n.t("replay.pgn"));
+          expect(html).not.toContain('class="cc-replay-controls"');
+          expect(html).not.toContain('class="cc-scrubber"');
+          for (const status of ["stopped", "error", "completed"] as const) {
+            const terminal = structuredClone(archive);
+            finishMatch(
+              terminal,
+              status === "completed" ? "1-0" : "*",
+              status === "completed"
+                ? "resignation"
+                : status === "error"
+                  ? "provider-error"
+                  : "cancelled",
+              status,
+            );
+            fixture.detail.data = { ...data, archive: terminal, status };
+            const ended = render();
+            expect(ended.match(/class="cc-board(?: cc-playable-board)? ?"/g)).toHaveLength(1);
+            expect(ended.match(/class="cc-square /g)).toHaveLength(64);
+            expect(ended).not.toContain(`aria-label="${i18n.t("human.playTitle")}"`);
+            expect(ended).not.toContain(i18n.t("human.moveLabel"));
+            expect(ended).toContain('class="cc-replay-controls"');
+            expect(ended).toContain('class="cc-scrubber"');
+            expect(ended).toContain('class="cc-timeline"');
+            expect(ended).toContain('class="cc-eval-graph"');
+          }
+        }
+      }
+    } finally {
+      fixture.realBoards = false;
+      fixture.detail = previous;
+      await i18n.changeLanguage("en-US");
+    }
+  },
+);
+
+it.each(["en-US", "es-MX"])(
+  "explains a rejected runner offer and avoids operator-stop replay copy in %s",
+  async (language) => {
+    const previous = fixture.detail;
+    fixture.realBoards = true;
+    fixture.runnerState = "rejected";
+    await i18n.changeLanguage(language);
+    try {
+      const player = {
+        name: "Denied model",
+        model: "fixture/denied",
+        protocol: "openai-chat" as const,
+      };
+      const archive = createMatch(
+        { title: "Declined offer", white: player, black: player, rules: {} },
+        "local",
+      );
+      finishMatch(archive, "*", "cancelled", "stopped");
+      fixture.detail = {
+        ...previous,
+        data: {
+          archive,
+          status: "stopped",
+          credentialSource: "runner-local",
+          published: false,
+          queuePosition: null,
+        },
+        isPending: false,
+        isError: false,
+        error: undefined,
+      };
+      const html = render();
+      expect(html.match(/class="cc-board(?: cc-playable-board)? ?"/g)).toHaveLength(1);
+      expect(html.match(/class="cc-square /g)).toHaveLength(64);
+      expect(html).toContain(i18n.t("runner.states.rejected"));
+      expect(html).toContain(i18n.t("runner.declinedHelp"));
+      expect(html).not.toContain("runner.states.rejected");
+      expect(html).not.toContain(i18n.t("ending.cancelled"));
+      expect(html).toContain('class="cc-replay-controls"');
+      fixture.runnerState = undefined;
+      expect(render()).not.toContain(i18n.t("ending.cancelled"));
+    } finally {
+      fixture.runnerState = undefined;
+      fixture.realBoards = false;
+      fixture.detail = previous;
+      await i18n.changeLanguage("en-US");
+    }
+  },
+);

@@ -6,13 +6,15 @@ import {
   finishMatch,
   type MatchArchive,
   playHostedHumanTurn,
+  submitMove,
 } from "@cockpit-chess/chess";
+import { gamePositions } from "@cockpit-chess/chess/spectator";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
 import esChess from "@cockpit-chess/locales/src/es-MX/chess.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createInstance } from "i18next";
-import { act, type ReactNode } from "react";
+import { act, type ReactNode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
 import { expect, it, vi } from "vitest";
@@ -26,6 +28,7 @@ const fixture = vi.hoisted(() => ({
   runnerStart: vi.fn(),
   runnerStop: vi.fn(),
   hostedStop: vi.fn(),
+  videoMounts: 0,
 }));
 vi.mock("@/hooks/use-auth-session", () => ({
   useAuthSession: () => ({
@@ -72,7 +75,20 @@ vi.mock("@/utils/orpc", () => ({
             credentialSource: fixture.runners.has(input.slug) ? "runner-local" : "operator",
             queuePosition: null,
             published: false,
-            spectatorEvaluations: null,
+            spectatorEvaluations: Object.fromEntries(
+              gamePositions(fixture.archives.get(input.slug) as MatchArchive).map((fen, ply) => [
+                String(ply),
+                {
+                  engine: "stockfish-19-lite-single",
+                  fen,
+                  depth: 10,
+                  nodes: 10000,
+                  cp: ply * 100,
+                  mate: null,
+                  bestMove: null,
+                },
+              ]),
+            ),
           }),
         }),
       },
@@ -151,7 +167,12 @@ vi.mock("./chess-board", () => ({
   ),
 }));
 vi.mock("./hero-board", () => ({ HeroBoard: () => null }));
-vi.mock("./video/video-export-dialog", () => ({ VideoExportDialog: () => null }));
+vi.mock("./video/video-export-dialog", () => ({
+  VideoExportDialog: function VideoExportDialog() {
+    const [instance] = useState(() => ++fixture.videoMounts);
+    return <div data-video-export-instance={instance} />;
+  },
+}));
 
 import { ArenaPage } from "./arena-page";
 import { Studio } from "./studio";
@@ -325,7 +346,7 @@ function click(element: FakeElement | undefined) {
   props?.onClick?.();
 }
 
-it("keeps one owner surface and one read-only replay through polls, moves and tab changes", async () => {
+it("keeps one board through polls, human moves, termination and tab changes", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-11-27T12:00:00Z"));
   const doc = new FakeDocument();
@@ -466,7 +487,7 @@ it("keeps one owner surface and one read-only replay through polls, moves and ta
   const owners = () =>
     all().filter((node) => node.getAttribute("aria-label") === i18n.t("human.playTitle"));
   const boards = (kind: string) => all().filter((node) => node.getAttribute("data-board") === kind);
-  function counts(ownerCount = 1, replayCount = 1) {
+  function counts(ownerCount = 1, replayCount = 0) {
     expect(owners().length).toBe(ownerCount);
     expect(boards("owner").length).toBe(ownerCount);
     expect(boards("replay").length).toBe(replayCount);
@@ -493,7 +514,8 @@ it("keeps one owner surface and one read-only replay through polls, moves and ta
     await select("first");
     counts();
     const owner = owners()[0];
-    const replay = boards("replay")[0];
+    const playBoard = boards("owner")[0];
+    const exportDialog = all().find((node) => node.hasAttribute("data-video-export-instance"));
     // Polls return a new archive object. Tick the real useNow interval as well;
     // the selected archive ID stays the same throughout.
     for (let poll = 0; poll < 8; poll++) {
@@ -506,7 +528,7 @@ it("keeps one owner surface and one read-only replay through polls, moves and ta
       await flush();
       counts();
       expect(owners()[0] === owner).toBe(true);
-      expect(boards("replay")[0] === replay).toBe(true);
+      expect(boards("owner")[0] === playBoard).toBe(true);
     }
     await act(async () => click(boards("owner")[0]));
     await flush();
@@ -518,6 +540,25 @@ it("keeps one owner surface and one read-only replay through polls, moves and ta
     counts();
     expect(owners()[0] === owner).toBe(true);
     expect(container.textContent).toContain(enChess.human.modelTurn);
+    // One poll batches a rejected model attempt and a scored move. The playable
+    // board catches up independently; the live graph must not claim a position.
+    const firstArchive = fixture.archives.get("first") as MatchArchive;
+    submitMove(firstArchive, boardAt(firstArchive), "e7e4");
+    submitMove(firstArchive, boardAt(firstArchive), "e7e5");
+    firstArchive.turn = { type: "idle" };
+    beginHostedTurn(firstArchive);
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["inspect", "first"], exact: true });
+    });
+    await flush();
+    counts();
+    expect(all().some((node) => node.getAttribute("class") === "cc-eval-graph")).toBe(true);
+    expect(all().some((node) => node.getAttribute("class")?.includes("cc-eval-graph-cursor"))).toBe(
+      false,
+    );
+    expect(
+      all().some((node) => node.localName === "input" && node.getAttribute("type") === "range"),
+    ).toBe(false);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(20_000);
     });
@@ -527,15 +568,19 @@ it("keeps one owner surface and one read-only replay through polls, moves and ta
       await client.refetchQueries({ queryKey: ["inspect", "first"], exact: true });
     });
     await flush();
-    counts();
-    expect(container.textContent).toContain(enChess.human.finished);
-    expect(boards("owner")[0]?.hasAttribute("disabled")).toBe(true);
+    counts(0, 1);
+    expect(container.contains(owner ?? null)).toBe(false);
+    expect(container.contains(playBoard ?? null)).toBe(false);
+    expect(boards("replay")[0]?.getAttribute("data-fen")).toBe(boardAt(firstArchive).fen());
+    expect(
+      all().find((node) => node.hasAttribute("data-video-export-instance")) === exportDialog,
+    ).toBe(true);
 
     await select("second");
     counts();
     expect(owners()[0] === owner).toBe(false);
-    expect(boards("replay")[0] === replay).toBe(false);
-    expect(owner?.parentNode).toBeNull();
+    expect(boards("owner")[0] === playBoard).toBe(false);
+    expect(container.contains(owner ?? null)).toBe(false);
     const secondOwner = owners()[0];
     await act(async () => {
       await i18n.changeLanguage("es-MX");
@@ -545,7 +590,7 @@ it("keeps one owner surface and one read-only replay through polls, moves and ta
     expect(container.textContent).toContain(esChess.human.playTitle);
     await select("model");
     counts(0, 1);
-    expect(secondOwner?.parentNode).toBeNull();
+    expect(container.contains(secondOwner ?? null)).toBe(false);
     // Actual Studio controls with the real runner hook. Offered games must
     // stop through the runner API even before acceptance (followup07).
     const offeredCard = all().find(
@@ -617,6 +662,7 @@ it("keeps one owner surface and one read-only replay through polls, moves and ta
       expect.anything(),
     );
     expect(fixture.runners.get("runner")?.state).toBe("stopped");
+    counts(0, 1);
     expect(fixture.hostedStop).not.toHaveBeenCalled();
     await select("second");
     counts();

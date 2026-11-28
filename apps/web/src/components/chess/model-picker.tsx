@@ -64,6 +64,7 @@ export function ModelPicker({
   onRetry,
   errors,
   needsTools,
+  typedHint,
 }: {
   side: "w" | "b";
   value: string;
@@ -73,6 +74,7 @@ export function ModelPicker({
   onRetry: () => void;
   errors: readonly unknown[];
   needsTools: boolean;
+  typedHint?: string;
 }) {
   const { t } = useTranslation("chess");
   const id = useId();
@@ -160,7 +162,7 @@ export function ModelPicker({
             </button>
           </span>
         ) : value.trim() ? (
-          t("create.unknownModel")
+          (typedHint ?? t("create.unknownModel"))
         ) : null}
       </div>
       {messages.length > 0 && (

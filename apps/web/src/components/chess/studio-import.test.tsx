@@ -14,7 +14,9 @@ vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
 }));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: { hostedEnabled: true } }),
+  useQuery: ({ surface }: { surface?: string }) => ({
+    data: surface === "info" ? { hostedEnabled: true } : undefined,
+  }),
   useInfiniteQuery: () => ({
     data: { pages: [{ items: [] }] },
     isPending: false,
@@ -28,7 +30,7 @@ vi.mock("@/utils/orpc", () => ({
     chess: {
       key: () => ["chess"],
       studio: { infiniteOptions: () => ({}) },
-      info: { queryOptions: () => ({}) },
+      info: { queryOptions: () => ({ surface: "info" }) },
       inspect: { queryOptions: () => ({}) },
       publish: { mutationOptions: () => ({}) },
       stop: { mutationOptions: () => ({}) },

@@ -149,6 +149,12 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
     (runner && runnerControls.accessDenied)
       ? undefined
       : detailData;
+  const liveHuman = Boolean(
+    detail &&
+      (detail.archive.source === "hosted" || runner) &&
+      playControls.humanSide &&
+      detail.archive.status === "running",
+  );
   const publish = useEntityMutation(orpc.chess.publish.mutationOptions(), {
     invalidateKey: orpc.chess.key(),
     successMessage: t("studio.success"),
@@ -356,25 +362,36 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                 </p>
               )}
               {runner && <RunnerMatchPanel controls={runnerControls} />}
-              {(detail.archive.source === "hosted" || runner) && playControls.humanSide && (
-                <HostedHumanPlay
-                  key={`play:${detail.archive.id}`}
-                  match={detail.archive}
-                  controls={playControls}
-                  queued={detail.status === "queued"}
-                  stale={detailError}
-                  stopPending={
-                    runner ? runnerControls.pending || runnerControls.uncertain : stop.isPending
-                  }
-                  onStop={runner ? runnerControls.stop : () => stop.mutate({ slug: selected })}
-                />
-              )}
               <MatchReplay
                 key={`replay:${detail.archive.id}`}
                 match={detail.archive}
                 executionSource={runner ? "runner" : detail.archive.source}
                 live={detail.archive.status === "running"}
                 spectator={{ evaluations: detail.spectatorEvaluations }}
+                endingNotice={
+                  runner && detail.archive.termination === "cancelled"
+                    ? t(
+                        runnerControls.state?.state === "rejected"
+                          ? "runner.states.rejected"
+                          : "runner.states.stopped",
+                      )
+                    : undefined
+                }
+                board={
+                  liveHuman ? (
+                    <HostedHumanPlay
+                      key={`play:${detail.archive.id}`}
+                      match={detail.archive}
+                      controls={playControls}
+                      queued={detail.status === "queued"}
+                      stale={detailError}
+                      stopPending={
+                        runner ? runnerControls.pending || runnerControls.uncertain : stop.isPending
+                      }
+                      onStop={runner ? runnerControls.stop : () => stop.mutate({ slug: selected })}
+                    />
+                  ) : undefined
+                }
               />
             </>
           )}
@@ -576,7 +593,7 @@ function RunnerMatchPanel({ controls }: { controls: ReturnType<typeof useRunnerC
               },
             )}
           </p>
-          {state.state === "declined" && <p>{t("runner.declinedHelp")}</p>}
+          {state.state === "rejected" && <p>{t("runner.declinedHelp")}</p>}
           {waiting && <p className="cc-muted">{t("runner.clocksContinue")}</p>}
           <div className="cc-hero-actions">
             {active && state.state === "accepted" && (
@@ -681,8 +698,8 @@ function HostedHumanPlay({
                       ? "yourTurn"
                       : "modelTurn";
   return (
-    <section className="cc-baseline-layout mb-8" aria-label={t("human.playTitle")}>
-      <div className="cc-board-panel">
+    <section className="min-w-0" aria-label={t("human.playTitle")}>
+      <div className="min-w-0">
         <div className="cc-player">
           <strong>{match.config[controls.humanSide === "b" ? "white" : "black"].name}</strong>
         </div>
@@ -700,7 +717,7 @@ function HostedHumanPlay({
           <span>{t(`colors.${controls.humanSide ?? "w"}`)}</span>
         </div>
       </div>
-      <div className="cc-lab-instructions min-w-0">
+      <div className="mt-4 min-w-0 px-3">
         <p className="cc-pill">{t("human.practice")}</p>
         <h3 className="mt-4">{t("human.playTitle")}</h3>
         <p role="status" aria-live="polite">
