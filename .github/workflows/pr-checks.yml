@@ -697,7 +697,7 @@ jobs:
         run: |
           set -euo pipefail
           changed="$(git diff --name-only HEAD^1 HEAD)"
-          if grep -qE '^(apps/cli/|apps/web/|packages/(chess|locales|ui)/|pnpm-workspace\.yaml$|packages/config/src/cli\.ts$|packages/api/src/routers/cli\.ts$|pnpm-lock\.yaml$|\.github/workflows/cli-(build|ci)\.yml$)' <<<"$changed"; then
+          if grep -qE '^(apps/cli/|apps/web/|packages/(chess|agent-runtime|locales|ui)/|pnpm-workspace\.yaml$|packages/config/src/cli\.ts$|packages/api/src/routers/cli\.ts$|pnpm-lock\.yaml$|THIRD-PARTY-LICENSES\.md$|docs/stockfish-distribution\.md$|\.github/workflows/cli-(build|ci)\.yml$)' <<<"$changed"; then
             echo "build=true" >> "$GITHUB_OUTPUT"
             echo "CLI-relevant files changed; building the binaries."
           else

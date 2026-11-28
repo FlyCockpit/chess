@@ -184,17 +184,50 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Additional notices in the Node npm artifact
+
+The `@flycockpit/chess` tarball includes full notices for bundled Node modules
+under `licenses/`, the local browser companion's bundled-code notices under
+`web/LICENSES.md`, and Roboto's complete OFL text. Some upstream npm tarballs
+omit their licence files. The build supplements these from the exact npm
+release's Git commit, verifies the installed package metadata and notice
+checksums, and records provenance beside the full texts:
+
+- `@cfworker/json-schema` 4.1.4: MIT, with its upstream third-party notices.
+- `js-tiktoken` 1.0.21: MIT (the text above).
+- `standardwebhooks` 1.1.1: npm metadata declares MIT, while the exact source
+  commit `b4d2c14fc5b4ccff3ff271e3b087dff812254c59` has an Apache-2.0 root
+  licence and no JavaScript-specific licence file. We retain that full upstream
+  text, the npm metadata and this discrepancy; we do not invent a missing MIT
+  grant or claim the upstream discrepancy has been resolved.
+
 ## Stockfish 19.0.1 — GPL-3.0
 
 Engine assistance runs the unmodified `stockfish-19-lite-single` JavaScript/WASM
-build as a separate UCI child process. No Stockfish binary is sent to public
-spectators' browsers. The installed npm package includes its full GPL text in
-`stockfish/Copying.txt`; retain that notice with redistributed engine binaries.
-Upstream port and build/source instructions: https://github.com/nmrugg/stockfish.js
-Exact npm release: https://www.npmjs.com/package/stockfish/v/19.0.1
-Upstream engine source: https://github.com/official-stockfish/Stockfish
+build as a separate UCI child process. No engine is loaded in website browsers.
+The `@flycockpit/chess` Node npm artifact conveys the engine on disk, its full
+GPL text (`stockfish/Copying.txt`), upstream copyright/authors, and the exact
+corresponding-source archive including the lite NNUE network and build scripts.
+The standalone Bun binaries contain no engine and reject engine-assisted games.
 
-The container images and CLI release binaries that include Stockfish must keep
-the engine's GPL notices and its corresponding source/build information (the
-links above). Cockpit Chess itself is licensed under AGPL-3.0-only (see
-[LICENSE](./LICENSE)), which is compatible with GPL-3.0 (AGPL-3.0 section 13).
+Stockfish copyright (C) 2004–2026, the Stockfish developers (see AUTHORS).
+Stockfish.js port by Nathan Rugg, maintained for Chess.com; upstream notices and
+copyright headers are retained. Powered by Stockfish; no endorsement implied.
+
+Exact port release: https://github.com/nmrugg/stockfish.js/releases/tag/v19.0.1
+at commit `0d5dd7944f88c817c07a26bc4fb1905d5f9c46d6`, which includes the
+Stockfish C++ source and Emscripten glue. Object/source/network checksums and
+build tools are pinned in `apps/cli/stockfish/manifest.json`.
+Corresponding source:
+https://chess.flycockpit.app/third-party/stockfish/stockfish-19.0.1-source.tar.gz
+(also inside every npm tarball at `stockfish/source/`). GPL text and authors:
+https://chess.flycockpit.app/third-party/stockfish/Copying.txt and
+https://chess.flycockpit.app/third-party/stockfish/AUTHORS.
+Keep these downloads available as long as the engine is distributed.
+
+See [build and distribution instructions](./docs/stockfish-distribution.md).
+Engine recipients retain all GPL rights, without additional website, account,
+or Terms of Service restrictions. Cockpit Chess is AGPL-3.0-only (see
+[LICENSE](./LICENSE)); its source is https://github.com/FlyCockpit/chess.
+AGPL section 13 permits combination with GPLv3 code without changing the
+engine's licence. Retain all source and notices when redistributing.

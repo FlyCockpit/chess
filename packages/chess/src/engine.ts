@@ -75,7 +75,7 @@ const spectatorCap = () => Math.max(1, pool.size - 1);
 /**
  * Sets the pool's size (the worker: CHESS_ENGINE_POOL_SIZE or the CPU count).
  * Shrinking stops idle processes beyond the new size; busy ones finish first.
- * `engineFile` replaces the Stockfish script (tests only).
+ * `engineFile` supplies the npm artifact's on-disk Stockfish script or a test fixture.
  */
 export function configureEnginePool(options: { size?: number; engineFile?: string }) {
   if (options.size !== undefined) {

@@ -1,4 +1,35 @@
-# cockpit-chess — companion CLI
+# @flycockpit/chess — local runner and companion CLI
+
+With **Node.js 24.13.1 or later** installed, start a runner with:
+
+```sh
+npx @flycockpit/chess
+```
+
+This command becomes available after the owner publishes the package. No
+global CLI, tsx or Bun installation is required. Set your OpenRouter key in
+your private terminal before starting, or configure a local model using
+`--provider-url` and `--allow-model`. The terminal prints a single-use claim
+link. Sign in and open it, then use **Settings → Command-line access** to
+create and control matches. Keep the terminal open. The key stays on your
+computer. Each new invocation creates a fresh claim; use `--resume <machineId>`
+only to resume a runner you already claimed.
+
+Operating defaults are $1 per match, $10 per rolling day and 2 concurrent
+matches. Local hard ceilings default to $25, $100 and 8. Browser limit raises
+require fresh verification and remain bounded by those ceilings. Set local
+ceilings with `--max-match-usd`, `--max-day-usd` and `--max-concurrency` before
+starting. Local checks use provider prices; an upstream price change after a
+check can exceed a limit once, then stops the runner. Set an OpenRouter key
+spend limit when you need a provider-enforced cap.
+
+The npm artifact includes the exact Stockfish lite single-thread engine,
+licence text and corresponding source. It starts Stockfish with Node from
+real files under npm's cache. See [engine distribution and build instructions](../../docs/stockfish-distribution.md).
+
+Node 22 is unsupported: on Windows its filesystem APIs report inconsistent
+device identities for the same lock file. The runner retains its strict lock
+check and fails closed on that runtime; update Node before starting.
 
 Run the local chess companion with a compiled binary (browser assets are embedded):
 
@@ -56,7 +87,8 @@ Stockfish runs as a separate process from a file on disk, which a compiled
 `cockpit-chess` binary does not contain. The compiled binary therefore rejects
 any match whose `rules.engineEvaluation` is not `"off"` (both the `engine_eval`
 tool and post-move evaluation) before it starts. Run engine-assisted matches
-from source (`pnpm --filter @cockpit-chess/cli dev …`).
+with the Node npm package (`npx @flycockpit/chess …`) or from source
+(`pnpm --filter @cockpit-chess/cli dev …`).
 
 The existing binary distribution pipeline is retained but remains unconfigured.
 Once releases and the canonical origin are configured, signed-in users can install
@@ -108,3 +140,30 @@ Environment variables: `COCKPIT_CHESS_SERVER` (server origin), `COCKPIT_CHESS_AP
 ## Development
 
 See [AGENTS.md](./AGENTS.md).
+
+## Building and inspecting the npm artifact
+
+Keep the internal workspace package `@cockpit-chess/cli` private. Build a
+separate, allowlisted publishable package with no workspace dependencies:
+
+```sh
+pnpm --filter @cockpit-chess/cli package:npm
+cd apps/cli/dist/npm
+npm pack --dry-run
+npm pack --ignore-scripts
+```
+
+From the repository root, run the isolated artifact test:
+
+```sh
+node apps/cli/scripts/test-package.mjs apps/cli/dist/npm/flycockpit-chess-1.0.0.tgz
+```
+
+The test installs only that tarball into an empty directory, with registry
+fallback blocked. It exercises the default runner with local pairing/model
+stubs and a real finite-node engine evaluation. CI repeats it on Linux, macOS
+and Windows at the supported Node floor and current build Node version.
+No real account or provider key is needed. The workflow uploads the tarball
+but never publishes it. The owner reviews the pack, verifies the public source
+download and publishes the staged package separately. Do not publish the
+private workspace or run npm publication as part of a check.

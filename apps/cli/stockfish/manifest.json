@@ -1,0 +1,27 @@
+{
+  "version": "19.0.1",
+  "engine": "stockfish-19-lite-single",
+  "upstream": "https://github.com/nmrugg/stockfish.js",
+  "tag": "v19.0.1",
+  "commit": "0d5dd7944f88c817c07a26bc4fb1905d5f9c46d6",
+  "npmIntegrity": "sha512-bTwsO4e9HAwPBKls1+szcfibmaWRNzTF20rQE/XPdB3LOSoT6XTZDr1zYwriwSRRFT5MkvqrglPmJrKEVXGnyQ==",
+  "files": {
+    "bin/stockfish-19-lite-single.js": "ccb130d7ff29408531c47d859a49f91d59d4f482d05a53eb1a3231a4f624c91a",
+    "bin/stockfish-19-lite-single.wasm": "ee4f115bdb2d32cadf96cada104a05b5ec257d7ad6f57582190b49bc71f096de",
+    "Copying.txt": "0b383d5a63da644f628d99c33976ea6487ed89aaa59f0b3257992deac1171e6b"
+  },
+  "source": {
+    "file": "stockfish-19.0.1-source.tar.gz",
+    "sha256": "f3de92f59596949123390c9f1dfe66dd4cbbaafe4b7faf20446edcd6d99cc2d1",
+    "url": "https://chess.flycockpit.app/third-party/stockfish/stockfish-19.0.1-source.tar.gz",
+    "commit": "0d5dd7944f88c817c07a26bc4fb1905d5f9c46d6",
+    "upstreamArchiveSha256": "e5289a920554bf0069a6601c228e81d957c00522bb31c4343588dc5d7d251879",
+    "network": {
+      "file": "src/nn-61e7af4bb97d.nnue",
+      "sha256": "61e7af4bb97d51eeeb25d322916f86513b5cd3a827ce189c98c6e31946f99e5b"
+    },
+    "emscripten": "6.0.9",
+    "terser": "5.51.2",
+    "build": "node build.js --single-threaded --lite --strict-em-check --no-split -f"
+  }
+}

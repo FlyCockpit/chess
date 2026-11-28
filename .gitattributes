@@ -1,2 +1,4 @@
 * text=auto eol=lf
 *.sh text eol=lf
+# Preserve the exact upstream GPL notice bytes recorded in the distribution manifest.
+apps/web/public/third-party/stockfish/Copying.txt -text
