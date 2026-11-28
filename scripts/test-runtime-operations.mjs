@@ -6,6 +6,7 @@
  * C1b gate: append --chess-human-only (durable human turns and worker release).
  * E3S gate: append --runner-limits-only (step-up proof and limit revision races).
  * E4a gate: append --chess-runner-only (durable runner controls and source fences).
+ * Operator spend gate: append --operator-funding-only (live admin authority, pool3).
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -2125,9 +2126,13 @@ async function main() {
         );
         queues.redisConnection.disconnect();
       }
-    } else if (["account-deletion", "account-deletion-pool3"].includes(process.argv[3])) {
+    } else if (
+      ["account-deletion", "account-deletion-pool3", "operator-funding"].includes(process.argv[3])
+    ) {
       try {
-        if (process.argv[3] === "account-deletion-pool3")
+        if (process.argv[3] === "operator-funding")
+          await (await import("./lib/operator-funding-check.mjs")).operatorFundingCheck();
+        else if (process.argv[3] === "account-deletion-pool3")
           await (await import("./lib/account-deletion-check.mjs")).accountDeletionPoolCheck();
         else {
           await (await import("./lib/account-deletion-check.mjs")).accountDeletionCheck();
@@ -2170,6 +2175,7 @@ async function main() {
       "--runner-limits-only",
       "--account-export-only",
       "--impersonation-only",
+      "--operator-funding-only",
     ].includes(process.argv[3]),
   );
   // Container names only. TEST_CONTAINER_PREFIX (shared with backup:test and
@@ -2349,6 +2355,18 @@ async function main() {
         },
       ],
       [
+        "operator-funding",
+        {
+          ...inviteEnv,
+          DATABASE_POOL_MAX: "3",
+          CHESS_HOSTED_ENABLED: "true",
+          CHESS_USER_MATCHES_ENABLED: "true",
+          OPENROUTER_API_KEY: "synthetic-fixture-only",
+          OPENROUTER_ORIGIN: "https://openrouter.example.test",
+          CHESS_PROVIDER_KEY_SECRET: "ab".repeat(32),
+        },
+      ],
+      [
         "chess-official",
         {
           ...inviteEnv,
@@ -2378,6 +2396,7 @@ async function main() {
       if (process.argv[3] === "--chess-moderation-only" && mode !== "chess-moderation") continue;
       if (process.argv[3] === "--chess-human-only" && mode !== "chess-human") continue;
       if (process.argv[3] === "--chess-runner-only" && mode !== "chess-runner") continue;
+      if (process.argv[3] === "--operator-funding-only" && mode !== "operator-funding") continue;
       if (process.argv[3] === "--runner-transport-only" && mode !== "runner-transport") continue;
       if (process.argv[3] === "--runner-claims-only" && mode !== "runner-claims") continue;
       if (process.argv[3] === "--account-export-only" && mode !== "account-export") continue;

@@ -333,6 +333,56 @@ describe.each<Protocol>(["openai-chat", "openai-responses", "anthropic"])(
       expect(guard.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
+    it.each([0, 1])(
+      "aborts asynchronous admission after %i allowed requests without retry or fallback sends",
+      async (allowed) => {
+        const controller = new AbortController();
+        const requests = captureHttp((index) => responseFor(protocol, index === 0));
+        const base = options(protocol);
+        const execute = vi.fn(() => ["e2e4"]);
+        const fallbackGuard = vi.fn(async (send: () => Promise<Response>) => send());
+        const dispatchGuard = vi.fn(async (send: () => Promise<Response>): Promise<Response> => {
+          // The hosted worker awaits its durable role admission, then aborts the
+          // same run before rethrowing a refusal into the native provider SDK.
+          await Promise.resolve();
+          if (dispatchGuard.mock.calls.length > allowed) {
+            controller.abort("chess:interrupted");
+            throw new Error("Operator billing requires an admin owner");
+          }
+          return send();
+        });
+        const result = await runAgentLoop({
+          ...base,
+          abortSignal: controller.signal,
+          model: { ...base.model, dataCollection: "deny", dispatchGuard },
+          fallbackModels: [
+            { ...base.model, model: "fallback-model", dispatchGuard: fallbackGuard },
+          ],
+          tools: [
+            {
+              name: "legal_moves",
+              description: "Get legal moves for one piece",
+              inputSchema: z.object({ piece: z.string() }),
+              maxResultChars: 1000,
+              execute,
+            },
+          ],
+        });
+        expect(result.stopReason).toBe("aborted");
+        expect(controller.signal.reason).toBe("chess:interrupted");
+        expect(requests).toHaveLength(allowed);
+        expect(dispatchGuard).toHaveBeenCalledTimes(allowed + 1);
+        expect(fallbackGuard).not.toHaveBeenCalled();
+        expect(execute).toHaveBeenCalledTimes(allowed);
+        expect(result.usage).toMatchObject({
+          inputTokens: allowed * 11,
+          outputTokens: allowed * 7,
+        });
+        for (const request of requests)
+          expect(request.body.provider).toMatchObject({ data_collection: "deny" });
+      },
+    );
+
     it("surfaces provider HTTP rejection instead of reporting a completed turn", async () => {
       const requests = captureHttp(
         () =>

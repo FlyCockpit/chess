@@ -11,7 +11,10 @@ import {
   loadOwnerOpenRouterKey,
   markOpenRouterKeyInvalid,
 } from "@cockpit-chess/api/lib/provider-key";
-import { dispatchForActiveOwner } from "@cockpit-chess/auth/account-deletion";
+import {
+  dispatchForActiveOwner,
+  OperatorFundingRevokedError,
+} from "@cockpit-chess/auth/account-deletion";
 import { isAccountDeletionPending } from "@cockpit-chess/auth/account-state";
 import { lockCliCredentials } from "@cockpit-chess/auth/device-redemption-lock";
 import { withLockSlot } from "@cockpit-chess/auth/lock-slots";
@@ -736,7 +739,23 @@ export async function handleChessRunJob(
           apiKey: key.apiKey,
           baseUrl: `${env.OPENROUTER_ORIGIN}/api/v1`,
           headers: attributionHeaders(),
-          dispatchGuard: (send) => dispatchForActiveOwner(ownerId, send),
+          dispatchGuard: async (send) => {
+            try {
+              return await dispatchForActiveOwner(
+                ownerId,
+                send,
+                row.credentialSource === "operator" ? "operator" : undefined,
+              );
+            } catch (error) {
+              if (error instanceof OperatorFundingRevokedError) {
+                // Runtime adapters may consume the error. Abort first so their
+                // retry/fallback and the game loop keep this unscored interruption.
+                abort();
+                console.info("[chess-run] Operator billing requires an admin owner", { matchId });
+              }
+              throw error;
+            }
+          },
           // The key-use lease, checked synchronously before every provider request.
           beforeDispatch: () => {
             controller.signal.throwIfAborted();

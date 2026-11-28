@@ -184,7 +184,11 @@ beforeEach(() => {
   db.chessMatch.findMany.mockResolvedValue([]);
   db.$executeRaw.mockResolvedValue(1);
   db.$queryRaw.mockResolvedValue([{ id: "match-id" }]);
-  db.user.findUnique.mockResolvedValue({ deletionRequestedAt: null, banned: false } as never);
+  db.user.findUnique.mockResolvedValue({
+    role: "admin",
+    deletionRequestedAt: null,
+    banned: false,
+  } as never);
   db.$transaction.mockImplementation(async (run) => {
     if (typeof run !== "function") return Promise.all(run);
     return run(db);
@@ -687,6 +691,56 @@ describe("durable chess worker", () => {
         termination: "interrupted",
       });
       expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+      env.CHESS_HOSTED_ENABLED = false;
+      env.OPENROUTER_API_KEY = undefined;
+    }
+  });
+  it("interrupts operator billing when the live owner is demoted during catalog IO", async () => {
+    env.CHESS_HOSTED_ENABLED = true;
+    env.OPENROUTER_API_KEY = "test-only";
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      db.user.findUnique.mockResolvedValue({
+        role: "user",
+        deletionRequestedAt: null,
+        banned: false,
+      } as never);
+      return Response.json({
+        data: [{ id: "vendor/model", pricing: { prompt: "0", completion: "0" } }],
+      });
+    });
+    const record = row();
+    record.archive = createMatch(
+      {
+        white: { name: "Model", model: "vendor/model", protocol: "openai-chat" },
+        black: player,
+        rules: { engineEvaluation: "off" },
+      },
+      "hosted",
+    );
+    db.chessMatch.findUnique.mockResolvedValue(record);
+    try {
+      expect(await handleChessRunJob({ data: { matchId: "match-id" } })).toMatchObject({
+        termination: "interrupted",
+        result: "*",
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(providerKey.load).not.toHaveBeenCalled();
+      expect(providerKey.markInvalid).not.toHaveBeenCalled();
+      expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: "error",
+            terminalCause: "interrupted",
+            runToken: null,
+          }),
+        }),
+      );
+      expect(console.info).toHaveBeenCalledWith(
+        "[chess-run] Operator billing requires an admin owner",
+        { matchId: "match-id" },
+      );
     } finally {
       fetch.mockRestore();
       env.CHESS_HOSTED_ENABLED = false;

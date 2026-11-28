@@ -1,7 +1,9 @@
 # Access matrix
 
 The server uses visitor, user, and admin roles with default-deny authorization.
-Only admins may spend the operator's inference funds or import drafts. Eligible hosted
+Only admins may spend the operator's inference funds or import drafts. Operator-funded
+hosted inference rechecks the owner's live admin role at every HTTP dispatch, ordered
+against role updates; demotion interrupts that funding without switching keys. Eligible hosted
 matches may be committed as official by their verified owner before acceptance.
 Signed-in users with a verified email may run hosted matches billed to their own
 connected OpenRouter key once the operator sets `CHESS_USER_MATCHES_ENABLED`

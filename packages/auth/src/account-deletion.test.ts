@@ -51,6 +51,79 @@ describe("durable owner authority", () => {
 });
 
 describe("actual provider dispatch fence", () => {
+  it("locks the live billing row before authorizing operator funding", async () => {
+    const order: string[] = [];
+    db.$executeRaw.mockImplementation(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      order.push(
+        sql.includes("FOR SHARE")
+          ? "billing-row"
+          : sql.includes("pg_advisory")
+            ? "credential"
+            : "timeout",
+      );
+      return 0;
+    });
+    db.user.findUnique.mockImplementation(async () => {
+      order.push("authority");
+      return { role: "user, Admin", deletionRequestedAt: null, banned: false };
+    });
+    await dispatchForActiveOwner(
+      "u1",
+      async () => {
+        order.push("request");
+        return new Response();
+      },
+      "operator",
+    );
+    expect(order).toEqual([
+      "timeout",
+      "credential",
+      "billing-row",
+      "authority",
+      "authority",
+      "request",
+    ]);
+  });
+
+  it.each([null, { role: null }, { role: "user" }, { role: "superadmin" }])(
+    "refuses operator HTTP dispatch without current admin authority",
+    async (user) => {
+      db.user.findUnique.mockResolvedValue(user);
+      const send = vi.fn(async () => new Response());
+      await expect(dispatchForActiveOwner("u1", send, "operator")).rejects.toThrow(
+        "Operator billing requires an admin owner",
+      );
+      expect(send).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { role: "admin", deletionRequestedAt: new Date() },
+    { role: "admin", banned: true, banExpires: null },
+  ])("does not let operator authority bypass deletion or ban", async (user) => {
+    db.user.findUnique.mockResolvedValue(user);
+    const send = vi.fn(async () => new Response());
+    await expect(dispatchForActiveOwner("u1", send, "operator")).rejects.toThrow(
+      "no longer active",
+    );
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("keeps ordinary active-owner requests independent of admin role", async () => {
+    db.user.findUnique.mockResolvedValue({
+      role: "user",
+      deletionRequestedAt: null,
+      banned: false,
+    });
+    const send = vi.fn(async () => new Response());
+    await dispatchForActiveOwner("u1", send);
+    expect(send).toHaveBeenCalledOnce();
+    expect(
+      db.$executeRaw.mock.calls.some(([strings]) => strings.join("?").includes("FOR SHARE")),
+    ).toBe(false);
+  });
+
   it("locks before reading durable authority and starts the request inside the transaction", async () => {
     const order: string[] = [];
     db.$executeRaw.mockImplementation(async (strings: TemplateStringsArray) => {
