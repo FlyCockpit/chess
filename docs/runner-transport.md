@@ -6,12 +6,14 @@ browser Origins, query parameters and WebSocket subprotocol credentials are
 refused. Companion sessions and API keys cannot authorize this connection.
 The browser continues to use protected cookie/CSRF RPC controls.
 
-E4a adds durable create/offer/accept/reject/stop/snapshot/ack control. It never
-dispatches model requests, writes moves or settles game results. The protected
-`chess.startRunner` control fails closed with `runner-gameplay-unavailable` until
-E4b supplies independent move legality and terminal handling. The current offer
-contract includes the bounded match configuration and its digest, pinned to the
-code-shipped prompt bundle; it contains no arbitrary instructions or local policy.
+Runner control persists create/offer/accept/reject/start/stop and streams legal moves,
+evaluations and board-bound terminal evidence. The protected `chess.startRunner`
+requires local acceptance and the current machine generation. `chess.moveRunner`
+authorizes a human move against the authoritative ply/FEN/revision and server deadline.
+Offers carry bounded current configuration and its digest, with the per-side cost
+budget capped to half the advertised combined operating/hard match ceiling. Original
+creation requests remain idempotent when limits later change. The local spend ledger
+remains the final authority; no key or local endpoint enters a command.
 
 Live upgrades use D2a's authoritative `isOwnerActive` predicate from
 `packages/auth/src/account-deletion.ts`. `RunnerOwnerActive` in
@@ -84,7 +86,8 @@ rechecks remain mandatory because a notification may be missed.
 `chess.createRunner`, `startRunner`, `stopRunner` and `runnerStatus` are protected
 cookie/CSRF browser controls. The helper rechecks a live verified,
 non-impersonated sign-in, forced-2FA policy and pending-deletion fence under the
-credential lock. A creation key binds its owner, machine and configuration digest
+credential lock. Authenticated current-generation polling renews machine contact even with no games,
+with durable writes coalesced to15s; creation requires contact within60s. A creation key binds its owner, machine and configuration digest
 to one match; retries return that match. Creation is limited to 16 active matches
 per machine and 64 per owner. Mutating controls share their own fail-closed 120/min
 owner budget. Source and billing are server-assigned `runner` / `runner-local`;
@@ -94,7 +97,11 @@ the existing strict archive has source `local`. Runner matches are never officia
 expiry and acknowledgement/cancellation timestamps before a Redis
 `chess_runner_command` ID-only wake hint is published. A failed/lost hint cannot
 lose the command: hello/reconnect and five-second live polling read at most 32
-pending commands. The envelope reuses the durable command ID with a fresh socket
+eligible commands. Each of at most16active matches contributes one durable command
+frontier: offer, then any pending human echo, then the latest resume, then start only
+after that resume has been acknowledged. Resume proof must follow the latest offer
+and match the current accepted ply/FEN. This dependency selection precedes machine-wide
+pagination; timestamps and random IDs never establish execution order. The envelope reuses the durable command ID with a fresh socket
 sequence. A semantic offer acceptance is distinct from a transport ACK.
 `RunnerEvent` stores a bounded exact message/payload receipt; reusing an ID with
 another match or payload is refused. Per-match receipt and retained-command caps
@@ -102,10 +109,14 @@ are 4096, with one reserved terminal stop command so an exhausted journal cannot
 prevent owner cancellation. Acknowledgements cannot authorize a start or change
 accepted board state.
 Each socket delivers at most four unacknowledged match commands, once per socket,
-with room for heartbeat and acknowledgement traffic. Successful semantic replies
+with room for heartbeat and acknowledgement traffic. Controls return only inbound
+ACKs; every durable command flows through the same outbox dependency rules. A start
+is ACKed only after the CLI persists ready/uncertain state, so waiting humans and
+in-flight models do not monopolize delivery credit. Only the human board echo, never
+a generic command ACK, releases a forwarded human input. Successful semantic replies
 or durable cancellation free delivery slots; reconnect starts a fresh window with
-the same durable IDs. Polls query those outstanding IDs independently before the
-bounded FIFO page, so page truncation cannot free a live command. Polls cannot
+the same durable IDs. Polls resolve active match frontiers and query outstanding terminal IDs independently
+before the global page, so truncation cannot free an eligible live command. Polls cannot
 replay a stale pre-acknowledgement snapshot.
 
 Live polling binds the current generation, records contact and renews the 120s
@@ -114,11 +125,29 @@ offer with the original validated configuration so the CLI can restore its
 journal and bind the new connection. Accepting a fresh offer creates one durable
 resume with the authoritative accepted sequence/FEN/ply. The CLI persists that
 resume, acknowledges it, and returns a snapshot. Snapshots must match server state
-and never create another resume or replace accepted moves. Stop commits a terminal
-state, cancels earlier outbox
-commands and clears generation/grace. Expired offers/grace are terminalized on
-the next authenticated recovery poll, which cannot revive them. E4b supplies the
-offline runner sweep and final reset/revoke/delete/gameplay settlement.
+and never create another resume or replace accepted moves. A pending human move is
+redelivered before the newer resume. Known durable results may replay against the
+exact accepted prefix; an uncertain provider dispatch is never requested again.
+
+Hosted model claim columns remain idle for runner turns; the current canonical archive
+holds model start/deadline, while machine/generation/outbox fence local execution.
+Human parked turn columns remain mirrored. No hosted worker claim is synthesized.
+
+The server applies legal model moves with shared chess rules and server elapsed time,
+then commits a resume followed by the next single-turn start. Human input commits
+before forwarding; only its matching echo schedules another turn. Every terminal
+claim pins accepted ply/FEN. Checkmate/draw derive from the board, illegal forfeits
+replay bounded rejected-attempt evidence, and resignation may forfeit only the active
+model side. Unverifiable local spend/provider failures settle unscored interruption.
+Absent usage is unknown, never zero; runner scores and timing are self-run/unverified.
+No runner can acquire an official entry.
+
+Stop, reset, revoke and deletion clear generation/grace immediately. Temporary socket
+loss records 120 seconds of reconnect grace; server clocks continue. A bounded worker
+sweep settles expired clocks/offers/grace even without another socket. The earliest
+clock or grace deadline wins. Grace expiry records runner-abandoned; no recovery
+poll can revive a terminal row. All terminal writes cancel obsolete commands and
+reserve a stop delivery to abort local work.
 
 Hosted admission, queue position/capacity, worker claims/writes/heartbeat and
 reconciliation explicitly exclude runner rows. Replay/inspect spectator helpers
@@ -142,6 +171,16 @@ callback that ignored cancellation.
 Replies use `RunnerConnection.send(action, originatingSignal)` with the exact
 signal supplied to that session's `onMessage` callback; retired callbacks cannot
 send through a replacement connection. Server liveness uses monotonic elapsed time.
+
+Application traffic is paced locally:64frames/second with128burst and a256-entry,
+256KiB session-owned FIFO. A separate bounded8/second,16burst liveness lane preserves
+heartbeat/pong delivery. Both together are at most4464frames/minute, below the
+specific6000/min runner socket/machine budgets. The receive queues allow 544 typed
+messages for the paired wire ceiling of 64, eight reply/control frames each plus 32 reserved.
+The local default remains 8 and server admission is capped at 16 active matches per machine;
+repeated hello is rejected before admission. Flood, frame/byte, connection and
+lease guards remain fail-closed. Sequence/ACK envelopes are assigned at actual send;
+a disconnected generation discards its queued frames and timers.
 
 Incoming queues and outgoing buffers are bounded; the outgoing buffer cap is
 256 KiB. Redis also limits messages per machine independently of HTTP request

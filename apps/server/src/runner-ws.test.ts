@@ -1,6 +1,9 @@
 import { RunnerLimitsError } from "@cockpit-chess/auth/runner-limits";
 import {
+  RUNNER_APPLICATION_FRAMES_PER_MINUTE,
+  RUNNER_RECEIVE_WINDOW,
   type RunnerClientMessage,
+  type RunnerDelivery,
   runnerConfigDigest,
   runnerMatchConfigSchema,
 } from "@cockpit-chess/chess/runner-protocol";
@@ -145,6 +148,79 @@ afterEach(() => {
 describe("durable runner transport controls", () => {
   const stop = { type: "stop", matchId: "owned", payload: { commandId: "durable1" } } as const;
 
+  it("stops the socket immediately and joins one disconnect write across close, finished and drain", async () => {
+    const write = Promise.withResolvers<void>();
+    const disconnected = vi.fn(() => write.promise);
+    const h = harness({
+      outbox: vi.fn().mockResolvedValue([]),
+      handle: vi.fn().mockResolvedValue([]),
+      disconnected,
+    });
+    const { active, peer, transport } = await connect(h);
+    active.close(1012, "RESTART");
+    expect(active.isClosed()).toBe(true);
+    expect(peer.close).toHaveBeenCalledExactlyOnceWith(1012, "RESTART");
+    active.finished();
+    active.close();
+    let drained = false;
+    const draining = transport.drain().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(disconnected).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        userId: "owner1",
+        machineId: "machine1",
+        connectionGeneration: 1,
+      }),
+    );
+    expect(drained).toBe(false);
+    write.resolve();
+    await draining;
+    expect(disconnected).toHaveBeenCalledOnce();
+  });
+
+  it("reports the retired generation once when a socket is replaced", async () => {
+    const disconnected = vi.fn(async () => {});
+    const h = harness({
+      outbox: vi.fn().mockResolvedValue([]),
+      handle: vi.fn().mockResolvedValue([]),
+      disconnected,
+    });
+    const first = await connect(h);
+    const second = await connect(h, first.transport);
+    await first.transport.idle();
+    expect(first.peer.close).toHaveBeenCalledWith(4409, "REPLACED");
+    expect(second.active.isClosed()).toBe(false);
+    expect(disconnected).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ connectionGeneration: 1 }),
+    );
+    first.active.finished();
+    await first.transport.drain();
+    second.active.finished();
+    expect(disconnected).toHaveBeenCalledTimes(2);
+    expect(disconnected).toHaveBeenLastCalledWith(
+      expect.objectContaining({ connectionGeneration: 2 }),
+    );
+  });
+
+  it("contains a failed disconnect write without delaying close or repeating it", async () => {
+    const disconnected = vi.fn(async () => {
+      throw new Error("untrusted storage detail");
+    });
+    const h = harness({
+      outbox: vi.fn().mockResolvedValue([]),
+      handle: vi.fn().mockResolvedValue([]),
+      disconnected,
+    });
+    const { active, peer, transport } = await connect(h);
+    active.finished();
+    expect(peer.close).toHaveBeenCalledOnce();
+    await transport.drain();
+    active.finished();
+    expect(disconnected).toHaveBeenCalledOnce();
+  });
+
   it("recovers a missed wake by polling and preserves command IDs only through reconnect redelivery", async () => {
     const outbox = vi.fn().mockResolvedValue([]);
     const handle = vi.fn().mockResolvedValue([]);
@@ -193,6 +269,176 @@ describe("durable runner transport controls", () => {
     expect(sent.filter((message) => message.type === "stop")).toHaveLength(5);
     expect(sent.at(-1)).toMatchObject({ type: "stop", payload: { commandId: "command4" } });
     await transport.drain();
+  });
+
+  it("reclaims a saturated result slot for resume and withholds the next start until its ACK", async () => {
+    const blockers = Array.from({ length: 3 }, (_, index) => ({
+      ...stop,
+      payload: { commandId: `blocker${index}` },
+    }));
+    const previous: RunnerDelivery = {
+      type: "start",
+      matchId: "owned",
+      payload: { commandId: "previous-start", expectedSeq: 0 },
+    };
+    const next: RunnerDelivery = {
+      type: "start",
+      matchId: "owned",
+      payload: { commandId: "aaa-next-start", expectedSeq: 1 },
+    };
+    const resume: RunnerDelivery = {
+      type: "resume",
+      matchId: "owned",
+      payload: {
+        commandId: "zzz-required-resume",
+        acceptedSeq: 1,
+        ply: 1,
+        fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+      },
+    };
+    let phase: "previous" | "resume" | "next" = "previous";
+    // Storage supplies an executable frontier, regardless of tied timestamps or
+    // the next start's lexically earlier random ID. The real PG tests prove selection.
+    const outbox = vi.fn(
+      async (): Promise<RunnerDelivery[]> => [
+        ...blockers,
+        phase === "previous" ? previous : phase === "resume" ? resume : next,
+      ],
+    );
+    const handle = vi.fn(
+      async (
+        _identity: RunnerMachineIdentity,
+        message: RunnerClientMessage,
+      ): Promise<RunnerDelivery[]> => {
+        if (message.type === "move") phase = "resume";
+        if (message.type === "ack" && message.payload.commandId === resume.payload.commandId)
+          phase = "next";
+        return [{ type: "ack", payload: { commandId: message.id } }];
+      },
+    );
+    const h = harness({ outbox, handle });
+    const { active, peer, sent, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    expect(sent.filter((message) => ["start", "stop"].includes(String(message.type)))).toHaveLength(
+      4,
+    );
+    const before = sent.length;
+    active.receive(
+      frame("move", 2, { uci: "e2e4", ply: 1, fen: resume.payload.fen }, { matchId: "owned" }),
+    );
+    await active.idle();
+    expect(sent.slice(before).map((message) => message.type)).toEqual(["ack", "resume"]);
+    expect(
+      sent.some(
+        (message) =>
+          (message.payload as { commandId?: string }).commandId === next.payload.commandId,
+      ),
+    ).toBe(false);
+    await active.deliver();
+    expect(sent.filter((message) => message.type === "resume")).toHaveLength(1);
+    active.receive(frame("ack", 3, { commandId: resume.payload.commandId }));
+    await active.idle();
+    expect(sent.at(-1)).toMatchObject(next);
+    await active.deliver();
+    await active.deliver();
+    expect(
+      sent.filter(
+        (message) =>
+          (message.payload as { commandId?: string }).commandId === next.payload.commandId,
+      ),
+    ).toHaveLength(1);
+    expect(peer.close).not.toHaveBeenCalled();
+    await transport.drain();
+  });
+
+  it("polls only the replacement frontier while post-accept authority is paused", async () => {
+    const config = runnerMatchConfigSchema.parse({
+      promptVersion: "1",
+      white: { name: "White", model: "test/white", protocol: "openai-chat" },
+      black: { name: "Black", model: "random", protocol: "random" },
+      rules: {},
+    });
+    const offer: RunnerDelivery = {
+      type: "offer",
+      matchId: "owned",
+      payload: {
+        commandId: "replacement-offer",
+        config,
+        configDigest: runnerConfigDigest(config),
+      },
+    };
+    const resume: RunnerDelivery = {
+      type: "resume",
+      matchId: "owned",
+      payload: {
+        commandId: "replacement-resume",
+        acceptedSeq: 0,
+        ply: 0,
+        fen: config.initialFen,
+      },
+    };
+    const start: RunnerDelivery = {
+      type: "start",
+      matchId: "owned",
+      payload: { commandId: "older-start", expectedSeq: 0 },
+    };
+    let phase: "offer" | "resume" | "start" = "offer";
+    let postAcceptPaused = false;
+    const authorization = Promise.withResolvers<RunnerMachineIdentity>();
+    const outbox = vi.fn(
+      async (): Promise<RunnerDelivery[]> => [
+        phase === "offer" ? offer : phase === "resume" ? resume : start,
+      ],
+    );
+    const handle = vi.fn(
+      async (
+        _identity: RunnerMachineIdentity,
+        message: RunnerClientMessage,
+      ): Promise<RunnerDelivery[]> => {
+        if (message.type === "accept") {
+          phase = "resume";
+          h.authority.resolve.mockImplementationOnce(() => {
+            postAcceptPaused = true;
+            return authorization.promise;
+          });
+        }
+        if (message.type === "ack" && message.payload.commandId === resume.payload.commandId)
+          phase = "start";
+        return [{ type: "ack", payload: { commandId: message.id } }];
+      },
+    );
+    const h = harness({ outbox, handle });
+    const old = await connect(h);
+    const replacement = await connect(h, old.transport);
+    replacement.active.receive(hello(2));
+    await replacement.active.idle();
+    replacement.active.receive(
+      frame(
+        "accept",
+        2,
+        { commandId: offer.payload.commandId },
+        { generation: 2, matchId: "owned" },
+      ),
+    );
+    for (let index = 0; index < 80 && !postAcceptPaused; ++index) await Promise.resolve();
+    expect(postAcceptPaused).toBe(true);
+    await replacement.active.deliver();
+    expect(replacement.sent.at(-1)).toMatchObject(resume);
+    expect(replacement.sent.some((message) => message.type === "start")).toBe(false);
+    const live = h.live.get("Bearer secret");
+    if (!live) throw new Error("Expected replacement identity");
+    authorization.resolve(live);
+    await replacement.active.idle();
+    expect(replacement.sent.filter((message) => message.type === "resume")).toHaveLength(1);
+    expect(replacement.sent.some((message) => message.type === "start")).toBe(false);
+    replacement.active.receive(
+      frame("ack", 3, { commandId: resume.payload.commandId }, { generation: 2 }),
+    );
+    await replacement.active.idle();
+    expect(replacement.sent.at(-1)).toMatchObject(start);
+    expect(replacement.active.isClosed()).toBe(false);
+    await old.transport.drain();
   });
 
   it("reclaims cancelled offer slots for stop commands without replaying other offers", async () => {
@@ -528,6 +774,65 @@ describe("durable runner transport controls", () => {
 });
 
 describe("runner transport simulation", () => {
+  it(`admits configured result bursts while authority is delayed and retains the${RUNNER_RECEIVE_WINDOW}-frame flood bound`, async () => {
+    const h = harness();
+    const { active, peer, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    const blocked = Promise.withResolvers<RunnerMachineIdentity>();
+    h.authority.resolve.mockImplementationOnce(() => blocked.promise);
+    for (let index = 0; index < RUNNER_RECEIVE_WINDOW; ++index) {
+      active.receive(frame("heartbeat", index + 2, { nonce: `result_control_${index}` }));
+      expect(peer.close).not.toHaveBeenCalled();
+    }
+    active.receive(frame("heartbeat", RUNNER_RECEIVE_WINDOW + 2, { nonce: "over_pending" }));
+    expect(peer.close).toHaveBeenCalledWith(4400, "INVALID");
+    const identity = h.live.get("Bearer secret");
+    if (!identity) throw new Error("Missing live identity");
+    blocked.resolve(identity);
+    await active.idle();
+    await transport.drain();
+  });
+
+  it("rejects a second queued hello before an authentication read can drain it", async () => {
+    const h = harness();
+    const { active, peer, sent, transport } = await connect(h);
+    const blocked = Promise.withResolvers<RunnerMachineIdentity>();
+    let reading = false;
+    h.authority.resolve.mockImplementationOnce(() => {
+      reading = true;
+      return blocked.promise;
+    });
+    active.receive(hello());
+    for (let index = 0; index < 20 && !reading; ++index) await Promise.resolve();
+    expect(reading).toBe(true);
+    active.receive(hello());
+    expect(peer.close).toHaveBeenCalledWith(4400, "INVALID");
+    const identity = h.live.get("Bearer secret");
+    if (!identity) throw new Error("Missing live identity");
+    blocked.resolve(identity);
+    await active.idle();
+    expect(sent).toHaveLength(1);
+    await transport.drain();
+  });
+
+  it("admits the supported gameplay minute and rejects its next application frame", async () => {
+    const h = harness();
+    const { active, peer, transport } = await connect(h);
+    active.receive(hello());
+    await active.idle();
+    for (let seq = 2; seq <= RUNNER_APPLICATION_FRAMES_PER_MINUTE; ++seq) {
+      active.receive(frame("heartbeat", seq, { nonce: `budget_${seq}` }));
+      await active.idle();
+    }
+    expect(peer.close).not.toHaveBeenCalled();
+    active.receive(
+      frame("heartbeat", RUNNER_APPLICATION_FRAMES_PER_MINUTE + 1, { nonce: "over_budget" }),
+    );
+    expect(peer.close).toHaveBeenCalledWith(4400, "INVALID");
+    await transport.drain();
+  });
+
   it("assigns identity/generation server-side, validates hello, and acknowledges exact sequence", async () => {
     const h = harness();
     const { active, sent, transport } = await connect(h);

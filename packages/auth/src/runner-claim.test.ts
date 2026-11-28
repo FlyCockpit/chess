@@ -52,6 +52,7 @@ type Row = Prisma.RunnerClaimGetPayload<Record<string, never>>;
 let row: Row;
 const live = {
   id: "session1",
+  expiresAt: new Date("2026-12-27"),
   user: {
     id: "owner1",
     email: "private@example.test",

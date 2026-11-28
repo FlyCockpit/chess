@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 
 import { createMatch } from "@cockpit-chess/chess";
 import { advanceMatch } from "@cockpit-chess/chess/runner";
+import { runnerHardLimitsSchema } from "@cockpit-chess/chess/runner-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { responseJsonUsage } from "../../../packages/agent-runtime/src/response-identity";
 
@@ -163,6 +164,36 @@ describe("local hard runner authority", () => {
         RunnerPolicyError,
       );
     await writeFile(file, JSON.stringify({ hard: { matchMicros: 999999999 } }));
+    await expect(readLocalRunnerOptions({}, file)).rejects.toThrow(RunnerPolicyError);
+  });
+
+  it("accepts the paired wire's local ceiling64 and rejects65 before catalog or startup authority", async () => {
+    const { directory, catalog, spend } = await fixture();
+    const models = vi.spyOn(catalog, "models");
+    const local = await RunnerPolicy.open(
+      { maxConcurrent: 64 },
+      {
+        catalog,
+        spend,
+        env: { OPENROUTER_API_KEY: "synthetic-key" },
+      },
+    );
+    expect(local.capabilities().hard.concurrency).toBe(64);
+    expect(runnerHardLimitsSchema.safeParse(local.capabilities().hard).success).toBe(true);
+    expect(models).toHaveBeenCalledOnce();
+    await expect(
+      RunnerPolicy.open(
+        { maxConcurrent: 65 },
+        {
+          catalog,
+          spend,
+          env: { OPENROUTER_API_KEY: "synthetic-key" },
+        },
+      ),
+    ).rejects.toThrow(RunnerPolicyError);
+    expect(models).toHaveBeenCalledOnce();
+    const file = join(directory, "too-many-concurrent.json");
+    await writeFile(file, JSON.stringify({ maxConcurrent: 65 }));
     await expect(readLocalRunnerOptions({}, file)).rejects.toThrow(RunnerPolicyError);
   });
 

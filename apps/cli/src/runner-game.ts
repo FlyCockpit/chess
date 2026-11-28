@@ -1,13 +1,15 @@
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import {
   applyUci,
-  beginHostedTurn,
+  beginTurn,
   boardAt,
   createMatch,
   type EngineEvaluation,
   finishMatch,
+  type MatchArchive,
   matchStats,
-  playHostedHumanTurn,
+  playHumanTurn,
   protocolForModel,
 } from "@cockpit-chess/chess";
 import {
@@ -35,7 +37,6 @@ type Game = {
   authority: RunnerMatchAuthority;
   signal: AbortSignal;
   task?: Promise<void>;
-  timer?: ReturnType<typeof setTimeout>;
   commands: Set<string>;
   reconciled: boolean;
   stopRequested?: boolean;
@@ -43,12 +44,51 @@ type Game = {
   memory: NonNullable<MatchRunnerOptions["memory"]>;
 };
 export type RunnerHello = Extract<RunnerClientMessage, { type: "hello" }>["payload"];
+type TerminalKind = "interrupted" | "stopped" | "completed";
+type TerminalReplay = { record: RunnerGameRecord; signal: AbortSignal; commands: Set<string> };
+
+function terminalPayload(archive: MatchArchive, kind: TerminalKind) {
+  const ply = matchStats(archive).moves;
+  return {
+    kind,
+    result: archive.result,
+    termination: archive.termination,
+    ply,
+    fen: boardAt(archive).fen(),
+    rejectedAttempts: archive.events
+      .flatMap((event) =>
+        event.type === "attempt" && !event.accepted && event.ply === ply
+          ? [{ move: event.move, ...(event.stopReason ? { stopReason: event.stopReason } : {}) }]
+          : [],
+      )
+      .slice(0, 32),
+  };
+}
+
+/** A known result may be republished after loss of its ACK, never recomputed. */
+function matchesAcceptedPrefix(
+  record: RunnerGameRecord,
+  accepted: Extract<RunnerServerMessage, { type: "resume" }>["payload"],
+) {
+  const moves = record.archive.events.filter((event) => event.type === "attempt" && event.accepted);
+  if (
+    accepted.acceptedSeq !== accepted.ply ||
+    accepted.ply < record.confirmedPly ||
+    accepted.ply > moves.length ||
+    moves.length - accepted.ply > 1
+  )
+    return false;
+  const last = moves[accepted.ply - 1];
+  const index = last ? record.archive.events.indexOf(last) : -1;
+  return accepted.fen === boardAt(record.archive, index).fen();
+}
 
 /** One local executor. Transport callbacks schedule work and return before any inference. */
 export class RunnerGameLoop {
   readonly hello: RunnerHello;
   private readonly games = new Map<string, Game>();
   private readonly cancelled = new Set<string>();
+  private readonly terminalReplays = new Map<string, TerminalReplay>();
   private readonly tasks = new Set<Promise<void>>();
   private closed = false;
   private closing?: Promise<void>;
@@ -159,7 +199,60 @@ export class RunnerGameLoop {
       return;
     }
     if (message.type === "stop") {
+      this.terminalReplays.delete(message.matchId);
       await this.stop(message.matchId, message.payload.commandId, signal);
+      return;
+    }
+    const replay = this.terminalReplays.get(message.matchId);
+    if (replay) {
+      if (
+        replay.signal === signal &&
+        message.type === "human-move" &&
+        this.echoHumanMove(message.matchId, replay.record, message, signal)
+      )
+        return;
+      if (replay.signal !== signal || message.type !== "resume") {
+        this.send({ type: "error", payload: { code: "STALE" } }, signal);
+        return;
+      }
+      if (replay.commands.has(message.payload.commandId)) {
+        this.send({ type: "ack", payload: { commandId: message.payload.commandId } }, signal);
+        return;
+      }
+      if (!matchesAcceptedPrefix(replay.record, message.payload) || replay.commands.size >= 4096) {
+        this.send({ type: "error", payload: { code: "STALE" } }, signal);
+        return;
+      }
+      replay.record.confirmedPly = message.payload.acceptedSeq;
+      await this.options.journal.save(message.matchId, replay.record);
+      replay.commands.add(message.payload.commandId);
+      if (!this.send({ type: "ack", payload: { commandId: message.payload.commandId } }, signal))
+        return;
+      let ply = 0;
+      for (const event of replay.record.archive.events) {
+        if (event.type !== "attempt" || !event.accepted) continue;
+        ++ply;
+        if (
+          ply > message.payload.acceptedSeq &&
+          !this.send(
+            {
+              type: "move",
+              matchId: message.matchId,
+              payload: { uci: event.move, ply, fen: event.fen },
+            },
+            signal,
+          )
+        )
+          return;
+      }
+      this.send(
+        {
+          type: "event",
+          matchId: message.matchId,
+          payload: terminalPayload(replay.record.archive, "completed"),
+        },
+        signal,
+      );
       return;
     }
     const game = this.games.get(message.matchId);
@@ -167,6 +260,13 @@ export class RunnerGameLoop {
       this.send({ type: "error", payload: { code: "STALE" } }, signal);
       return;
     }
+    if (
+      message.type === "human-move" &&
+      !game.task &&
+      game.record.phase !== "uncertain" &&
+      this.echoHumanMove(message.matchId, game.record, message, signal)
+    )
+      return;
     if (game.commands.has(message.payload.commandId)) {
       this.send({ type: "ack", payload: { commandId: message.payload.commandId } }, signal, game);
       return;
@@ -183,19 +283,94 @@ export class RunnerGameLoop {
     const archive = game.record.archive;
     const ply = matchStats(archive).moves;
     if (message.type === "resume") {
-      if (
-        message.payload.acceptedSeq !== ply ||
-        message.payload.ply !== ply ||
-        message.payload.fen !== boardAt(archive).fen()
-      ) {
+      if (!matchesAcceptedPrefix(game.record, message.payload)) {
         game.authority.stop();
         await this.terminal(message.matchId, game, "interrupted");
         return;
       }
       game.commands.add(message.payload.commandId);
-      game.reconciled = true;
-      game.record.confirmedPly = ply;
-      this.armHumanTimer(message.matchId, game);
+      game.reconciled = message.payload.acceptedSeq === ply;
+      game.record.confirmedPly = message.payload.acceptedSeq;
+      await this.persist(message.matchId, game);
+      if (
+        !this.send({ type: "ack", payload: { commandId: message.payload.commandId } }, signal, game)
+      )
+        return;
+      if (game.reconciled) this.snapshot(message.matchId, game);
+      else this.outputs(message.matchId, game, message.payload.acceptedSeq);
+      return;
+    }
+    if (
+      archive.status !== "running" ||
+      game.record.phase === "terminal" ||
+      message.payload.expectedSeq !== ply ||
+      (message.type === "start" && (game.record.confirmedPly !== ply || !game.reconciled))
+    ) {
+      this.send({ type: "error", payload: { code: "STALE" } }, signal, game);
+      return;
+    }
+    game.authority.assertLive();
+    if (message.type === "human-move") {
+      if (
+        archive.turn.type === "model" ||
+        archive.config[boardAt(archive).turn() === "w" ? "white" : "black"].protocol !== "human"
+      )
+        throw new Error("RUNNER_GAME_TURN");
+      // A malformed/illegal command must not mutate retries, clocks or the local board.
+      if (message.payload.uci !== "resign") applyUci(boardAt(archive), message.payload.uci);
+      game.commands.add(message.payload.commandId);
+      game.record.phase = "uncertain";
+      await this.persist(message.matchId, game);
+      game.authority.assertLive();
+      // The server already accepted this human move against its durable clock.
+      // Local wall time cannot override that decision or fabricate a timeout.
+      archive.turn = { type: "idle" };
+      playHumanTurn(archive, boardAt(archive), 0, message.payload.uci);
+      this.launchTurn(message.matchId, game, ply, true);
+      return;
+    }
+    if (archive.turn.type !== "idle") {
+      // A fresh process has no in-memory command receipt, but a reconciled
+      // ready human turn proves parking completed before its old ACK was lost.
+      // Recover only that receipt; never start another turn or reset its clock.
+      if (
+        game.record.phase === "ready" &&
+        archive.turn.type === "human" &&
+        archive.turn.side === boardAt(archive).turn() &&
+        archive.turn.expectedSeq === archive.events.length &&
+        archive.config[archive.turn.side === "w" ? "white" : "black"].protocol === "human"
+      ) {
+        game.commands.add(message.payload.commandId);
+        await this.persist(message.matchId, game);
+        game.authority.assertLive();
+        if (
+          !this.send(
+            { type: "ack", payload: { commandId: message.payload.commandId } },
+            signal,
+            game,
+          )
+        )
+          return;
+        this.snapshot(message.matchId, game);
+        return;
+      }
+      this.send({ type: "error", payload: { code: "STALE" } }, signal, game);
+      return;
+    }
+    game.commands.add(message.payload.commandId);
+    if (archive.config[boardAt(archive).turn() === "w" ? "white" : "black"].protocol === "human") {
+      const now = this.now();
+      // Parking records local UI state only. The server owns the running clock
+      // and its deadline; a local clock estimate can never expire this turn.
+      archive.turn = beginTurn(archive.turn, {
+        type: "human",
+        side: boardAt(archive).turn(),
+        turnId: randomUUID(),
+        expectedSeq: archive.events.length,
+        startedAt: new Date(now).toISOString(),
+        deadline: new Date(now + archive.config.rules.turnTimeoutMs).toISOString(),
+      });
+      game.record.phase = "ready";
       await this.persist(message.matchId, game);
       if (
         !this.send({ type: "ack", payload: { commandId: message.payload.commandId } }, signal, game)
@@ -204,47 +379,16 @@ export class RunnerGameLoop {
       this.snapshot(message.matchId, game);
       return;
     }
-    if (
-      archive.status !== "running" ||
-      game.record.phase === "terminal" ||
-      message.payload.expectedSeq !== ply ||
-      game.record.confirmedPly !== ply ||
-      !game.reconciled
-    ) {
-      this.send({ type: "error", payload: { code: "STALE" } }, signal, game);
-      return;
-    }
-    game.authority.assertLive();
-    if (message.type === "human-move") {
-      if (archive.turn.type !== "human") throw new Error("RUNNER_GAME_TURN");
-      // A malformed/illegal command must not mutate retries, clocks or the local board.
-      applyUci(boardAt(archive), message.payload.uci);
-      game.commands.add(message.payload.commandId);
-      clearTimeout(game.timer);
-      game.record.phase = "uncertain";
-      await this.persist(message.matchId, game);
-      game.authority.assertLive();
-      playHostedHumanTurn(archive, new Date(this.now()), message.payload.uci);
-      this.launchTurn(message.matchId, game, ply, true);
-      return;
-    }
-    if (archive.turn.type !== "idle") {
-      this.send({ type: "error", payload: { code: "STALE" } }, signal, game);
-      return;
-    }
-    game.commands.add(message.payload.commandId);
-    if (archive.config[boardAt(archive).turn() === "w" ? "white" : "black"].protocol === "human") {
-      beginHostedTurn(archive, new Date(this.now()));
-      game.record.phase = archive.status === "running" ? "ready" : "terminal";
-      await this.persist(message.matchId, game);
-      this.snapshot(message.matchId, game);
-      this.armHumanTimer(message.matchId, game);
-      return;
-    }
     // Persist the uncertainty fence before credentials, prices, inference or evaluation.
     game.record.phase = "uncertain";
     await this.persist(message.matchId, game);
     game.authority.assertLive();
+    // Release delivery credit only after the no-repeat fence is durable. A
+    // start ACK records receipt, never authority to dispatch another turn.
+    if (
+      !this.send({ type: "ack", payload: { commandId: message.payload.commandId } }, signal, game)
+    )
+      return;
     if (
       !this.send(
         { type: "event", matchId: message.matchId, payload: { kind: "started" } },
@@ -271,7 +415,6 @@ export class RunnerGameLoop {
         return;
       }
       game.commands.add(commandId);
-      clearTimeout(game.timer);
       game.stopRequested = true;
       game.spectator?.abort();
       game.authority.stop();
@@ -308,6 +451,31 @@ export class RunnerGameLoop {
     }
   }
 
+  /** A server-accepted human command can outlive the socket that delivered it. */
+  private echoHumanMove(
+    matchId: string,
+    record: RunnerGameRecord,
+    message: Extract<Message, { type: "human-move" }>,
+    signal: AbortSignal,
+  ): boolean {
+    const moves = record.archive.events.filter(
+      (event) => event.type === "attempt" && event.accepted,
+    );
+    const last = moves.at(-1);
+    if (
+      last?.type !== "attempt" ||
+      moves.length !== message.payload.expectedSeq + 1 ||
+      last.move !== message.payload.uci ||
+      record.archive.config[last.side === "w" ? "white" : "black"].protocol !== "human"
+    )
+      return false;
+    this.send(
+      { type: "move", matchId, payload: { uci: last.move, ply: moves.length, fen: last.fen } },
+      signal,
+    );
+    return true;
+  }
+
   private async offer(message: Extract<Message, { type: "offer" }>, signal: AbortSignal) {
     const { config, configDigest, commandId } = message.payload;
     const reject = (reason: "busy" | "policy" | "unsupported") =>
@@ -336,6 +504,16 @@ export class RunnerGameLoop {
       return reject("unsupported");
     if (this.cancelled.has(message.matchId)) return reject("policy");
     let game = this.games.get(message.matchId);
+    const terminal = this.terminalReplays.get(message.matchId)?.record ?? game?.record;
+    if (terminal?.phase === "terminal" && terminal.archive.status === "completed" && !game?.task) {
+      if (terminal.digest !== configDigest) return reject("policy");
+      game?.spectator?.abort();
+      game?.authority.finish();
+      this.games.delete(message.matchId);
+      this.terminalReplays.set(message.matchId, { record: terminal, signal, commands: new Set() });
+      this.send({ type: "accept", matchId: message.matchId, payload: { commandId } }, signal);
+      return;
+    }
     if (game) {
       if (
         game.record.digest !== configDigest ||
@@ -354,11 +532,11 @@ export class RunnerGameLoop {
         game.reconciled = false;
       }
       this.send({ type: "accept", matchId: message.matchId, payload: { commandId } }, signal, game);
-      this.snapshot(message.matchId, game);
       return;
     }
     // Bound in-memory tombstones too. Disk tombstones are never silently discarded.
-    if (this.games.size + this.cancelled.size >= 256) return reject("busy");
+    if (this.games.size + this.cancelled.size + this.terminalReplays.size >= 256)
+      return reject("busy");
     let stored: RunnerGameRecord | undefined;
     try {
       const loaded = await this.options.journal.load(message.matchId);
@@ -368,6 +546,18 @@ export class RunnerGameLoop {
       this.poisoned = true;
       for (const item of this.games.values()) item.authority.stop();
       throw new Error("RUNNER_GAME_STORAGE");
+    }
+    if (stored?.phase === "terminal" && stored.archive.status === "completed") {
+      const { prompt, ...settings } = stored.archive.config;
+      if (
+        stored.digest !== configDigest ||
+        stored.archive.source !== "local" ||
+        runnerConfigDigest({ ...settings, promptVersion: prompt.version }) !== configDigest
+      )
+        return reject("policy");
+      this.terminalReplays.set(message.matchId, { record: stored, signal, commands: new Set() });
+      this.send({ type: "accept", matchId: message.matchId, payload: { commandId } }, signal);
+      return;
     }
     if (
       stored &&
@@ -418,7 +608,6 @@ export class RunnerGameLoop {
         return;
       // A loaded match must be explicitly reconciled, even if its last send succeeded.
       if (!stored) game.record.phase = "ready";
-      this.snapshot(message.matchId, game);
       if (game.record.archive.status !== "running")
         await this.terminal(message.matchId, game, "completed");
     } catch {
@@ -548,16 +737,14 @@ export class RunnerGameLoop {
         {
           type: "event",
           matchId,
-          payload: {
-            kind: archive.status === "completed" ? "completed" : "interrupted",
-            result: archive.result,
-            termination: archive.termination,
-          },
+          payload: terminalPayload(
+            archive,
+            archive.status === "completed" ? "completed" : "interrupted",
+          ),
         },
         game.signal,
         game,
       );
-    else this.snapshot(matchId, game);
   }
 
   private evaluation(
@@ -602,40 +789,12 @@ export class RunnerGameLoop {
     );
   }
 
-  private armHumanTimer(matchId: string, game: Game) {
-    if (game.record.archive.turn.type !== "human") return;
-    clearTimeout(game.timer);
-    const deadline = Date.parse(game.record.archive.turn.deadline);
-    game.timer = setTimeout(
-      () => {
-        void this.tail
-          .then(async () => {
-            if (
-              this.closed ||
-              game.task ||
-              game.signal.aborted ||
-              game.record.archive.turn.type !== "human"
-            )
-              return;
-            playHostedHumanTurn(game.record.archive, new Date(Math.max(this.now(), deadline)));
-            await this.terminal(matchId, game, "completed");
-          })
-          .catch(() => {
-            game.authority.stop();
-          });
-      },
-      Math.max(0, deadline - this.now()),
-    );
-    game.timer.unref();
-  }
-
   private async terminal(
     matchId: string,
     game: Game,
     kind: "interrupted" | "stopped" | "completed",
     signal = game.signal,
   ) {
-    clearTimeout(game.timer);
     game.spectator?.abort();
     if (game.record.archive.status === "running")
       finishMatch(
@@ -650,11 +809,7 @@ export class RunnerGameLoop {
       {
         type: "event",
         matchId,
-        payload: {
-          kind,
-          result: game.record.archive.result,
-          termination: game.record.archive.termination,
-        },
+        payload: terminalPayload(game.record.archive, kind),
       },
       signal,
       game,
@@ -674,7 +829,6 @@ export class RunnerGameLoop {
     );
     for (const [, game] of active) {
       game.stopRequested = true;
-      clearTimeout(game.timer);
       game.spectator?.abort();
       game.authority.stop();
     }
@@ -692,7 +846,6 @@ export class RunnerGameLoop {
     if (this.closing) return this.closing;
     this.closed = true;
     for (const game of this.games.values()) {
-      clearTimeout(game.timer);
       game.spectator?.abort();
       game.authority.stop();
     }

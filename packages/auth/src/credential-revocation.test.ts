@@ -33,7 +33,9 @@ const { cliCredentialLockKey } = await import("./device-redemption-lock");
 beforeEach(() => {
   vi.clearAllMocks();
   db.runnerMachine.updateMany.mockReturnValue("runnerMachine.updateMany");
-  db.chessMatch.updateMany.mockReturnValue("chessMatch.updateMany");
+  db.chessMatch.updateMany.mockImplementation(({ where }) =>
+    where.source === "runner" ? "runnerMatch.updateMany" : "chessMatch.updateMany",
+  );
   db.apiKey.deleteMany.mockReturnValue("apiKey.deleteMany");
   db.session.deleteMany.mockReturnValue("session.deleteMany");
   db.deviceCode.deleteMany.mockReturnValue("deviceCode.deleteMany");
@@ -134,6 +136,8 @@ describe("revokeCredentialsBeforePasswordReset", () => {
       "deviceCode.deleteMany",
       "runnerMachine.updateMany",
       "runnerMachine.notify",
+      "runnerMatch.updateMany",
+      "runnerMatch.updateMany",
       "chessMatch.updateMany",
       "chessMatch.updateMany",
       "twoFactor.deleteMany",
@@ -153,6 +157,8 @@ describe("revokeCredentialsAfterPasswordReset", () => {
       "deviceCode.deleteMany",
       "runnerMachine.updateMany",
       "runnerMachine.notify",
+      "runnerMatch.updateMany",
+      "runnerMatch.updateMany",
       "chessMatch.updateMany",
       "chessMatch.updateMany",
       "twoFactor.deleteMany",
@@ -182,7 +188,7 @@ describe("revokeCredentialsAfterPasswordReset", () => {
     expect(sleeps).toEqual([100, 400]);
     // Each sweep gets fresh promises. Finalization runs once, after the retries.
     expect(db.apiKey.deleteMany).toHaveBeenCalledTimes(3);
-    expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(6);
+    expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(12);
     expect(db.user.updateMany).not.toHaveBeenCalled();
     expect(db.verification.deleteMany).toHaveBeenCalledExactlyOnceWith({
       where: { value: "u1", identifier: { startsWith: "reset-password:" } },
@@ -464,15 +470,24 @@ describe("activation revocation on the bound client", () => {
     expect(db.$transaction).not.toHaveBeenCalled();
   });
 
-  it.each([true, false])(
-    "reset cancellation preserves the pending deletion cause (pending=%s)",
-    async (pending) => {
+  it.each([
+    ["hosted", true],
+    ["hosted", false],
+    ["runner", true],
+    ["runner", false],
+  ] as const)(
+    "reset cancellation preserves the %s pending deletion cause (pending=%s)",
+    async (source, pending) => {
       let status = "running";
       let cause: unknown;
       const archive = { acceptedMoves: ["e2e4"] };
       db.chessMatch.updateMany.mockImplementation((write) => {
         const matchesOwner = write.where.Owner.deletionRequestedAt === null ? !pending : pending;
-        if (matchesOwner && write.where.status.in.includes(status)) {
+        if (
+          write.where.source === source &&
+          matchesOwner &&
+          write.where.status.in.includes(status)
+        ) {
           status = write.data.status;
           cause = write.data.terminalCause;
         }
@@ -484,7 +499,9 @@ describe("activation revocation on the bound client", () => {
         "owner",
       );
       expect(status).toBe("stopped");
-      expect(cause).toBe(pending ? "owner-delete" : "owner-reset");
+      expect(cause).toBe(
+        pending ? "owner-delete" : source === "runner" ? "runner-revoked" : "owner-reset",
+      );
       expect(archive).toEqual({ acceptedMoves: ["e2e4"] });
       // A repeated reset cannot overwrite any pre-existing terminal outcome.
       db.chessMatch.updateMany.mockClear();
@@ -524,7 +541,7 @@ describe("activation revocation on the bound client", () => {
       where: { userId: "invitee", revokedAt: null },
       data: { revokedAt: expect.any(Date), connectionGeneration: { increment: 1 } },
     });
-    expect(tx.chessMatch.updateMany).toHaveBeenCalledTimes(2);
+    expect(tx.chessMatch.updateMany).toHaveBeenCalledTimes(4);
     expect(tx.chessMatch.updateMany).toHaveBeenCalledWith({
       where: {
         ownerId: "invitee",
@@ -647,7 +664,7 @@ describe("hosted match recovery cancellation", () => {
           sleep: async () => {},
         });
       // No billing filter: operator-billed admin matches must be fenced too.
-      expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(2);
+      expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(4);
       expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
         where: {
           ownerId: "owner",
@@ -678,6 +695,8 @@ describe("hosted match recovery cancellation", () => {
         "deviceCode.deleteMany",
         "runnerMachine.updateMany",
         "runnerMachine.notify",
+        "runnerMatch.updateMany",
+        "runnerMatch.updateMany",
         "chessMatch.updateMany",
         "chessMatch.updateMany",
         ...(kind === "quarantine" ? ["session.deleteMany"] : []),

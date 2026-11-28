@@ -26,15 +26,14 @@ Only models and protocols advertised by that executor may be selected.
 Game `expectedSeq` and `acceptedSeq` count legal moves, starting at zero. They are
 separate from the WebSocket envelope's sequence and the local archive's event
 sequence. A move carries its resulting one-based `ply` and resulting `fen`.
-Each `start` runs at most one automatic turn; a human `start` arms the common
-bounded human turn and waits for `human-move`. Before another automatic turn,
-`resume` must confirm the exact local move count and FEN. A snapshot distinguishes
-the locally computed ply from the last confirmed server sequence. After durably
+Each `start` runs at most one automatic turn; a human `start` parks a bounded turn and waits for `human-move`; only the server expires its clock. Before another automatic turn,
+`resume` must confirm the exact local move count and FEN. Snapshots are emitted only after an authoritative resume confirms the exact board. After durably
 saving a valid resume, the executor ACKs that command and sends its snapshot;
-a repeated resume command receives only its ACK. Transport ACKs alone never
-authorize another paid turn. E4 supplies durable server commands and
+a repeated resume command receives only its ACK. Start commands are ACKed only after the ready/uncertain journal fence is durable.
+The server requires the latest current-board resume ACK before releasing a start.
+Transport ACKs alone never authorize another paid turn. E4 supplies durable server commands and
 checks every move against the authoritative board; client scores and completion
-events are advisory and never official.
+events include bounded accepted-board and rejected-attempt evidence. Local results and scores remain unverified and never official. Known completed journals can replay terminal evidence without reacquiring inference authority.
 
 The journal follows the selected local spending authority under the OS user's
 `~/.cockpit-chess/runner-games/` directory. New machine claims, website origins and

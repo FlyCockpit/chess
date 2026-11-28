@@ -35,6 +35,10 @@ const { getJob, runner, ensureJob } = vi.hoisted(() => ({
         ) => Promise<unknown>),
   },
 }));
+const { reconcileRunners } = vi.hoisted(() => ({ reconcileRunners: vi.fn() }));
+vi.mock("@cockpit-chess/api/lib/chess-runner", () => ({
+  reconcileRunnerMatches: reconcileRunners,
+}));
 vi.mock("@cockpit-chess/queue", async () => {
   const { chessReconcileJobSchema, chessRunJobSchema } = await import(
     "../../../../packages/queue/src/jobs"
@@ -173,6 +177,7 @@ function row() {
 beforeEach(() => {
   vi.clearAllMocks();
   mockReset(db);
+  reconcileRunners.mockResolvedValue({ scanned: 0, settled: 0 });
   runner.override = null;
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "info").mockImplementation(() => {});
@@ -406,6 +411,7 @@ describe("durable chess worker", () => {
       }),
     ).resolves.toEqual({ evaluated: false });
     expect(db.chessMatch.findMany).not.toHaveBeenCalled();
+    expect(reconcileRunners).not.toHaveBeenCalled();
   });
   it("interrupts an already-aborted hosted run without dispatching inference", async () => {
     const controller = new AbortController();
@@ -1002,6 +1008,56 @@ describe("chess reconcile sweep", () => {
               : queued,
       )) as never);
   }
+  it("settles runner deadlines independently without admitting hosted jobs or engine work", async () => {
+    rows([], []);
+    const controller = new AbortController();
+    reconcileRunners.mockResolvedValue({ scanned: 3, settled: 2 });
+    await expect(
+      handleChessReconcileJob({ data: { reason: "cron" } }, controller.signal),
+    ).resolves.toEqual({ scanned: 0, errored: 0, runnerScanned: 3, runnerSettled: 2 });
+    expect(reconcileRunners).toHaveBeenCalledExactlyOnceWith(controller.signal);
+    expect(getJob).not.toHaveBeenCalled();
+    expect(ensureJob).not.toHaveBeenCalled();
+    expect(evaluatePosition).not.toHaveBeenCalled();
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+    expect(db.chessMatch.findMany.mock.calls[0]?.[0]?.where).toMatchObject({
+      source: { in: ["hosted", "runner"] },
+      OR: [{ Owner: { deletionRequestedAt: { not: null } } }, { ownerId: null }],
+    });
+    for (const [query] of db.chessMatch.findMany.mock.calls.slice(1))
+      expect(query?.where?.source).toBe("hosted");
+  });
+  it("settles pending owners before runner recovery and runner recovery before hosted repair", async () => {
+    rows([], []);
+    let finishDeletion = (_rows: never[]) => {};
+    db.chessMatch.findMany.mockImplementationOnce(
+      (() =>
+        new Promise<never[]>((resolve) => {
+          finishDeletion = resolve;
+        })) as never,
+    );
+    let finish = (_result: { scanned: number; settled: number }) => {};
+    reconcileRunners.mockReturnValueOnce(
+      new Promise<{ scanned: number; settled: number }>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const pending = handleChessReconcileJob({ data: { reason: "cron" } });
+    expect(reconcileRunners).not.toHaveBeenCalled();
+    expect(db.chessMatch.findMany).toHaveBeenCalledTimes(1);
+    finishDeletion([]);
+    await vi.waitFor(() => expect(reconcileRunners).toHaveBeenCalledOnce());
+    expect(db.chessMatch.findMany).toHaveBeenCalledTimes(1);
+    finish({ scanned: 0, settled: 0 });
+    await expect(pending).resolves.toEqual({ scanned: 0, errored: 0 });
+    expect(db.chessMatch.findMany).toHaveBeenCalledTimes(4);
+    expect(db.chessMatch.findMany.mock.invocationCallOrder[0]).toBeLessThan(
+      reconcileRunners.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(reconcileRunners.mock.invocationCallOrder[0]).toBeLessThan(
+      db.chessMatch.findMany.mock.invocationCallOrder[1] ?? 0,
+    );
+  });
   it("errors stale running records with a bounded, ordered heartbeat compare-and-set", async () => {
     const row = stale("running");
     rows([row], []);

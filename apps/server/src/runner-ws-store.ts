@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { RUNNER_APPLICATION_FRAMES_PER_MINUTE } from "@cockpit-chess/chess/runner-protocol";
 
 /** One live lease per machine across replicas; identifiers never contain credentials. */
 export type RunnerLease = {
@@ -15,7 +16,7 @@ type RedisCommands = {
 
 export const RUNNER_LEASE_TTL_MS = 60_000;
 export const RUNNER_IP_CONNECTIONS = 16;
-export const RUNNER_ACTIONS_PER_MINUTE = 240;
+export const RUNNER_ACTIONS_PER_MINUTE = RUNNER_APPLICATION_FRAMES_PER_MINUTE;
 export const RUNNER_REPLACEMENT_CHANNEL = "runner_ws_replaced";
 
 const reserveIpScript = `

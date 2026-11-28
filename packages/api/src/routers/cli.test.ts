@@ -8,6 +8,9 @@ vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
   return { default: mockDeep() };
 });
+vi.mock("@cockpit-chess/auth/runner-limits-store", () => ({
+  readRunnerLimitsInTransaction: vi.fn(),
+}));
 vi.mock("@cockpit-chess/queue", () => ({
   chessRunQueue: {},
   ensureRunnableJob: vi.fn(),

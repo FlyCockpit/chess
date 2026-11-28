@@ -16,7 +16,7 @@ type DeviceCodeRow = { deviceCode: string; userId: string | null; status: string
 type SessionRow = { id: string; userId: string; origin: string; expiresAt?: Date };
 type MatchRow = {
   ownerId: string;
-  source: "hosted" | "local";
+  source: "hosted" | "local" | "runner";
   status: "queued" | "running" | "completed" | "stopped";
   terminalCause: string | null;
 };
@@ -134,19 +134,29 @@ const db = vi.hoisted(() => {
     chessMatch: {
       updateMany: (args: unknown) =>
         statement(async (ctx) => {
+          const runner = (args as { where: { source: string } }).where.source === "runner";
           const pending =
             (args as { where: { Owner: { deletionRequestedAt: null | { not: null } } } }).where
               .Owner.deletionRequestedAt !== null;
           expect(args).toEqual({
             where: {
               ownerId: USER,
-              source: "hosted",
+              source: runner ? "runner" : "hosted",
               status: { in: ["queued", "running"] },
               Owner: { deletionRequestedAt: pending ? { not: null } : null },
             },
             data: {
               status: "stopped",
               runToken: null,
+              ...(runner
+                ? {
+                    runnerState: "stopped",
+                    runnerGeneration: null,
+                    runnerResumeDeadline: null,
+                    runnerRevision: { increment: 1 },
+                    heartbeatAt: null,
+                  }
+                : {}),
               turnType: "idle",
               turnId: null,
               turnSide: null,
@@ -154,7 +164,7 @@ const db = vi.hoisted(() => {
               turnStartedAt: null,
               turnDeadline: null,
               pendingMove: expect.anything(),
-              terminalCause: pending ? "owner-delete" : "owner-reset",
+              terminalCause: pending ? "owner-delete" : runner ? "runner-revoked" : "owner-reset",
               ending: { kind: "cancelled" },
             },
           });
@@ -162,13 +172,17 @@ const db = vi.hoisted(() => {
           const matches = store.matches.filter(
             (row) =>
               row.ownerId === USER &&
-              row.source === "hosted" &&
+              row.source === (runner ? "runner" : "hosted") &&
               ["queued", "running"].includes(row.status) &&
               (store.deletionRequestedAt !== null) === pending,
           );
           for (const row of matches) {
             row.status = "stopped";
-            row.terminalCause = pending ? "owner-delete" : "owner-reset";
+            row.terminalCause = pending
+              ? "owner-delete"
+              : runner
+                ? "runner-revoked"
+                : "owner-reset";
           }
           return { count: matches.length };
         }),
@@ -308,6 +322,9 @@ describe("device-flow redemption vs password-reset revocation", () => {
         { ownerId: USER, source: "hosted", status: "completed", terminalCause: "completed" },
         { ownerId: "other", source: "hosted", status: "running", terminalCause: null },
         { ownerId: USER, source: "local", status: "running", terminalCause: null },
+        { ownerId: USER, source: "runner", status: "running", terminalCause: null },
+        { ownerId: USER, source: "runner", status: "completed", terminalCause: "checkmate" },
+        { ownerId: "other", source: "runner", status: "running", terminalCause: null },
       );
       await revokeCredentialsAfterPasswordReset(USER);
       expect(store.matches).toEqual([
@@ -320,6 +337,14 @@ describe("device-flow redemption vs password-reset revocation", () => {
         { ownerId: USER, source: "hosted", status: "completed", terminalCause: "completed" },
         { ownerId: "other", source: "hosted", status: "running", terminalCause: null },
         { ownerId: USER, source: "local", status: "running", terminalCause: null },
+        {
+          ownerId: USER,
+          source: "runner",
+          status: "stopped",
+          terminalCause: pending ? "owner-delete" : "runner-revoked",
+        },
+        { ownerId: USER, source: "runner", status: "completed", terminalCause: "checkmate" },
+        { ownerId: "other", source: "runner", status: "running", terminalCause: null },
       ]);
     },
   );

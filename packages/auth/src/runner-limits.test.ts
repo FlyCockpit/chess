@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@cockpit-chess/db", () => ({ default: {} }));
 vi.mock("./index.js", () => ({ auth: {}, passwordPepper: {} }));
 vi.mock("@cockpit-chess/env/shared", () => ({ env: { DATABASE_POOL_MAX: 5 } }));
-const { createRunnerLimitsService } = await import("./runner-limits.js");
+const { createRunnerLimitsService, readRunnerLimitsInTransaction } = await import(
+  "./runner-limits.js"
+);
 type Row = { id: string; identifier: string; value: string; expiresAt: Date };
 const tx = {
   $executeRaw: vi.fn(),
@@ -49,6 +51,7 @@ const service = createRunnerLimitsService(
 function liveSession() {
   return {
     id: "s1",
+    expiresAt: new Date(Date.now() + 86_400_000),
     user: {
       id: "u1",
       email: "u1@example.com",
@@ -129,6 +132,43 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("runner operating limits", () => {
+  it("reads the exact advertised limits in an existing credential transaction", async () => {
+    const transaction = tx as unknown as Prisma.TransactionClient;
+    await expect(readRunnerLimitsInTransaction(transaction, "u1", "m1")).resolves.toBeNull();
+    await seed();
+    await expect(readRunnerLimitsInTransaction(transaction, "u1", "m1")).resolves.toEqual({
+      version: 1,
+      userId: "u1",
+      machineId: "m1",
+      generation: 1,
+      operatingLimits,
+      hardLimits,
+      pending: null,
+      lastResult: null,
+    });
+    expect(tx.verification.findUnique).toHaveBeenLastCalledWith({
+      where: { id: "runner-limits:v1:m1" },
+      select: { value: true, expiresAt: true },
+    });
+  });
+  it.each(["owner", "machine", "expired", "oversized", "ceiling", "extra"])(
+    "preserves the current %s storage refusal in transactional callers",
+    async (fault) => {
+      await seed();
+      const row = stored.get("runner-limits:v1:m1");
+      if (!row) throw new Error("Expected state");
+      const state = JSON.parse(row.value);
+      if (fault === "owner") state.userId = "other";
+      if (fault === "machine") state.machineId = "other";
+      if (fault === "ceiling") state.operatingLimits.matchMicros = hardLimits.matchMicros + 1;
+      if (fault === "extra") state.extra = true;
+      row.value = fault === "oversized" ? "x".repeat(8193) : JSON.stringify(state);
+      if (fault === "expired") row.expiresAt = new Date();
+      await expect(
+        readRunnerLimitsInTransaction(tx as unknown as Prisma.TransactionClient, "u1", "m1"),
+      ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+    },
+  );
   it("returns no invented limits before a runner advertises its local authority", async () => {
     expect(await service.get(session, "m1")).toEqual({
       available: false,

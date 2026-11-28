@@ -2,8 +2,10 @@ import { protectedProcedure } from "../index";
 import {
   createRunnerInput,
   createRunnerMatch,
+  moveRunnerMatch,
   runnerCommandInput,
   runnerMatchStatus,
+  runnerMoveInput,
   runnerSlugInput,
   startRunnerMatch,
   stopRunnerMatch,
@@ -33,6 +35,10 @@ export const chessRunnerRouter = {
   stopRunner: protectedProcedure.input(runnerCommandInput).handler(async ({ context, input }) => {
     await controlBudget(context.session.user.id);
     return stopRunnerMatch(context, input);
+  }),
+  moveRunner: protectedProcedure.input(runnerMoveInput).handler(async ({ context, input }) => {
+    await controlBudget(context.session.user.id);
+    return moveRunnerMatch(context, input);
   }),
   runnerStatus: protectedProcedure
     .input(runnerSlugInput)

@@ -3,7 +3,7 @@ import { createRouterClient } from "@orpc/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "../context";
 
-const { authority, budget, budgetOptions, create, start, stop, status } = vi.hoisted(() => ({
+const { authority, budget, budgetOptions, create, start, stop, status, move } = vi.hoisted(() => ({
   authority: vi.fn(),
   budget: vi.fn(),
   budgetOptions: [] as Record<string, unknown>[],
@@ -11,6 +11,7 @@ const { authority, budget, budgetOptions, create, start, stop, status } = vi.hoi
   start: vi.fn(),
   stop: vi.fn(),
   status: vi.fn(),
+  move: vi.fn(),
 }));
 vi.mock("@cockpit-chess/db", () => ({ default: {} }));
 vi.mock("../lib/two-factor-policy", () => ({
@@ -35,6 +36,14 @@ vi.mock("../lib/chess-runner", async () => {
     }),
     runnerSlugInput: slug,
     runnerCommandInput: slug.extend({ commandId: z.uuid(), expectedRevision: z.number().int() }),
+    runnerMoveInput: slug.extend({
+      commandId: z.uuid(),
+      expectedRevision: z.number().int(),
+      expectedSeq: z.number().int(),
+      fen: z.string(),
+      move: z.string(),
+    }),
+    moveRunnerMatch: move,
     createRunnerMatch: create,
     startRunnerMatch: start,
     stopRunnerMatch: stop,

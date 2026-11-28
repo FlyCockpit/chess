@@ -397,7 +397,8 @@ export async function revokeCredentialsInTransaction(
   userId: string,
   { activeMatches = "cancel" }: { activeMatches?: "cancel" | "deletion-pending" } = {},
 ) {
-  for (const write of runnerMachineRevocationWrites(userId, tx)) await write;
+  for (const write of runnerMachineRevocationWrites(userId, tx, undefined, { activeMatches }))
+    await write;
   if (activeMatches === "cancel")
     for (const write of cancelActiveHostedMatchesWrites(userId, tx)) await write;
   await tx.apiKey.deleteMany({ where: { referenceId: userId } });

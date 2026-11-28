@@ -4,6 +4,11 @@ import {
   RUNNER_LIVENESS_MS,
   RUNNER_MAX_BUFFERED_BYTES,
   RUNNER_MAX_FRAME_BYTES,
+  RUNNER_MAX_LOCAL_CONCURRENCY,
+  RUNNER_RECEIVE_WINDOW,
+  RUNNER_SEND_BURST,
+  RUNNER_SEND_QUEUE_LIMIT,
+  RUNNER_SEND_RATE,
   type RunnerServerMessage,
 } from "@cockpit-chess/chess/runner-protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -92,6 +97,17 @@ function harness(options: Partial<RunnerConnectionOptions> = {}) {
   return { connection, sockets, socket: sockets[0] as Socket, socketFactory, onState };
 }
 
+async function readyConnection() {
+  const onMessage = vi.fn<NonNullable<RunnerConnectionOptions["onMessage"]>>();
+  const h = harness({ onMessage });
+  h.socket.welcome();
+  h.socket.message("ack", { commandId: "ready" });
+  await vi.advanceTimersByTimeAsync(0);
+  const signal = onMessage.mock.calls[0]?.[1];
+  if (!signal) throw new Error("Missing ready signal");
+  return { ...h, signal };
+}
+
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
   vi.clearAllTimers();
@@ -99,6 +115,133 @@ afterEach(() => {
 });
 
 describe("runner outbound connection", () => {
+  it("paces application output in FIFO order and assigns sequence on actual flush", async () => {
+    const h = await readyConnection();
+    for (let index = 0; index < 200; ++index) {
+      expect(
+        h.connection.send({ type: "ack", payload: { commandId: `paced_${index}` } }, h.signal),
+      ).toBe(true);
+    }
+    expect(h.socket.clientFrames()).toHaveLength(RUNNER_SEND_BURST);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.socket.clientFrames()).toHaveLength(RUNNER_SEND_BURST + RUNNER_SEND_RATE);
+    await vi.advanceTimersByTimeAsync(1000);
+    const frames = h.socket.clientFrames();
+    expect(frames).toHaveLength(201);
+    expect(frames.map((frame) => frame.seq)).toEqual(
+      Array.from({ length: 201 }, (_, index) => index + 1),
+    );
+    expect(frames.slice(1).map((frame) => frame.payload)).toEqual(
+      Array.from({ length: 200 }, (_, index) => ({ commandId: `paced_${index}` })),
+    );
+    expect(h.connection.getState()).toBe("connected");
+    h.connection.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("detaches queued payloads and reserves immediate liveness delivery without reordering gameplay", async () => {
+    const h = await readyConnection();
+    for (let index = 1; index < RUNNER_SEND_BURST; ++index)
+      h.connection.send({ type: "ack", payload: { commandId: `burst_${index}` } }, h.signal);
+    const queued = { type: "ack", payload: { commandId: "original_queued" } } as const;
+    expect(h.connection.send(queued, h.signal)).toBe(true);
+    Object.assign(queued.payload, { commandId: "mutated_after_send" });
+    h.socket.message("heartbeat", { nonce: "priority_nonce" }, 3);
+    expect(h.socket.clientFrames().at(-1)).toMatchObject({
+      type: "pong",
+      seq: 129,
+      ack: 3,
+      payload: { nonce: "priority_nonce" },
+    });
+    await vi.advanceTimersByTimeAsync(16);
+    expect(h.socket.clientFrames().at(-1)).toMatchObject({
+      type: "ack",
+      seq: 130,
+      ack: 3,
+      payload: { commandId: "original_queued" },
+    });
+    expect(h.connection.getState()).toBe("connected");
+    h.connection.stop();
+  });
+
+  it("bounds priority liveness traffic independently of queued application output", async () => {
+    const h = await readyConnection();
+    for (let index = 0; index < 17; ++index)
+      h.socket.message("heartbeat", { nonce: `challenge_${index}` }, index + 3);
+    expect(h.socket.clientFrames().filter((frame) => frame.type === "pong")).toHaveLength(16);
+    expect(h.connection.getState()).toBe("stopped");
+    expect(h.signal.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds queued application frames and discards them on overflow", async () => {
+    const h = await readyConnection();
+    for (let index = 1; index < RUNNER_SEND_BURST + RUNNER_SEND_QUEUE_LIMIT; ++index)
+      expect(
+        h.connection.send({ type: "ack", payload: { commandId: `bounded_${index}` } }, h.signal),
+      ).toBe(true);
+    expect(h.connection.send({ type: "ack", payload: { commandId: "over_queue" } }, h.signal)).toBe(
+      false,
+    );
+    expect(h.connection.getState()).toBe("stopped");
+    expect(h.signal.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.socket.clientFrames()).toHaveLength(RUNNER_SEND_BURST);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds queued bytes independently of the frame count", async () => {
+    const h = await readyConnection();
+    for (let index = 1; index < RUNNER_SEND_BURST; ++index)
+      h.connection.send({ type: "ack", payload: { commandId: `burst_${index}` } }, h.signal);
+    let accepted = 0;
+    for (; accepted <= RUNNER_SEND_QUEUE_LIMIT; ++accepted) {
+      if (
+        !h.connection.send(
+          {
+            type: "event",
+            matchId: "m",
+            payload: {
+              kind: "interrupted",
+              result: "*",
+              termination: "interrupted",
+              ply: 0,
+              fen,
+              rejectedAttempts: Array.from({ length: 32 }, () => ({ move: "x".repeat(256) })),
+            },
+          },
+          h.signal,
+        )
+      )
+        break;
+    }
+    expect(accepted).toBeGreaterThan(0);
+    expect(accepted).toBeLessThan(RUNNER_SEND_QUEUE_LIMIT);
+    expect(h.connection.getState()).toBe("stopped");
+    expect(h.socket.clientFrames()).toHaveLength(RUNNER_SEND_BURST);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("discards queued output on reconnect and never spends its old sequence or signal", async () => {
+    const h = await readyConnection();
+    for (let index = 0; index < RUNNER_SEND_BURST + 20; ++index)
+      h.connection.send({ type: "ack", payload: { commandId: `old_${index}` } }, h.signal);
+    h.socket.events?.close(1006);
+    expect(h.signal.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(500);
+    const next = h.sockets[1];
+    if (!next) throw new Error("Missing replacement socket");
+    next.welcome(2);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(next.clientFrames()).toHaveLength(1);
+    expect(next.clientFrames()[0]).toMatchObject({ type: "hello", generation: 2, seq: 1 });
+    expect(h.socket.clientFrames()).toHaveLength(RUNNER_SEND_BURST);
+    expect(
+      h.connection.send({ type: "ack", payload: { commandId: "stale_signal" } }, h.signal),
+    ).toBe(false);
+    h.connection.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it("sends only Authorization to the exact endpoint and uses authenticated welcome generation", () => {
     const h = harness();
     expect(h.socketFactory).toHaveBeenCalledWith("wss://runner.example/api/cli/runner/ws", {
@@ -699,7 +842,7 @@ describe("runner outbound connection", () => {
     const onMessage = vi.fn(() => new Promise<void>(() => {}));
     const h = harness({ onMessage });
     h.socket.welcome();
-    for (let seq = 2; seq <= 34; seq++)
+    for (let seq = 2; seq <= RUNNER_RECEIVE_WINDOW + 2; seq++)
       h.socket.message("start", { commandId: `c${seq}`, expectedSeq: 0 }, seq, { matchId: "m" });
     await vi.advanceTimersByTimeAsync(0);
     expect(h.socket.close).toHaveBeenCalledWith(4400);
@@ -725,6 +868,25 @@ describe("runner outbound connection", () => {
     expect(bytes.socket.close).toHaveBeenCalledWith(4400);
     bytes.connection.stop();
     await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it("retains the largest locally configured result ACK burst behind a delayed callback", async () => {
+    const release = Promise.withResolvers<void>();
+    const onMessage = vi
+      .fn<NonNullable<RunnerConnectionOptions["onMessage"]>>()
+      .mockImplementationOnce(() => release.promise);
+    const h = harness({ onMessage });
+    h.socket.welcome();
+    h.socket.message("ack", { commandId: "first" });
+    await vi.advanceTimersByTimeAsync(0);
+    for (let index = 0; index < RUNNER_MAX_LOCAL_CONCURRENCY * 8; ++index)
+      h.socket.message("ack", { commandId: `result_${index}` }, index + 3);
+    expect(h.socket.close).not.toHaveBeenCalled();
+    release.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onMessage).toHaveBeenCalledTimes(RUNNER_MAX_LOCAL_CONCURRENCY * 8 + 1);
+    expect(h.connection.getState()).toBe("connected");
+    h.connection.stop();
   });
 
   it.each([RUNNER_MAX_BUFFERED_BYTES, Infinity, -1])(

@@ -5,11 +5,13 @@ import {
 } from "@cockpit-chess/auth/runner-limits";
 import {
   parseRunnerClientFrame,
+  RUNNER_APPLICATION_FRAMES_PER_MINUTE,
   RUNNER_COMMAND_WINDOW,
   RUNNER_HEARTBEAT_MS,
   RUNNER_LIVENESS_MS,
   RUNNER_MAX_BUFFERED_BYTES,
   RUNNER_MAX_FRAME_BYTES,
+  RUNNER_RECEIVE_WINDOW,
   RUNNER_RESUME_GRACE_MS,
   type RunnerClientMessage,
   type RunnerDelivery,
@@ -20,9 +22,9 @@ import type { RunnerMachineIdentity } from "./runner-session.js";
 import type { RunnerAuthority } from "./runner-ws-authority.js";
 import type { RunnerLease, RunnerLeaseStore } from "./runner-ws-store.js";
 
-// Four commands each produce a semantic reply and snapshot. Reserve four more
-// slots for concurrent heartbeat/pong and operating-limit replies.
-const RUNNER_MAX_PENDING_MESSAGES = RUNNER_COMMAND_WINDOW * 2 + 4;
+// Delivery credit is independent of execution. The paired wire permits a locally
+// raised ceiling of64 (default8); allow64*8 reply/control frames plus32 reserved.
+const RUNNER_MAX_PENDING_MESSAGES = RUNNER_RECEIVE_WINDOW;
 export const RUNNER_MAX_LOCAL_CONNECTIONS = 128;
 const IO_TIMEOUT_MS = 5000;
 
@@ -74,6 +76,7 @@ type Options = {
       identity: RunnerMachineIdentity,
       message: RunnerClientMessage,
     ): Promise<RunnerDelivery[]>;
+    disconnected?(identity: RunnerMachineIdentity): Promise<void>;
   };
 };
 
@@ -137,6 +140,7 @@ export function createRunnerTransport(options: Options) {
     let sent = 0;
     let lastAck = 0;
     let hello = false;
+    let helloQueued = false;
     let lastSeen = now();
     let lastPong = now();
     const heartbeatNonces = new Map<string, number>();
@@ -159,6 +163,13 @@ export function createRunnerTransport(options: Options) {
       connections.delete(api);
       // Do not await an unavailable store before stopping authority locally.
       void run(options.leases.release(lease)).catch(() => {});
+      // Persist grace on every detected close. The backend compares this exact
+      // generation so a retired socket cannot disconnect its replacement.
+      if (options.controls?.disconnected) {
+        void run(Promise.resolve().then(() => options.controls?.disconnected?.(identity))).catch(
+          () => {},
+        );
+      }
       try {
         terminating = setTimeout(() => socket.terminate(), 1000);
         terminating.unref?.();
@@ -298,7 +309,7 @@ export function createRunnerTransport(options: Options) {
       if (
         binary ||
         Buffer.byteLength(data) > RUNNER_MAX_FRAME_BYTES ||
-        ++frames > 240 ||
+        ++frames > RUNNER_APPLICATION_FRAMES_PER_MINUTE ||
         pending >= RUNNER_MAX_PENDING_MESSAGES
       ) {
         close(4400, "INVALID");
@@ -309,6 +320,12 @@ export function createRunnerTransport(options: Options) {
         message = parseRunnerClientFrame(
           typeof data === "string" ? data : Buffer.from(data).toString("utf8"),
         );
+        // Reject another potentially large capabilities frame before it can
+        // occupy queue memory while the first hello's authority read waits.
+        if (message.type === "hello") {
+          if (helloQueued) throw new Error("Runner duplicate hello");
+          helloQueued = true;
+        }
       } catch {
         close(4400, "INVALID");
         return;

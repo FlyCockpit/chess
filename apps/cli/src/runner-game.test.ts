@@ -158,17 +158,14 @@ async function fixture(
     return stored;
   };
   const idle = async (ply: number) => {
-    await vi.waitFor(() =>
+    await vi.waitFor(() => {
+      expect(record().phase).toBe("ready");
       expect(sent).toContainEqual({
-        type: "snapshot",
+        type: "move",
         matchId,
-        payload: {
-          acceptedSeq: ply === 0 ? 0 : ply - 1,
-          ply,
-          fen: boardAt(record().archive).fen(),
-        },
-      }),
-    );
+        payload: expect.objectContaining({ ply, fen: boardAt(record().archive).fen() }),
+      });
+    });
   };
   return {
     loop,
@@ -269,7 +266,11 @@ describe("paired runner game loop", () => {
     expect(f.sent).toContainEqual({
       type: "event",
       matchId,
-      payload: { kind: "completed", result: "1-0", termination: "checkmate" },
+      payload: expect.objectContaining({
+        kind: "completed",
+        result: "1-0",
+        termination: "checkmate",
+      }),
     });
     expect(f.advance).not.toHaveBeenCalled();
   });
@@ -311,6 +312,79 @@ describe("paired runner game loop", () => {
     expect(f.sent.at(-1)).toEqual({ type: "error", payload: { code: "STALE" } });
     expect(f.advance).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["human", "model"] as const)(
+    "ACKs a %s start only after its durable state and before outputs or execution",
+    async (kind) => {
+      const work = gate();
+      const f = await fixture({
+        advance: async (archive) => {
+          await work.promise;
+          return play(archive);
+        },
+      });
+      await f.handle(
+        offer(
+          kind === "human"
+            ? config({ white: { name: "Human", model: "human", protocol: "human" } })
+            : config(),
+        ),
+      );
+      const entered = gate();
+      const writing = gate();
+      const save = vi.mocked(f.journal.save).getMockImplementation();
+      if (!save) throw new Error("Missing journal fixture");
+      vi.mocked(f.journal.save).mockImplementationOnce(async (id, record) => {
+        entered.release();
+        await writing.promise;
+        await save(id, record);
+      });
+      const credentials = vi.spyOn(f.policy, "credentials");
+      const before = f.sent.length;
+      const starting = f.handle(start(0, "durable-start-ack"));
+      await entered.promise;
+      expect(f.sent).toHaveLength(before);
+      expect(credentials).not.toHaveBeenCalled();
+      expect(f.advance).not.toHaveBeenCalled();
+      writing.release();
+      await starting;
+      expect(f.record().phase).toBe(kind === "human" ? "ready" : "uncertain");
+      expect(f.sent.slice(before).map((message) => message.type)).toEqual(
+        kind === "human" ? ["ack", "snapshot"] : ["ack", "event"],
+      );
+      expect(f.sent[before]).toEqual({ type: "ack", payload: { commandId: "durable-start-ack" } });
+      work.release();
+      if (kind === "model") await f.idle(1);
+      else expect(f.advance).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["human", "model"] as const)(
+    "stops a %s start after ACK backpressure without outputs or execution",
+    async (kind) => {
+      const f = await fixture();
+      await f.handle(
+        offer(
+          kind === "human"
+            ? config({ white: { name: "Human", model: "human", protocol: "human" } })
+            : config(),
+        ),
+      );
+      const before = f.sent.length;
+      f.send.mockImplementation((action) => {
+        f.sent.push(action);
+        return action.type !== "ack";
+      });
+      const credentials = vi.spyOn(f.policy, "credentials");
+      await f.handle(start(0, "blocked-start-ack"));
+      expect(f.sent.slice(before)).toEqual([
+        { type: "ack", payload: { commandId: "blocked-start-ack" } },
+      ]);
+      expect(f.record().phase).toBe(kind === "human" ? "ready" : "uncertain");
+      expect(credentials).not.toHaveBeenCalled();
+      expect(f.advance).not.toHaveBeenCalled();
+    },
+  );
 
   it("acknowledges a first resume only after durable reconciliation, then sends its snapshot", async () => {
     const f = await fixture();
@@ -371,11 +445,6 @@ describe("paired runner game loop", () => {
       if (reoffer.type !== "offer") throw new Error("Expected reoffer");
       expect(next.sent.slice(beginning)).toEqual([
         { type: "accept", matchId, payload: { commandId: reoffer.payload.commandId } },
-        {
-          type: "snapshot",
-          matchId,
-          payload: { acceptedSeq: 0, ply: 0, fen: boardAt(archive).fen() },
-        },
       ]);
       const confirming = { ...resume(archive, "replacement_resume"), generation: 2 };
       const before = next.sent.length;
@@ -477,7 +546,11 @@ describe("paired runner game loop", () => {
       {
         type: "event",
         matchId,
-        payload: { kind: "stopped", result: "*", termination: "cancelled" },
+        payload: expect.objectContaining({
+          kind: "stopped",
+          result: "*",
+          termination: "cancelled",
+        }),
       },
       { type: "ack", payload: { commandId: "offline_stop" } },
     ]);
@@ -624,6 +697,87 @@ describe("paired runner game loop", () => {
     expect(matchStats(f.record().archive).moves).toBe(2);
   });
 
+  it.each(["same-process", "new-instance"] as const)(
+    "replays a durable terminal result in a %s without acquiring execution authority",
+    async (mode) => {
+      const settings = config({ initialFen: "7k/8/5QK1/8/8/8/8/8 w - - 0 1" });
+      const first = await fixture({
+        advance: async (archive) => {
+          submitMove(archive, boardAt(archive), "f6g7");
+          return archive;
+        },
+      });
+      await first.handle(offer(settings));
+      await first.handle(start());
+      await vi.waitFor(() => expect(first.record().archive.termination).toBe("checkmate"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      first.controller.abort();
+      const restored = mode === "same-process" ? first : await fixture();
+      if (mode === "new-instance") restored.records.set(matchId, structuredClone(first.record()));
+      const begin = vi.spyOn(restored.policy, "beginMatch");
+      const signal = new AbortController().signal;
+      await restored.handle(offer(settings), signal);
+      expect(restored.sent.at(-1)).toMatchObject({ type: "accept", matchId });
+      const before = restored.sent.length;
+      const prefix = resume(createMatch(settings), "terminal_prefix");
+      await restored.handle(prefix, signal);
+      expect(restored.sent.slice(before)).toEqual([
+        { type: "ack", payload: { commandId: "terminal_prefix" } },
+        {
+          type: "move",
+          matchId,
+          payload: { uci: "f6g7", ply: 1, fen: boardAt(first.record().archive).fen() },
+        },
+        {
+          type: "event",
+          matchId,
+          payload: {
+            kind: "completed",
+            result: "1-0",
+            termination: "checkmate",
+            ply: 1,
+            fen: boardAt(first.record().archive).fen(),
+            rejectedAttempts: [],
+          },
+        },
+      ]);
+      await restored.handle(prefix, signal);
+      expect(restored.sent.at(-1)).toEqual({
+        type: "ack",
+        payload: { commandId: "terminal_prefix" },
+      });
+      await restored.handle(start(1), signal);
+      expect(restored.sent.at(-1)).toEqual({ type: "error", payload: { code: "STALE" } });
+      expect(begin).not.toHaveBeenCalled();
+      expect(first.advance).toHaveBeenCalledTimes(1);
+      expect(restored.spend.reserve).not.toHaveBeenCalled();
+    },
+  );
+
+  it("includes only the final turn's bounded rejected moves in terminal evidence", async () => {
+    const f = await fixture({
+      advance: async (archive) => {
+        submitMove(archive, boardAt(archive), "e2e5");
+        return archive;
+      },
+    });
+    await f.handle(offer(config({ rules: { maxAttempts: 1 } })));
+    await f.handle(start());
+    await vi.waitFor(() => expect(f.record().phase).toBe("terminal"));
+    expect(f.sent).toContainEqual({
+      type: "event",
+      matchId,
+      payload: {
+        kind: "completed",
+        result: "0-1",
+        termination: "illegal-forfeit",
+        ply: 0,
+        fen: DEFAULT_POSITION,
+        rejectedAttempts: [{ move: "e2e5" }],
+      },
+    });
+  });
+
   it("acks a reused command ID without redispatch during flight or after completion", async () => {
     const entered = gate();
     const finish = gate();
@@ -697,7 +851,11 @@ describe("paired runner game loop", () => {
       expect(f.sent.at(-1)).toEqual({
         type: "event",
         matchId,
-        payload: { kind: "interrupted", result: "*", termination: "interrupted" },
+        payload: expect.objectContaining({
+          kind: "interrupted",
+          result: "*",
+          termination: "interrupted",
+        }),
       });
       await f.handle(start(1));
       expect(f.advance).toHaveBeenCalledTimes(1);
@@ -900,7 +1058,7 @@ describe("paired runner game loop", () => {
     expect(f.sent.some((item) => item.type === "move")).toBe(false);
   });
 
-  it("does not publish or replay a completed call if disconnected before its durable result write returns", async () => {
+  it("replays a durable result against the accepted prefix after reconnect without another call", async () => {
     const writing = gate();
     const finish = gate();
     const f = await fixture();
@@ -924,17 +1082,22 @@ describe("paired runner game loop", () => {
     expect(f.sent.some((item) => item.type === "move")).toBe(false);
     const reconnected = new AbortController();
     await f.handle(offer(), reconnected.signal);
-    expect(f.sent.at(-1)).toMatchObject({ type: "snapshot", payload: { ply: 1, acceptedSeq: 0 } });
+    expect(f.sent.at(-1)).toMatchObject({ type: "accept", matchId });
     await f.handle(start(1), reconnected.signal);
     expect(f.advance).toHaveBeenCalledTimes(1);
-    const stale = resume(createMatch(config()));
-    await f.handle(stale, reconnected.signal);
-    expect(f.record().phase).toBe("terminal");
-    expect(f.sent.at(-1)).toEqual({
-      type: "event",
+    const accepted = resume(createMatch(config()));
+    await f.handle(accepted, reconnected.signal);
+    expect(f.record().phase).toBe("ready");
+    expect(f.sent.at(-1)).toMatchObject({
+      type: "move",
       matchId,
-      payload: { kind: "interrupted", result: "*", termination: "interrupted" },
+      payload: { ply: 1, uci: "e2e4" },
     });
+    expect(f.advance).toHaveBeenCalledTimes(1);
+    await f.handle(start(1), reconnected.signal);
+    expect(f.advance).toHaveBeenCalledTimes(1);
+    await f.handle(resume(f.record().archive), reconnected.signal);
+    expect(f.record().confirmedPly).toBe(1);
   });
 
   it("stops authority on output backpressure and cannot spend on another turn", async () => {
@@ -947,7 +1110,7 @@ describe("paired runner game loop", () => {
     await f.handle(start());
     await vi.waitFor(() => expect(f.sent.some((item) => item.type === "move")).toBe(true));
     const after = f.sent.filter((item) => item.type === "snapshot");
-    expect(after).toHaveLength(1);
+    expect(after).toHaveLength(0);
     await f.handle(resume(f.record().archive));
     await f.handle(start(1));
     expect(f.advance).toHaveBeenCalledTimes(1);
@@ -957,7 +1120,7 @@ describe("paired runner game loop", () => {
   it("does not dispatch when the started event encounters output backpressure", async () => {
     const f = await fixture();
     await f.handle(offer());
-    f.send.mockReturnValue(false);
+    f.send.mockImplementation((action) => action.type !== "event");
     const credentials = vi.spyOn(f.policy, "credentials");
     await f.handle(start());
     expect(f.record().phase).toBe("uncertain");
@@ -1025,7 +1188,7 @@ describe("paired runner game loop", () => {
     expect(f.sent).toContainEqual({
       type: "event",
       matchId,
-      payload: { kind: "stopped", result: "*", termination: "cancelled" },
+      payload: expect.objectContaining({ kind: "stopped", result: "*", termination: "cancelled" }),
     });
     expect(f.sent.some((action) => action.type === "move")).toBe(false);
     const replacement = f.policy.beginMatch("freed_slot", f.controller.signal);
@@ -1212,7 +1375,7 @@ describe("operating-limit integration", () => {
     expect(f.record().phase).toBe("terminal");
     expect(f.record().archive.status).toBe("stopped");
     await f.handle(offer(config(), "new_after_lowering"));
-    expect(f.sent.at(-2)).toMatchObject({ type: "accept", matchId: "new_after_lowering" });
+    expect(f.sent.at(-1)).toMatchObject({ type: "accept", matchId: "new_after_lowering" });
     await controller.close();
   });
 
@@ -1415,7 +1578,11 @@ describe("common human turns and real model runner", () => {
     expect(f.sent).toContainEqual({
       type: "event",
       matchId,
-      payload: { kind: "interrupted", result: "*", termination: "engine-error" },
+      payload: expect.objectContaining({
+        kind: "interrupted",
+        result: "*",
+        termination: "engine-error",
+      }),
     });
     expect(f.advance).not.toHaveBeenCalled();
   });
@@ -1438,7 +1605,7 @@ describe("common human turns and real model runner", () => {
   });
 
   it.each(["after-move", "both"] as const)(
-    "persists a late human timeout without invalid %s player analysis",
+    "applies a server-accepted human move despite a late local %s clock",
     async (engineEvaluation) => {
       let now = Date.parse("2026-11-27T12:00:00.000Z");
       const f = await fixture({ engine: true, now: () => now });
@@ -1463,19 +1630,19 @@ describe("common human turns and real model runner", () => {
       await f.handle(
         message("human-move", { commandId: "late_human", expectedSeq: 0, uci: "e2e4" }),
       );
-      await vi.waitFor(() => expect(f.record().phase).toBe("terminal"));
-      expect(f.record().archive.termination).toBe("move-timeout");
-      expect(f.record().archive.events.some((event) => event.type === "evaluation")).toBe(false);
+      await f.idle(1);
+      expect(f.record().archive.termination).toBe("playing");
+      expect(f.record().archive.status).toBe("running");
       expect(() => validateArchive(f.record().archive)).not.toThrow();
-      expect(f.sent).toContainEqual({
-        type: "event",
-        matchId,
-        payload: { kind: "completed", result: "0-1", termination: "move-timeout" },
-      });
-      expect(f.sent.some((action) => action.type === "move")).toBe(false);
+      expect(f.sent).toContainEqual(
+        expect.objectContaining({
+          type: "move",
+          payload: expect.objectContaining({ uci: "e2e4", ply: 1 }),
+        }),
+      );
       expect(
-        evaluatePosition.mock.calls.every(([, options]) => options?.lane === "spectators"),
-      ).toBe(true);
+        f.sent.some((action) => action.type === "event" && action.payload.kind === "completed"),
+      ).toBe(false);
       expect(() => other.assertLive()).not.toThrow();
       other.finish();
       expect(f.advance).not.toHaveBeenCalled();
@@ -1572,9 +1739,12 @@ describe("common human turns and real model runner", () => {
     expect(f.advance).not.toHaveBeenCalled();
   });
 
-  it("restores a common parked human turn only after reconciliation", async () => {
-    const f = await fixture();
-    const settings = config({ white: { name: "Human", model: "human", protocol: "human" } });
+  it("replays a pending server-accepted human command before resume and echoes duplicates without work", async () => {
+    const f = await fixture({ engine: true });
+    const settings = config({
+      white: { name: "Human", model: "human", protocol: "human" },
+      rules: { engineEvaluation: "after-move" },
+    });
     const archive = createMatch(settings);
     beginHostedTurn(archive);
     f.records.set(matchId, {
@@ -1587,13 +1757,114 @@ describe("common human turns and real model runner", () => {
     await f.handle(
       message("human-move", { commandId: "before_resume", expectedSeq: 0, uci: "e2e4" }),
     );
-    expect(matchStats(f.record().archive).moves).toBe(0);
-    await f.handle(resume(archive));
-    await f.handle(
-      message("human-move", { commandId: "after_resume", expectedSeq: 0, uci: "e2e4" }),
-    );
     await f.idle(1);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const events = structuredClone(f.record().archive.events);
+    const searches = evaluatePosition.mock.calls.length;
+    for (const commandId of ["before_resume", "same_move_new_id"]) {
+      await f.handle(message("human-move", { commandId, expectedSeq: 0, uci: "e2e4" }));
+      expect(f.sent.at(-1)).toMatchObject({
+        type: "move",
+        matchId,
+        payload: { uci: "e2e4", ply: 1 },
+      });
+    }
+    expect(f.record().archive.events).toEqual(events);
+    expect(evaluatePosition).toHaveBeenCalledTimes(searches);
+    await f.handle(start(1));
+    expect(f.sent.at(-1)).toEqual({ type: "error", payload: { code: "STALE" } });
     expect(f.record().archive.turn.type).toBe("idle");
     expect(f.advance).not.toHaveBeenCalled();
+    await f.handle(resume(f.record().archive));
+    await f.handle(start(1));
+    await f.idle(2);
+    expect(f.advance).toHaveBeenCalledTimes(1);
   });
+
+  it("recovers a lost parked-human start ACK in a fresh loop after durable reconciliation without resetting its turn", async () => {
+    const settings = config({ white: { name: "Human", model: "human", protocol: "human" } });
+    const first = await fixture();
+    await first.handle(offer(settings));
+    await first.handle(resume(first.record().archive));
+    await first.handle(start(0, "lost-human-start"));
+    const journal = structuredClone(first.record());
+    expect(journal.phase).toBe("ready");
+    expect(journal.archive.turn.type).toBe("human");
+    // The saved ready state survives while the start ACK never reaches the server.
+    first.controller.abort();
+    await first.loop.close();
+    const restored = await fixture({ now: () => Date.now() + 60_000 });
+    restored.records.set(matchId, journal);
+    await restored.handle(offer(settings));
+    const beforeConfirmation = restored.saves.length;
+    await restored.handle(start(0, "lost-human-start"));
+    expect(restored.sent.at(-1)).toEqual({ type: "error", payload: { code: "STALE" } });
+    expect(restored.saves).toHaveLength(beforeConfirmation);
+    await restored.handle(resume(journal.archive));
+    const writeEntered = gate();
+    const writeReleased = gate();
+    const save = vi.mocked(restored.journal.save).getMockImplementation();
+    if (!save) throw new Error("Missing journal fixture");
+    vi.mocked(restored.journal.save).mockImplementationOnce(async (id, record) => {
+      writeEntered.release();
+      await writeReleased.promise;
+      await save(id, record);
+    });
+    const credentials = vi.spyOn(restored.policy, "credentials");
+    const before = restored.sent.length;
+    const retry = restored.handle(start(0, "lost-human-start"));
+    await writeEntered.promise;
+    expect(restored.sent).toHaveLength(before);
+    expect(restored.record().archive.turn).toEqual(journal.archive.turn);
+    writeReleased.release();
+    await retry;
+    expect(restored.sent.slice(before)).toEqual([
+      { type: "ack", payload: { commandId: "lost-human-start" } },
+      {
+        type: "snapshot",
+        matchId,
+        payload: { acceptedSeq: 0, ply: 0, fen: boardAt(journal.archive).fen() },
+      },
+    ]);
+    await restored.handle(start(0, "another-human-start-id"));
+    expect(restored.record().archive.turn).toEqual(journal.archive.turn);
+    const saved = restored.saves.length;
+    await restored.handle(start(1, "wrong-human-ply"));
+    expect(restored.sent.at(-1)).toEqual({ type: "error", payload: { code: "STALE" } });
+    expect(restored.saves).toHaveLength(saved);
+    expect(credentials).not.toHaveBeenCalled();
+    expect(restored.advance).not.toHaveBeenCalled();
+    expect(restored.spend.reserve).not.toHaveBeenCalled();
+    expect(evaluatePosition).not.toHaveBeenCalled();
+  });
+
+  it.each(["uncertain-human", "parked-model", "wrong-fen"] as const)(
+    "never treats restored %s state as an acknowledged parked-human start",
+    async (mode) => {
+      const f = await fixture();
+      const settings =
+        mode === "parked-model"
+          ? config()
+          : config({ white: { name: "Human", model: "human", protocol: "human" } });
+      const archive = createMatch(settings);
+      beginHostedTurn(archive);
+      f.records.set(matchId, {
+        digest: runnerConfigDigest(settings),
+        phase: mode === "uncertain-human" ? "uncertain" : "ready",
+        archive,
+        confirmedPly: 0,
+      });
+      await f.handle(offer(settings));
+      const confirming = resume(archive);
+      if (mode === "wrong-fen" && confirming.type === "resume")
+        confirming.payload.fen = "8/8/8/8/8/8/5k2/7K w - - 0 1";
+      await f.handle(confirming);
+      const before = f.sent.length;
+      await f.handle(start(0, "must-not-ack"));
+      expect(f.sent.slice(before).some((message) => message.type === "ack")).toBe(false);
+      expect(f.advance).not.toHaveBeenCalled();
+      expect(f.spend.reserve).not.toHaveBeenCalled();
+      expect(evaluatePosition).not.toHaveBeenCalled();
+    },
+  );
 });

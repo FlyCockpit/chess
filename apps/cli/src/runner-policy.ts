@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import type { ProviderCredentials } from "@cockpit-chess/chess/runner";
-import { runnerOperatingLimitsSchema } from "@cockpit-chess/chess/runner-protocol";
+import {
+  RUNNER_MAX_LOCAL_CONCURRENCY,
+  runnerOperatingLimitsSchema,
+} from "@cockpit-chess/chess/runner-protocol";
 import { z } from "zod";
 import { t } from "./chess-i18n";
 import { resolveApiKey } from "./chess-provider";
@@ -18,7 +21,7 @@ import {
 } from "./runner-spend";
 
 const micros = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-const concurrent = z.number().int().min(1).max(1024);
+const concurrent = z.number().int().min(1).max(RUNNER_MAX_LOCAL_CONCURRENCY);
 const limitsSchema = z.strictObject({
   matchMicros: micros,
   dayMicros: micros,

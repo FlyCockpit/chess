@@ -1,4 +1,5 @@
 import {
+  disconnectRunnerMatches,
   handleRunnerControl,
   RUNNER_COMMAND_CHANNEL,
   runnerOutbox,
@@ -44,7 +45,13 @@ export function createRunnerWebSocketRuntime(options: { isOwnerActive: RunnerOwn
         leases: createRunnerLeaseStore(redisConnection),
         isAvailable,
         limits: runnerLimitsService,
-        controls: { outbox: runnerOutbox, handle: handleRunnerControl },
+        controls: {
+          outbox: runnerOutbox,
+          handle: handleRunnerControl,
+          disconnected: async (identity) => {
+            await disconnectRunnerMatches(identity);
+          },
+        },
       })
     : null;
   if (transport) {

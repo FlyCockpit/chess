@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Prisma } from "@cockpit-chess/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunnerMachineTransaction } from "./runner-machine";
 
@@ -8,15 +9,17 @@ const db = vi.hoisted(() => ({
   session: { findFirst: vi.fn() },
   appSetting: { findUnique: vi.fn() },
   runnerMachine: { count: vi.fn(), create: vi.fn(), updateMany: vi.fn() },
+  chessMatch: { updateMany: vi.fn() },
 }));
 vi.mock("@cockpit-chess/db", () => ({ default: db }));
 vi.mock("@cockpit-chess/env/shared", () => ({ env: { DATABASE_POOL_MAX: 3 } }));
 
-const tx = db as unknown as RunnerMachineTransaction;
+const tx = db as unknown as RunnerMachineTransaction & Pick<Prisma.TransactionClient, "chessMatch">;
 const {
   digestRunnerMachineSecret,
   mintRunnerMachineForSession,
   mintRunnerMachineInTransaction,
+  requireRunnerMachineMintAuthority,
   parseRunnerMachineSecret,
   revokeRunnerMachinesInTransaction,
   runnerMachinePublicSelect,
@@ -38,6 +41,7 @@ const secret = RUNNER_MACHINE_TOKEN_PREFIX + "ab".repeat(32);
 function liveSession(user: Record<string, unknown> = {}) {
   return {
     id: "s1",
+    expiresAt: new Date(Date.now() + 60_000),
     user: {
       id: "u1",
       emailVerified: true,
@@ -73,6 +77,7 @@ beforeEach(() => {
   db.runnerMachine.count.mockResolvedValue(0);
   db.runnerMachine.create.mockResolvedValue(machine);
   db.runnerMachine.updateMany.mockResolvedValue({ count: 1 });
+  db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
   db.$transaction.mockImplementation(
     async (fn: (client: RunnerMachineTransaction) => Promise<unknown>) => {
       if (typeof fn !== "function") throw new Error("Expected interactive transaction");
@@ -114,6 +119,71 @@ describe("runner secret purpose and encoding", () => {
 });
 
 describe("internal runner enrollment", () => {
+  it("retains the projected session deadline before the final policy read", async () => {
+    const current = liveSession();
+    const retained = vi.fn();
+    db.session.findFirst.mockResolvedValueOnce(current);
+    await expect(requireRunnerMachineMintAuthority(tx, session, retained)).resolves.toEqual(
+      current.user,
+    );
+    expect(db.session.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ expiresAt: true }),
+      }),
+    );
+    expect(retained).toHaveBeenCalledExactlyOnceWith(current.expiresAt);
+    expect(retained.mock.invocationCallOrder[0]).toBeLessThan(
+      db.appSetting.findUnique.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+  it.each([0, 1])(
+    "refuses session expiry during the final policy await (%sms past expiry)",
+    async (after) => {
+      const current = liveSession();
+      const retained = vi.fn();
+      db.session.findFirst.mockResolvedValueOnce(current);
+      db.appSetting.findUnique.mockImplementationOnce(async () => {
+        vi.setSystemTime(current.expiresAt.getTime() + after);
+        return null;
+      });
+      await expect(requireRunnerMachineMintAuthority(tx, session, retained)).rejects.toBeInstanceOf(
+        RunnerMachineSessionRevokedError,
+      );
+      expect(retained).toHaveBeenCalledExactlyOnceWith(current.expiresAt);
+      expect(db.runnerMachine.create).not.toHaveBeenCalled();
+    },
+  );
+  it("permits an unexpired session after the final policy await", async () => {
+    const current = liveSession();
+    db.session.findFirst.mockResolvedValueOnce(current);
+    db.appSetting.findUnique.mockImplementationOnce(async () => {
+      vi.setSystemTime(current.expiresAt.getTime() - 1);
+      return null;
+    });
+    await expect(requireRunnerMachineMintAuthority(tx, session)).resolves.toEqual(current.user);
+  });
+  it.each([undefined, new Date(Number.NaN)])(
+    "refuses a missing or invalid projected expiry (%s)",
+    async (expiresAt) => {
+      db.session.findFirst.mockResolvedValueOnce({ ...liveSession(), expiresAt } as never);
+      await expect(requireRunnerMachineMintAuthority(tx, session)).rejects.toBeInstanceOf(
+        RunnerMachineSessionRevokedError,
+      );
+      expect(db.appSetting.findUnique).not.toHaveBeenCalled();
+    },
+  );
+  it("rolls back enrollment when its final policy await crosses the original session expiry", async () => {
+    const current = liveSession();
+    db.session.findFirst.mockResolvedValue(current);
+    db.appSetting.findUnique.mockResolvedValueOnce(null).mockImplementationOnce(async () => {
+      vi.setSystemTime(current.expiresAt);
+      return null;
+    });
+    await expect(
+      mintRunnerMachineForSession(session, { displayName: "Laptop" }),
+    ).rejects.toBeInstanceOf(RunnerMachineSessionRevokedError);
+    expect(db.runnerMachine.create).toHaveBeenCalledTimes(1);
+  });
   it("mints within one transaction, after the shared lock and live authority reads", async () => {
     const { machine: result, secret: minted } = await mintRunnerMachineForSession(session, {
       displayName: " Laptop ",
@@ -317,6 +387,7 @@ describe("transactional runner revocation", () => {
       RunnerMachineInputError,
     );
     expect(db.runnerMachine.updateMany).not.toHaveBeenCalled();
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
     expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
@@ -328,6 +399,35 @@ describe("transactional runner revocation", () => {
         where: { userId: "u1", ...(machineId ? { id: machineId } : {}), revokedAt: null },
         data: { revokedAt: NOW, connectionGeneration: { increment: 1 } },
       });
+      expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(2);
+      for (const pending of [true, false])
+        expect(db.chessMatch.updateMany).toHaveBeenCalledWith({
+          where: {
+            ownerId: "u1",
+            source: "runner",
+            ...(machineId ? { runnerMachineId: machineId } : {}),
+            status: { in: ["queued", "running"] },
+            Owner: { deletionRequestedAt: pending ? { not: null } : null },
+          },
+          data: {
+            status: "stopped",
+            runnerState: "stopped",
+            runnerGeneration: null,
+            runnerResumeDeadline: null,
+            runnerRevision: { increment: 1 },
+            runToken: null,
+            heartbeatAt: null,
+            turnType: "idle",
+            turnId: null,
+            turnSide: null,
+            turnExpectedSeq: null,
+            turnStartedAt: null,
+            turnDeadline: null,
+            pendingMove: expect.anything(),
+            terminalCause: pending ? "owner-delete" : "runner-revoked",
+            ending: { kind: "cancelled" },
+          },
+        });
       const [query, channel, payload] = db.$executeRaw.mock.calls[0] ?? [];
       expect((query as TemplateStringsArray).join("?")).toBe("SELECT pg_notify(?, ?)");
       expect(channel).toBe(RUNNER_MACHINE_REVOCATION_CHANNEL);
@@ -349,4 +449,14 @@ describe("transactional runner revocation", () => {
     db.$executeRaw.mockRejectedValue(new Error("notify unavailable"));
     await expect(revokeRunnerMachinesInTransaction(tx, "u1")).rejects.toThrow("notify unavailable");
   });
+
+  it.each([1, 2])(
+    "awaits terminal match fence %s before completing explicit machine revocation",
+    async (index) => {
+      const failure = new Error("match fence unavailable");
+      if (index === 2) db.chessMatch.updateMany.mockResolvedValueOnce({ count: 0 });
+      db.chessMatch.updateMany.mockRejectedValueOnce(failure);
+      await expect(revokeRunnerMachinesInTransaction(tx, "u1", "m1")).rejects.toBe(failure);
+    },
+  );
 });

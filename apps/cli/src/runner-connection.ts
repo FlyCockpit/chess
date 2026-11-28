@@ -7,6 +7,10 @@ import {
   RUNNER_LIVENESS_MS,
   RUNNER_MAX_BUFFERED_BYTES,
   RUNNER_MAX_FRAME_BYTES,
+  RUNNER_RECEIVE_WINDOW,
+  RUNNER_SEND_BURST,
+  RUNNER_SEND_QUEUE_LIMIT,
+  RUNNER_SEND_RATE,
   RUNNER_WS_PATH,
   type RunnerClientMessage,
   type RunnerServerMessage,
@@ -70,9 +74,11 @@ export interface RunnerConnectionOptions {
 
 const HANDSHAKE_MS = 10_000;
 const CALLBACK_MS = 10_000;
-const MAX_PENDING_MESSAGES = 32;
+const MAX_PENDING_MESSAGES = RUNNER_RECEIVE_WINDOW;
 const MAX_RECONNECTS = 10;
 const MAX_REPLACEMENTS = 3;
+const LIVENESS_SEND_RATE = 8;
+const LIVENESS_SEND_BURST = 16;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -128,6 +134,13 @@ type Session = {
   queue: { message: Parameters<RunnerMessageHandler>[0]; bytes: number }[];
   pendingBytes: number;
   processing: boolean;
+  outgoing: { action: ClientAction; bytes: number }[];
+  outgoingBytes: number;
+  outputTokens: number;
+  outputAt: number;
+  controlTokens: number;
+  controlAt: number;
+  outputTimer?: ReturnType<typeof setTimeout>;
 };
 
 /** Outbound transport only. Nothing executes commands unless onMessage is explicitly installed. */
@@ -179,7 +192,7 @@ export class RunnerConnection {
     this.setState("stopped");
   }
 
-  /** Requires the originating onMessage session's signal; never buffers or replays commands. */
+  /** Requires the originating session; bounded paced output is discarded on disconnect. */
   send(message: RunnerClientAction, signal: AbortSignal): boolean {
     const session = this.session;
     if (
@@ -287,6 +300,12 @@ export class RunnerConnection {
         queue: [],
         pendingBytes: 0,
         processing: false,
+        outgoing: [],
+        outgoingBytes: 0,
+        outputTokens: RUNNER_SEND_BURST,
+        outputAt: this.now(),
+        controlTokens: LIVENESS_SEND_BURST,
+        controlAt: this.now(),
       };
       this.session = session;
       session.handshake = this.timer(session, HANDSHAKE_MS, () => this.disconnect(session, 1001));
@@ -322,6 +341,9 @@ export class RunnerConnection {
       return false;
     }
     try {
+      const buffered = session.socket.bufferedAmount;
+      if (!Number.isFinite(buffered) || buffered < 0 || buffered >= RUNNER_MAX_BUFFERED_BYTES)
+        throw new Error();
       const parsed = runnerClientMessageSchema.safeParse({
         ...action,
         version: 1,
@@ -331,7 +353,86 @@ export class RunnerConnection {
         ack: session.received,
       });
       if (!parsed.success) throw new Error();
-      const frame = serializeRunnerFrame(parsed.data);
+      // Parse now to detach callers' mutable payloads. Wire sequence, ACK and ID
+      // are assigned only at actual transmission, including priority liveness.
+      const bytes = Buffer.byteLength(serializeRunnerFrame(parsed.data), "utf8") + 32;
+      this.refillOutput(session);
+      if (action.type === "heartbeat" || action.type === "pong") {
+        if (session.controlTokens < 1) throw new Error();
+        --session.controlTokens;
+        return this.transmit(session, parsed.data);
+      }
+      if (session.outgoing.length === 0 && session.outputTokens >= 1) {
+        --session.outputTokens;
+        return this.transmit(session, parsed.data);
+      }
+      if (
+        session.outgoing.length >= RUNNER_SEND_QUEUE_LIMIT ||
+        session.outgoingBytes + bytes > RUNNER_MAX_BUFFERED_BYTES
+      )
+        throw new Error();
+      session.outgoing.push({ action: parsed.data, bytes });
+      session.outgoingBytes += bytes;
+      this.flushOutput(session);
+      return this.session === session && !session.controller.signal.aborted;
+    } catch {
+      this.disconnect(session, 4400);
+      return false;
+    }
+  }
+
+  private refillOutput(session: Session): void {
+    const now = this.now();
+    session.outputTokens = Math.min(
+      RUNNER_SEND_BURST,
+      session.outputTokens + (Math.max(0, now - session.outputAt) * RUNNER_SEND_RATE) / 1000,
+    );
+    session.controlTokens = Math.min(
+      LIVENESS_SEND_BURST,
+      session.controlTokens + (Math.max(0, now - session.controlAt) * LIVENESS_SEND_RATE) / 1000,
+    );
+    session.outputAt = Math.max(session.outputAt, now);
+    session.controlAt = Math.max(session.controlAt, now);
+  }
+
+  private flushOutput(session: Session): void {
+    if (this.session !== session || session.controller.signal.aborted) return;
+    this.cancelTimer(session, session.outputTimer);
+    session.outputTimer = undefined;
+    this.refillOutput(session);
+    while (session.outgoing.length && session.outputTokens >= 1) {
+      const queued = session.outgoing.shift();
+      if (!queued) break;
+      session.outgoingBytes -= queued.bytes;
+      --session.outputTokens;
+      if (!this.transmit(session, queued.action)) return;
+    }
+    if (session.outgoing.length) {
+      session.outputTimer = this.timer(
+        session,
+        Math.max(1, Math.ceil(((1 - session.outputTokens) * 1000) / RUNNER_SEND_RATE)),
+        () => this.flushOutput(session),
+      );
+    }
+  }
+
+  private transmit(session: Session, action: ClientAction): boolean {
+    if (this.session !== session || session.controller.signal.aborted) return false;
+    if (session.generation && this.now() - session.lastValidAt >= RUNNER_LIVENESS_MS) {
+      this.disconnect(session, 1001);
+      return false;
+    }
+    try {
+      const frame = serializeRunnerFrame(
+        runnerClientMessageSchema.parse({
+          ...action,
+          version: 1,
+          generation: session.generation,
+          id: randomUUID(),
+          seq: session.sent + 1,
+          ack: session.received,
+        }),
+      );
       const buffered = session.socket.bufferedAmount;
       if (
         !Number.isFinite(buffered) ||
@@ -339,9 +440,9 @@ export class RunnerConnection {
         buffered + Buffer.byteLength(frame, "utf8") > RUNNER_MAX_BUFFERED_BYTES
       )
         throw new Error();
-      session.sent += 1;
+      ++session.sent;
       session.socket.send(frame);
-      return this.session === session;
+      return this.session === session && !session.controller.signal.aborted;
     } catch {
       this.disconnect(session, 4400);
       return false;
@@ -509,6 +610,8 @@ export class RunnerConnection {
     session.timers.clear();
     session.pendingNonces.clear();
     session.queue.length = 0;
+    session.outgoing.length = 0;
+    session.outgoingBytes = 0;
     try {
       session.unsubscribe();
     } catch {

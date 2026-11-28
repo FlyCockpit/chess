@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { chessRunJobId, chessTurnData } from "@cockpit-chess/api/lib/chess-human";
+import { reconcileRunnerMatches } from "@cockpit-chess/api/lib/chess-runner";
 import {
   chessStatsColumns,
   chessUsageColumns,
@@ -204,6 +205,10 @@ export async function handleChessReconcileJob(
   if (data.reason === "spectator")
     return backfillSpectatorEvaluations(data.matchId, data.fromPly, data.access, signal);
   await settlePendingDeletionMatches();
+  // Pending deletion settles first so its terminal cause wins runner recovery.
+  // Runner rows never become hosted jobs, including after a missed disconnect
+  // notification or a different replica taking over the transport lease.
+  const runners = await reconcileRunnerMatches(signal);
   const cutoff = new Date(Date.now() - STALE_HEARTBEAT_MS);
   const select = {
     id: true,
@@ -372,6 +377,7 @@ export async function handleChessReconcileJob(
     scanned: running.length + queued.length + humans.length,
     errored,
     ...(humans.length ? { expired } : {}),
+    ...(runners.scanned ? { runnerScanned: runners.scanned, runnerSettled: runners.settled } : {}),
   };
 }
 

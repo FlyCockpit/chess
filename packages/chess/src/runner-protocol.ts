@@ -3,7 +3,13 @@ import { createHash } from "node:crypto";
 
 import { validateFen } from "chess.js";
 import { z } from "zod";
-import { archiveSchema, Chess, MODEL_PROTOCOLS, matchConfigSchema } from "./index";
+import {
+  archiveSchema,
+  Chess,
+  MODEL_PROTOCOLS,
+  matchConfigSchema,
+  replyStopReasons,
+} from "./index";
 import { promptVersionSchema } from "./prompts";
 
 export const RUNNER_PROTOCOL_VERSION = 1;
@@ -14,6 +20,16 @@ export const RUNNER_RESUME_GRACE_MS = 120_000;
 export const RUNNER_MAX_BUFFERED_BYTES = 262_144;
 /** Per-socket chess command credit, with headroom for liveness and limit replies. */
 export const RUNNER_COMMAND_WINDOW = 4;
+/** Bounded output pacing is independent of local concurrency and server admission. */
+export const RUNNER_SEND_RATE = 64;
+export const RUNNER_SEND_BURST = 128;
+export const RUNNER_SEND_QUEUE_LIMIT = 256;
+export const RUNNER_MAX_MATCHES_PER_MACHINE = 16;
+/** The paired-runner wire permits a locally raised ceiling up to64; default8. */
+export const RUNNER_MAX_LOCAL_CONCURRENCY = 64;
+export const RUNNER_RECEIVE_WINDOW = RUNNER_MAX_LOCAL_CONCURRENCY * 8 + 32;
+// Gameplay64/s + reserved liveness8/s, bursts128+16: at most4464/min.
+export const RUNNER_APPLICATION_FRAMES_PER_MINUTE = 6000;
 export const RUNNER_WS_PATH = "/api/cli/runner/ws";
 
 const identifier = z
@@ -40,7 +56,7 @@ const uci = z.string().regex(/^[a-h][1-8][a-h][1-8][qrbn]?$/);
 const hardLimits = {
   matchMicros: positiveInteger,
   dayMicros: positiveInteger,
-  concurrency: positiveInteger.max(64),
+  concurrency: positiveInteger.max(RUNNER_MAX_LOCAL_CONCURRENCY),
 };
 const limits = {
   ...hardLimits,
@@ -142,6 +158,16 @@ export const runnerClientMessageSchema = z.discriminatedUnion("type", [
           kind: z.enum(["stopped", "completed", "interrupted"]),
           result: archiveSchema.shape.result,
           termination: archiveSchema.shape.termination,
+          ply: integer,
+          fen,
+          rejectedAttempts: z
+            .array(
+              z.strictObject({
+                move: z.string().max(256),
+                stopReason: z.enum(replyStopReasons).optional(),
+              }),
+            )
+            .max(32),
         })
         .strict(),
     ]),
@@ -176,7 +202,12 @@ export const runnerServerMessageSchema = z.discriminatedUnion("type", [
   ),
   matchFrame("start", z.object({ ...command, expectedSeq: integer }).strict()),
   matchFrame("stop", ack),
-  matchFrame("human-move", z.object({ ...command, uci, expectedSeq: integer }).strict()),
+  matchFrame(
+    "human-move",
+    z
+      .object({ ...command, uci: z.union([uci, z.literal("resign")]), expectedSeq: integer })
+      .strict(),
+  ),
   matchFrame("resume", z.object({ ...command, acceptedSeq: integer, fen, ply: integer }).strict()),
   frame("limits", runnerLimitUpdateSchema),
   frame("ack", ack),

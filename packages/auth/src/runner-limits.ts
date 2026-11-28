@@ -3,6 +3,20 @@ import prisma, { type Prisma } from "@cockpit-chess/db";
 import { z } from "zod";
 import { ownerActiveInTransaction } from "./account-deletion.js";
 import { lockCliCredentials, withCliCredentialLockSlot } from "./device-redemption-lock.js";
+import {
+  runnerLimitOperatingSchema as operatingSchema,
+  type RunnerLimitsCommand,
+  RunnerLimitsError,
+  type RunnerLimitsIdentity,
+  type RunnerLimitsResult,
+  readRunnerLimitsInTransaction,
+  runnerLimitResultSchema as resultSchema,
+  runnerLimitValuesSchema,
+  type RunnerLimitState as State,
+  runnerLimitStateId as stateId,
+  runnerLimitStateSchema as stateSchema,
+  runnerLimitsWithin as within,
+} from "./runner-limits-store.js";
 import { type RunnerMachineSession, requireRunnerMachineMintAuthority } from "./runner-machine.js";
 import {
   type RunnerStepUp,
@@ -10,54 +24,17 @@ import {
   verifyRunnerLimitStepUp,
 } from "./runner-step-up.js";
 
-const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-export const runnerLimitValuesSchema = z.strictObject({
-  matchMicros: integer.min(1),
-  dayMicros: integer.min(1),
-  concurrency: integer.min(1).max(64),
-});
-const operatingSchema = runnerLimitValuesSchema.extend({ revision: integer });
-const commandSchema = runnerLimitValuesSchema.extend({
-  commandId: z
-    .string()
-    .min(1)
-    .max(128)
-    .regex(/^[A-Za-z0-9_-]+$/),
-  expectedRevision: integer,
-  revision: integer,
-});
-const resultSchema = z.strictObject({
-  commandId: z
-    .string()
-    .min(1)
-    .max(128)
-    .regex(/^[A-Za-z0-9_-]+$/),
-  revision: integer,
-  status: z.enum(["applied", "rejected"]),
-  reason: z.enum(["applied", "ceiling", "stale", "stopped", "storage"]),
-  operatingLimits: operatingSchema,
-  hardLimits: runnerLimitValuesSchema,
-});
-export type RunnerLimitsCommand = z.infer<typeof commandSchema>;
-export type RunnerLimitsResult = z.infer<typeof resultSchema>;
-export type RunnerLimitsIdentity = {
-  userId: string;
-  machineId: string;
-  connectionGeneration: number;
-};
-const stateSchema = z.strictObject({
-  version: z.literal(1),
-  userId: z.string().min(1).max(128),
-  machineId: z.string().min(1).max(128),
-  generation: integer,
-  operatingLimits: operatingSchema,
-  hardLimits: runnerLimitValuesSchema,
-  pending: commandSchema.nullable(),
-  lastResult: resultSchema.nullable(),
-});
-type State = z.infer<typeof stateSchema>;
+export {
+  type RunnerLimitsCommand,
+  RunnerLimitsError,
+  type RunnerLimitsIdentity,
+  type RunnerLimitsResult,
+  readRunnerLimitsInTransaction,
+  runnerLimitStateSchema,
+  runnerLimitValuesSchema,
+} from "./runner-limits-store.js";
 
-export { stateSchema as runnerLimitStateSchema };
+const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 
 const requestShape = {
   id: z.string().min(1).max(64),
@@ -85,16 +62,7 @@ const proofSchema = z.strictObject({
   expectedRevision: integer,
   limits: runnerLimitValuesSchema,
 });
-export class RunnerLimitsError extends Error {
-  constructor(
-    readonly code: "NOT_FOUND" | "CONFLICT" | "FORBIDDEN" | "BAD_REQUEST" | "SERVICE_UNAVAILABLE",
-  ) {
-    super(code);
-    this.name = "RunnerLimitsError";
-  }
-}
 export const RUNNER_LIMIT_PROOF_MS = 120_000;
-const stateId = (id: string) => `runner-limits:v1:${id}`;
 const proofId = (proof: string) =>
   `runner-limit-proof:v1:${createHash("sha256").update(proof).digest("hex")}`;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -103,13 +71,6 @@ const values = (value: z.infer<typeof operatingSchema>) => ({
   dayMicros: value.dayMicros,
   concurrency: value.concurrency,
 });
-const within = (
-  limit: z.infer<typeof runnerLimitValuesSchema>,
-  hard: z.infer<typeof runnerLimitValuesSchema>,
-) =>
-  limit.matchMicros <= hard.matchMicros &&
-  limit.dayMicros <= hard.dayMicros &&
-  limit.concurrency <= hard.concurrency;
 const raises = (
   limit: z.infer<typeof runnerLimitValuesSchema>,
   current: z.infer<typeof runnerLimitValuesSchema>,
@@ -169,25 +130,7 @@ export function createRunnerLimitsService(db: Database = prisma, verify = verify
     userId: string,
     machineId: string,
   ): Promise<State | null> {
-    const row = await tx.verification.findUnique({
-      where: { id: stateId(machineId) },
-      select: { value: true, expiresAt: true },
-    });
-    if (!row) return null;
-    if (row.expiresAt <= new Date() || row.value.length > 8192)
-      throw new RunnerLimitsError("SERVICE_UNAVAILABLE");
-    try {
-      const state = stateSchema.parse(JSON.parse(row.value));
-      if (
-        state.userId !== userId ||
-        state.machineId !== machineId ||
-        !within(state.operatingLimits, state.hardLimits)
-      )
-        throw new Error();
-      return state;
-    } catch {
-      throw new RunnerLimitsError("SERVICE_UNAVAILABLE");
-    }
+    return readRunnerLimitsInTransaction(tx, userId, machineId);
   }
   async function write(tx: Prisma.TransactionClient, state: State, expiresAt: Date) {
     const id = stateId(state.machineId);

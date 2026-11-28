@@ -130,19 +130,29 @@ const db = vi.hoisted(() => {
   };
   const none = () => statement(async () => ({ count: 0 }));
   const cancelMatches = async (args: unknown, ctx: TxContext) => {
+    const runner = (args as { where: { source: string } }).where.source === "runner";
     const pending =
       (args as { where: { Owner: { deletionRequestedAt: null | { not: null } } } }).where.Owner
         .deletionRequestedAt !== null;
     expect(args).toEqual({
       where: {
         ownerId: store.user.id,
-        source: "hosted",
+        source: runner ? "runner" : "hosted",
         status: { in: ["queued", "running"] },
         Owner: { deletionRequestedAt: pending ? { not: null } : null },
       },
       data: {
         status: "stopped",
         runToken: null,
+        ...(runner
+          ? {
+              runnerState: "stopped",
+              runnerGeneration: null,
+              runnerResumeDeadline: null,
+              runnerRevision: { increment: 1 },
+              heartbeatAt: null,
+            }
+          : {}),
         turnType: "idle",
         turnId: null,
         turnSide: null,
@@ -150,7 +160,7 @@ const db = vi.hoisted(() => {
         turnStartedAt: null,
         turnDeadline: null,
         pendingMove: expect.anything(),
-        terminalCause: pending ? "owner-delete" : "owner-reset",
+        terminalCause: pending ? "owner-delete" : runner ? "runner-revoked" : "owner-reset",
         ending: { kind: "cancelled" },
       },
     });
@@ -158,7 +168,7 @@ const db = vi.hoisted(() => {
     const matches = store.matches.filter(
       (row) =>
         row.ownerId === store.user.id &&
-        row.source === "hosted" &&
+        row.source === (runner ? "runner" : "hosted") &&
         ["queued", "running"].includes(row.status) &&
         (store.user.deletionRequestedAt !== null) === pending,
     );

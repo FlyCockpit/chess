@@ -24,6 +24,9 @@ vi.mock("@cockpit-chess/db", async () => {
   const Prisma = await import("../../../db/prisma/generated/internal/prismaNamespace");
   return { default: mockDeep<typeof prismaInstance>(), Prisma };
 });
+vi.mock("@cockpit-chess/auth/runner-limits-store", () => ({
+  readRunnerLimitsInTransaction: vi.fn(),
+}));
 const { ensureRunnableJob, budget, budgetConfigs, env, reconcileAdd } = vi.hoisted(() => ({
   ensureRunnableJob: vi.fn(),
   reconcileAdd: vi.fn(),

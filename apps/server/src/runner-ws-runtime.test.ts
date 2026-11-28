@@ -20,12 +20,14 @@ const state = vi.hoisted(() => ({
   monitor: vi.fn(),
   outbox: vi.fn().mockResolvedValue([]),
   handle: vi.fn().mockResolvedValue([]),
+  disconnected: vi.fn().mockResolvedValue(undefined),
   events: undefined as WSEvents<WebSocket> | undefined,
 }));
 vi.mock("@cockpit-chess/api/lib/chess-runner", () => ({
   RUNNER_COMMAND_CHANNEL: "chess_runner_command",
   runnerOutbox: state.outbox,
   handleRunnerControl: state.handle,
+  disconnectRunnerMatches: state.disconnected,
 }));
 vi.mock("@cockpit-chess/queue", () => ({
   createRedisConnection: state.redis,
@@ -151,6 +153,13 @@ describe("Node runner upgrade adapter", () => {
     await runtime.stop();
     expect(fixture.stop).toHaveBeenCalledOnce();
     expect(fixture.leases.release).toHaveBeenCalled();
+    expect(state.disconnected).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        userId: "owner1",
+        machineId: "machine1",
+        connectionGeneration: 1,
+      }),
+    );
   });
 
   it("closes a control-frame flood without logging submitted content", async () => {

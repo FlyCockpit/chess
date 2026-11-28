@@ -1,16 +1,31 @@
 import { randomUUID } from "node:crypto";
-import { boardAt, createMatch, matchConfigSchema } from "@cockpit-chess/chess";
+import {
+  applyUci,
+  beginHostedTurn,
+  boardAt,
+  createMatch,
+  matchConfigSchema,
+  validateArchive,
+} from "@cockpit-chess/chess";
 import {
   type RunnerClientMessage,
   runnerConfigDigest,
   runnerServerMessageSchema,
 } from "@cockpit-chess/chess/runner-protocol";
 import type prismaInstance from "@cockpit-chess/db";
+import type { Prisma } from "@cockpit-chess/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type DeepMockProxy, mockReset } from "vitest-mock-extended";
 import type { Context } from "../context";
 
 const { mintAuthority, publish } = vi.hoisted(() => ({ mintAuthority: vi.fn(), publish: vi.fn() }));
+vi.mock("@cockpit-chess/auth/runner-limits-store", () => ({
+  readRunnerLimitsInTransaction: vi.fn(async () => ({
+    generation: 3,
+    operatingLimits: { matchMicros: 2_000_000 },
+    hardLimits: { matchMicros: 25_000_000 },
+  })),
+}));
 vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
   return { default: mockDeep<typeof prismaInstance>() };
@@ -43,6 +58,8 @@ const {
   runnerOutbox,
   startRunnerMatch,
   stopRunnerMatch,
+  moveRunnerMatch,
+  disconnectRunnerMatches,
 } = await import("./chess-runner");
 const { chessDigest } = await import("./chess-official");
 const { RunnerMachineForbiddenError, RunnerMachineSessionRevokedError } = await import(
@@ -93,20 +110,16 @@ function offerPayload(commandId = "offer") {
     configDigest: runnerConfigDigest(configWithPrompt),
   };
 }
-function acceptedResponses(id = "event", offerId = "offer") {
-  return [
-    { type: "ack", payload: { commandId: id } },
-    {
-      type: "resume",
-      matchId: "match",
-      payload: {
-        commandId: chessDigest(["runner-resume", "match", offerId]),
-        acceptedSeq: 0,
-        fen: boardAt(row().archive).fen(),
-        ply: 0,
-      },
-    },
-  ];
+function acceptedResponses(id = "event") {
+  return [{ type: "ack", payload: { commandId: id } }];
+}
+function acceptanceResumePayload(offerId = "offer") {
+  return {
+    commandId: chessDigest(["runner-resume", "match", offerId]),
+    acceptedSeq: 0,
+    fen: boardAt(row().archive).fen(),
+    ply: 0,
+  };
 }
 function accept(id = "event"): RunnerClientMessage {
   return {
@@ -120,6 +133,81 @@ function accept(id = "event"): RunnerClientMessage {
     payload: { commandId: "offer" },
   };
 }
+
+type OutboxCommand = {
+  id: string;
+  matchId: string;
+  kind: string;
+  revision: number;
+  payload: Prisma.JsonValue;
+  createdAt: Date;
+  expiresAt: Date;
+  ackedAt: Date | null;
+  cancelledAt: Date | null;
+};
+function queuedCommand(
+  kind: string,
+  id: string,
+  revision: number,
+  payload: Prisma.JsonValue,
+  matchId = "match",
+): OutboxCommand {
+  return {
+    ...command(),
+    id,
+    matchId,
+    kind,
+    revision,
+    payload,
+    createdAt: new Date(),
+  };
+}
+
+/** Query-aware commands: each active match and the separate terminal page see only their rows. */
+function stageOutbox(states: ReturnType<typeof row>[], commands: OutboxCommand[]) {
+  db.chessMatch.findMany.mockResolvedValue(states as never);
+  db.chessMatch.findFirst.mockImplementation(
+    (async (args?: Prisma.ChessMatchFindFirstArgs) =>
+      states.find((state) => state.id === args?.where?.id) ?? null) as never,
+  );
+  const matches = (entry: OutboxCommand, where: Prisma.RunnerCommandWhereInput = {}) => {
+    if (typeof where.matchId === "string" && entry.matchId !== where.matchId) return false;
+    if (typeof where.kind === "string" && entry.kind !== where.kind) return false;
+    if (where.ackedAt === null && entry.ackedAt !== null) return false;
+    if (where.cancelledAt === null && entry.cancelledAt !== null) return false;
+    if (typeof where.id === "string" && entry.id !== where.id) return false;
+    if (where.id && typeof where.id === "object") {
+      if (Array.isArray(where.id.in) && !where.id.in.includes(entry.id)) return false;
+      if (Array.isArray(where.id.notIn) && where.id.notIn.includes(entry.id)) return false;
+    }
+    if (where.expiresAt && typeof where.expiresAt === "object" && "gt" in where.expiresAt) {
+      const after = where.expiresAt.gt;
+      if (after instanceof Date && entry.expiresAt <= after) return false;
+    }
+    if (where.Match && "status" in where.Match) {
+      const state = states.find((candidate) => candidate.id === entry.matchId);
+      if (!state || ["queued", "running"].includes(state.status)) return false;
+    }
+    return true;
+  };
+  db.runnerCommand.findMany.mockImplementation((async (args?: Prisma.RunnerCommandFindManyArgs) =>
+    commands
+      .filter((entry) => matches(entry, args?.where))
+      .sort((left, right) => right.revision - left.revision)
+      .slice(0, args?.take ?? commands.length)) as never);
+  db.runnerCommand.findFirst.mockImplementation((async (
+    args?: Prisma.RunnerCommandFindFirstArgs,
+  ) => {
+    const found = commands
+      .filter((entry) => matches(entry, args?.where))
+      .sort((left, right) =>
+        args?.orderBy && !Array.isArray(args.orderBy) && args.orderBy.revision === "asc"
+          ? left.revision - right.revision
+          : right.revision - left.revision,
+      );
+    return found[0] ?? null;
+  }) as never);
+}
 beforeEach(() => {
   vi.clearAllMocks();
   mockReset(db);
@@ -128,6 +216,8 @@ beforeEach(() => {
   publish.mockResolvedValue(0);
   db.runnerMachine.findFirst.mockResolvedValue({
     id: "machine",
+    expiresAt: new Date(Date.now() + 600_000),
+    connectionGeneration: 3,
     User: { emailVerified: true, banned: false, banExpires: null, deletionRequestedAt: null },
   } as never);
   db.chessMatch.findFirst.mockResolvedValue(row() as never);
@@ -136,10 +226,12 @@ beforeEach(() => {
   db.chessMatch.count.mockResolvedValue(0);
   db.chessCreation.findUnique.mockResolvedValue(null);
   db.runnerCommand.findUnique.mockResolvedValue(command() as never);
-  db.runnerCommand.findFirst.mockResolvedValue({
-    payload: offerPayload(),
-    expiresAt: new Date(Date.now() + 300_000),
-  } as never);
+  db.runnerCommand.findFirst.mockImplementation((async (
+    args?: Prisma.RunnerCommandFindFirstArgs,
+  ) =>
+    args?.where?.kind === "offer"
+      ? { payload: offerPayload(), expiresAt: new Date(Date.now() + 300_000), revision: 1 }
+      : null) as never);
   db.runnerCommand.updateMany.mockResolvedValue({ count: 1 });
   db.runnerCommand.findMany.mockResolvedValue([]);
   db.runnerCommand.count.mockResolvedValue(0);
@@ -172,13 +264,7 @@ describe("runner browser control", () => {
     if (offer.type !== "offer") throw new Error("Expected current offer");
     expect(offer.payload.config.promptVersion).toBe("1");
     expect(offer.payload.configDigest).toBe(runnerConfigDigest(offer.payload.config));
-    db.runnerCommand.findMany.mockResolvedValue([
-      {
-        ...command,
-        Match: row(),
-        expiresAt: new Date(Date.now() + 300_000),
-      },
-    ] as never);
+    stageOutbox([row()], [queuedCommand("offer", String(command.id), 1, offer.payload)]);
     await expect(runnerOutbox(identity)).resolves.toEqual([
       {
         type: "offer",
@@ -197,21 +283,17 @@ describe("runner browser control", () => {
   });
   it("cannot rebind or deliver a resume for a terminal row with stale active metadata", async () => {
     const terminal = { ...row(), status: "stopped", runnerState: "accepted", runnerGeneration: 2 };
-    db.chessMatch.findMany.mockResolvedValue([terminal] as never);
-    db.chessMatch.findFirst.mockResolvedValue(terminal as never);
-    db.runnerCommand.findMany.mockResolvedValue([
-      {
-        id: "old-resume",
-        kind: "resume",
-        Match: terminal,
-        payload: {
+    stageOutbox(
+      [terminal],
+      [
+        queuedCommand("resume", "old-resume", 2, {
           commandId: "old-resume",
           acceptedSeq: 0,
           fen: boardAt(terminal.archive).fen(),
           ply: 0,
-        },
-      },
-    ] as never);
+        }),
+      ],
+    );
     await expect(runnerOutbox(identity)).resolves.toEqual([]);
     expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
     expect(db.runnerCommand.create).not.toHaveBeenCalled();
@@ -232,7 +314,11 @@ describe("runner browser control", () => {
   });
   it("checks the current browser session under the credential lock for every status read", async () => {
     await runnerMatchStatus(context, { slug: "runner-match" });
-    expect(mintAuthority).toHaveBeenCalledWith(db, { userId: "owner", sessionId: "session" });
+    expect(mintAuthority).toHaveBeenCalledWith(
+      db,
+      { userId: "owner", sessionId: "session" },
+      expect.any(Function),
+    );
     expect(mintAuthority).toHaveBeenCalledTimes(2);
     expect(db.chessMatch.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -384,7 +470,8 @@ describe("runner browser control", () => {
     ).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
     expect(db.chessMatch.create).not.toHaveBeenCalled();
   });
-  it("leaves starts unavailable until authoritative gameplay handling is installed", async () => {
+  it("refuses starts before local acceptance", async () => {
+    db.runnerCommand.findUnique.mockResolvedValue(null);
     await expect(
       startRunnerMatch(context, {
         slug: "runner-match",
@@ -392,8 +479,7 @@ describe("runner browser control", () => {
         expectedRevision: 1,
       }),
     ).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
-      data: { reason: "runner-gameplay-unavailable" },
+      code: "CONFLICT",
     });
     expect(db.runnerCommand.create).not.toHaveBeenCalled();
   });
@@ -471,6 +557,7 @@ describe("runner machine control and durable outbox", () => {
     db.runnerMachine.findFirst
       .mockResolvedValueOnce({
         id: "machine",
+        expiresAt: new Date(Date.now() + 600_000),
         User: { emailVerified: true, banned: false, banExpires: null, deletionRequestedAt: null },
       } as never)
       .mockResolvedValueOnce(null);
@@ -530,6 +617,7 @@ describe("runner machine control and durable outbox", () => {
     const now = Date.now();
     const machine = {
       id: "machine",
+      expiresAt: new Date(now + 600_000),
       User: { emailVerified: true, banned: false, banExpires: null, deletionRequestedAt: null },
     };
     db.runnerCommand.findUnique.mockResolvedValue({
@@ -559,7 +647,9 @@ describe("runner machine control and durable outbox", () => {
       };
       db.chessMatch.findMany.mockResolvedValue([state] as never);
       db.chessMatch.findFirst.mockResolvedValue(state as never);
-      db.runnerCommand.findFirst.mockResolvedValue({ expiresAt: new Date(now + 10) } as never);
+      db.runnerCommand.findFirst.mockImplementation((async (
+        args?: Prisma.RunnerCommandFindFirstArgs,
+      ) => (args?.where?.kind === "offer" ? { expiresAt: new Date(now + 10) } : null)) as never);
       db.chessMatch.updateMany.mockImplementation((async () => {
         vi.setSystemTime(now + 20);
         return { count: 1 };
@@ -607,6 +697,7 @@ describe("runner machine control and durable outbox", () => {
       expect.objectContaining({
         select: {
           id: true,
+          expiresAt: true,
           User: {
             select: {
               banned: true,
@@ -625,7 +716,8 @@ describe("runner machine control and durable outbox", () => {
         id: "stop",
         kind: "stop",
         payload: { commandId: "stop" },
-        Match: { ...row(), runnerState: "stopped", runnerGeneration: null },
+        matchId: "match",
+        expiresAt: new Date(Date.now() + 300_000),
       },
     ] as never);
     expect(await runnerOutbox(identity)).toEqual([
@@ -638,7 +730,13 @@ describe("runner machine control and durable outbox", () => {
           ackedAt: null,
           cancelledAt: null,
           expiresAt: { gt: expect.any(Date) },
-          Match: { source: "runner", ownerId: "owner", runnerMachineId: "machine" },
+          Match: {
+            source: "runner",
+            ownerId: "owner",
+            runnerMachineId: "machine",
+            status: { notIn: ["queued", "running"] },
+            runnerGeneration: null,
+          },
         }),
       }),
     );
@@ -647,14 +745,21 @@ describe("runner machine control and durable outbox", () => {
     const stopped = { ...row(), runnerState: "stopped", runnerGeneration: null };
     db.runnerCommand.findMany
       .mockResolvedValueOnce([
-        { id: "new-resume", kind: "stop", payload: { commandId: "new-resume" }, Match: stopped },
+        {
+          id: "new-resume",
+          matchId: stopped.id,
+          kind: "stop",
+          expiresAt: new Date(Date.now() + 300_000),
+          payload: { commandId: "new-resume" },
+        },
       ] as never)
       .mockResolvedValueOnce(
         Array.from({ length: 31 }, (_, index) => ({
           id: `old-${index}`,
           kind: "stop",
           payload: { commandId: `old-${index}` },
-          Match: stopped,
+          matchId: stopped.id,
+          expiresAt: new Date(Date.now() + 300_000),
         })) as never,
       );
     const result = await runnerOutbox(identity, ["new-resume"]);
@@ -668,7 +773,13 @@ describe("runner machine control and durable outbox", () => {
           ackedAt: null,
           cancelledAt: null,
           expiresAt: { gt: expect.any(Date) },
-          Match: { source: "runner", ownerId: "owner", runnerMachineId: "machine" },
+          Match: {
+            source: "runner",
+            ownerId: "owner",
+            runnerMachineId: "machine",
+            status: { notIn: ["queued", "running"] },
+            runnerGeneration: null,
+          },
         }),
         take: 4,
       }),
@@ -677,7 +788,7 @@ describe("runner machine control and durable outbox", () => {
       2,
       expect.objectContaining({
         where: expect.objectContaining({ id: { notIn: ["new-resume"] } }),
-        take: 31,
+        take: 32,
       }),
     );
   });
@@ -778,7 +889,7 @@ describe("runner machine control and durable outbox", () => {
         data: expect.objectContaining({
           kind: "resume",
           revision: 2,
-          payload: acceptedResponses()[1]?.payload,
+          payload: acceptanceResumePayload(),
         }),
       }),
     );
@@ -828,7 +939,7 @@ describe("runner machine control and durable outbox", () => {
         payload: { commandId: "reoffer" },
       } as RunnerClientMessage;
       await expect(handleRunnerControl(identity, message)).resolves.toEqual(
-        acceptedResponses("fresh-accept", "reoffer"),
+        acceptedResponses("fresh-accept"),
       );
       expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -910,26 +1021,17 @@ describe("runner machine control and durable outbox", () => {
     },
   );
   it("delivers a current reconnect offer in accepted phase before its resume", async () => {
-    db.runnerCommand.findMany.mockResolvedValue([
-      {
-        ...command(),
-        id: "reoffer",
-        revision: 3,
-        payload: offerPayload("reoffer"),
-        Match: { ...row(), runnerState: "accepted", runnerRevision: 3 },
-      },
-    ] as never);
+    stageOutbox(
+      [{ ...row(), runnerState: "accepted", runnerRevision: 3 }],
+      [queuedCommand("offer", "reoffer", 3, offerPayload("reoffer"))],
+    );
     await expect(runnerOutbox(identity)).resolves.toEqual([
       { type: "offer", matchId: "match", payload: offerPayload("reoffer") },
     ]);
   });
   it("reuses the initial unaccepted offer on a replacement socket", async () => {
     const state = { ...row(), runnerGeneration: 2 };
-    db.chessMatch.findMany.mockResolvedValue([state] as never);
-    db.chessMatch.findFirst.mockResolvedValue(state as never);
-    db.runnerCommand.findMany.mockResolvedValue([
-      { ...command(), payload: offerPayload(), Match: row() },
-    ] as never);
+    stageOutbox([state], [queuedCommand("offer", "offer", 1, offerPayload())]);
     await expect(runnerOutbox(identity)).resolves.toEqual([
       { type: "offer", matchId: "match", payload: offerPayload() },
     ]);
@@ -939,6 +1041,137 @@ describe("runner machine control and durable outbox", () => {
         data: expect.objectContaining({ runnerGeneration: 3, runnerRevision: 1 }),
       }),
     );
+  });
+  it("delivers reconciliation before an executable command despite tied timestamps and reversed IDs", async () => {
+    const state = { ...row(), status: "running", runnerState: "running", runnerRevision: 4 };
+    const offer = queuedCommand("offer", "offer", 1, offerPayload());
+    offer.ackedAt = new Date();
+    const resume = queuedCommand("resume", "z-resume", 3, {
+      commandId: "z-resume",
+      acceptedSeq: 0,
+      ply: 0,
+      fen: boardAt(state.archive).fen(),
+    });
+    const start = queuedCommand("start", "a-start", 4, { commandId: "a-start", expectedSeq: 0 });
+    start.createdAt = resume.createdAt;
+    stageOutbox([state], [start, resume, offer]);
+    expect(await runnerOutbox(identity)).toEqual([
+      { type: "resume", matchId: state.id, payload: resume.payload },
+    ]);
+    // Even already-delivered credit cannot make a dependent start eligible early.
+    expect(await runnerOutbox(identity, [start.id])).toEqual([
+      { type: "resume", matchId: state.id, payload: resume.payload },
+    ]);
+    db.runnerCommand.findUnique.mockResolvedValue(resume as never);
+    db.runnerCommand.updateMany.mockImplementation((async (
+      args: Prisma.RunnerCommandUpdateManyArgs,
+    ) => {
+      if (args.where?.id === resume.id && args.data.ackedAt instanceof Date)
+        resume.ackedAt = args.data.ackedAt;
+      return { count: 1 };
+    }) as never);
+    expect(
+      await handleRunnerControl(identity, {
+        version: 1,
+        generation: 3,
+        seq: 1,
+        ack: 0,
+        id: "resume-ack",
+        type: "ack",
+        payload: { commandId: resume.id },
+      }),
+    ).toEqual([{ type: "ack", payload: { commandId: "resume-ack" } }]);
+    expect(await runnerOutbox(identity)).toEqual([
+      { type: "start", matchId: state.id, payload: start.payload },
+    ]);
+    expect(db.runnerCommand.create).not.toHaveBeenCalled();
+  });
+  it.each(["sequence", "fen"])(
+    "withholds start after a %s-mismatched acknowledged resume",
+    async (fault) => {
+      const state = { ...row(), status: "running", runnerState: "running", runnerRevision: 4 };
+      const offer = queuedCommand("offer", "offer", 1, offerPayload());
+      offer.ackedAt = new Date();
+      const otherBoard = boardAt(state.archive);
+      applyUci(otherBoard, "e2e4");
+      const resume = queuedCommand("resume", "resume", 3, {
+        commandId: "resume",
+        acceptedSeq: fault === "sequence" ? 1 : 0,
+        ply: fault === "sequence" ? 1 : 0,
+        fen: fault === "fen" ? otherBoard.fen() : boardAt(state.archive).fen(),
+      });
+      resume.ackedAt = new Date();
+      stageOutbox(
+        [state],
+        [offer, resume, queuedCommand("start", "start", 4, { commandId: "start", expectedSeq: 0 })],
+      );
+      expect(await runnerOutbox(identity)).toEqual([]);
+    },
+  );
+  it("selects replacement offers before 32 older blocked executable commands", async () => {
+    const states = Array.from({ length: 16 }, (_, index) => ({
+      ...row(),
+      id: `match-${index}`,
+      status: "running",
+      runnerState: "running",
+      runnerRevision: 3,
+    }));
+    const commands = states.flatMap((state, index) => [
+      queuedCommand(
+        "start",
+        `old-start-${index}`,
+        1,
+        { commandId: `old-start-${index}`, expectedSeq: 0 },
+        state.id,
+      ),
+      queuedCommand(
+        "human-move",
+        `old-human-${index}`,
+        2,
+        { commandId: `old-human-${index}`, expectedSeq: 0, uci: "e2e4" },
+        state.id,
+      ),
+      queuedCommand("offer", `reoffer-${index}`, 3, offerPayload(`reoffer-${index}`), state.id),
+    ]);
+    stageOutbox(states, commands);
+    const deliveries = await runnerOutbox(identity);
+    expect(deliveries).toHaveLength(16);
+    expect(deliveries.every((message) => message.type === "offer")).toBe(true);
+    expect(deliveries.map((message) => ("matchId" in message ? message.matchId : ""))).toEqual(
+      states.map((state) => state.id),
+    );
+    for (const state of states)
+      expect(db.runnerCommand.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ matchId: state.id, ackedAt: null, cancelledAt: null }),
+          take: RUNNER_OUTBOX_LIMIT,
+          orderBy: { revision: "desc" },
+        }),
+      );
+  });
+  it("prioritizes a pending human echo before reconciliation or another start", async () => {
+    const state = { ...row(), status: "running", runnerState: "running", runnerRevision: 4 };
+    const human = queuedCommand("human-move", "human", 2, {
+      commandId: "human",
+      uci: "e2e4",
+      expectedSeq: 0,
+    });
+    stageOutbox(
+      [state],
+      [
+        human,
+        queuedCommand("resume", "resume", 3, {
+          commandId: "resume",
+          acceptedSeq: 0,
+          ply: 0,
+          fen: boardAt(state.archive).fen(),
+        }),
+        queuedCommand("start", "start", 4, { commandId: "start", expectedSeq: 0 }),
+      ],
+    );
+    expect(await runnerOutbox(identity)).toEqual([
+      { type: "human-move", matchId: state.id, payload: human.payload },
+    ]);
   });
   it.each(["digest", "shape"])(
     "refuses a malformed original %s when preparing a reconnect offer",
@@ -1016,14 +1249,10 @@ describe("runner machine control and durable outbox", () => {
     expect(db.runnerCommand.create).not.toHaveBeenCalled();
   });
   it("validates persisted payloads before delivering them", async () => {
-    db.runnerCommand.findMany.mockResolvedValue([
-      {
-        id: "resume",
-        kind: "resume",
-        payload: { commandId: "resume", path: "/not-allowed" },
-        Match: { ...row(), runnerState: "accepted" },
-      },
-    ] as never);
+    stageOutbox(
+      [{ ...row(), runnerState: "accepted" }],
+      [queuedCommand("resume", "resume", 2, { commandId: "resume", path: "/not-allowed" })],
+    );
     await expect(runnerOutbox(identity)).rejects.toThrow();
   });
   it("records a matching snapshot without creating another resume or consuming command capacity", async () => {
@@ -1341,20 +1570,26 @@ describe("runner machine control and durable outbox", () => {
       expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
     },
   );
-  it("does not treat transport ack as local offer acceptance", async () => {
-    await expect(
-      handleRunnerControl(identity, {
-        version: 1,
-        generation: 3,
-        seq: 1,
-        ack: 0,
-        id: "event",
-        type: "ack",
-        payload: { commandId: "offer" },
-      }),
-    ).rejects.toMatchObject({ code: "CONFLICT" });
-    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
-  });
+  it.each(["offer", "human-move"])(
+    "does not treat transport ack as semantic %s acceptance",
+    async (kind) => {
+      db.runnerCommand.findUnique.mockResolvedValue({ ...command(), kind } as never);
+      await expect(
+        handleRunnerControl(identity, {
+          version: 1,
+          generation: 3,
+          seq: 1,
+          ack: 0,
+          id: "event",
+          type: "ack",
+          payload: { commandId: "offer" },
+        }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+      expect(db.runnerCommand.updateMany).not.toHaveBeenCalled();
+      expect(db.runnerEvent.create).not.toHaveBeenCalled();
+    },
+  );
   it("rejects stale match generation even with a valid current machine", async () => {
     db.chessMatch.findFirst.mockResolvedValue({ ...row(), runnerGeneration: 2 } as never);
     await expect(handleRunnerControl(identity, accept())).rejects.toMatchObject({
@@ -1459,5 +1694,448 @@ describe("runner absolute transaction admission budget", () => {
       code: "SERVICE_UNAVAILABLE",
     });
     expect(mintAuthority).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("authoritative runner gameplay", () => {
+  it("pins a valid archive after intersecting advertised match ceilings", async () => {
+    const { readRunnerLimitsInTransaction } = await import(
+      "@cockpit-chess/auth/runner-limits-store"
+    );
+    vi.mocked(readRunnerLimitsInTransaction).mockResolvedValueOnce({
+      generation: 3,
+      operatingLimits: { matchMicros: 1_000_000 },
+      hardLimits: { matchMicros: 25_000_000 },
+    } as never);
+    db.chessMatch.create.mockResolvedValue(row() as never);
+    await createRunnerMatch(context, { machineId: "machine", creationKey: randomUUID(), config });
+    const data = db.chessMatch.create.mock.calls[0]?.[0].data;
+    const archive = validateArchive(data?.archive);
+    expect(archive.config.rules.costBudgetMicros).toBe(500_000);
+  });
+  function running(human = false) {
+    const state = row();
+    state.status = "running";
+    state.runnerState = "running";
+    state.archive = createMatch(
+      human
+        ? {
+            ...config,
+            white: { name: "Human", model: "human", protocol: "human" },
+            rules: { ...config.rules, context: "fresh" },
+          }
+        : config,
+    );
+    beginHostedTurn(state.archive);
+    db.chessMatch.findFirst.mockResolvedValue(state as never);
+    db.runnerCommand.findUnique.mockResolvedValue(null);
+    db.runnerCommand.findFirst.mockResolvedValue(null);
+    return state;
+  }
+  function frame(
+    type: "move",
+    payload: { uci: string; ply: number; fen: string },
+  ): RunnerClientMessage {
+    return { ...accept(), type, payload };
+  }
+  function move(state: ReturnType<typeof row>, uci = "e2e4") {
+    const board = boardAt(state.archive);
+    applyUci(board, uci);
+    return frame("move", { uci, ply: 1, fen: board.fen() });
+  }
+  it("independently applies a legal model move and writes a current valid archive before next dispatch", async () => {
+    const state = running();
+    const replies = await handleRunnerControl(identity, move(state));
+    expect(replies.map((r) => r.type)).toEqual(["ack"]);
+    expect(db.runnerCommand.create.mock.calls.map(([args]) => args.data.kind)).toEqual([
+      "resume",
+      "start",
+    ]);
+    expect(db.runnerCommand.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { matchId: "match", kind: "resume", ackedAt: null, cancelledAt: null },
+      }),
+    );
+    const data = db.chessMatch.updateMany.mock.calls.at(-1)?.[0].data;
+    expect(data).toMatchObject({
+      status: "running",
+      runnerAcceptedSeq: 1,
+      whiteCostMicros: null,
+      blackCostMicros: null,
+    });
+    const archive = validateArchive(data?.archive);
+    expect(boardAt(archive).turn()).toBe("b");
+    expect(archive.turn.type).toBe("model");
+  });
+  it.each(["commands", "events"])(
+    "settles %s journal exhaustion as unscored event-limit before another dispatch",
+    async (kind) => {
+      const state = running();
+      db.runnerCommand.count.mockImplementation((async (args?: Prisma.RunnerCommandCountArgs) =>
+        args?.where?.ackedAt === null ? 0 : kind === "commands" ? 4092 : 0) as never);
+      db.runnerEvent.count.mockResolvedValue(kind === "events" ? 4080 : 0);
+      expect(await handleRunnerControl(identity, move(state))).toEqual(acceptedResponses());
+      const data = db.chessMatch.updateMany.mock.calls.at(-1)?.[0].data;
+      expect(data).toMatchObject({
+        status: "error",
+        runnerState: "error",
+        runnerGeneration: null,
+        result: "*",
+        terminalCause: "event-limit",
+      });
+      expect(validateArchive(data?.archive).termination).toBe("event-limit");
+      expect(db.runnerCommand.create.mock.calls.map(([args]) => args.data.kind)).toEqual(["stop"]);
+    },
+  );
+  it("allows the next turn immediately below both journal reserve thresholds", async () => {
+    const state = running();
+    db.runnerCommand.count.mockImplementation((async (args?: Prisma.RunnerCommandCountArgs) =>
+      args?.where?.ackedAt === null ? 0 : 4091) as never);
+    db.runnerEvent.count.mockResolvedValue(4079);
+    expect(await handleRunnerControl(identity, move(state))).toEqual(acceptedResponses());
+    expect(db.runnerCommand.create.mock.calls.map(([args]) => args.data.kind)).toEqual([
+      "resume",
+      "start",
+    ]);
+    expect(db.chessMatch.updateMany.mock.calls.at(-1)?.[0].data).toMatchObject({
+      status: "running",
+      runnerAcceptedSeq: 1,
+      runnerGeneration: 3,
+    });
+  });
+  it.each(["illegal", "ply", "fen", "human", "generation"])(
+    "refuses %s move without a durable write or next dispatch",
+    async (fault) => {
+      const state = running(fault === "human");
+      const message = move(state);
+      if (message.type !== "move") throw new Error("Expected move");
+      if (fault === "illegal") message.payload.uci = "e2e5";
+      if (fault === "ply") message.payload.ply = 2;
+      if (fault === "fen") message.payload.fen = boardAt(state.archive).fen();
+      if (fault === "generation")
+        db.chessMatch.findFirst.mockResolvedValue({ ...state, runnerGeneration: 2 } as never);
+      await expect(handleRunnerControl(identity, message)).rejects.toMatchObject({
+        code: fault === "illegal" ? "BAD_REQUEST" : "CONFLICT",
+      });
+      expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+      expect(db.runnerCommand.create).not.toHaveBeenCalled();
+    },
+  );
+  it("keeps clocks running during disconnect and settles server expiry before a late legal move", async () => {
+    const state = running();
+    const now = Date.now();
+    beginState();
+    function beginState() {
+      state.archive.turn = { type: "idle" };
+      beginHostedTurn(state.archive, new Date(now - 61_000));
+    }
+    db.chessMatch.findFirst.mockResolvedValue(state as never);
+    await handleRunnerControl(identity, move(state));
+    const data = db.chessMatch.updateMany.mock.calls.at(-1)?.[0].data;
+    expect(data).toMatchObject({
+      status: "completed",
+      runnerGeneration: null,
+      runnerAcceptedSeq: 0,
+      result: "0-1",
+      terminalCause: "move-timeout",
+    });
+    validateArchive(data?.archive);
+  });
+  it("replays bounded rejected attempts through the common illegal policy", async () => {
+    const state = running();
+    const response = await handleRunnerControl(identity, {
+      ...accept(),
+      type: "event",
+      payload: {
+        kind: "completed",
+        result: "0-1",
+        termination: "illegal-forfeit",
+        ply: 0,
+        fen: boardAt(state.archive).fen(),
+        rejectedAttempts: Array.from({ length: 3 }, () => ({ move: "e2e5" })),
+      },
+    });
+    expect(response.map((r) => r.type)).toEqual(["ack"]);
+    const data = db.chessMatch.updateMany.mock.calls.at(-1)?.[0].data;
+    expect(data).toMatchObject({ status: "completed", whiteIllegal: 3, runnerGeneration: null });
+    validateArchive(data?.archive);
+  });
+  it("refuses a fabricated checkmate on a live board", async () => {
+    const state = running();
+    await expect(
+      handleRunnerControl(identity, {
+        ...accept(),
+        type: "event",
+        payload: {
+          kind: "completed",
+          result: "1-0",
+          termination: "checkmate",
+          ply: 0,
+          fen: boardAt(state.archive).fen(),
+          rejectedAttempts: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+  });
+  it("accepts a human move only from the live owner board and forwards its pre-move ply", async () => {
+    const state = running(true);
+    const result = await moveRunnerMatch(context, {
+      slug: state.slug,
+      commandId: randomUUID(),
+      expectedRevision: state.runnerRevision,
+      expectedSeq: 0,
+      fen: boardAt(state.archive).fen(),
+      move: "e2e4",
+    });
+    expect(result.acceptedSeq).toBe(1);
+    expect(db.runnerCommand.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          kind: "human-move",
+          payload: expect.objectContaining({ uci: "e2e4", expectedSeq: 0 }),
+        }),
+      }),
+    );
+    validateArchive(db.chessMatch.updateMany.mock.calls.at(-1)?.[0].data.archive);
+  });
+  it.each([
+    ["session", true],
+    ["machine", true],
+    ["session", false],
+    ["machine", false],
+  ] as const)(
+    "checks retained %s expiry after the final machine await (expired: %s)",
+    async (credential, expired) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const now = Date.now();
+      const state = running(true);
+      const expiry = new Date(now + (expired ? 10 : 1000));
+      const machine = {
+        id: "machine",
+        expiresAt: credential === "machine" ? expiry : new Date(now + 1000),
+        User: { emailVerified: true, banned: false, banExpires: null, deletionRequestedAt: null },
+      };
+      mintAuthority.mockImplementation(
+        async (_tx: unknown, _session: unknown, retain: (value: Date) => void) => {
+          retain(credential === "session" ? expiry : new Date(now + 1000));
+          return { id: "owner" };
+        },
+      );
+      db.runnerMachine.findFirst
+        .mockResolvedValueOnce(machine as never)
+        .mockImplementationOnce((async () => {
+          vi.setSystemTime(now + 20);
+          return machine;
+        }) as never);
+      const operation = moveRunnerMatch(context, {
+        slug: state.slug,
+        commandId: randomUUID(),
+        expectedRevision: state.runnerRevision,
+        expectedSeq: 0,
+        fen: boardAt(state.archive).fen(),
+        move: "e2e4",
+      });
+      if (expired) {
+        await expect(operation).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+        expect(publish).not.toHaveBeenCalled();
+      } else await expect(operation).resolves.toMatchObject({ acceptedSeq: 1 });
+      expect(db.chessMatch.updateMany).toHaveBeenCalledTimes(1);
+      expect(db.runnerMachine.findFirst).toHaveBeenCalledTimes(2);
+    },
+  );
+  it("retains machine expiry across the final control authorization await", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const now = Date.now();
+    const machine = {
+      id: "machine",
+      expiresAt: new Date(now + 10),
+      User: { emailVerified: true, banned: false, banExpires: null, deletionRequestedAt: null },
+    };
+    db.runnerMachine.findFirst
+      .mockResolvedValueOnce(machine as never)
+      .mockImplementationOnce((async () => {
+        vi.setSystemTime(now + 20);
+        return machine;
+      }) as never);
+    await expect(handleRunnerControl(identity, accept())).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    expect(db.runnerMachine.findFirst).toHaveBeenCalledTimes(2);
+  });
+  it("records exactly120s disconnect grace only for this live generation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-28T01:00:00Z"));
+    await disconnectRunnerMatches(identity);
+    expect(db.chessMatch.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          source: "runner",
+          runnerMachineId: "machine",
+          runnerGeneration: 3,
+          runnerResumeDeadline: { gt: new Date() },
+        }),
+        data: { runnerResumeDeadline: new Date(Date.now() + 120_000) },
+      }),
+    );
+  });
+  it("accepts a local operating-limit stop while the server is awaiting a human", async () => {
+    const state = running(true);
+    await handleRunnerControl(identity, {
+      ...accept(),
+      type: "event",
+      payload: {
+        kind: "stopped",
+        result: "*",
+        termination: "cancelled",
+        ply: 0,
+        fen: boardAt(state.archive).fen(),
+        rejectedAttempts: [],
+      },
+    });
+    expect(db.chessMatch.updateMany.mock.calls.at(-1)?.[0].data).toMatchObject({
+      status: "stopped",
+      runnerGeneration: null,
+    });
+  });
+  it("rechecks the original turn deadline after the last receipt write", async () => {
+    vi.useFakeTimers();
+    const state = running();
+    const deadline =
+      state.archive.turn.type === "idle" ? 0 : Date.parse(state.archive.turn.deadline);
+    db.runnerEvent.create.mockImplementation((async () => {
+      vi.setSystemTime(deadline + 1);
+      return {};
+    }) as never);
+    await expect(handleRunnerControl(identity, move(state))).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+  });
+  it("withholds an old start until the replacement offer is accepted", async () => {
+    const state = running();
+    const offer = queuedCommand("offer", "reoffer", 4, offerPayload("reoffer"));
+    offer.ackedAt = new Date();
+    const resume = queuedCommand("resume", "old-resume", 2, {
+      commandId: "old-resume",
+      acceptedSeq: 0,
+      ply: 0,
+      fen: boardAt(state.archive).fen(),
+    });
+    resume.ackedAt = new Date();
+    stageOutbox(
+      [state],
+      [offer, resume, queuedCommand("start", "start", 3, { commandId: "start", expectedSeq: 0 })],
+    );
+    await expect(runnerOutbox(identity)).resolves.toEqual([]);
+  });
+  it("normalizes a revoked match status over its still-running archive", async () => {
+    const state = running(true);
+    state.status = "stopped";
+    state.runnerState = "stopped";
+    state.runnerGeneration = null as never;
+    db.chessMatch.findFirst.mockResolvedValue(state as never);
+    const result = await runnerMatchStatus(context, { slug: state.slug });
+    expect(result).toMatchObject({
+      status: "stopped",
+      turn: { type: "idle" },
+      termination: "cancelled",
+      result: "*",
+    });
+  });
+  it("classifies a delayed sweep at the first model deadline, not the later exhausted clock", async () => {
+    const state = running();
+    state.archive = createMatch({
+      ...config,
+      rules: { ...config.rules, clock: { w: 120_000, b: 120_000 }, turnTimeoutMs: 60_000 },
+    });
+    beginHostedTurn(state.archive, new Date(Date.now() - 130_000));
+    db.chessMatch.findFirst.mockResolvedValue(state as never);
+    await handleRunnerControl(identity, move(state));
+    const archive = validateArchive(db.chessMatch.updateMany.mock.calls.at(-1)?.[0].data.archive);
+    expect(archive.termination).toBe("move-timeout");
+    expect(archive.events.find((e) => e.type === "timing")).toMatchObject({ elapsedMs: 60_000 });
+  });
+  it("abandons an expired human reconnect grace before accepting browser input", async () => {
+    const state = running(true);
+    state.archive = createMatch({
+      ...config,
+      white: { name: "Human", model: "human", protocol: "human" },
+      rules: { ...config.rules, context: "fresh", turnTimeoutMs: 300_000 },
+    });
+    beginHostedTurn(state.archive, new Date(Date.now() - 121_000));
+    state.runnerResumeDeadline = new Date(Date.now() - 1);
+    db.chessMatch.findFirst.mockResolvedValue(state as never);
+    const result = await moveRunnerMatch(context, {
+      slug: state.slug,
+      commandId: randomUUID(),
+      expectedRevision: state.runnerRevision,
+      expectedSeq: 0,
+      fen: boardAt(state.archive).fen(),
+      move: "e2e4",
+    });
+    expect(result).toMatchObject({ state: "abandoned", acceptedSeq: 0, turn: { type: "idle" } });
+    expect(db.runnerCommand.create).not.toHaveBeenCalled();
+  });
+  it("refuses a browser move when its original grace expires during receipt persistence", async () => {
+    vi.useFakeTimers();
+    const state = running(true);
+    state.runnerResumeDeadline = new Date(Date.now() + 1000);
+    db.chessMatch.findFirst.mockResolvedValue(state as never);
+    db.runnerEvent.create.mockImplementation((async () => {
+      vi.setSystemTime(Date.now() + 1001);
+      return {};
+    }) as never);
+    await expect(
+      moveRunnerMatch(context, {
+        slug: state.slug,
+        commandId: randomUUID(),
+        expectedRevision: state.runnerRevision,
+        expectedSeq: 0,
+        fen: boardAt(state.archive).fen(),
+        move: "e2e4",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+});
+
+describe("runner durable authenticated contact", () => {
+  it("renews contact with no active games using exact generation and a bounded write interval", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-28T04:00:00Z"));
+    await runnerOutbox(identity);
+    expect(db.runnerMachine.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "machine",
+        userId: "owner",
+        connectionGeneration: 3,
+        revokedAt: null,
+        expiresAt: { gt: new Date() },
+        OR: [{ lastSeenAt: null }, { lastSeenAt: { lt: new Date(Date.now() - 15_000) } }],
+      },
+      data: { lastSeenAt: new Date() },
+    });
+  });
+  it("cannot refresh contact from a superseded or revoked identity", async () => {
+    db.runnerMachine.findFirst.mockResolvedValue(null);
+    await expect(runnerOutbox(identity)).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    expect(db.runnerMachine.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+it("settles pending-owner recovery as deletion even when the machine is already revoked", async () => {
+  const state = { ...row(), Owner: { deletionRequestedAt: new Date() } };
+  db.chessMatch.findMany.mockResolvedValue([
+    { id: state.id, ownerId: "owner", runnerMachineId: "machine" },
+  ] as never);
+  db.chessMatch.findFirst.mockResolvedValue(state as never);
+  db.runnerMachine.findFirst.mockResolvedValue(null);
+  const { reconcileRunnerMatches } = await import("./chess-runner");
+  await expect(reconcileRunnerMatches()).resolves.toEqual({ scanned: 1, settled: 1 });
+  expect(db.chessMatch.updateMany.mock.calls.at(-1)?.[0].data).toMatchObject({
+    status: "stopped",
+    runnerState: "stopped",
+    runnerGeneration: null,
+    runnerResumeDeadline: null,
+    terminalCause: "owner-delete",
   });
 });

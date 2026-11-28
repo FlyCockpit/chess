@@ -58,6 +58,9 @@
     "./runner-limits": {
       "default": "./src/runner-limits.ts"
     },
+    "./runner-limits-store": {
+      "default": "./src/runner-limits-store.ts"
+    },
     "./runner-step-up": {
       "default": "./src/runner-step-up.ts"
     }

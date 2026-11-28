@@ -59,7 +59,14 @@ const clientFixtures = [
     ...base,
     type: "event",
     matchId: "m",
-    payload: { kind: "completed", result: "1-0", termination: "checkmate" },
+    payload: {
+      kind: "completed",
+      result: "1-0",
+      termination: "checkmate",
+      ply: 0,
+      fen,
+      rejectedAttempts: [],
+    },
   },
   { ...base, type: "ack", payload: { commandId: "c" } },
   { ...base, type: "error", payload: { code: "INVALID" } },
@@ -295,6 +302,42 @@ describe("runner protocol", () => {
     ).toBe(false);
     expect(runnerClientMessageSchema.safeParse(welcome).success).toBe(false);
     expect(runnerServerMessageSchema.safeParse(hello).success).toBe(false);
+  });
+
+  it("requires current board-bound terminal evidence and bounds rejected attempts", () => {
+    const terminal = {
+      ...base,
+      matchId: "m",
+      type: "event",
+      payload: {
+        kind: "completed",
+        result: "0-1",
+        termination: "illegal-forfeit",
+        ply: 0,
+        fen,
+        rejectedAttempts: [{ move: "e2e5" }],
+      },
+    };
+    expect(runnerClientMessageSchema.safeParse(terminal).success).toBe(true);
+    for (const field of ["ply", "fen", "rejectedAttempts"] as const) {
+      const incomplete: Record<string, unknown> = { ...terminal.payload };
+      delete incomplete[field];
+      expect(
+        runnerClientMessageSchema.safeParse({ ...terminal, payload: incomplete }).success,
+      ).toBe(false);
+    }
+    for (const rejectedAttempts of [
+      Array.from({ length: 33 }, () => ({ move: "e2e5" })),
+      [{ move: "x".repeat(257) }],
+      [{ move: "e2e4", stopReason: "invented" }],
+    ]) {
+      expect(
+        runnerClientMessageSchema.safeParse({
+          ...terminal,
+          payload: { ...terminal.payload, rejectedAttempts },
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it.each([parseRunnerClientFrame, parseRunnerServerFrame])(

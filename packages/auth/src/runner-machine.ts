@@ -96,6 +96,7 @@ export function digestRunnerMachineSecret(secret: string): string | null {
 export async function requireRunnerMachineMintAuthority(
   tx: RunnerMachineTransaction,
   session: RunnerMachineSession,
+  retainExpiry?: (expiresAt: Date) => void,
 ) {
   const liveSession = await tx.session.findFirst({
     where: {
@@ -107,6 +108,7 @@ export async function requireRunnerMachineMintAuthority(
     },
     select: {
       id: true,
+      expiresAt: true,
       user: {
         select: {
           id: true,
@@ -122,7 +124,14 @@ export async function requireRunnerMachineMintAuthority(
       },
     },
   });
-  if (!liveSession) throw new RunnerMachineSessionRevokedError();
+  if (
+    !liveSession ||
+    !(liveSession.expiresAt instanceof Date) ||
+    !Number.isFinite(liveSession.expiresAt.getTime())
+  )
+    throw new RunnerMachineSessionRevokedError();
+  const expiresAt = liveSession.expiresAt;
+  retainExpiry?.(expiresAt);
   const user = liveSession.user;
   if (!user.emailVerified || isAccountDeletionPending(user) || isUserBanned(user))
     throw new RunnerMachineForbiddenError();
@@ -136,6 +145,9 @@ export async function requireRunnerMachineMintAuthority(
   ) {
     throw new RunnerMachineForbiddenError();
   }
+  // The query's expiry predicate captures its start time; policy lookup may
+  // await storage across that deadline. Never return elapsed browser authority.
+  if (expiresAt.getTime() <= Date.now()) throw new RunnerMachineSessionRevokedError();
   return user;
 }
 
@@ -214,14 +226,19 @@ export function mintRunnerMachineForSession(
  * Repeated revocation never advances the generation of an already revoked row.
  */
 export async function revokeRunnerMachinesInTransaction(
-  tx: Pick<Prisma.TransactionClient, "runnerMachine" | "$executeRaw">,
+  tx: Pick<Prisma.TransactionClient, "runnerMachine" | "chessMatch" | "$executeRaw">,
   userId: string,
   machineId?: string,
 ): Promise<number> {
   // An accidentally empty scoped ID must never turn into a bulk reset.
   if (machineId === "") throw new RunnerMachineInputError();
-  const [update, notification] = runnerMachineRevocationWrites(userId, tx, machineId);
+  const [update, notification, ...cancellations] = runnerMachineRevocationWrites(
+    userId,
+    tx,
+    machineId,
+  );
   const { count } = await update;
+  for (const cancellation of cancellations) await cancellation;
   await notification;
   return count;
 }

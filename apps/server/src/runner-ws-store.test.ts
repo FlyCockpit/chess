@@ -1,3 +1,8 @@
+import {
+  RUNNER_APPLICATION_FRAMES_PER_MINUTE,
+  RUNNER_SEND_BURST,
+  RUNNER_SEND_RATE,
+} from "@cockpit-chess/chess/runner-protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   createRunnerLeaseStore,
@@ -82,6 +87,8 @@ describe("Redis runner lease commands", () => {
       "1",
       RUNNER_ACTIONS_PER_MINUTE,
     ]);
+    expect(limit).toBe(RUNNER_APPLICATION_FRAMES_PER_MINUTE);
+    expect(limit).toBeGreaterThan((RUNNER_SEND_RATE + 8) * 60 + RUNNER_SEND_BURST + 16);
     await store.validate(lease, false);
     expect(evalCommand.mock.calls[1]?.at(-2)).toBe("0");
   });
