@@ -2096,7 +2096,20 @@ async function main() {
     else if (process.argv[3] === "invite-race") await inviteRaceCheck();
     else if (process.argv[3] === "password-signin-race") await passwordSignInRaceCheck();
     else if (process.argv[3] === "runner-machines") await runnerMachinesCheck();
-    else if (process.argv[3] === "runner-claims") {
+    else if (process.argv[3] === "impersonation") {
+      try {
+        await (await import("./lib/impersonation-check.mjs")).impersonationCheck();
+      } finally {
+        await (await import("../packages/db/src/index.ts")).default.$disconnect();
+        const queues = await import("../packages/queue/src/index.ts");
+        await Promise.all(
+          Object.values(queues)
+            .filter((value) => value instanceof queues.Queue)
+            .map((queue) => queue.close()),
+        );
+        queues.redisConnection.disconnect();
+      }
+    } else if (process.argv[3] === "runner-claims") {
       const { runnerClaimsCheck } = await import("./lib/runner-claim-check.ts");
       await runnerClaimsCheck();
     } else if (process.argv[3] === "account-export") {
@@ -2156,6 +2169,7 @@ async function main() {
       "--account-deletion-only",
       "--runner-limits-only",
       "--account-export-only",
+      "--impersonation-only",
     ].includes(process.argv[3]),
   );
   // Container names only. TEST_CONTAINER_PREFIX (shared with backup:test and
@@ -2307,6 +2321,7 @@ async function main() {
       // independent browser mint to reach the database while that write waits.
       ["password-signin-race", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-machines", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
+      ["impersonation", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-claims", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-limits", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-transport", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
@@ -2356,6 +2371,7 @@ async function main() {
       if (process.argv[3] === "--runner-transport-only" && mode !== "runner-transport") continue;
       if (process.argv[3] === "--runner-claims-only" && mode !== "runner-claims") continue;
       if (process.argv[3] === "--account-export-only" && mode !== "account-export") continue;
+      if (process.argv[3] === "--impersonation-only" && mode !== "impersonation") continue;
       if (process.argv[3] === "--account-deletion-only" && !mode.startsWith("account-deletion"))
         continue;
       if (process.argv[3] === "--runner-limits-only" && mode !== "runner-limits") continue;

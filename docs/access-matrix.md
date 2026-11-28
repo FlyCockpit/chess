@@ -69,6 +69,15 @@ Route visibility never substitutes for procedure authorization. Public records
 must exclude keys, private inference context, owner account details, and drafts.
 CLI endpoints retain the access levels registered in the server.
 
+Better Auth's cookie-only `POST /api/auth/admin/stop-impersonating` restores only
+the live original admin session named by its signed saved-session cookie and
+bound to the live target session's `impersonatedBy`. The original actor must
+still satisfy the shared verified-admin, ban/deletion and forced-2FA policy;
+the saved session must be a non-impersonated browser sign-in session. The target's
+role, verification, ban or pending-deletion state cannot authorize or veto this
+return. Better Auth retains its origin/CSRF checks and session restoration;
+every other admin plugin endpoint continues to require active admin authority.
+
 Runner enrollment uses a per-run claim/exchange surface. Anonymous POSTs to
 `/api/cli/runner/begin`, `/poll` and `/exchange` have independent fail-closed IP
 budgets, strict bounded bodies and no cookie/bearer fallback. Begin stores

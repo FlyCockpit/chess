@@ -1,13 +1,28 @@
 import type { Context, Next } from "hono";
 
-import { requireVerifiedAdminSession } from "./admin-session-gate";
+import {
+  requireImpersonatorIsVerifiedAdmin,
+  requireVerifiedAdminSession,
+} from "./admin-session-gate";
+
+const STOP_IMPERSONATING_PATH = "/api/auth/admin/stop-impersonating";
 
 // Better-Auth's admin plugin exposes a parallel management API under
 // `/api/auth/admin/*`. Its built-in route checks validate the role, but they
 // do not know this app also requires verified email and any globally forced
 // second factor. Gate the whole plugin surface before `auth.handler`.
+//
+// One exact exception: `POST /api/auth/admin/stop-impersonating`. During an
+// impersonation the cookie session is the target user's, so the strict gate
+// would refuse the request that ends it. That one route is checked against the
+// impersonating admin instead (`requireImpersonatorIsVerifiedAdmin`). Every
+// other method and path — including near-misses like a trailing slash — stays
+// on the strict gate.
 export async function betterAuthAdminGate(c: Context, next: Next) {
-  const result = await requireVerifiedAdminSession(c.req.raw.headers);
+  const isStopImpersonating = c.req.method === "POST" && c.req.path === STOP_IMPERSONATING_PATH;
+  const result = isStopImpersonating
+    ? await requireImpersonatorIsVerifiedAdmin(c.req.raw.headers)
+    : await requireVerifiedAdminSession(c.req.raw.headers);
   if (!result.ok) {
     return c.json(
       { error: result.error, error_description: result.errorDescription },

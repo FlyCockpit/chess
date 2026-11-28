@@ -1,7 +1,9 @@
 import { type Context, Hono } from "hono";
+import { generateSignedCookie } from "hono/cookie";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getSession = vi.fn();
+const cookieSecret = "disposable-impersonation-unit-secret";
 
 vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
@@ -12,6 +14,11 @@ vi.mock("@cockpit-chess/db", async () => {
 
 vi.mock("@cockpit-chess/auth", () => ({
   auth: {
+    $context: Promise.resolve({
+      secret: "disposable-impersonation-unit-secret",
+      createAuthCookie: () => ({ name: "better-auth.admin_session" }),
+      authCookies: { sessionToken: { name: "better-auth.session_token", attributes: {} } },
+    }),
     api: {
       get getSession() {
         return getSession;
@@ -28,6 +35,7 @@ const { betterAuthAdminGate } = await import("./better-auth-admin-gate");
 
 const db = prisma as unknown as {
   appSetting: { findMany: ReturnType<typeof vi.fn> };
+  session: { findFirst: ReturnType<typeof vi.fn> };
 };
 
 describe("betterAuthAdminGate", () => {
@@ -36,6 +44,7 @@ describe("betterAuthAdminGate", () => {
 
   beforeEach(() => {
     getSession.mockReset();
+    db.session.findFirst.mockReset();
     db.appSetting.findMany.mockResolvedValue([]);
     // Force-2FA settings are TTL-cached in-process; reset between tests.
     invalidateForceTwoFactorSettingsCache();
@@ -194,5 +203,151 @@ describe("betterAuthAdminGate", () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(body);
+  });
+
+  describe("return from impersonation", () => {
+    const actor = () => ({
+      user: { id: "admin", role: "admin", emailVerified: true, twoFactorEnabled: true },
+      session: { id: "original", origin: "sign-in", impersonatedBy: null },
+    });
+    const target = () => ({
+      user: { id: "ordinary", role: "user", emailVerified: false },
+      session: { id: "impersonation", impersonatedBy: "admin", authenticatedAt: null },
+    });
+    const stop = async (path = "stop-impersonating", saved = "original-token:") =>
+      app.request(`/api/auth/admin/${path}`, {
+        method: "POST",
+        headers: {
+          cookie: await generateSignedCookie("better-auth.admin_session", saved, cookieSecret),
+          authorization: "Bearer must-not-authorize",
+        },
+      });
+
+    it("admits only the saved verified admin and strips bearer lookup credentials", async () => {
+      getSession.mockResolvedValueOnce(target());
+      db.session.findFirst.mockResolvedValueOnce(actor());
+      expect((await stop()).status).toBe(200);
+      expect(downstream).toHaveBeenCalledTimes(1);
+      for (const [options] of getSession.mock.calls) {
+        expect(options.headers.has("authorization")).toBe(false);
+      }
+      expect(db.session.findFirst).toHaveBeenCalledWith({
+        where: {
+          token: "original-token",
+          userId: "admin",
+          impersonatedBy: null,
+          origin: "sign-in",
+          expiresAt: { gt: expect.any(Date) },
+        },
+        select: { user: { select: expect.objectContaining({ deletionRequestedAt: true }) } },
+      });
+    });
+
+    it.each([{ banned: true }, { deletionRequestedAt: new Date() }])(
+      "a target's lifecycle cannot block returning: %j",
+      async (lifecycle) => {
+        const impersonated = target();
+        getSession.mockResolvedValueOnce({
+          ...impersonated,
+          user: { ...impersonated.user, ...lifecycle },
+        });
+        db.session.findFirst.mockResolvedValueOnce(actor());
+        expect((await stop()).status).toBe(200);
+      },
+    );
+
+    it.each([
+      { role: "user" },
+      { emailVerified: false },
+      { twoFactorEnabled: false },
+      { banned: true },
+      { deletionRequestedAt: new Date() },
+    ])("checks the actor's current authority: %j", async (change) => {
+      const admin = actor();
+      getSession.mockResolvedValueOnce(target());
+      db.session.findFirst.mockResolvedValueOnce({ ...admin, user: { ...admin.user, ...change } });
+      expect((await stop()).status).toBe(403);
+      expect(downstream).not.toHaveBeenCalled();
+    });
+
+    it("refuses when no live saved browser session is bound to the actor", async () => {
+      getSession.mockResolvedValueOnce(target());
+      db.session.findFirst.mockResolvedValueOnce(null);
+      expect((await stop()).status).toBe(401);
+      expect(downstream).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["POST", "stop-impersonating/"],
+      ["GET", "stop-impersonating"],
+      ["POST", "stop-impersonating-extra"],
+    ])("keeps %s %s on the active-user gate", async (method, path) => {
+      getSession.mockResolvedValueOnce(target());
+      const response = await app.request(`/api/auth/admin/${path}`, { method });
+      expect(response.status).toBe(403);
+      expect(db.session.findFirst).not.toHaveBeenCalled();
+      expect(downstream).not.toHaveBeenCalled();
+    });
+
+    it.each([null, { user: { id: "admin" }, session: { impersonatedBy: null } }])(
+      "requires a live impersonated session: %j",
+      async (impersonated) => {
+        getSession.mockResolvedValueOnce(impersonated);
+        expect((await stop()).status).toBe(401);
+        expect(getSession).toHaveBeenCalledTimes(1);
+        expect(downstream).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["", "better-auth.admin_session=unsigned", "better-auth.admin_session=bad.signature"])(
+      "refuses a missing or invalid signed restoration cookie",
+      async (cookie) => {
+        getSession.mockResolvedValueOnce(target());
+        const response = await app.request("/api/auth/admin/stop-impersonating", {
+          method: "POST",
+          headers: { cookie },
+        });
+        expect(response.status).toBe(401);
+        expect(getSession).toHaveBeenCalledTimes(1);
+        expect(downstream).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not confer actor authority on another management endpoint", async () => {
+      getSession.mockResolvedValue(target());
+      expect((await stop("list-users")).status).toBe(403);
+      expect(downstream).not.toHaveBeenCalled();
+    });
+
+    it.each(["duplicate", "malformed-quoted-duplicate", "quoted"])(
+      "rejects ambiguous saved cookie inputs: %s",
+      async (kind) => {
+        const signed = await generateSignedCookie(
+          "better-auth.admin_session",
+          "original-token:",
+          cookieSecret,
+        );
+        const cookie =
+          kind === "duplicate"
+            ? `${signed}; ${signed}`
+            : kind === "malformed-quoted-duplicate"
+              ? signed.replace("=", '="') + `X; ${signed}`
+              : signed.replace("=", '="') + '"';
+        getSession.mockResolvedValueOnce(target());
+        const response = await app.request("/api/auth/admin/stop-impersonating", {
+          method: "POST",
+          headers: { cookie },
+        });
+        expect(response.status).toBe(401);
+        expect(db.session.findFirst).not.toHaveBeenCalled();
+        expect(downstream).not.toHaveBeenCalled();
+      },
+    );
+
+    it("fails closed when the session lookup fails", async () => {
+      getSession.mockRejectedValue(new Error("database unavailable"));
+      expect((await stop()).status).toBe(401);
+      expect(downstream).not.toHaveBeenCalled();
+    });
   });
 });

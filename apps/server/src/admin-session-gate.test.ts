@@ -5,6 +5,10 @@ const { getSession, isTwoFactorPolicySatisfied } = vi.hoisted(() => ({
   isTwoFactorPolicySatisfied: vi.fn(),
 }));
 vi.mock("@cockpit-chess/auth", () => ({ auth: { api: { getSession } } }));
+vi.mock("@cockpit-chess/db", async () => {
+  const { mockDeep } = await import("vitest-mock-extended");
+  return { default: mockDeep() };
+});
 vi.mock("@cockpit-chess/api/lib/two-factor-policy", () => ({ isTwoFactorPolicySatisfied }));
 
 import { requireVerifiedAdminSession } from "./admin-session-gate";
