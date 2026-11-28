@@ -4,6 +4,7 @@
  * E1 gate: append --runner-machines-only (includes shared device/password races).
  * B2 gate: append --chess-official-only (durable official starts and settlement).
  * C1b gate: append --chess-human-only (durable human turns and worker release).
+ * E3S gate: append --runner-limits-only (step-up proof and limit revision races).
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -2111,6 +2112,9 @@ async function main() {
         );
         queues.redisConnection.disconnect();
       }
+    } else if (process.argv[3] === "runner-limits") {
+      const { runnerLimitsCheck } = await import("./lib/runner-limits-check.ts");
+      await runnerLimitsCheck();
     } else if (process.argv[3] === "runner-transport") {
       const { runnerTransportCheck } = await import("./lib/runner-transport-check.mjs");
       await runnerTransportCheck();
@@ -2130,6 +2134,7 @@ async function main() {
       "--runner-transport-only",
       "--runner-claims-only",
       "--account-deletion-only",
+      "--runner-limits-only",
     ].includes(process.argv[3]),
   );
   // Container names only. TEST_CONTAINER_PREFIX (shared with backup:test and
@@ -2282,6 +2287,7 @@ async function main() {
       ["password-signin-race", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-machines", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-claims", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
+      ["runner-limits", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-transport", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       [
         "account-deletion",
@@ -2318,6 +2324,7 @@ async function main() {
       if (process.argv[3] === "--runner-claims-only" && mode !== "runner-claims") continue;
       if (process.argv[3] === "--account-deletion-only" && !mode.startsWith("account-deletion"))
         continue;
+      if (process.argv[3] === "--runner-limits-only" && mode !== "runner-limits") continue;
       if (
         process.argv[3] === "--runner-machines-only" &&
         !["runner-machines", "password-signin-race", "device-flow"].includes(mode)
@@ -2335,7 +2342,12 @@ async function main() {
           },
           timeout: ["chess-official", "chess-human", "account-deletion"].includes(mode)
             ? 120_000
-            : ["runner-machines", "runner-claims", "password-signin-race"].includes(mode)
+            : [
+                  "runner-machines",
+                  "runner-claims",
+                  "runner-limits",
+                  "password-signin-race",
+                ].includes(mode)
               ? 60_000
               : 45_000,
           stdio: ["chess-admission", "chess-official", "chess-human", "account-deletion"].includes(

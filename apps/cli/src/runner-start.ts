@@ -12,6 +12,11 @@ import { CliError, ExitCode } from "./exit";
 import { withNetworkDeadline } from "./network";
 import { configDir } from "./paths";
 import { RunnerConnection, type RunnerConnectionOptions } from "./runner-connection";
+import {
+  RunnerLimitController,
+  type RunnerLimitStore,
+  runnerLimitFileStore,
+} from "./runner-limits";
 import { createNodeRunnerSocket } from "./runner-node-socket";
 
 const CLAIM_MS = 600_000;
@@ -74,6 +79,8 @@ export interface RunnerStartupIO {
   store: RunnerStore;
   connect(options: RunnerConnectionOptions): Pick<RunnerConnection, "start" | "stop" | "send">;
   signal: AbortSignal;
+  /** Test/executor seam; product startup persists per-origin/machine limit receipts. */
+  limitsStore?: (origin: string, machineId: string) => Promise<RunnerLimitStore>;
 }
 
 function message(key: string, defaultValue: string, values: Record<string, string | number> = {}) {
@@ -274,6 +281,7 @@ export async function completeRunnerClaim(
 }
 
 export async function startRunner(origin: string, flags: RunnerStartupFlags, io: RunnerStartupIO) {
+  let localLimits: RunnerLimitController | undefined;
   try {
     io.signal.throwIfAborted();
     if (resolveServer({}, origin) !== origin) throw failure();
@@ -348,21 +356,42 @@ export async function startRunner(origin: string, flags: RunnerStartupFlags, io:
         "Connecting runner transport. Match execution is not available in this build.",
       ),
     );
-    const operatingLimits = Object.freeze({
-      matchMicros: Math.min(1_000_000, ceilings.matchMicros),
-      dayMicros: Math.min(10_000_000, ceilings.dayMicros),
-      concurrency: Math.min(2, ceilings.concurrency),
-      revision: 0,
+    const limits = await RunnerLimitController.open({
+      hard: ceilings,
+      store: await (io.limitsStore ?? runnerLimitFileStore)(origin, credential.machineId),
+      terminal: io.terminal,
     });
+    localLimits = limits;
     const url = new URL(RUNNER_WS_PATH, origin);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    let cancellation: Promise<void> | undefined;
+    const finish = async () => {
+      // Local cancellation is recorded before closing the transport, whose
+      // terminal callback can run immediately after disconnect.
+      await cancellation;
+      await limits.close(() => {
+        // Stay cancellable through every pending write and release prepare.
+        // Detach only at the store's synchronous successful unlock boundary.
+        clearTimeout(expiryTimer);
+        io.signal.removeEventListener("abort", stop);
+      });
+    };
+    function stop() {
+      cancellation ??= limits.stop();
+      clearTimeout(expiryTimer);
+      io.signal.removeEventListener("abort", stop);
+      connection.stop();
+      void finish().catch(() => io.terminal(t("cli:runnerStorage")));
+    }
     const connection = io.connect({
       url: url.href,
       credential: credential.credential,
       allowLocalhostWs: url.protocol === "ws:",
       socketFactory: createNodeRunnerSocket,
-      hello: { models: [], engine: false, operatingLimits },
-      onMessage: (incoming, signal) => {
+      hello: () => ({ models: [], engine: false, ...limits.snapshot() }),
+      onTerminal: finish,
+      onMessage: async (incoming, signal) => {
         if (incoming.type === "offer")
           connection.send(
             {
@@ -372,25 +401,16 @@ export async function startRunner(origin: string, flags: RunnerStartupFlags, io:
             },
             signal,
           );
-        else if (!["ack", "error"].includes(incoming.type)) {
-          if (incoming.type === "limits")
-            io.terminal(
-              message(
-                "limitsRejected",
-                "Operating limit revision {{revision}} rejected: updates are unavailable in this build.",
-                { revision: incoming.payload.revision },
-              ),
-            );
+        else if (incoming.type === "limits") {
+          const result = await limits.apply(incoming.payload);
+          if (!signal.aborted && !io.signal.aborted)
+            connection.send({ type: "limits-result", payload: result }, signal);
+        } else if (!["ack", "error"].includes(incoming.type)) {
           connection.send({ type: "error", payload: { code: "UNSUPPORTED" } }, signal);
         }
       },
     });
-    const stop = () => {
-      clearTimeout(expiryTimer);
-      io.signal.removeEventListener("abort", stop);
-      connection.stop();
-    };
-    const expiryTimer = setTimeout(
+    expiryTimer = setTimeout(
       stop,
       Math.min(2_147_483_647, Date.parse(credential.expiresAt) - io.now()),
     );
@@ -398,8 +418,13 @@ export async function startRunner(origin: string, flags: RunnerStartupFlags, io:
     io.signal.addEventListener("abort", stop, { once: true });
     if (io.signal.aborted) stop();
     else connection.start();
-    return connection;
+    return {
+      start: () => connection.start(),
+      send: (...args: Parameters<typeof connection.send>) => connection.send(...args),
+      stop,
+    };
   } catch (error) {
+    await localLimits?.close().catch(() => {});
     if (error instanceof CliError) throw error;
     throw failure();
   }
@@ -458,8 +483,10 @@ export function runnerFileStore(root = configDir()): RunnerStore {
 export async function runRunnerStartup(flags: RunnerStartupFlags): Promise<void> {
   const controller = new AbortController();
   const stop = () => controller.abort();
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  // Repeated signals must not restore the default process termination while
+  // permanent cancellation is still waiting for a durable write.
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
   const cleanup = () => {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
@@ -499,8 +526,16 @@ export async function runRunnerStartup(flags: RunnerStartupFlags): Promise<void>
       connect: (options) =>
         new RunnerConnection({
           ...options,
-          onState: (state) => {
-            if (state === "stopped") cleanup();
+          onTerminal: async () => {
+            try {
+              await options.onTerminal?.();
+            } catch {
+              // A failed durable release keeps cancellation handlers and the
+              // fail-closed store state; report only fixed local guidance.
+              process.stderr.write(`${t("cli:runnerStorage")}\n`);
+              throw new Error("RUNNER_LIMIT_STORAGE");
+            }
+            cleanup();
           },
         }),
     });

@@ -53,12 +53,16 @@ export interface RunnerConnectionOptions {
   /** Exact websocket endpoint, never an HTTP URL to downgrade. */
   url: string;
   credential: string;
-  hello: Extract<RunnerClientMessage, { type: "hello" }>["payload"];
+  hello:
+    | Extract<RunnerClientMessage, { type: "hello" }>["payload"]
+    | (() => Extract<RunnerClientMessage, { type: "hello" }>["payload"]);
   socketFactory: RunnerSocketFactory;
   allowLocalhostWs?: boolean;
   onMessage?: RunnerMessageHandler;
   /** Observer cancellation follows state changes; observers never block transport. */
   onState?: (state: RunnerConnectionState, signal: AbortSignal) => void | Promise<void>;
+  /** Exactly once when reconnect is no longer possible; joins durable local cleanup. */
+  onTerminal?: () => void | Promise<void>;
   random?: () => number;
   now?: () => number;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
@@ -136,6 +140,7 @@ export class RunnerConnection {
   private replacements = 0;
   private lastGeneration = 0;
   private terminal = false;
+  private terminalNotified = false;
   private handlerRunning = false;
   private stateNotification?: AbortController;
 
@@ -149,10 +154,13 @@ export class RunnerConnection {
       seq: 1,
       ack: 0,
       type: "hello",
-      payload: options.hello,
+      payload: typeof options.hello === "function" ? options.hello() : options.hello,
     });
     if (!hello.success || hello.data.type !== "hello") throw new Error("RUNNER_CONNECTION_INVALID");
-    this.options = { ...options, hello: hello.data.payload };
+    this.options = {
+      ...options,
+      hello: typeof options.hello === "function" ? options.hello : hello.data.payload,
+    };
   }
 
   getState(): RunnerConnectionState {
@@ -166,8 +174,7 @@ export class RunnerConnection {
 
   stop(): void {
     if (this.state === "stopped") return;
-    this.terminal = true;
-    this.lifetime.abort();
+    this.markTerminal();
     if (this.session) this.disconnect(this.session, 1000, false);
     this.setState("stopped");
   }
@@ -192,6 +199,18 @@ export class RunnerConnection {
     this.state = state;
     this.stateNotification?.abort();
     if (this.state === state) void this.notifyState(state);
+  }
+
+  private markTerminal(): void {
+    this.terminal = true;
+    this.lifetime.abort();
+    if (this.terminalNotified) return;
+    this.terminalNotified = true;
+    // Cleanup is separate from cancellable status observers: a terminal
+    // observer's cancellation must never skip releasing a process lock.
+    void Promise.resolve()
+      .then(() => this.options.onTerminal?.())
+      .catch(() => {});
   }
 
   private async notifyState(state: RunnerConnectionState): Promise<void> {
@@ -364,7 +383,14 @@ export class RunnerConnection {
         session.received = 1;
         session.lastValidAt = this.now();
         this.cancelTimer(session, session.handshake);
-        if (!this.write(session, { type: "hello", payload: this.options.hello })) return;
+        const hello = this.options.hello;
+        if (
+          !this.write(session, {
+            type: "hello",
+            payload: typeof hello === "function" ? hello() : hello,
+          })
+        )
+          return;
         this.setState("connected");
         if (this.session !== session) return;
         this.touch(session);
@@ -497,8 +523,8 @@ export class RunnerConnection {
       this.stateNotification?.abort();
       if (this.state === "disconnected") void this.notifyState("disconnected");
     }
-    if (code === 4400 || code === 4401 || !reconnect) this.terminal = true;
-    if (code === 4409 && ++this.replacements > MAX_REPLACEMENTS) this.terminal = true;
+    if (code === 4400 || code === 4401 || !reconnect) this.markTerminal();
+    if (code === 4409 && ++this.replacements > MAX_REPLACEMENTS) this.markTerminal();
     if (!this.terminal) this.retry();
   }
 
@@ -506,7 +532,7 @@ export class RunnerConnection {
     if (this.terminal || this.lifetime.signal.aborted) return;
     this.setState("disconnected");
     if (this.terminal || this.reconnects >= MAX_RECONNECTS) {
-      this.terminal = true;
+      this.markTerminal();
       return;
     }
     const cap = Math.min(30_000, 1000 * 2 ** this.reconnects++);
@@ -520,10 +546,10 @@ export class RunnerConnection {
           if (!this.terminal && !this.lifetime.signal.aborted) this.connect();
         })
         .catch(() => {
-          if (!this.lifetime.signal.aborted) this.terminal = true;
+          if (!this.lifetime.signal.aborted) this.markTerminal();
         });
     } catch {
-      this.terminal = true;
+      this.markTerminal();
     }
   }
 

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunnerConnectionOptions } from "./runner-connection";
+import { type RunnerLimitState, runnerLimitFileStore } from "./runner-limits";
 import {
   completeRunnerClaim,
   type PendingRunnerClaim,
@@ -64,6 +65,14 @@ function harness(responses: (Response | Error)[] = []) {
     store,
     connect,
     signal: controller.signal,
+    limitsStore: async () => ({
+      load: async () => undefined,
+      save: async () => {},
+      close: async (beforeRelease, afterRelease) => {
+        beforeRelease?.();
+        afterRelease?.();
+      },
+    }),
   };
   return { io, fetcher, store, connection, connect, controller };
 }
@@ -103,16 +112,7 @@ describe("runner startup", () => {
     expect(options).toMatchObject({
       url: `${origin.replace("https:", "wss:")}/api/cli/runner/ws`,
       credential: credential.credential,
-      hello: {
-        models: [],
-        engine: false,
-        operatingLimits: {
-          matchMicros: 1_000_000,
-          dayMicros: 10_000_000,
-          concurrency: 2,
-          revision: 0,
-        },
-      },
+      hello: expect.any(Function),
     });
     expect(h.connection.start).toHaveBeenCalledOnce();
     for (const [url, init] of h.fetcher.mock.calls) {
@@ -264,7 +264,7 @@ describe("runner startup", () => {
     expect(h.connect).not.toHaveBeenCalled();
   });
 
-  it("rejects offers and every execution/control action, never raising local limits", async () => {
+  it("rejects execution and excessive operating limits while reporting the local ceiling", async () => {
     const h = harness();
     h.store.loadCredential.mockResolvedValue(credential);
     await startRunner(
@@ -299,6 +299,7 @@ describe("runner startup", () => {
         payload: {
           commandId: "limits-1",
           revision: 100,
+          expectedRevision: 99,
           matchMicros: 900_000_000,
           dayMicros: 900_000_000,
           concurrency: 64,
@@ -307,10 +308,14 @@ describe("runner startup", () => {
       signal,
     );
     expect(h.connection.send).toHaveBeenLastCalledWith(
-      { type: "error", payload: { code: "UNSUPPORTED" } },
+      {
+        type: "limits-result",
+        payload: expect.objectContaining({ status: "rejected", reason: "stale", revision: 100 }),
+      },
       signal,
     );
-    expect(options?.hello.operatingLimits).toEqual({
+    const hello = typeof options?.hello === "function" ? options.hello() : options?.hello;
+    expect(hello?.operatingLimits).toEqual({
       matchMicros: 500_000,
       dayMicros: 2_000_000,
       concurrency: 1,
@@ -330,6 +335,185 @@ describe("runner startup", () => {
       signal,
     );
     h.controller.abort();
+  });
+
+  it("applies an operating command once and replays its ACK without changing local ceilings", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    const runner = await startRunner(origin, { resume: "machine-1" }, h.io);
+    const options = h.connect.mock.calls[0]?.[0];
+    const signal = new AbortController().signal;
+    const command = {
+      version: 1 as const,
+      generation: 1,
+      id: "frame-1",
+      seq: 1,
+      ack: 0,
+      type: "limits" as const,
+      payload: {
+        commandId: "limits-1",
+        expectedRevision: 0,
+        revision: 1,
+        matchMicros: 2_000_000,
+        dayMicros: 20_000_000,
+        concurrency: 3,
+      },
+    };
+    await options?.onMessage?.(command, signal);
+    await options?.onMessage?.(command, signal);
+    expect(h.connection.send).toHaveBeenCalledTimes(2);
+    expect(h.connection.send.mock.calls[0]).toEqual(h.connection.send.mock.calls[1]);
+    expect(h.connection.send).toHaveBeenLastCalledWith(
+      {
+        type: "limits-result",
+        payload: expect.objectContaining({
+          status: "applied",
+          revision: 1,
+          hardLimits: { matchMicros: 25_000_000, dayMicros: 100_000_000, concurrency: 8 },
+        }),
+      },
+      signal,
+    );
+    const hello = typeof options?.hello === "function" ? options.hello() : options?.hello;
+    expect(hello?.operatingLimits).toMatchObject({ matchMicros: 2_000_000, revision: 1 });
+    runner.stop();
+  });
+
+  it.each([false, true])(
+    "terminal shutdown drains writes and keeps cancellation live until unlock (cancel: %s)",
+    async (cancelDuringDrain) => {
+      const root = await mkdtemp(join(tmpdir(), "runner-start-terminal-"));
+      const h = harness();
+      h.store.loadCredential.mockResolvedValue(credential);
+      let block = false;
+      let release: (() => void) | undefined;
+      h.io.limitsStore = async (origin, machine) => {
+        const store = await runnerLimitFileStore(origin, machine, root);
+        return {
+          ...store,
+          save: async (state) => {
+            await store.save(state);
+            if (block) {
+              block = false;
+              await new Promise<void>((resolve) => {
+                release = resolve;
+              });
+            }
+          },
+        };
+      };
+      await startRunner(origin, { resume: "machine-1" }, h.io);
+      const options = h.connect.mock.calls[0]?.[0];
+      if (!options?.onTerminal) throw new Error("missing terminal cleanup");
+      const controller = new AbortController();
+      try {
+        block = true;
+        const pending = options.onMessage?.(
+          {
+            version: 1,
+            generation: 1,
+            id: "terminal-frame",
+            seq: 1,
+            ack: 0,
+            type: "limits",
+            payload: {
+              commandId: "terminal-limit",
+              expectedRevision: 0,
+              revision: 1,
+              matchMicros: 2_000_000,
+              dayMicros: 20_000_000,
+              concurrency: 3,
+            },
+          },
+          controller.signal,
+        );
+        await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+        controller.abort();
+        let finished = false;
+        const finishing = Promise.resolve(options.onTerminal()).then(() => {
+          finished = true;
+        });
+        await Promise.resolve();
+        expect(finished).toBe(false);
+        if (cancelDuringDrain) h.controller.abort();
+        await expect(runnerLimitFileStore(origin, "machine-1", root)).rejects.toThrow();
+        release?.();
+        await pending;
+        await finishing;
+        expect(h.connection.send).not.toHaveBeenCalled();
+        const resumed = await runnerLimitFileStore(origin, "machine-1", root);
+        const state = await resumed.load();
+        expect(state).toMatchObject({
+          stopped: cancelDuringDrain,
+          operatingLimits: {
+            revision: cancelDuringDrain ? 0 : 1,
+            matchMicros: cancelDuringDrain ? 1_000_000 : 2_000_000,
+          },
+        });
+        await resumed.close();
+      } finally {
+        release?.();
+        await options.onTerminal();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("records an explicit stop before terminal cleanup can release a pending-write lock", async () => {
+    const h = harness();
+    h.store.loadCredential.mockResolvedValue(credential);
+    let state: RunnerLimitState | undefined;
+    let block = false;
+    let release: (() => void) | undefined;
+    const close = vi.fn(async (beforeRelease?: () => void, afterRelease?: () => void) => {
+      beforeRelease?.();
+      afterRelease?.();
+    });
+    h.io.limitsStore = async () => ({
+      load: async () => state,
+      save: async (next) => {
+        state = structuredClone(next);
+        if (block) {
+          block = false;
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+      },
+      close,
+    });
+    const runner = await startRunner(origin, { resume: "machine-1" }, h.io);
+    const options = h.connect.mock.calls[0]?.[0];
+    h.connection.stop.mockImplementation(() => {
+      void options?.onTerminal?.();
+    });
+    block = true;
+    const pending = options?.onMessage?.(
+      {
+        version: 1,
+        generation: 1,
+        id: "pending-frame",
+        seq: 1,
+        ack: 0,
+        type: "limits",
+        payload: {
+          commandId: "pending-limit",
+          expectedRevision: 0,
+          revision: 1,
+          matchMicros: 2_000_000,
+          dayMicros: 20_000_000,
+          concurrency: 3,
+        },
+      },
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    runner.stop();
+    expect(close).not.toHaveBeenCalled();
+    release?.();
+    await pending;
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(state).toMatchObject({ stopped: true, operatingLimits: { revision: 0 } });
   });
 
   it.each([

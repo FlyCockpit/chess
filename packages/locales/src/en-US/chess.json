@@ -424,13 +424,24 @@
       "claim": "Claim this run within 10 minutes:\n{{url}}",
       "claimed": "Claimed by {{email}}. Controls: {{url}}",
       "waiting": "Connecting runner transport. Match execution is not available in this build.",
-      "limitsRejected": "Operating limit revision {{revision}} rejected: updates are unavailable in this build.",
       "terminal": "Start the runner from a private terminal so claim links and account details are not written to logs.",
       "resumeHelp": "Resume an existing runner at this server without creating a claim",
       "matchHelp": "Local hard USD ceiling per match",
       "dayHelp": "Local hard USD ceiling per day",
       "concurrencyHelp": "Local hard concurrency ceiling (1–64)",
-      "description": "Cockpit Chess: connect a runner, or use companion commands"
+      "description": "Cockpit Chess: connect a runner, or use companion commands",
+      "limitResult": "Operating limit revision {{revision}}: {{status}} ({{reason}}). Requested {{match}}/match, {{day}}/day, concurrency {{concurrency}}. Active revision {{activeRevision}}: {{activeMatch}}/match, {{activeDay}}/day, concurrency {{activeConcurrency}}. Local ceilings: {{hardMatch}}/match, {{hardDay}}/day, concurrency {{hardConcurrency}}.",
+      "limitStatus": {
+        "applied": "applied",
+        "rejected": "rejected"
+      },
+      "limitReason": {
+        "applied": "confirmed locally",
+        "ceiling": "above the local ceiling",
+        "stale": "stale or conflicting revision",
+        "stopped": "run stopped locally",
+        "storage": "local storage unavailable"
+      }
     }
   },
   "termination": {

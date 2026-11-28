@@ -13,12 +13,14 @@ runner-machine/match association and legal move/sequence CAS. An `offer` current
 contains only a command ID and configuration digest; E4 must extend its strict
 payload before game execution is enabled.
 
-Live upgrades remain disabled until D2a supplies the authoritative deletion
-predicate. `RunnerOwnerActive` in
+Live upgrades use D2a's authoritative `isOwnerActive` predicate from
+`packages/auth/src/account-deletion.ts`. `RunnerOwnerActive` in
 `apps/server/src/runner-ws-authority.ts` is the seam:
 `(userId: string) => Promise<boolean>`. It must query durable account eligibility,
 return false for missing or deletion-pending owners, and propagate storage
-failures so transport fails closed. There is no permissive interim predicate.
+failures so transport fails closed. The limits service also uses the same
+transaction-bound owner check while holding the credential lock. There is no
+permissive interim predicate.
 
 ## Wire contract
 
@@ -38,9 +40,14 @@ sequences are E4's responsibility. Reconnect never automatically replays a model
 request, command callback or move.
 
 Allowed client messages are hello, heartbeat, pong, accept, reject, move,
-evaluation, snapshot, event, ack and error. Server messages are welcome,
+evaluation, snapshot, event, limits-result, ack and error. Server messages are welcome,
 heartbeat, pong, offer, start, stop, human-move, resume, limits, ack and error.
-Operating limits use integer micros, concurrency and revision only. The protocol
+The client advertises operating values/revision and its local hard ceilings in
+hello. A server `limits` command contains only operating integer micros,
+concurrency, expected/current revision and command ID. The client returns an
+explicit `limits-result` with the requested revision, applied/refused reason,
+actual values and ceilings. Server polling redelivers one durable pending
+command until this acknowledgement arrives. The protocol
 has no provider URL, headers, credential, filesystem path, executable tool,
 arbitrary JSON metadata or remotely writable local hard-ceiling field.
 Model protocol IDs reuse the chess package's `MODEL_PROTOCOLS`:

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import type { ProviderCredentials } from "@cockpit-chess/chess/runner";
+import { runnerOperatingLimitsSchema } from "@cockpit-chess/chess/runner-protocol";
 import { z } from "zod";
 import { t } from "./chess-i18n";
 import { resolveApiKey } from "./chess-provider";
@@ -409,6 +410,31 @@ export class RunnerPolicy {
     }
     this.operating = Object.freeze(limits);
     this.revision = revision;
+  }
+
+  /** Only the private local revision store calls this before any match is started. */
+  restoreOperatingLimits(input: unknown): void {
+    const parsed = runnerOperatingLimitsSchema.safeParse(input);
+    if (
+      this.stopped ||
+      this.revision !== 0 ||
+      this.matches.size > 0 ||
+      this.finished.size > 0 ||
+      !parsed.success ||
+      parsed.data.matchMicros > this.hard.matchMicros ||
+      parsed.data.dayMicros > this.hard.dayMicros ||
+      parsed.data.concurrency > this.hard.concurrency
+    )
+      throw new RunnerPolicyError("limits");
+    const { revision, ...limits } = parsed.data;
+    this.operating = Object.freeze(limits);
+    this.revision = revision;
+  }
+
+  /** A local stop cannot be undone by a website command or a later connection. */
+  stopOperatingLimits(): void {
+    this.stopped = true;
+    for (const match of this.matches.values()) match.stop();
   }
 
   /** Bind the validated E2 session signal: its local 60s liveness timer aborts it on loss. */

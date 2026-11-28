@@ -235,6 +235,48 @@ describe("local hard runner authority", () => {
     expect(JSON.parse(await readFile(file, "utf8")).records).toHaveLength(2);
   });
 
+  it("a reduction below accrued spend stops old authorities and preserves the rolling-day charge", async () => {
+    const { policy, spend } = await fixture();
+    const match = policy.beginMatch("spent", new AbortController().signal);
+    const credentials = await match.credentials({ model, protocol: "openai-chat" });
+    await credentials.authorizeRequest?.(request());
+    const accrued = spend.snapshot().dayMicros;
+    expect(accrued).toBeGreaterThan(1);
+    policy.applyOperatingLimits({ matchMicros: 1, dayMicros: 1, concurrency: 1 }, 1);
+    expect(match.signal.aborted).toBe(true);
+    await expect(credentials.authorizeRequest?.(request())).rejects.toMatchObject({
+      code: "offline",
+    });
+    match.finish();
+    const next = policy.beginMatch("new", new AbortController().signal);
+    const nextCredentials = await next.credentials({ model, protocol: "openai-chat" });
+    await expect(nextCredentials.authorizeRequest?.(request())).rejects.toMatchObject({
+      code: "limits",
+    });
+    expect(spend.snapshot().dayMicros).toBe(accrued);
+  });
+
+  it("restores a durable local revision only before matches and cannot restore a stopped policy", async () => {
+    const { policy } = await fixture();
+    policy.restoreOperatingLimits({
+      matchMicros: 2_000_000,
+      dayMicros: 20_000_000,
+      concurrency: 3,
+      revision: 9,
+    });
+    expect(policy.capabilities()).toMatchObject({
+      operating: { matchMicros: 2_000_000 },
+      revision: 9,
+    });
+    expect(() =>
+      policy.restoreOperatingLimits({ matchMicros: 1, dayMicros: 1, concurrency: 1, revision: 10 }),
+    ).toThrow(RunnerPolicyError);
+    policy.stopOperatingLimits();
+    expect(() =>
+      policy.applyOperatingLimits({ matchMicros: 1, dayMicros: 1, concurrency: 1 }, 10),
+    ).toThrow(RunnerPolicyError);
+  });
+
   it("refreshes local price bounds for each wire request and refuses unknown prices", async () => {
     const { policy, setPrice, spend } = await fixture();
     const authority = policy.beginMatch("price", new AbortController().signal);

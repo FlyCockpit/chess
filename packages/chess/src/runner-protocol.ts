@@ -33,13 +33,31 @@ const fen = z
   .max(128)
   .refine((value) => validateFen(value).ok);
 const uci = z.string().regex(/^[a-h][1-8][a-h][1-8][qrbn]?$/);
-const limits = {
+const hardLimits = {
   matchMicros: positiveInteger,
   dayMicros: positiveInteger,
   concurrency: positiveInteger.max(64),
+};
+const limits = {
+  ...hardLimits,
   revision: integer,
 };
+export const runnerHardLimitsSchema = z.object(hardLimits).strict();
+export const runnerOperatingLimitsSchema = z.object(limits).strict();
 const command = { commandId: identifier };
+export const runnerLimitUpdateSchema = z
+  .object({ ...command, ...limits, expectedRevision: integer })
+  .strict();
+export const runnerLimitResultSchema = z
+  .object({
+    commandId: identifier,
+    revision: integer,
+    status: z.enum(["applied", "rejected"]),
+    reason: z.enum(["applied", "ceiling", "stale", "stopped", "storage"]),
+    operatingLimits: runnerOperatingLimitsSchema,
+    hardLimits: runnerHardLimitsSchema,
+  })
+  .strict();
 const nonce = z.object({ nonce: identifier }).strict();
 const error = z
   .object({ code: z.enum(["INVALID", "UNAUTHORIZED", "STALE", "UNSUPPORTED", "BUSY"]) })
@@ -67,12 +85,14 @@ export const runnerClientMessageSchema = z.discriminatedUnion("type", [
       .object({
         models: z.array(z.object({ id: modelIdentifier, protocol }).strict()).max(512),
         engine: z.boolean(),
-        operatingLimits: z.object(limits).strict(),
+        operatingLimits: runnerOperatingLimitsSchema,
+        hardLimits: runnerHardLimitsSchema,
       })
       .strict(),
   ),
   frame("heartbeat", nonce),
   frame("pong", nonce),
+  frame("limits-result", runnerLimitResultSchema),
   matchFrame("accept", ack),
   matchFrame(
     "reject",
@@ -125,7 +145,7 @@ export const runnerServerMessageSchema = z.discriminatedUnion("type", [
   matchFrame("stop", ack),
   matchFrame("human-move", z.object({ ...command, uci, expectedSeq: integer }).strict()),
   matchFrame("resume", z.object({ ...command, acceptedSeq: integer, fen, ply: integer }).strict()),
-  frame("limits", z.object({ ...command, ...limits }).strict()),
+  frame("limits", runnerLimitUpdateSchema),
   frame("ack", ack),
   frame("error", error),
 ]);

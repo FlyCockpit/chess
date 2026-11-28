@@ -19,6 +19,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { CreateApiKeyDialog } from "@/components/cli/create-api-key-dialog";
 import { type ApiKeyRow, RevokeApiKeyDialog } from "@/components/cli/revoke-api-key-dialog";
 import { RevokeRunnerDialog, type RunnerRow } from "@/components/cli/revoke-runner-dialog";
+import { RunnerLimitsSheet } from "@/components/cli/runner-limits-sheet";
 import { EmptyState } from "@/components/empty-state";
 import { InlineRetry } from "@/components/inline-retry";
 import { LoadMore } from "@/components/load-more";
@@ -49,6 +50,7 @@ function CliSettings() {
 function RunnersCard() {
   const { t, i18n } = useTranslation(["settings", "common"]);
   const [revoking, setRevoking] = useState<RunnerRow | null>(null);
+  const [editingLimits, setEditingLimits] = useState<RunnerRow | null>(null);
   const listQuery = useInfiniteQuery(
     orpc.cliAccess.runners.list.infiniteOptions({
       input: (cursor: string | undefined) => ({ limit: 20, cursor }),
@@ -137,6 +139,15 @@ function RunnersCard() {
                           </p>
                         )}
                       </div>
+                      {runner.status === "active" && (
+                        <Button
+                          variant="outline"
+                          className="min-h-[44px] shrink-0"
+                          onClick={() => setEditingLimits(runner)}
+                        >
+                          {t("settings:cli.runners.limits.edit")}
+                        </Button>
+                      )}
                       {runner.status !== "revoked" && (
                         <Button
                           variant="outline"
@@ -165,6 +176,7 @@ function RunnersCard() {
           if (!open) setRevoking(null);
         }}
       />
+      <RunnerLimitsSheet runner={editingLimits} onClose={() => setEditingLimits(null)} />
     </Card>
   );
 }

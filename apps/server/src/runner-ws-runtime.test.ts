@@ -3,6 +3,14 @@ import { WSContext, type WSEvents } from "hono/ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 
+vi.mock("@cockpit-chess/auth/runner-limits", () => ({
+  runnerLimitsService: {
+    hello: vi.fn(async () => null),
+    pending: vi.fn(async () => null),
+    result: vi.fn(async () => true),
+  },
+}));
+
 const state = vi.hoisted(() => ({
   redis: vi.fn(),
   notifications: vi.fn(),
@@ -123,7 +131,7 @@ describe("Node runner upgrade adapter", () => {
       "message",
       [
         Buffer.from(
-          '{"version":1,"generation":1,"id":"hello","seq":1,"ack":1,"type":"hello","payload":{"models":[],"engine":false,"operatingLimits":{"matchMicros":1,"dayMicros":1,"concurrency":1,"revision":0}}}',
+          '{"version":1,"generation":1,"id":"hello","seq":1,"ack":1,"type":"hello","payload":{"models":[],"engine":false,"hardLimits":{"matchMicros":25,"dayMicros":100,"concurrency":8},"operatingLimits":{"matchMicros":1,"dayMicros":1,"concurrency":1,"revision":0}}}',
         ),
       ],
       false,

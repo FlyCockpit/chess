@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { createRunnerLimitsService } from "@cockpit-chess/auth/runner-limits";
 import {
   parseRunnerClientFrame,
   RUNNER_HEARTBEAT_MS,
@@ -45,6 +46,7 @@ type Options = {
   leases: RunnerLeaseStore;
   isAvailable: () => boolean;
   now?: () => number;
+  limits?: Pick<ReturnType<typeof createRunnerLimitsService>, "hello" | "pending" | "result">;
 };
 
 /**
@@ -182,12 +184,18 @@ export function createRunnerTransport(options: Options) {
           close(4408, "LIVENESS");
           return;
         }
-        if (now() - lastHeartbeat < RUNNER_HEARTBEAT_MS) return;
+        if (!hello) return;
         if (!(await authorized(false))) {
           close();
           return;
         }
         if (closed) return;
+        if (options.limits) {
+          const command = await run(options.limits.pending(identity));
+          if (closed) return;
+          if (command) send({ type: "limits", payload: command });
+        }
+        if (now() - lastHeartbeat < RUNNER_HEARTBEAT_MS) return;
         lastHeartbeat = now();
         const nonce = randomUUID();
         heartbeatNonces.set(nonce, now() + RUNNER_LIVENESS_MS);
@@ -273,7 +281,21 @@ export function createRunnerTransport(options: Options) {
             hello = true;
             clearTimeout(helloTimeout);
             lastSeen = now();
+            if (options.limits) {
+              const command = await run(
+                options.limits.hello(identity, {
+                  operatingLimits: message.payload.operatingLimits,
+                  hardLimits: message.payload.hardLimits,
+                }),
+              );
+              if (closed) return;
+              if (command) send({ type: "limits", payload: command });
+            }
             send({ type: "ack", payload: { commandId: message.id } });
+          } else if (message.type === "limits-result" && options.limits) {
+            await run(options.limits.result(identity, message.payload));
+            if (closed) return;
+            send({ type: "ack", payload: { commandId: message.payload.commandId } });
           } else {
             send({ type: "error", payload: { code: "UNSUPPORTED" } });
           }

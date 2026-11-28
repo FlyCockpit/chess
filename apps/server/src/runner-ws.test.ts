@@ -44,12 +44,13 @@ function harness() {
       if (leases.get(lease.machineId) === lease) leases.delete(lease.machineId);
     }),
   };
-  const transport = () =>
+  const transport = (limits?: Parameters<typeof createRunnerTransport>[0]["limits"]) =>
     createRunnerTransport({
       authority,
       leases: store,
       isAvailable: () => available,
       now: Date.now,
+      limits,
     });
   return {
     live,
@@ -85,6 +86,7 @@ function hello(generation = 1, overrides: Record<string, unknown> = {}) {
     payload: {
       models: [],
       engine: true,
+      hardLimits: { matchMicros: 25_000_000, dayMicros: 100_000_000, concurrency: 8 },
       operatingLimits: {
         matchMicros: 1_000_000,
         dayMicros: 10_000_000,
@@ -449,6 +451,91 @@ describe("runner transport simulation", () => {
     await expect(transport.admit(extra)).rejects.toThrow("admission unavailable");
     expect(extra).not.toHaveBeenCalled();
     for (const complete of finish) complete();
+    await transport.drain();
+  });
+});
+
+describe("durable operating-limit transport", () => {
+  const command = {
+    commandId: "limit-command",
+    expectedRevision: 0,
+    revision: 1,
+    matchMicros: 2_000_000,
+    dayMicros: 10_000_000,
+    concurrency: 2,
+  };
+  const hardLimits = { matchMicros: 25_000_000, dayMicros: 100_000_000, concurrency: 8 };
+  const result = {
+    commandId: command.commandId,
+    revision: command.revision,
+    status: "applied",
+    reason: "applied",
+    operatingLimits: {
+      matchMicros: command.matchMicros,
+      dayMicros: command.dayMicros,
+      concurrency: command.concurrency,
+      revision: command.revision,
+    },
+    hardLimits,
+  };
+  function backend() {
+    return {
+      hello: vi.fn(async () => command),
+      pending: vi.fn(async () => command),
+      result: vi.fn(async () => true),
+    };
+  }
+  it("registers authoritative hello, redelivers durable command and accepts exact terminal result", async () => {
+    const h = harness();
+    const limits = backend();
+    const { active, sent, transport } = await connect(h, h.transport(limits));
+    active.receive(hello());
+    await active.idle();
+    expect(limits.hello).toHaveBeenCalledWith(
+      expect.objectContaining({ machineId: "machine1", connectionGeneration: 1 }),
+      expect.objectContaining({ hardLimits }),
+    );
+    expect(
+      sent.filter((message) => message.type === "limits").map((message) => message.payload),
+    ).toEqual([command]);
+    vi.setSystemTime(Date.now() + 5000);
+    await active.tick();
+    expect(limits.pending).toHaveBeenCalledTimes(1);
+    expect(
+      sent.filter((message) => message.type === "limits").map((message) => message.payload),
+    ).toEqual([command, command]);
+    active.receive(frame("limits-result", 2, result));
+    await active.idle();
+    expect(limits.result).toHaveBeenCalledWith(
+      expect.objectContaining({ machineId: "machine1", connectionGeneration: 1 }),
+      result,
+    );
+    expect(sent.at(-1)).toMatchObject({ type: "ack", payload: { commandId: command.commandId } });
+    await transport.drain();
+  });
+  it("never delivers pending commands after revocation or storage validation failure", async () => {
+    const h = harness();
+    const limits = backend();
+    const { active, peer, transport } = await connect(h, h.transport(limits));
+    active.receive(hello());
+    await active.idle();
+    h.live.clear();
+    vi.setSystemTime(Date.now() + 5000);
+    await active.tick();
+    expect(limits.pending).not.toHaveBeenCalled();
+    expect(peer.close).toHaveBeenCalledWith(4401, "UNAUTHORIZED");
+    await transport.drain();
+  });
+  it("closes on unavailable durable delivery and never substitutes invented command state", async () => {
+    const h = harness();
+    const limits = backend();
+    limits.pending.mockRejectedValue(new Error("storage unavailable"));
+    const { active, peer, transport } = await connect(h, h.transport(limits));
+    active.receive(hello());
+    await active.idle();
+    vi.setSystemTime(Date.now() + 5000);
+    await active.tick();
+    expect(peer.close).toHaveBeenCalledWith(4401, "UNAUTHORIZED");
     await transport.drain();
   });
 });

@@ -20,6 +20,21 @@ const env = vi.hoisted(
 );
 vi.mock("@cockpit-chess/env/server", () => ({ env, ADMIN_EMAILS: new Set<string>() }));
 vi.mock("@cockpit-chess/env/shared", () => ({ env: {} }));
+const limits = vi.hoisted(() => ({
+  get: vi.fn(),
+  prove: vi.fn(),
+  set: vi.fn(),
+  proofBudget: vi.fn(),
+  writeBudget: vi.fn(),
+}));
+vi.mock("@cockpit-chess/auth/runner-limits", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@cockpit-chess/auth/runner-limits")>()),
+  runnerLimitsService: { get: limits.get, prove: limits.prove, set: limits.set },
+}));
+vi.mock("../lib/procedure-budget", () => ({
+  createProcedureBudget: (options: { keyPrefix: string }) =>
+    options.keyPrefix === "rl:runner-limit-proof" ? limits.proofBudget : limits.writeBudget,
+}));
 const createApiKey = vi.hoisted(() => vi.fn());
 vi.mock("@cockpit-chess/auth", () => ({ auth: { api: { createApiKey } } }));
 // The lock itself is proven in packages/auth (device-redemption-race.test.ts);
@@ -62,7 +77,7 @@ vi.mock("@cockpit-chess/auth/device-redemption-lock", () => {
       const minted = await mint();
       if (lock.lapseAfterMint) {
         await discard(minted);
-        throw new Error("lapsed");
+        throw new CliCredentialSessionRevokedError();
       }
       return minted;
     },
@@ -96,6 +111,7 @@ function client(
         twoFactorEnabled: false,
         image: null,
         banned: false,
+        deletionRequestedAt: null,
         banReason: null,
         banExpires: null,
         createdAt: now,
@@ -173,7 +189,7 @@ describe("cliAccess.installCommand", () => {
   it("does not return a stateless capability after the mint lock lapses", async () => {
     env.CLI_RELEASE_REPO = "acme/app";
     lock.lapseAfterMint = true;
-    await expect(client().installCommand()).rejects.toThrow("lapsed");
+    await expect(client().installCommand()).rejects.toSatisfy(isCode("UNAUTHORIZED"));
   });
 
   it.each(["api-key", "session-token"] as const)(
@@ -650,4 +666,99 @@ describe("credential mint authority codes", () => {
     expect(createApiKey).not.toHaveBeenCalled();
     expect(lock.calls).toHaveLength(0);
   });
+});
+
+describe("cliAccess.runners operating limits", () => {
+  const request = {
+    id: "machine1",
+    expectedRevision: 3,
+    limits: { matchMicros: 2_000_000, dayMicros: 10_000_000, concurrency: 2 },
+  };
+  const verification = { method: "password" as const, password: "typed-sentinel-password" };
+  it("keeps runner limits browser-only, protected and session-bound", async () => {
+    limits.get.mockResolvedValue({ available: false });
+    await client().runners.getLimits({ id: "machine1" });
+    expect(limits.get).toHaveBeenCalledWith(
+      { userId: "user-1", sessionId: "auth-session" },
+      "machine1",
+    );
+    await expect(anonymous().runners.getLimits({ id: "machine1" })).rejects.toSatisfy(
+      isCode("UNAUTHORIZED"),
+    );
+    await expect(
+      client("user-1", {}, "api-key").runners.getLimits({ id: "machine1" }),
+    ).rejects.toSatisfy(isCode("UNAUTHORIZED"));
+    await expect(
+      client("user-1", {}, "session-token").runners.getLimits({ id: "machine1" }),
+    ).rejects.toSatisfy(isCode("UNAUTHORIZED"));
+  });
+  it("enforces the dedicated verification budget before passing exact values to the proof service", async () => {
+    limits.prove.mockResolvedValue({
+      proof: "ab".repeat(32),
+      expiresAt: new Date(Date.now() + 120_000),
+    });
+    await client().runners.proveLimits({ ...request, verification });
+    expect(limits.proofBudget).toHaveBeenCalledWith("user-1");
+    expect(limits.prove).toHaveBeenCalledWith(
+      { userId: "user-1", sessionId: "auth-session" },
+      { ...request, verification },
+    );
+    expect(limits.proofBudget.mock.invocationCallOrder[0]).toBeLessThan(
+      limits.prove.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+  it("never leaks submitted credential details from an unavailable verifier/storage", async () => {
+    limits.prove.mockRejectedValue(new Error(verification.password));
+    const result = await client()
+      .runners.proveLimits({ ...request, verification })
+      .catch((error: unknown) => error);
+    expect(result).toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+    expect(JSON.stringify(result)).not.toContain(verification.password);
+  });
+  it("returns a localized refusal code for incorrect step-up", async () => {
+    limits.prove.mockResolvedValue(null);
+    await expect(client().runners.proveLimits({ ...request, verification })).rejects.toSatisfy(
+      isCode("FORBIDDEN"),
+    );
+  });
+  it("enforces a separate update budget and forwards only exact declared input", async () => {
+    limits.set.mockResolvedValue({ pending: { revision: 4 } });
+    await client().runners.setLimits({ ...request, proof: "ab".repeat(32) });
+    expect(limits.writeBudget).toHaveBeenCalledWith("user-1");
+    expect(limits.set).toHaveBeenCalledWith(
+      { userId: "user-1", sessionId: "auth-session" },
+      { ...request, proof: "ab".repeat(32) },
+    );
+    await expect(
+      client().runners.setLimits({ ...request, endpoint: "https://evil.example" } as never),
+    ).rejects.toSatisfy(isCode("BAD_REQUEST"));
+  });
+});
+
+describe("runner limits pending-deletion browser gate", () => {
+  it.each(["getLimits", "proveLimits", "setLimits"])(
+    "refuses %s before service dispatch",
+    async (procedure) => {
+      const api = client("user-1", { deletionRequestedAt: new Date() });
+      const request = {
+        id: "machine1",
+        expectedRevision: 0,
+        limits: { matchMicros: 2_000_000, dayMicros: 10_000_000, concurrency: 2 },
+      };
+      const run =
+        procedure === "getLimits"
+          ? () => api.runners.getLimits({ id: request.id })
+          : procedure === "proveLimits"
+            ? () =>
+                api.runners.proveLimits({
+                  ...request,
+                  verification: { method: "password", password: "test-password" },
+                })
+            : () => api.runners.setLimits(request);
+      await expect(run()).rejects.toSatisfy(isCode("UNAUTHORIZED"));
+      expect(limits.get).not.toHaveBeenCalled();
+      expect(limits.prove).not.toHaveBeenCalled();
+      expect(limits.set).not.toHaveBeenCalled();
+    },
+  );
 });

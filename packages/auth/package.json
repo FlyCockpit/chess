@@ -54,6 +54,12 @@
     },
     "./user-creation-policy": {
       "default": "./src/user-creation-policy.ts"
+    },
+    "./runner-limits": {
+      "default": "./src/runner-limits.ts"
+    },
+    "./runner-step-up": {
+      "default": "./src/runner-step-up.ts"
     }
   },
   "scripts": {

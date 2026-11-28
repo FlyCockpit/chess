@@ -136,6 +136,45 @@
         "confirm": "Revoke access",
         "pending": "Revoking…",
         "success": "Runner access revoked."
+      },
+      "limits": {
+        "edit": "Operating limits",
+        "title": "Runner operating limits",
+        "description": "Adjust limits for {{name}}. Your terminal confirms each change.",
+        "loadFailed": "Could not load runner limits. Try again.",
+        "connectFirst": "Start or reconnect this runner in your terminal, then try again to load its active limits.",
+        "current": "Confirmed revision {{revision}}: {{match}} per match, {{day}} per rolling 24 hours, {{concurrency}} concurrent matches.",
+        "hard": "Local ceilings: {{match}} per match, {{day}} per rolling 24 hours, {{concurrency}} concurrent matches.",
+        "localOnly": "Raise ceilings only in the CLI startup options on your machine. Requests are price-checked locally; set a provider-key spending cap for absolute billing protection.",
+        "match": "Per match (USD)",
+        "day": "Per rolling 24 hours (USD)",
+        "concurrency": "Concurrent matches",
+        "stepUp": "Increasing any limit requires a fresh password or authenticator code for these exact values.",
+        "method": "Verify this increase",
+        "password": "Current password",
+        "totp": "Authenticator code",
+        "setup": "This account has no supported verification method. Set up an authenticator in Security before raising limits. You can still lower limits.",
+        "setupLink": "Open security settings",
+        "reduction": "Lowering a limit pauses active matches. Previous spending stays counted; a lower cap cannot refund it.",
+        "ceiling": "These values exceed the local ceilings shown above. Choose lower values, or restart the CLI with higher local ceilings.",
+        "invalid": "Enter positive USD amounts with up to six decimal places, and concurrency from 1 to 64.",
+        "submit": "Send limits to terminal",
+        "waiting": "Change sent. Keep the runner connected and check its terminal for confirmation.",
+        "pending": "Revision {{revision}} is waiting for terminal confirmation. Reconnect the runner if this persists.",
+        "result": {
+          "applied": "Revision {{revision}} was confirmed by the terminal.",
+          "ceiling": "Revision {{revision}} was refused by the terminal: it exceeds a local ceiling. Choose values within the confirmed ceilings.",
+          "stale": "Revision {{revision}} was refused because its starting revision changed. Refresh and try again.",
+          "stopped": "Revision {{revision}} was refused because this run was stopped locally. Start a new run in the terminal.",
+          "storage": "Revision {{revision}} was refused because the terminal could not safely save it. Check the terminal before retrying."
+        },
+        "errors": {
+          "conflict": "The limits changed or another change is pending. Refresh the limits and review them before trying again.",
+          "verification": "Verification failed or your session expired. Check your password or current authenticator code, then try again or sign in again.",
+          "unavailable": "Verification is temporarily unavailable or its attempt limit was reached. Wait a few minutes and try again.",
+          "missing": "This runner is no longer available. Close this panel and refresh the runner list.",
+          "failed": "The change could not be confirmed. Refresh the limits before retrying; check the terminal for any pending change."
+        }
       }
     }
   },

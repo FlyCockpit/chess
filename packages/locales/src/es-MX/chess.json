@@ -99,9 +99,20 @@
       "claim": "Reclama esta ejecución en los próximos 10 minutos:\n{{url}}",
       "claimed": "Reclamada por {{email}}. Controles: {{url}}",
       "waiting": "Conectando el transporte de la ejecución. Este programa aún no permite ejecutar partidas.",
-      "limitsRejected": "Se rechazó la revisión {{revision}} de los límites operativos: este programa aún no permite actualizarlos.",
       "terminal": "Inicia la ejecución desde una terminal privada para evitar que los enlaces y los datos de la cuenta se escriban en registros.",
-      "expired": "El enlace venció o no se pudo completar la conexión. Inicia una ejecución nueva."
+      "expired": "El enlace venció o no se pudo completar la conexión. Inicia una ejecución nueva.",
+      "limitResult": "Revisión {{revision}} de límites operativos: {{status}} ({{reason}}). Solicitado: {{match}} por partida, {{day}} por día y {{concurrency}} simultáneas. Revisión activa {{activeRevision}}: {{activeMatch}} por partida, {{activeDay}} por día y {{activeConcurrency}} simultáneas. Máximos locales: {{hardMatch}} por partida, {{hardDay}} por día y {{hardConcurrency}} simultáneas.",
+      "limitStatus": {
+        "applied": "aplicada",
+        "rejected": "rechazada"
+      },
+      "limitReason": {
+        "applied": "confirmada localmente",
+        "ceiling": "supera el máximo local",
+        "stale": "revisión obsoleta o en conflicto",
+        "stopped": "ejecutor detenido localmente",
+        "storage": "almacenamiento local no disponible"
+      }
     }
   },
   "colors": {

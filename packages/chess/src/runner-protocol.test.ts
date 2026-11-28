@@ -26,6 +26,7 @@ const hello = {
     models: [{ id: "vendor/model", protocol: "openai-responses" }],
     engine: false,
     operatingLimits: limits,
+    hardLimits: { matchMicros: 25_000_000, dayMicros: 100_000_000, concurrency: 8 },
   },
 };
 const welcome = {
@@ -73,7 +74,7 @@ const serverFixtures = [
     matchId: "m",
     payload: { commandId: "c", acceptedSeq: 0, fen, ply: 0 },
   },
-  { ...base, type: "limits", payload: { commandId: "c", ...limits } },
+  { ...base, type: "limits", payload: { commandId: "c", ...limits, expectedRevision: 0 } },
   { ...base, type: "ack", payload: { commandId: "c" } },
   { ...base, type: "error", payload: { code: "UNAUTHORIZED" } },
 ];

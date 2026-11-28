@@ -16,11 +16,44 @@ flag registration and that startup flow.
 Local price-checked ceiling defaults are **$25 per match, $100 per rolling 24 hours and 8 concurrent
 matches**. Operating defaults are **$1, $10 and 2**. Only local startup options
 change hard ceilings. `applyOperatingLimits()` accepts a strict operating shape
-and the next revision, bounded by the hard ceilings. E3S owns browser step-up,
-wire validation, terminal change notices and acknowledgement handling. Reducing
+and the next revision, bounded by the hard ceilings. Settings → Command-line
+access → Operating limits shows confirmed values, ceilings and pending changes.
+Increasing any component requires a fresh password or authenticator code;
+reductions require the live owner session. Accounts without either supported
+method get a link to Security to set up an authenticator. Reducing
 a limit stops active authorities before an in-flight reservation can authorize
 another request; the loop must settle those authorities before releasing their
 concurrency slots. Raising a limit never revives a stopped authority.
+
+`RunnerLimitController` owns strict operating revisions and terminal receipts.
+Construct it with the local hard limits and a `runnerLimitFileStore(origin,
+machineId)`; the game executor passes its `RunnerPolicy` as the policy adapter.
+Restore happens before any match starts. Keep one controller through transport
+reconnects and supply `hello` as a callback so it advertises current values.
+Each accepted or refused request, including replay, prints requested/current
+values, revision and the local ceilings. Above-ceiling values are refused,
+never clamped. Limits do not reset or replace the separate spend ledger.
+
+The browser's two-minute one-use proof binds the user, live browser session,
+machine/run, connection generation, current revision and exact proposed values.
+Proof creation, consumption and durable command state use existing Verification
+storage under the same credential lock as reset/revoke. Only one change may be
+pending. A queued request is not a confirmed change: the CLI durably saves a
+receipt before applying/acknowledging it. The server redelivers the same command
+after a lost ACK; replay returns the saved receipt. Sign-out, expiry, reset,
+revocation, archival and deletion cannot preserve proof authority.
+
+Local limit state lives in the private CLI config directory's
+`runner-limits-v1/`, separately from provider spend. It uses an exclusive lock,
+atomic replacement and file/directory sync. Explicit local stop persists for
+that run and cannot be reversed by remote commands or explicit resume. A crash
+leaves the lock; only the local operator may remove that specific lock after
+checking its PID is dead. Keep the state JSON. Corruption, an unsafe directory
+or a failed durable write stops authority. Terminal transport cleanup drains
+writes while local cancellation stays active. A guarded synchronous unlock is
+the close boundary; cancellation accepted before it is durably recorded, and
+a stop after completed closure fails explicitly. Receipt storage is bounded; a full
+receipt history refuses further updates rather than forgetting an old command.
 
 For each accepted match, call `policy.beginMatch(matchId, sessionSignal)` with
 the **validated E2 message handler's session signal**. E2's local heartbeat and

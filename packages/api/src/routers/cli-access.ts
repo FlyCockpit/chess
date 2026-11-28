@@ -12,6 +12,12 @@ import {
   runnerClaimTokenSchema,
 } from "@cockpit-chess/auth/runner-claim";
 import {
+  RunnerLimitsError,
+  runnerLimitsProofRequestSchema,
+  runnerLimitsService,
+  runnerLimitsSetRequestSchema,
+} from "@cockpit-chess/auth/runner-limits";
+import {
   RunnerMachineForbiddenError,
   RunnerMachineInputError,
   RunnerMachineLimitError,
@@ -28,6 +34,7 @@ import { protectedProcedure } from "../index";
 import { createCliInstallToken } from "../lib/cli-install-token";
 import { isCliReleaseConfigured } from "../lib/cli-release";
 import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagination";
+import { createProcedureBudget } from "../lib/procedure-budget";
 import { entityId } from "../lib/schemas";
 
 /**
@@ -94,8 +101,67 @@ async function withRunnerBrowserSession<T>(
   );
 }
 
+const limitProofBudget = createProcedureBudget({
+  keyPrefix: "rl:runner-limit-proof",
+  points: 5,
+  durationSeconds: 300,
+  failClosed: true,
+  overBudgetMessage: () => "Runner verification budget exhausted",
+  unavailableMessage: "Runner verification unavailable",
+  unavailableLog: "Runner limit proof budget unavailable",
+});
+const limitWriteBudget = createProcedureBudget({
+  keyPrefix: "rl:runner-limit-write",
+  points: 30,
+  durationSeconds: 300,
+  failClosed: true,
+  overBudgetMessage: () => "Runner limit update budget exhausted",
+  unavailableMessage: "Runner updates unavailable",
+  unavailableLog: "Runner limit write budget unavailable",
+});
+
+async function withRunnerLimits<T>(
+  context: Context & { session: NonNullable<Context["session"]> },
+  run: (session: { userId: string; sessionId: string }) => Promise<T>,
+): Promise<T> {
+  if (context.credential !== undefined) throw new ORPCError("UNAUTHORIZED");
+  try {
+    return await run({ userId: context.session.user.id, sessionId: context.session.session.id });
+  } catch (error) {
+    if (error instanceof ORPCError) throw error;
+    if (error instanceof RunnerLimitsError) throw new ORPCError(error.code);
+    if (error instanceof RunnerMachineSessionRevokedError) throw new ORPCError("UNAUTHORIZED");
+    if (error instanceof RunnerMachineForbiddenError) throw new ORPCError("FORBIDDEN");
+    // Neither submitted credentials nor storage parameter values enter an error cause.
+    throw new ORPCError("SERVICE_UNAVAILABLE");
+  }
+}
+
 export const cliAccessRouter = {
   runners: {
+    getLimits: protectedProcedure
+      .input(z.strictObject({ id: entityId }))
+      .handler(({ input, context }) =>
+        withRunnerLimits(context, (session) => runnerLimitsService.get(session, input.id)),
+      ),
+    proveLimits: protectedProcedure
+      .input(runnerLimitsProofRequestSchema)
+      .handler(({ input, context }) =>
+        withRunnerLimits(context, async (session) => {
+          await limitProofBudget(session.userId);
+          const proof = await runnerLimitsService.prove(session, input);
+          if (!proof) throw new ORPCError("FORBIDDEN");
+          return proof;
+        }),
+      ),
+    setLimits: protectedProcedure
+      .input(runnerLimitsSetRequestSchema)
+      .handler(({ input, context }) =>
+        withRunnerLimits(context, async (session) => {
+          await limitWriteBudget(session.userId);
+          return runnerLimitsService.set(session, input);
+        }),
+      ),
     claim: protectedProcedure
       .input(z.strictObject({ token: runnerClaimTokenSchema }))
       .handler(async ({ input, context }) => {

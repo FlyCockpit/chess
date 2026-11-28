@@ -136,6 +136,45 @@
         "confirm": "Revocar acceso",
         "pending": "Revocando…",
         "success": "Se revocó el acceso del equipo."
+      },
+      "limits": {
+        "edit": "Límites de uso",
+        "title": "Límites de uso del ejecutor",
+        "description": "Ajusta los límites de {{name}}. Tu terminal confirma cada cambio.",
+        "loadFailed": "No se pudieron cargar los límites. Inténtalo de nuevo.",
+        "connectFirst": "Inicia o vuelve a conectar este ejecutor en tu terminal y vuelve a intentar cargar sus límites activos.",
+        "current": "Revisión confirmada {{revision}}: {{match}} por partida, {{day}} por cada periodo móvil de 24 horas y {{concurrency}} partidas simultáneas.",
+        "hard": "Topes locales: {{match}} por partida, {{day}} por cada periodo móvil de 24 horas y {{concurrency}} partidas simultáneas.",
+        "localOnly": "Aumenta los topes solo en las opciones de inicio del CLI en tu equipo. Los precios se verifican localmente antes de cada solicitud; establece un tope de gasto en la clave del proveedor para limitar la facturación de forma absoluta.",
+        "match": "Por partida (USD)",
+        "day": "Por cada periodo móvil de 24 horas (USD)",
+        "concurrency": "Partidas simultáneas",
+        "stepUp": "Para aumentar cualquier límite, verifica estos valores exactos con tu contraseña o un código del autenticador reciente.",
+        "method": "Verifica este aumento",
+        "password": "Contraseña actual",
+        "totp": "Código del autenticador",
+        "setup": "Esta cuenta no tiene un método de verificación compatible. Configura un autenticador en Seguridad antes de aumentar los límites. Puedes seguir reduciéndolos.",
+        "setupLink": "Abrir configuración de seguridad",
+        "reduction": "Reducir un límite pausa las partidas activas. El gasto previo sigue contando; un tope menor no lo reembolsa.",
+        "ceiling": "Estos valores superan los topes locales mostrados. Elige valores menores o reinicia el CLI con topes locales más altos.",
+        "invalid": "Ingresa importes positivos en USD con hasta seis decimales y entre 1 y 64 partidas simultáneas.",
+        "submit": "Enviar límites a la terminal",
+        "waiting": "Cambio enviado. Mantén el ejecutor conectado y revisa la confirmación en su terminal.",
+        "pending": "La revisión {{revision}} espera la confirmación de la terminal. Vuelve a conectar el ejecutor si esto continúa.",
+        "result": {
+          "applied": "La terminal confirmó la revisión {{revision}}.",
+          "ceiling": "La terminal rechazó la revisión {{revision}} porque supera un tope local. Elige valores dentro de los topes confirmados.",
+          "stale": "Se rechazó la revisión {{revision}} porque cambió su revisión inicial. Actualiza e inténtalo de nuevo.",
+          "stopped": "Se rechazó la revisión {{revision}} porque esta ejecución se detuvo localmente. Inicia una nueva ejecución en la terminal.",
+          "storage": "Se rechazó la revisión {{revision}} porque la terminal no pudo guardarla de forma segura. Revisa la terminal antes de reintentar."
+        },
+        "errors": {
+          "conflict": "Los límites cambiaron o hay otro cambio pendiente. Actualiza los límites y revísalos antes de reintentar.",
+          "verification": "La verificación falló o tu sesión venció. Revisa tu contraseña o el código actual del autenticador e inténtalo de nuevo o vuelve a iniciar sesión.",
+          "unavailable": "La verificación no está disponible temporalmente o se alcanzó el límite de intentos. Espera unos minutos e inténtalo de nuevo.",
+          "missing": "Este ejecutor ya no está disponible. Cierra este panel y actualiza la lista de ejecutores.",
+          "failed": "No se pudo confirmar el cambio. Actualiza los límites antes de reintentar y revisa si hay cambios pendientes en la terminal."
+        }
       }
     }
   },

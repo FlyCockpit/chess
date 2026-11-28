@@ -165,6 +165,7 @@ export async function runnerTransportCheck() {
           payload: {
             models: [],
             engine: false,
+            hardLimits: { matchMicros: 25000000, dayMicros: 100000000, concurrency: 8 },
             operatingLimits: {
               matchMicros: 1000000,
               dayMicros: 10000000,
@@ -337,6 +338,7 @@ async function runnerSocketBoundaryCheck({ fixture, ownerId, prisma, runners, lo
       hello: {
         models: [],
         engine: false,
+        hardLimits: { matchMicros: 25000000, dayMicros: 100000000, concurrency: 8 },
         operatingLimits: { matchMicros: 1000000, dayMicros: 10000000, concurrency: 2, revision: 0 },
       },
       onMessage: (message) => {

@@ -18,6 +18,7 @@ const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const hello = {
   models: [],
   engine: false,
+  hardLimits: { matchMicros: 25_000_000, dayMicros: 100_000_000, concurrency: 8 },
   operatingLimits: { matchMicros: 1, dayMicros: 2, concurrency: 1, revision: 0 },
 };
 
@@ -464,9 +465,33 @@ describe("runner outbound connection", () => {
     h.connection.stop();
   });
 
+  it("rebuilds the safe hello from current local limits on every reconnect", async () => {
+    let revision = 0;
+    const h = harness({
+      hello: () => ({ ...hello, operatingLimits: { ...hello.operatingLimits, revision } }),
+    });
+    h.socket.welcome();
+    expect(h.socket.clientFrames()[0]).toMatchObject({
+      type: "hello",
+      payload: { operatingLimits: { revision: 0 } },
+    });
+    revision = 4;
+    h.socket.events?.close(1012);
+    await vi.advanceTimersByTimeAsync(500);
+    const next = h.sockets[1] as Socket;
+    next.welcome(2);
+    expect(next.clientFrames()[0]).toMatchObject({
+      type: "hello",
+      payload: { operatingLimits: { revision: 4 }, hardLimits: hello.hardLimits },
+    });
+    h.connection.stop();
+  });
+
   it("caps full jitter at 30s and limits reconnect attempts", async () => {
     const delays: number[] = [];
+    const onTerminal = vi.fn();
     const h = harness({
+      onTerminal,
       random: () => 0.999999,
       sleep: async (ms) => {
         delays.push(ms);
@@ -480,7 +505,36 @@ describe("runner outbound connection", () => {
     expect(delays).toEqual([999, 1999, 3999, 7999, 15999, 29999, 29999, 29999, 29999, 29999]);
     expect(h.socketFactory).toHaveBeenCalledTimes(11);
     expect(h.connection.getState()).toBe("disconnected");
+    expect(onTerminal).toHaveBeenCalledOnce();
     h.connection.stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onTerminal).toHaveBeenCalledOnce();
+  });
+
+  it.each([4400, 4401])("runs terminal cleanup once after protocol shutdown %s", async (code) => {
+    const onTerminal = vi.fn();
+    const h = harness({ onTerminal });
+    h.socket.welcome();
+    h.socket.events?.close(code);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onTerminal).toHaveBeenCalledOnce();
+    h.connection.stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onTerminal).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retains local resources during an ordinary reconnect and closes only on terminal stop", async () => {
+    const onTerminal = vi.fn();
+    const h = harness({ onTerminal });
+    h.socket.welcome();
+    h.socket.events?.close(1012);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.socketFactory).toHaveBeenCalledTimes(2);
+    expect(onTerminal).not.toHaveBeenCalled();
+    h.connection.stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onTerminal).toHaveBeenCalledOnce();
   });
 
   it("bounds repeated replacement fights even after successful welcomes", async () => {

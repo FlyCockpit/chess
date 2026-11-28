@@ -1,3 +1,4 @@
+import { runnerLimitsService } from "@cockpit-chess/auth/runner-limits";
 import {
   RUNNER_MAX_BUFFERED_BYTES,
   RUNNER_MAX_FRAME_BYTES,
@@ -37,6 +38,7 @@ export function createRunnerWebSocketRuntime(options: { isOwnerActive: RunnerOwn
         authority,
         leases: createRunnerLeaseStore(redisConnection),
         isAvailable,
+        limits: runnerLimitsService,
       })
     : null;
   if (transport) {
