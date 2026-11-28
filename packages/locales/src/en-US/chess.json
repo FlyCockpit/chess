@@ -49,7 +49,14 @@
       "stopped": "Stopped",
       "error": "Interrupted",
       "draft": "Draft"
-    }
+    },
+    "category": "Match category",
+    "vsHumans": "Vs humans",
+    "vsHumansDescription": "Published human vs model games from hosted matches and self-run CLI runners. Always practice; excluded from official results. Self-run CLI matches report no verified cost or evaluations.",
+    "hosted": "Hosted",
+    "selfRun": "Self-run · unverified",
+    "humansEmpty": "No published human games in this category yet.",
+    "humansEmptyDescription": "Play a human vs model game in Studio, then publish it to share the replay. Private and hidden games stay out of this list."
   },
   "colors": {
     "w": "White",
@@ -193,8 +200,8 @@
   "leaderboard": {
     "title": "Every official start counts.",
     "description": "Exploratory results from all accepted official starts, including queued, withdrawn and failed matches. Configurable settings vary; this is not an unbiased benchmark or a global model ranking.",
-    "empty": "No official starts yet.",
-    "emptyDescription": "Choose official before a hosted model match starts. Practice, human games, local runs and imports do not enter these results. Replay publication is independent.",
+    "empty": "No official starts match these filters.",
+    "emptyDescription": "Clear filters to explore other settings. Only hosted model matches chosen as official before acceptance enter these results; publishing a replay is independent.",
     "model": "Model / protocol",
     "ruleset": "Ruleset",
     "note": "Scope: all {{count}} accepted official matches. Earned points = wins + ½ draws; score = points / all starts. Withdrawals, stops and errors stay in the denominator with no points and are shown separately from losses. Pending starts make scores provisional. These are not Elo ratings.",
@@ -229,7 +236,14 @@
       "infrastructureErrors": "Infrastructure errors"
     },
     "paginationNote": "Groups are paginated by a stable comparison key, not ranked across pages. Compare only matching prompt version/hash, rules, starting position, billing cohort and opponent type; protocol and move format are shown for each group. Results cover the full stated scope, not a recent-game sample.",
-    "loadMore": "Load more comparison groups"
+    "loadMore": "Load more comparison groups",
+    "filterPrompt": "System prompt version",
+    "allPrompts": "All prompt versions",
+    "filterScope": "Compare this scope",
+    "clearFilters": "Clear filters",
+    "promptRetry": "Couldn’t load prompt choices. Try again.",
+    "scopeHelp": "Choose a prompt version, then use Compare this scope on a result to match exact rules, starting position, payer and opponent type.",
+    "scopeFiltered": "Filtered to the comparison settings shown below. Clear filters to explore other settings."
   },
   "methodology": {
     "title": "The rules are part of the result.",
@@ -244,8 +258,12 @@
     "budgetBody": "Every dispatch reserves a conservative token and cost allowance, including transport retries, before inference. There is no fixed reply cap: each reply may use the model’s own maximum output, limited by what the side’s budgets can still pay, unless the ruleset sets one for an experiment. Reported usage and price-based cost estimates are separate from reservations. Missing provider usage is not proof of zero cost.",
     "rankTitle": "Every start, with its scope",
     "rankBody": "Practice is the default. Official participation is chosen before acceptance and permanently counts every queued start, whether its replay is published, hidden or deleted. Points are wins + ½ draws, divided by all starts. Withdrawals, stops and errors earn no points and are listed separately from W/D/L; pending starts are provisional. Groups separate model/protocol, prompt version/hash, rules, starting position, billing cohort and opponent type. Pages follow comparison keys, not a global rank. Settings are configurable: these are exploratory results, not an unbiased benchmark. Humans, random-only games, local runs and imports are never official.",
-    "privacyTitle": "Your keys stay with you",
-    "privacyBody": "Local inference credentials stay in your local process. Portable game archives contain game data, not provider credentials. Public viewers trigger no inference calls."
+    "privacyTitle": "Keys and publication",
+    "privacyBody": "Hosted own-key matches use your encrypted OpenRouter key on our server and worker. Self-run keys stay on your computer. Replay publication is separate from official participation: private or hidden transcripts are unavailable publicly, while the minimal official model/settings/outcome record remains counted. Account deletion removes private replays and anonymizes retained published ones.",
+    "promptsTitle": "Fixed, recorded prompts",
+    "promptsBody": "Hosted matches pin a fixed system prompt version and exact bundle hash before acceptance. Filter official results by version and compare matching rules and starting positions. User-configurable settings still vary, so matching a prompt alone does not make a controlled benchmark.",
+    "selfRunTitle": "Hosted and self-run games",
+    "selfRunBody": "Hosted model calls and evaluations run on our server. Self-run CLI calls and Stockfish run on your computer; keys stay there. Self-run matches report no verified cost or evaluations and never enter official results. The separate Vs humans list includes published hosted and self-run human vs model games, always practice."
   },
   "lab": {
     "title": "Your machine. Your experiment.",
@@ -261,8 +279,8 @@
     "reset": "Start again",
     "download": "Export this game",
     "cliTitle": "Bring your own inference",
-    "cliDescription": "Run the local companion with your provider credentials. The browser connects to your own machine; there is no database or account requirement.",
-    "cliCommand": "cockpit-chess serve",
+    "cliDescription": "After npm publication, use Node.js 24.13.1 or later and run this command. Open the single-use claim link, sign in and control your runner from Settings → Command-line access. Keep the terminal open; keys and Stockfish stay on your computer. Self-run results are practice, with no verified cost or evaluations.",
+    "cliCommand": "npx @flycockpit/chess",
     "import": "Import archive",
     "importError": "This is not a valid Cockpit Chess game archive.",
     "importTooLarge": "This file is larger than 2 MB. Choose a smaller game archive.",

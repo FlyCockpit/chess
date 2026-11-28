@@ -20,7 +20,7 @@ Cockpit Chess runs chess games between language models and records every decisio
 - **Hosted matches.** LLM-vs-LLM games through OpenRouter, run by a background worker, with the server as the authoritative referee (chess.js).
 - **Live arena and replay.** Watch games live or replay them, with every illegal or unparseable attempt recorded.
 - **Official results.** Every accepted official hosted start counts, grouped by model/protocol, prompt version/hash, exact rules, starting position, billing cohort and opponent type.
-- **Studio.** An admin area to create, stop, publish and import matches, and to export PGN, JSON and result images.
+- **Studio.** Create, control and publish your hosted or self-run matches; administrators can also import archives. Export PGN, JSON and result images.
 - **Video export.** Any replay can be exported as an MP4 (H.264, square or landscape) for posting on X, rendered in the browser.
 - **Configurable rules.** Memory, identity disclosure, board representation, legal-move help, time, token and cost budgets, and optional Stockfish assistance.
 - **Local companion.** A CLI with a loopback browser lab for local or self-hosted models (OpenAI-compatible endpoints), plus a Stockfish engine opponent.
@@ -28,6 +28,24 @@ Cockpit Chess runs chess games between language models and records every decisio
 ## How it works
 
 Cockpit Chess is a pnpm/Turborepo monorepo. A React 19 + TanStack Router PWA talks oRPC to a Hono server (Better-Auth, Prisma/PostgreSQL). A BullMQ worker on Valkey, embedded in the app or run as a separate container, plays matches through `packages/chess` (the chess.js referee and a Stockfish subprocess) and `packages/agent-runtime` (model provider adapters). The companion CLI in `apps/cli` serves the local lab and uploads games.
+
+## Public results and self-run play
+
+Official or practice is chosen before a hosted model match is accepted; practice is the default. Every accepted official start permanently counts, including queued starts, withdrawals and failures, whether its transcript is published, hidden or deleted. Earned points are wins + ½ draws, divided by **all starts**. W/D/L, pending starts, owner withdrawals, and provider/account/infrastructure errors are shown separately; unscored starts earn no points, and pending starts make the score provisional.
+
+Results on `/$lang/?tab=leaderboard` can be filtered by system prompt version. Use **Compare this scope** to match the exact prompt, rules/settings, starting position, billing cohort and opponent type; protocol and move format remain visible. Filters persist in the URL and browser history. All ledger entries in the stated scope count, with bounded pages of comparison groups; there is no newest-500 sample or global ranking across unlike settings. These configurable experiments are not a controlled benchmark. Unpublishing, moderation and account deletion cannot remove official participation; private/hidden transcripts remain unavailable.
+
+Human games are always practice. The Arena’s **Vs humans** category lists published, visible human-v-model matches from both hosted and self-run CLI runners, labels their source, and keeps private games owner-scoped. Self-run CLI matches report **no verified cost or evaluations** and never enter official results. Hosted model calls/evaluations run on the server; self-run inference and Stockfish run on the user’s computer.
+
+With **Node.js 24.13.1 or later**, after the owner publishes the npm package:
+
+```sh
+npx @flycockpit/chess
+```
+
+The command prints a single-use browser claim link. Sign in, claim the runner, and create/control matches from **Settings → Command-line access**. Keep the terminal open; model keys and Stockfish stay on your computer. Default operating limits are $1/match, $10/rolling day and 2 concurrent matches. Local hard ceilings are $25/match, $100/rolling day and concurrency 8; only local startup configuration can raise them. Browser raises require step-up authentication and cannot exceed local ceilings. Provider prices can change; use a provider-side key cap when an absolute billing cap is required. See [CLI instructions](apps/cli/README.md) and [local runner authority](docs/runner-local-authority.md).
+
+The npm artifact includes the Stockfish 19.0.1 lite single-thread engine, full GPL text and exact corresponding source. The stable source URL is `https://chess.flycockpit.app/third-party/stockfish/stockfish-19.0.1-source.tar.gz`. This documents the packaged artifact and intended URL; npm publication and live URL availability require the owner’s release step.
 
 ## Quick start
 

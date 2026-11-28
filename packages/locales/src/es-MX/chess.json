@@ -32,7 +32,14 @@
       "stopped": "Detenido",
       "error": "Interrumpido",
       "draft": "Borrador"
-    }
+    },
+    "category": "Categoría de partida",
+    "vsHumans": "Contra humanos",
+    "vsHumansDescription": "Partidas publicadas de humano contra modelo, alojadas o ejecutadas con el runner de la CLI. Siempre son de práctica y no cuentan en los resultados oficiales. Las partidas de la CLI no tienen costos ni evaluaciones verificados.",
+    "hosted": "Alojada",
+    "selfRun": "Ejecución local · sin verificar",
+    "humansEmpty": "Todavía no hay partidas contra humanos publicadas en esta categoría.",
+    "humansEmptyDescription": "Juega contra un modelo en Studio y publica la partida para compartir la repetición. Las partidas privadas y ocultas no aparecen aquí."
   },
   "board": {
     "label": "Tablero de ajedrez",
@@ -160,8 +167,8 @@
     "reset": "Empezar de nuevo",
     "download": "Exportar esta partida",
     "cliTitle": "Trae tu propia inferencia",
-    "cliDescription": "Ejecuta el compañero local con tus credenciales del proveedor. El navegador se conecta a tu propia máquina; no hay base de datos ni requisito de cuenta.",
-    "cliCommand": "cockpit-chess serve",
+    "cliDescription": "Después de la publicación en npm, usa Node.js 24.13.1 o posterior y ejecuta este comando. Abre el enlace de un solo uso, inicia sesión y controla el runner desde Configuración → Acceso por línea de comandos. Mantén la terminal abierta; las claves y Stockfish se quedan en tu computadora. Son partidas de práctica, sin costos ni evaluaciones verificados.",
+    "cliCommand": "npx @flycockpit/chess",
     "import": "Importar archivo",
     "importError": "Este no es un archivo válido de partida de Ajedrez Cockpit.",
     "importTooLarge": "Este archivo supera los 2 MB. Elige un archivo de partida más pequeño.",
@@ -171,8 +178,8 @@
   "leaderboard": {
     "title": "Cada inicio oficial cuenta.",
     "description": "Resultados exploratorios de todos los inicios oficiales aceptados, incluidas las partidas en cola, retiradas y fallidas. La configuración puede variar; esto no es una evaluación imparcial ni una clasificación global de modelos.",
-    "empty": "Todavía no hay inicios oficiales.",
-    "emptyDescription": "Elige la participación oficial antes de iniciar una partida alojada entre modelos. Las partidas de práctica, con humanos, locales y las importaciones no entran en estos resultados. La publicación de la repetición es independiente.",
+    "empty": "Ninguna participación oficial coincide con estos filtros.",
+    "emptyDescription": "Borra los filtros para explorar otras configuraciones. Solo cuentan las partidas alojadas de modelos elegidas como oficiales antes de aceptarse; publicar una repetición es independiente.",
     "model": "Modelo / protocolo",
     "ruleset": "Conjunto de reglas",
     "note": "Ámbito: las {{count}} partidas oficiales aceptadas. Puntos obtenidos = victorias + ½ tablas; puntuación = puntos / todos los inicios. Los retiros, las detenciones y los errores permanecen en el denominador sin puntos y se muestran por separado de las derrotas. Los inicios pendientes hacen que las puntuaciones sean provisionales. No son puntuaciones Elo.",
@@ -207,7 +214,14 @@
       "infrastructureErrors": "Errores de infraestructura"
     },
     "paginationNote": "Los grupos se paginan por una clave de comparación estable, no por una clasificación entre páginas. Compara solo grupos con la misma versión y hash del prompt, reglas, posición inicial, grupo de facturación y tipo de oponente; cada grupo muestra su protocolo y formato de movimiento. Los resultados cubren todo el ámbito indicado, no una muestra de partidas recientes.",
-    "loadMore": "Cargar más grupos de comparación"
+    "loadMore": "Cargar más grupos de comparación",
+    "filterPrompt": "Versión del prompt de sistema",
+    "allPrompts": "Todas las versiones del prompt",
+    "filterScope": "Comparar este grupo",
+    "clearFilters": "Borrar filtros",
+    "promptRetry": "No se pudieron cargar las versiones del prompt. Inténtalo de nuevo.",
+    "scopeHelp": "Elige una versión del prompt y usa Comparar este grupo en un resultado para igualar las reglas, la posición inicial, quién paga y el tipo de oponente.",
+    "scopeFiltered": "Los resultados usan los criterios de comparación que aparecen abajo. Borra los filtros para explorar otras configuraciones."
   },
   "local": {
     "private": "Proceso local",
@@ -251,8 +265,12 @@
     "budgetBody": "Cada despacho reserva una cantidad conservadora de tokens y costos, incluyendo reintentos de transporte, antes de la inferencia. No hay un límite fijo de respuesta: cada respuesta puede usar la salida máxima del propio modelo, limitada por lo que los presupuestos del lado aún pueden pagar, salvo que las reglas fijen uno para un experimento. El uso reportado y las estimaciones de costos basadas en precios son independientes de las reservas. La falta de uso del proveedor no prueba costo cero.",
     "rankTitle": "Cada inicio, con su ámbito",
     "rankBody": "La opción predeterminada es práctica. La participación oficial se elige antes de la aceptación y cada inicio en cola cuenta permanentemente, sin importar si su repetición se publica, se oculta o se elimina. Los puntos son victorias + ½ tablas, divididos entre todos los inicios. Los retiros, las detenciones y los errores no otorgan puntos y se muestran por separado de las victorias, tablas y derrotas; los inicios pendientes son provisionales. Los grupos separan modelo/protocolo, versión y hash del prompt, reglas, posición inicial, grupo de facturación y tipo de oponente. Las páginas siguen las claves de comparación, no una clasificación global. La configuración puede variar: estos resultados son exploratorios, no una evaluación imparcial. Las partidas con humanos, entre jugadores aleatorios, locales y las importaciones nunca son oficiales.",
-    "privacyTitle": "Tus claves permanecen contigo",
-    "privacyBody": "Las credenciales de inferencia local permanecen en tu proceso local. Los archivos de partidas portátiles contienen datos de juego, no credenciales del proveedor. Los espectadores públicos no generan llamadas de inferencia."
+    "privacyTitle": "Claves y publicación",
+    "privacyBody": "Las partidas alojadas con tu clave de OpenRouter la usan cifrada en nuestro servidor y worker. Las claves de ejecución local se quedan en tu computadora. Publicar una repetición es independiente de participar oficialmente: las transcripciones privadas u ocultas no son públicas, pero el registro mínimo oficial de modelo, configuración y resultado sigue contando. Eliminar la cuenta borra las repeticiones privadas y anonimiza las publicadas que se conservan.",
+    "promptsTitle": "Prompts fijos y registrados",
+    "promptsBody": "Cada partida alojada fija la versión del prompt de sistema y el hash exacto del paquete antes de aceptarse. Filtra los resultados oficiales por versión y compara reglas y posiciones iniciales iguales. La configuración aún puede variar: compartir un prompt no equivale a una prueba controlada.",
+    "selfRunTitle": "Partidas alojadas y de ejecución local",
+    "selfRunBody": "Las llamadas a modelos y las evaluaciones alojadas se ejecutan en nuestro servidor. En la CLI, las llamadas y Stockfish se ejecutan en tu computadora; las claves se quedan ahí. Las partidas locales no tienen costos ni evaluaciones verificados y nunca son oficiales. La lista Contra humanos incluye partidas publicadas de humano contra modelo, alojadas y locales, siempre de práctica."
   },
   "nav": {
     "arena": "Arena",

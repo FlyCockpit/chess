@@ -2653,3 +2653,74 @@ describe("deletion replay visibility and stale admission", () => {
     expect(db.chessMatch.update).not.toHaveBeenCalled();
   });
 });
+
+describe("public vs humans category", () => {
+  it("applies visibility, source and exact participant pairs before bounded public cursor pagination", async () => {
+    db.chessMatch.findMany.mockResolvedValue([]);
+    await client(null).list({ category: "vs-humans", limit: 3 });
+    const args = db.chessMatch.findMany.mock.calls[0]?.[0];
+    expect(args?.where).toEqual({
+      AND: [
+        {
+          AND: [
+            {
+              published: true,
+              hiddenAt: null,
+              OR: [{ ownerId: null }, { Owner: { is: { deletionRequestedAt: null } } }],
+            },
+            {
+              source: { in: ["hosted", "runner"] },
+              OR: ["openai-chat", "openai-responses", "anthropic"].flatMap((protocol) => [
+                {
+                  AND: [
+                    { archive: { path: ["config", "white", "protocol"], equals: "human" } },
+                    { archive: { path: ["config", "black", "protocol"], equals: protocol } },
+                  ],
+                },
+                {
+                  AND: [
+                    { archive: { path: ["config", "black", "protocol"], equals: "human" } },
+                    { archive: { path: ["config", "white", "protocol"], equals: protocol } },
+                  ],
+                },
+              ]),
+            },
+          ],
+        },
+      ],
+    });
+    expect(args?.take).toBe(4);
+    expect(args?.orderBy).toEqual([{ createdAt: "desc" }, { publicId: "desc" }]);
+    expect(args?.select).not.toHaveProperty("archive");
+  });
+  it("returns safe cards from both backends without owner/internal/archive fields", async () => {
+    db.chessMatch.findMany.mockResolvedValue([
+      { ...row(), source: "hosted", published: true },
+      {
+        ...row(),
+        id: "internal-runner",
+        publicId: "runner-public",
+        source: "runner",
+        published: true,
+      },
+    ]);
+    const page = await client(null).list({ category: "vs-humans", limit: 3 });
+    expect(page.items.map((game) => game.source)).toEqual(["hosted", "runner"]);
+    expect(page.items.map((game) => game.id)).toEqual(["public-id", "runner-public"]);
+    for (const game of page.items) {
+      for (const key of [
+        "archive",
+        "ownerId",
+        "Owner",
+        "whiteModel",
+        "runnerMachineId",
+        "OfficialEntry",
+      ])
+        expect(game).not.toHaveProperty(key);
+      expect(game.official).toBe(false);
+    }
+    await expect(
+      client(null).list({ category: "private", limit: 3 } as never),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+});

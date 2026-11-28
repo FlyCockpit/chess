@@ -19,6 +19,7 @@ import { QueryBoundary } from "@/components/query-boundary";
 import { WideContent } from "@/components/wide-content";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useReplayVisibility } from "@/hooks/use-replay-visibility";
+import type { ResultsFilter } from "@/lib/home-search";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { orpc } from "@/utils/orpc";
 import { endingHeadlineLabel } from "./ending-label";
@@ -53,16 +54,26 @@ export function ArenaPage({
   tab,
   slug,
   onNavigate,
+  resultsFilter = {},
+  onResultsFilter,
+  category,
+  onCategory,
 }: {
   tab: ArenaTab;
   slug?: string;
   onNavigate: (tab: ArenaTab, slug?: string) => void;
+  resultsFilter?: ResultsFilter;
+  onResultsFilter?: (filter: ResultsFilter) => void;
+  category?: "all" | "vs-humans";
+  onCategory?: (category: "all" | "vs-humans") => void;
 }) {
   const { t } = useTranslation("chess");
   return (
     <div className="cc-app">
-      {tab === "arena" && <Arena slug={slug} onNavigate={onNavigate} />}
-      {tab === "leaderboard" && <Leaderboard />}
+      {tab === "arena" && (
+        <Arena slug={slug} onNavigate={onNavigate} category={category} onCategory={onCategory} />
+      )}
+      {tab === "leaderboard" && <Leaderboard filter={resultsFilter} onFilter={onResultsFilter} />}
       {tab === "lab" && (
         <>
           <Intro title={t("lab.title")} description={t("lab.description")} />
@@ -97,9 +108,13 @@ function Intro({ title, description }: { title: string; description: string }) {
 function Arena({
   slug,
   onNavigate,
+  category,
+  onCategory,
 }: {
   slug?: string;
   onNavigate: (tab: ArenaTab, slug?: string) => void;
+  category?: "all" | "vs-humans";
+  onCategory?: (category: "all" | "vs-humans") => void;
 }) {
   const { t } = useTranslation("chess");
   const [demo] = useState(() =>
@@ -117,7 +132,7 @@ function Arena({
     isFetchingNextPage,
   } = useInfiniteQuery(
     orpc.chess.list.infiniteOptions({
-      input: (cursor: string | undefined) => ({ cursor, limit: 9 }),
+      input: (cursor: string | undefined) => ({ cursor, limit: 9, category }),
       initialPageParam: undefined,
       meta: { skipGlobalErrorToast: true },
       getNextPageParam: (page) => page.nextCursor,
@@ -260,6 +275,23 @@ function Arena({
           shows it at once; the other games follow. Without one, the list leads and the
           demonstration follows. */}
       {slug && replay}
+      <div className="my-6 flex flex-wrap items-center gap-3">
+        <label htmlFor="arena-category">{t("arena.category")}</label>
+        <select
+          id="arena-category"
+          className="min-h-11 max-w-full rounded-md border bg-background px-3"
+          value={category ?? "all"}
+          onChange={(event) =>
+            onCategory?.(event.target.value === "vs-humans" ? "vs-humans" : "all")
+          }
+        >
+          <option value="all">{t("arena.all")}</option>
+          <option value="vs-humans">{t("arena.vsHumans")}</option>
+        </select>
+      </div>
+      {category === "vs-humans" && (
+        <p className="cc-muted mb-6">{t("arena.vsHumansDescription")}</p>
+      )}
       {(isError || listPaused) && (
         <button className="cc-error" type="button" onClick={() => void refetch()}>
           {listPaused || !online ? t("arena.offlineRetry") : t("arena.retry")}
@@ -302,6 +334,7 @@ function Arena({
                   <div className="cc-rule-tags mt-4">
                     <span>{t(`context.${game.contextMode}`)}</span>
                     <span>{t(game.official ? "arena.official" : "arena.local")}</span>
+                    <span>{t(game.source === "hosted" ? "arena.hosted" : "arena.selfRun")}</span>
                   </div>
                 </>
               );
@@ -331,6 +364,12 @@ function Arena({
         hasNextPage={!isQueryAccessError(listError) && Boolean(hasNextPage)}
         isFetchingNextPage={isFetchingNextPage}
       />
+      {!isPending && !isError && games.length === 0 && category === "vs-humans" && (
+        <div className="cc-empty" role="status">
+          <h3>{t("arena.humansEmpty")}</h3>
+          <p>{t("arena.humansEmptyDescription")}</p>
+        </div>
+      )}
       {!slug && replay}
       {!slug && (
         <div className="cc-demo-notice">
@@ -343,7 +382,13 @@ function Arena({
     </>
   );
 }
-function Leaderboard() {
+function Leaderboard({
+  filter,
+  onFilter,
+}: {
+  filter: ResultsFilter;
+  onFilter?: (filter: ResultsFilter) => void;
+}) {
   const { t, i18n } = useTranslation("chess");
   const {
     data,
@@ -357,7 +402,7 @@ function Leaderboard() {
     isFetchingNextPage,
   } = useInfiniteQuery(
     orpc.chess.leaderboard.infiniteOptions({
-      input: (cursor: string | undefined) => ({ cursor, limit: 25 }),
+      input: (cursor: string | undefined) => ({ ...filter, cursor, limit: 25 }),
       initialPageParam: undefined,
       getNextPageParam: (page) => page.nextCursor,
       meta: { skipGlobalErrorToast: true },
@@ -372,6 +417,7 @@ function Leaderboard() {
   return (
     <>
       <Intro title={t("leaderboard.title")} description={t("leaderboard.description")} />
+      <ResultsFilters filter={filter} onFilter={onFilter} />
       <QueryBoundary
         query={{ data, error, isPending, isError, fetchStatus, refetch }}
         skeleton={<Skeleton className="h-64" />}
@@ -426,6 +472,27 @@ function Leaderboard() {
                           <div className="cc-lb-rules-inline">
                             <ComparisonScopeLabel scope={row} />
                           </div>
+                          <button
+                            type="button"
+                            className="cc-button cc-button-secondary mt-3 min-h-11"
+                            onClick={() =>
+                              onFilter?.({
+                                promptVersion: row.promptVersion,
+                                rulesKey: row.rulesKey,
+                                initialPositionHash: row.initialPositionHash,
+                                billingCohort:
+                                  row.billingCohort === "operator"
+                                    ? "operator"
+                                    : "owner-openrouter",
+                                opponentType:
+                                  row.opponentType === "model-v-random"
+                                    ? "model-v-random"
+                                    : "model-v-model",
+                              })
+                            }
+                          >
+                            {t("leaderboard.filterScope")}
+                          </button>
                         </td>
                         <td className="cc-lb-rules">
                           <ComparisonScopeLabel scope={row} />
@@ -493,6 +560,100 @@ function Leaderboard() {
         label={t("leaderboard.loadMore")}
       />
     </>
+  );
+}
+function ResultsFilters({
+  filter,
+  onFilter,
+}: {
+  filter: ResultsFilter;
+  onFilter?: (filter: ResultsFilter) => void;
+}) {
+  const { t } = useTranslation("chess");
+  const { data, error, isPending, refetch } = useQuery(
+    orpc.chess.info.queryOptions({ meta: { skipGlobalErrorToast: true } }),
+  );
+  const versions = isQueryAccessError(error) ? [] : (data?.promptVersions ?? []);
+  const scoped = Boolean(
+    filter.rulesKey || filter.initialPositionHash || filter.billingCohort || filter.opponentType,
+  );
+  return (
+    <div className="cc-rule-card mb-6 min-w-0">
+      <div className="flex flex-wrap items-center gap-3">
+        <label htmlFor="results-prompt">{t("leaderboard.filterPrompt")}</label>
+        <select
+          id="results-prompt"
+          className="min-h-11 max-w-full rounded-md border bg-background px-3"
+          value={filter.promptVersion ?? ""}
+          onChange={(event) =>
+            onFilter?.({ ...filter, promptVersion: event.target.value || undefined })
+          }
+        >
+          <option value="">{t("leaderboard.allPrompts")}</option>
+          {filter.promptVersion &&
+            !versions.some((version) => version.version === filter.promptVersion) && (
+              <option value={filter.promptVersion}>
+                {t("leaderboard.promptVersion", { version: filter.promptVersion })}
+              </option>
+            )}
+          {versions.map((version) => (
+            <option key={version.version} value={version.version}>
+              {t("leaderboard.promptVersion", { version: version.version })}
+            </option>
+          ))}
+        </select>
+        {(scoped || filter.promptVersion) && (
+          <button
+            type="button"
+            className="cc-button cc-button-secondary min-h-11"
+            onClick={() => onFilter?.({})}
+          >
+            {t("leaderboard.clearFilters")}
+          </button>
+        )}
+      </div>
+      {isPending && <Skeleton className="mt-3 h-5 w-48" />}
+      {Boolean(error) && (
+        <button type="button" className="cc-error min-h-11" onClick={() => void refetch()}>
+          {t("leaderboard.promptRetry")}
+        </button>
+      )}
+      <p className="cc-muted mt-3">
+        {t(scoped ? "leaderboard.scopeFiltered" : "leaderboard.scopeHelp")}
+      </p>
+      {filter.rulesKey && (
+        <CopyField
+          className="mt-3 max-w-full"
+          value={filter.rulesKey}
+          copyLabel={t("leaderboard.ruleset")}
+        />
+      )}
+      {filter.initialPositionHash && (
+        <CopyField
+          className="mt-3 max-w-full"
+          value={filter.initialPositionHash}
+          copyLabel={t("leaderboard.initialPosition")}
+        />
+      )}
+      {filter.billingCohort && (
+        <p className="cc-muted mt-3">
+          {t(
+            filter.billingCohort === "operator"
+              ? "leaderboard.billing.operator"
+              : "leaderboard.billing.openrouter",
+          )}
+        </p>
+      )}
+      {filter.opponentType && (
+        <p className="cc-muted mt-3">
+          {t(
+            filter.opponentType === "model-v-random"
+              ? "leaderboard.opponents.random"
+              : "leaderboard.opponents.model",
+          )}
+        </p>
+      )}
+    </div>
   );
 }
 function ComparisonScopeLabel({
@@ -567,15 +728,24 @@ function Methodology() {
     <>
       <Intro title={t("methodology.title")} description={t("methodology.intro")} />
       <div className="cc-rules-grid">
-        {(["legal", "context", "identity", "budget", "rank", "privacy"] as const).map(
-          (key, index) => (
-            <article className="cc-rule-card" key={key}>
-              <span className="cc-eyebrow">{String(index + 1).padStart(2, "0")}</span>
-              <h2>{t(`methodology.${key}Title`)}</h2>
-              <p>{t(`methodology.${key}Body`)}</p>
-            </article>
-          ),
-        )}
+        {(
+          [
+            "legal",
+            "context",
+            "identity",
+            "budget",
+            "rank",
+            "privacy",
+            "prompts",
+            "selfRun",
+          ] as const
+        ).map((key, index) => (
+          <article className="cc-rule-card" key={key}>
+            <span className="cc-eyebrow">{String(index + 1).padStart(2, "0")}</span>
+            <h2>{t(`methodology.${key}Title`)}</h2>
+            <p>{t(`methodology.${key}Body`)}</p>
+          </article>
+        ))}
       </div>
     </>
   );

@@ -7,13 +7,29 @@ export const Route = createFileRoute("/$lang/_public/")({
   component: HomePage,
 });
 function HomePage() {
-  const { tab, game } = Route.useSearch();
+  const { tab, game, category, ...resultsFilter } = Route.useSearch();
   const navigate = Route.useNavigate();
   return (
     <ArenaPage
       tab={tab ?? "arena"}
       slug={game}
-      onNavigate={(nextTab, slug) => void navigate({ search: { tab: nextTab, game: slug } })}
+      category={category}
+      resultsFilter={resultsFilter}
+      onResultsFilter={(filter) =>
+        void navigate({ search: { ...filter, tab: "leaderboard" }, resetScroll: false })
+      }
+      onCategory={(next) =>
+        void navigate({
+          search: (previous) => ({ ...previous, category: next, game: undefined }),
+          resetScroll: false,
+        })
+      }
+      onNavigate={(nextTab, slug) =>
+        void navigate({
+          search: (previous) => ({ ...previous, tab: nextTab, game: slug }),
+          resetScroll: nextTab !== (tab ?? "arena") || Boolean(slug),
+        })
+      }
     />
   );
 }

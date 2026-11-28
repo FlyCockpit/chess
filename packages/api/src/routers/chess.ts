@@ -487,41 +487,66 @@ export const chessRouter = {
       throw new ORPCError("SERVICE_UNAVAILABLE", { message: "Model catalog unavailable" });
     }
   }),
-  list: publicProcedure.input(cursorPageInput).handler(async ({ input }) => {
-    const readPage = () =>
-      prisma.chessMatch.findMany({
-        where: withCursor(publicReplayWhere, "createdAt", input.cursor, "desc", "publicId"),
-        select: publicSummary,
-        orderBy: [{ createdAt: "desc" }, { publicId: "desc" }],
-        take: pageTake(input.limit),
-      });
-    let rows = await readPage();
-    let safeIds = new Set<string>();
-    if (rows.some((row) => row.ownerId === null)) {
-      safeIds = await safeCatalogIds();
-      // Catalog IO can take seconds. Only this final, visibility-constrained
-      // query may supply response data or the page boundary.
-      rows = await readPage();
-    }
-    // Cursor stays anchored to the database order; public cards use only the new identity.
-    const page = cursorPage(
-      rows.map((row) => ({ ...row, id: row.publicId })),
-      input.limit,
-      "createdAt",
-    );
-    return {
-      ...page,
-      items: page.items.flatMap((row) => {
-        if (
-          row.hiddenAt ||
-          row.Owner?.deletionRequestedAt ||
-          (row.ownerId === null && !neutralArchiveId(row.slug))
-        )
-          return [];
-        return [publicCard(row, safeIds)];
+  list: publicProcedure
+    .input(
+      cursorPageInput.extend({
+        category: z.enum(["all", "vs-humans"]).optional(),
       }),
-    };
-  }),
+    )
+    .handler(async ({ input }) => {
+      // Live matches need the pinned config: terminal statistics may not exist yet.
+      const humanVsModel = MODEL_PROTOCOLS.flatMap((protocol) => [
+        {
+          AND: [
+            { archive: { path: ["config", "white", "protocol"], equals: "human" } },
+            { archive: { path: ["config", "black", "protocol"], equals: protocol } },
+          ],
+        },
+        {
+          AND: [
+            { archive: { path: ["config", "black", "protocol"], equals: "human" } },
+            { archive: { path: ["config", "white", "protocol"], equals: protocol } },
+          ],
+        },
+      ]);
+      const where: Prisma.ChessMatchWhereInput =
+        input.category === "vs-humans"
+          ? { AND: [publicReplayWhere, { source: { in: ["hosted", "runner"] }, OR: humanVsModel }] }
+          : publicReplayWhere;
+      const readPage = () =>
+        prisma.chessMatch.findMany({
+          where: withCursor(where, "createdAt", input.cursor, "desc", "publicId"),
+          select: publicSummary,
+          orderBy: [{ createdAt: "desc" }, { publicId: "desc" }],
+          take: pageTake(input.limit),
+        });
+      let rows = await readPage();
+      let safeIds = new Set<string>();
+      if (rows.some((row) => row.ownerId === null)) {
+        safeIds = await safeCatalogIds();
+        // Catalog IO can take seconds. Only this final, visibility-constrained
+        // query may supply response data or the page boundary.
+        rows = await readPage();
+      }
+      // Cursor stays anchored to the database order; public cards use only the new identity.
+      const page = cursorPage(
+        rows.map((row) => ({ ...row, id: row.publicId })),
+        input.limit,
+        "createdAt",
+      );
+      return {
+        ...page,
+        items: page.items.flatMap((row) => {
+          if (
+            row.hiddenAt ||
+            row.Owner?.deletionRequestedAt ||
+            (row.ownerId === null && !neutralArchiveId(row.slug))
+          )
+            return [];
+          return [publicCard(row, safeIds)];
+        }),
+      };
+    }),
   get: publicProcedure.input(slugInput).handler(async ({ input }) => {
     const readReplay = () =>
       prisma.chessMatch.findFirst({

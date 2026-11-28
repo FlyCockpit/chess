@@ -1,6 +1,8 @@
 import { createMatch } from "@cockpit-chess/chess";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
+import esChess from "@cockpit-chess/locales/src/es-MX/chess.json";
+import esCommon from "@cockpit-chess/locales/src/es-MX/common.json";
 import { createInstance } from "i18next";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider } from "react-i18next";
@@ -25,6 +27,15 @@ const fixture = vi.hoisted(() => ({
   },
   executionSource: undefined as string | undefined,
   beforeExport: undefined as (() => Promise<boolean>) | undefined,
+  listOptions: undefined as
+    | undefined
+    | {
+        input: (cursor: string | undefined) => {
+          cursor?: string;
+          limit: number;
+          category?: string;
+        };
+      },
   leaderboardOptions: undefined as
     | undefined
     | {
@@ -62,7 +73,12 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("@/utils/orpc", () => ({
   orpc: {
     chess: {
-      list: { infiniteOptions: () => ({}) },
+      list: {
+        infiniteOptions: (options: typeof fixture.listOptions) => {
+          fixture.listOptions = options;
+          return {};
+        },
+      },
       get: { queryOptions: () => ({}) },
       leaderboard: {
         infiniteOptions: (options: typeof fixture.leaderboardOptions) => {
@@ -106,7 +122,10 @@ const i18n = createInstance();
 beforeAll(async () => {
   await i18n.init({
     lng: "en-US",
-    resources: { "en-US": { chess: enChess, common: enCommon } },
+    resources: {
+      "en-US": { chess: enChess, common: enCommon },
+      "es-MX": { chess: esChess, common: esCommon },
+    },
     defaultNS: "chess",
     react: { useSuspense: false },
   });
@@ -134,10 +153,14 @@ beforeEach(() => {
     isFetchingNextPage: false,
   };
 });
-function render(tab: "arena" | "leaderboard", slug?: string) {
+function render(
+  tab: "arena" | "leaderboard" | "methodology" | "lab",
+  slug?: string,
+  props: Partial<Parameters<typeof ArenaPage>[0]> = {},
+) {
   return renderToStaticMarkup(
     <I18nextProvider i18n={i18n}>
-      <ArenaPage tab={tab} slug={slug} onNavigate={vi.fn()} />
+      <ArenaPage tab={tab} slug={slug} onNavigate={vi.fn()} {...props} />
     </I18nextProvider>,
   );
 }
@@ -441,4 +464,96 @@ it("passes the server runner source to a public replay independently of its loca
   fixture.query.data = { ...(fixture.query.data as object), source: "local" };
   render("arena", "published");
   expect(fixture.executionSource).toBe("local");
+});
+
+it("passes URL comparison filters into every bounded results page and clears old cursor on a new scope", () => {
+  loadedLeaderboard();
+  const filter = {
+    promptVersion: "1",
+    rulesKey: "a".repeat(16),
+    initialPositionHash: "b".repeat(64),
+    billingCohort: "operator" as const,
+    opponentType: "model-v-random" as const,
+  };
+  const html = render("leaderboard", undefined, { resultsFilter: filter });
+  expect(fixture.leaderboardOptions?.input("page-two")).toEqual({
+    ...filter,
+    cursor: "page-two",
+    limit: 25,
+  });
+  expect(html).toContain(enChess.leaderboard.clearFilters);
+  expect(html).toContain(enChess.leaderboard.scopeFiltered);
+  render("leaderboard", undefined, { resultsFilter: { promptVersion: "2" } });
+  expect(fixture.leaderboardOptions?.input(undefined)).toEqual({
+    promptVersion: "2",
+    cursor: undefined,
+    limit: 25,
+  });
+});
+it("shows bounded registry prompt choices and a retry without hiding loaded results", () => {
+  loadedLeaderboard();
+  fixture.query.data = { promptVersions: [{ version: "1", hash: "abc" }] };
+  const html = render("leaderboard", undefined, { resultsFilter: { promptVersion: "1" } });
+  expect(html).toContain('value="1" selected=""');
+  expect(html).toContain(enChess.leaderboard.filterPrompt);
+  expect(html).toContain(enChess.leaderboard.allPrompts);
+  expect(html).toContain(enChess.leaderboard.filterScope);
+  fixture.query.error = new Error("network");
+  const failed = render("leaderboard");
+  expect(failed).toContain(enChess.leaderboard.promptRetry);
+  expect(failed).toContain("Loaded model");
+});
+it("requests a bounded vs-humans list and labels hosted and self-run sources", () => {
+  listWith("hosted", "runner");
+  fixture.list.data.pages[0]!.items[0]!.source = "hosted";
+  fixture.list.data.pages[0]!.items[1]!.source = "runner";
+  const html = render("arena", undefined, { category: "vs-humans" });
+  expect(fixture.listOptions?.input("page-two")).toEqual({
+    category: "vs-humans",
+    cursor: "page-two",
+    limit: 9,
+  });
+  for (const key of ["vsHumans", "vsHumansDescription", "hosted", "selfRun"] as const)
+    expect(html).toContain(enChess.arena[key]);
+  expect(html).toContain('value="vs-humans" selected=""');
+});
+it("explains empty human results and offers a next step without a permanent skeleton", () => {
+  listWith();
+  const html = render("arena", undefined, { category: "vs-humans" });
+  expect(html).toContain(enChess.arena.humansEmpty);
+  expect(html).toContain(enChess.arena.humansEmptyDescription);
+  expect(html).not.toContain("h-28");
+});
+it("explains versioning, independent publication and unverified self-run results", () => {
+  const html = render("methodology");
+  for (const key of [
+    "promptsTitle",
+    "promptsBody",
+    "selfRunTitle",
+    "selfRunBody",
+    "privacyBody",
+  ] as const)
+    expect(html).toContain(enChess.methodology[key]);
+});
+
+it("renders Spanish filter, human-source and methodology guidance without English fallback", async () => {
+  await i18n.changeLanguage("es-MX");
+  try {
+    loadedLeaderboard();
+    fixture.query.data = { promptVersions: [{ version: "1", hash: "abc" }] };
+    const results = render("leaderboard", undefined, { resultsFilter: { promptVersion: "1" } });
+    for (const key of ["filterPrompt", "allPrompts", "clearFilters", "filterScope"] as const)
+      expect(results).toContain(esChess.leaderboard[key]);
+    listWith("runner");
+    fixture.list.data.pages[0]!.items[0]!.source = "runner";
+    const humans = render("arena", undefined, { category: "vs-humans" });
+    expect(humans).toContain(esChess.arena.vsHumans);
+    expect(humans).toContain(esChess.arena.vsHumansDescription);
+    expect(humans).toContain(esChess.arena.selfRun);
+    const methodology = render("methodology");
+    expect(methodology).toContain(esChess.methodology.selfRunBody);
+    expect(methodology).toContain(esChess.methodology.promptsBody);
+  } finally {
+    await i18n.changeLanguage("en-US");
+  }
 });

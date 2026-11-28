@@ -28,3 +28,38 @@ describe("homeSearchSchema", () => {
     expect(fromUrl("")).toEqual({});
   });
 });
+
+it("keeps prompt versions parsed as JSON numbers and all comparison filters in shared URLs", () => {
+  const rulesKey = "a".repeat(16);
+  const initialPositionHash = "b".repeat(64);
+  expect(
+    fromUrl(
+      `?tab=leaderboard&promptVersion=1&rulesKey=${rulesKey}&initialPositionHash=${initialPositionHash}&billingCohort=owner-openrouter&opponentType=model-v-random`,
+    ),
+  ).toEqual({
+    tab: "leaderboard",
+    promptVersion: "1",
+    rulesKey,
+    initialPositionHash,
+    billingCohort: "owner-openrouter",
+    opponentType: "model-v-random",
+  });
+  expect(fromUrl("?tab=arena&category=vs-humans")).toEqual({ tab: "arena", category: "vs-humans" });
+});
+it("drops malformed filters independently without losing the selected tab", () => {
+  expect(
+    fromUrl(
+      "?tab=leaderboard&promptVersion=false&rulesKey=bad&initialPositionHash=bad&billingCohort=runner&opponentType=human&category=private",
+    ),
+  ).toEqual({
+    tab: "leaderboard",
+    promptVersion: undefined,
+    rulesKey: undefined,
+    initialPositionHash: undefined,
+    billingCohort: undefined,
+    opponentType: undefined,
+    category: undefined,
+  });
+  expect(fromUrl("?promptVersion=2").promptVersion).toBe("2");
+  expect(fromUrl("?promptVersion=-1").promptVersion).toBeUndefined();
+});

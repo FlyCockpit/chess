@@ -720,6 +720,99 @@ export async function chessOfficialCheck() {
       );
     }
 
+    console.log("chess-official: F1 public vs-humans eligibility, privacy and tied cursor pages");
+    const humanRows = [];
+    const sameTime = new Date("2026-11-01T01:02:03Z");
+    for (const [source, humanSide] of [
+      ["hosted", "white"],
+      ["runner", "black"],
+      ["runner", "white"],
+    ]) {
+      const game = archive({ [humanSide]: human }, source === "runner" ? "local" : "hosted");
+      humanRows.push(
+        await prisma.chessMatch.create({
+          data: {
+            ...makeData(game, firstOwner, source === "runner" ? "runner-local" : "operator"),
+            source,
+            runnerState: source === "runner" ? "offered" : null,
+            published: true,
+            createdAt: sameTime,
+          },
+        }),
+      );
+    }
+    // These records must never supply a human-category card or boundary.
+    const excluded = [
+      { white: human, black, published: false, source: "hosted" },
+      { white, black: human, published: true, hiddenAt: new Date(), source: "hosted" },
+      { white: human, black, published: true, source: "local" },
+      { white, black, published: true, source: "hosted" },
+      { white: human, black: baseline, published: true, source: "hosted" },
+      { white: human, black: human, published: true, source: "runner" },
+    ];
+    const excludedIds = [];
+    for (const { white: w, black: b, source, ...flags } of excluded) {
+      // Invalid pairings are negative query fixtures, never submitted to create/read archive APIs.
+      const game = archive();
+      game.config.white = w;
+      game.config.black = b;
+      if (source === "runner") game.source = "local";
+      const row = await prisma.chessMatch.create({
+        data: {
+          ...makeData(game, firstOwner, source === "runner" ? "runner-local" : "operator"),
+          source,
+          runnerState: source === "runner" ? "offered" : null,
+          createdAt: sameTime,
+          ...flags,
+        },
+      });
+      excludedIds.push(row.publicId);
+    }
+    const deletingHumanOwner = await owner();
+    await prisma.user.update({
+      where: { id: deletingHumanOwner },
+      data: { deletionRequestedAt: new Date(), deletionState: "pending" },
+    });
+    await prisma.chessMatch.create({
+      data: {
+        ...makeData(archive({ white: human }), deletingHumanOwner),
+        published: true,
+        createdAt: sameTime,
+      },
+    });
+    const firstHumans = await publicClient.list({ category: "vs-humans", limit: 2 });
+    assert.equal(firstHumans.items.length, 2);
+    assert.ok(firstHumans.nextCursor);
+    const nextHumans = await publicClient.list({
+      category: "vs-humans",
+      limit: 2,
+      cursor: firstHumans.nextCursor,
+    });
+    assert.equal(nextHumans.items.length, 1);
+    assert.equal(nextHumans.nextCursor, null);
+    const publicHumans = [...firstHumans.items, ...nextHumans.items];
+    assert.deepEqual(
+      publicHumans.map((row) => row.id),
+      humanRows
+        .map((row) => row.publicId)
+        .sort()
+        .reverse(),
+    );
+    assert.deepEqual(new Set(publicHumans.map((row) => row.source)), new Set(["hosted", "runner"]));
+    for (const card of publicHumans) {
+      assert.equal(card.official, false);
+      assert.ok(!excludedIds.includes(card.id));
+      for (const field of ["archive", "Owner", "ownerId", "runnerMachineId", "OfficialEntry"])
+        assert.ok(!(field in card));
+    }
+    const beforeHideHumans = await officialLeaderboard({ limit: 100 });
+    await prisma.chessMatch.update({
+      where: { id: humanRows[0].id },
+      data: { hiddenAt: new Date() },
+    });
+    assert.equal((await publicClient.list({ category: "vs-humans", limit: 10 })).items.length, 2);
+    assert.deepEqual(await officialLeaderboard({ limit: 100 }), beforeHideHumans);
+
     console.log("chess-official: all-start PostgreSQL aggregate exceeds the old 500-row window");
     const aggregateGame = archive({ rules: { tokenBudget: 8128 } });
     const aggregateSnapshot = officialCommitment(aggregateGame, "operator");
@@ -757,7 +850,7 @@ export async function chessOfficialCheck() {
       );
       bulkIds.push(...ids);
     }
-    const all = await officialLeaderboard(aggregateFilter);
+    const all = await publicClient.leaderboard(aggregateFilter);
     assert.equal(all.sampleSize, 502);
     assert.equal(all.items.length, 2);
     const whiteAggregate = all.items.find((item) => item.model === white.model);
@@ -777,6 +870,11 @@ export async function chessOfficialCheck() {
       data: { published: false },
     });
     assert.deepEqual(await officialLeaderboard(aggregateFilter), all);
+    await prisma.chessMatch.updateMany({
+      where: { id: { in: bulkIds } },
+      data: { hiddenAt: new Date() },
+    });
+    assert.deepEqual(await publicClient.leaderboard(aggregateFilter), all);
     await prisma.chessMatch.deleteMany({ where: { id: { in: bulkIds }, ownerId: firstOwner } });
     assert.deepEqual(await officialLeaderboard(aggregateFilter), all);
     assert.equal(
@@ -803,7 +901,10 @@ export async function chessOfficialCheck() {
     const differentFen = archive({ rules: { tokenBudget: 8128 }, initialFen: shiftedBoard.fen() });
     const differentRules = archive({ rules: { tokenBudget: 8129 } });
     const randomOpponent = archive({ rules: { tokenBudget: 8128 }, black: baseline });
+    const differentPrompt = structuredClone(aggregateGame);
+    differentPrompt.config.prompt.version = "2"; // Future ledger scope; never passed to a current archive reader.
     const variants = [
+      [differentPrompt, "operator"],
       [differentFen, "operator"],
       [differentRules, "operator"],
       [aggregateGame, "owner-openrouter"],
@@ -814,6 +915,10 @@ export async function chessOfficialCheck() {
       await enroll(game, firstOwner, billing);
     }
     assert.deepEqual(await officialLeaderboard(aggregateFilter), all);
+    const futurePage = await publicClient.leaderboard({ ...aggregateFilter, promptVersion: "2" });
+    assert.equal(futurePage.sampleSize, 1);
+    assert.equal(futurePage.items.length, 2);
+    assert.ok(futurePage.items.every((item) => item.promptVersion === "2" && item.games === 1));
     const baselinePage = await officialLeaderboard({
       ...aggregateFilter,
       opponentType: "model-v-random",

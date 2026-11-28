@@ -277,6 +277,15 @@ class FakeElement extends FakeNode {
   get tagName() {
     return this.nodeName;
   }
+  get options(): FakeElement[] {
+    return elements(this).filter((element) => element.localName === "option");
+  }
+  get value(): string {
+    return this.attributes.get("value") ?? "";
+  }
+  set value(value: string) {
+    this.attributes.set("value", String(value));
+  }
   setAttribute(name: string, value: unknown) {
     this.attributes.set(name, String(value));
   }
