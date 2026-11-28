@@ -298,6 +298,8 @@ export async function evaluateAfterMove(
  */
 export function spectatorFeed(options: {
   record: (ply: number, evaluation: EngineEvaluation) => Promise<void> | void;
+  /** Durable access may end between positions (moderation, deletion, ownership). */
+  beforeEvaluate?: () => Promise<void> | void;
   known?: SpectatorEvaluations | null;
   signal?: AbortSignal;
 }) {
@@ -320,6 +322,8 @@ export function spectatorFeed(options: {
       while (pending.length && !stopped()) {
         const next = pending.shift() as (typeof pending)[number];
         try {
+          if (options.beforeEvaluate) await options.beforeEvaluate();
+          if (stopped()) break;
           const evaluation = await evaluatePosition(next.fen, {
             nodes: next.nodes,
             signal: options.signal,

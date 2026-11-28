@@ -61,12 +61,11 @@ const link = new RPCLink({
     if (isDocumentReplaced()) {
       // The account-free page's public procedures (docs/access-matrix.md).
       // Old account actions stay blocked even if a late callback starts one.
-      if (
-        path.length !== 2 ||
-        path[0] !== "chess" ||
-        !["info", "list", "get", "leaderboard"].includes(path[1] ?? "")
-      )
-        return new Promise<never>(() => {});
+      const publicRead =
+        path.length === 2 &&
+        ((path[0] === "chess" && ["info", "list", "get", "leaderboard"].includes(path[1] ?? "")) ||
+          (path[0] === "chessModeration" && path[1] === "visibility"));
+      if (!publicRead) return new Promise<never>(() => {});
       headers.delete("X-Expected-User");
     }
     return guardIdentityResponse(

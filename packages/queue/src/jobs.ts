@@ -41,6 +41,13 @@ export const chessRunJobSchema = z.object({
 });
 export type ChessRunJobData = z.infer<typeof chessRunJobSchema>;
 
+/** A public request never inherits an owner's private evaluation authority. */
+export const chessSpectatorAccessSchema = z.discriminatedUnion("purpose", [
+  z.object({ purpose: z.literal("public"), version: z.number().int().nonnegative() }).strict(),
+  z.object({ purpose: z.literal("owner"), ownerId: z.string().min(1).max(64) }).strict(),
+]);
+export type ChessSpectatorAccess = z.infer<typeof chessSpectatorAccessSchema>;
+
 /**
  * Chess reconcile sweep — errors hosted matches whose worker stopped
  * heartbeating, and queued matches whose BullMQ job is missing or terminal.
@@ -54,12 +61,15 @@ export const chessReconcileJobSchema = z.discriminatedUnion("reason", [
    * deduplicated per match by `chessSpectatorJobId`). It shares this queue because
    * the chess-run consumer must never wait behind it.
    */
-  z.object({
-    reason: z.literal("spectator"),
-    matchId: z.string().min(1).max(64),
-    /** The first missing ply when the chunk was requested (also in its job id). */
-    fromPly: z.number().int().nonnegative(),
-  }),
+  z
+    .object({
+      reason: z.literal("spectator"),
+      matchId: z.string().min(1).max(64),
+      /** The first missing ply when the chunk was requested (also in its job id). */
+      fromPly: z.number().int().nonnegative(),
+      access: chessSpectatorAccessSchema,
+    })
+    .strict(),
 ]);
 export type ChessReconcileJobData = z.infer<typeof chessReconcileJobSchema>;
 
@@ -69,8 +79,12 @@ export type ChessReconcileJobData = z.infer<typeof chessReconcileJobSchema>;
  * behind hands them to a new job (the next first missing ply) instead of its own,
  * still-active id.
  */
-export const chessSpectatorJobId = (matchId: string, fromPly: number) =>
-  `chess-spectator-${matchId}-${fromPly}`;
+export const chessSpectatorJobId = (
+  matchId: string,
+  fromPly: number,
+  access: ChessSpectatorAccess,
+) =>
+  `chess-spectator-${matchId}-${fromPly}-${access.purpose === "public" ? `public-${access.version}` : `owner-${access.ownerId}`}`;
 /**
  * Backfill chunks are prioritized BullMQ jobs; the reconcile sweep's scheduled jobs are
  * not, and BullMQ hands out unprioritized waiting jobs first. So a sweep waits for at

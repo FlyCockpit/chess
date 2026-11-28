@@ -25,6 +25,9 @@
     "./lib/chess-human": {
       "default": "./src/lib/chess-human.ts"
     },
+    "./lib/chess-spectator-access": {
+      "default": "./src/lib/chess-spectator-access.ts"
+    },
     "./lib/build-commit": {
       "default": "./src/lib/build-commit.ts"
     },

@@ -18,6 +18,7 @@ import { LoadMore } from "@/components/load-more";
 import { QueryBoundary } from "@/components/query-boundary";
 import { WideContent } from "@/components/wide-content";
 import { useNetworkStatus } from "@/hooks/use-network-status";
+import { useReplayVisibility } from "@/hooks/use-replay-visibility";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { orpc } from "@/utils/orpc";
 import { endingHeadlineLabel } from "./ending-label";
@@ -25,6 +26,7 @@ import { replayRefetch } from "./evaluation";
 import { HeroBoard } from "./hero-board";
 import { LocalLab } from "./local-lab";
 import { MatchReplay } from "./replay";
+import { ReplayReportDialog } from "./replay-report-dialog";
 
 // Studio reads the Better Auth session; lazy + ClientOnly keeps the auth client
 // out of the public landing chunk. The fallback mirrors Studio's pending skeleton.
@@ -127,6 +129,7 @@ function Arena({
           : 60000,
     }),
   );
+  const visibility = useReplayVisibility(slug ?? "not-selected", Boolean(slug));
   const {
     data: selectedData,
     error: selectedError,
@@ -135,8 +138,8 @@ function Arena({
     fetchStatus: gameFetchStatus,
     refetch: retryGame,
   } = useQuery({
-    ...orpc.chess.get.queryOptions({ input: { slug: slug ?? "not-selected" } }),
-    enabled: Boolean(slug),
+    ...visibility.replayOptions,
+    enabled: Boolean(slug) && !visibility.unavailable,
     meta: { skipGlobalErrorToast: true },
     // An unknown or unpublished slug stays that way: say so at once instead of retrying.
     retry: (failures, error) => !isQueryAccessError(error) && failures < 3,
@@ -144,7 +147,8 @@ function Arena({
   });
   const online = useNetworkStatus();
   const listPaused = isPending && listFetchStatus === "paused";
-  const selected = isQueryAccessError(selectedError) ? undefined : selectedData;
+  const selected =
+    visibility.unavailable || isQueryAccessError(selectedError) ? undefined : selectedData;
   const games = isQueryAccessError(listError)
     ? []
     : (list?.pages.flatMap((page) => page.items) ?? []);
@@ -162,9 +166,15 @@ function Arena({
   const replay = (
     <>
       {slug && gameError && selected && gameRetry}
-      {slug && pendingGame && !gamePaused ? (
-        <Skeleton className="h-96" />
-      ) : slug && isQueryAccessError(selectedError) ? (
+      {slug && selected && Boolean(visibility.error) && (
+        <p role="alert" className="cc-error">
+          {t("moderation.visibilityFailed")}{" "}
+          <button type="button" className="min-h-11" onClick={visibility.retry}>
+            {t("moderation.tryAgain")}
+          </button>
+        </p>
+      )}
+      {slug && (visibility.unavailable || isQueryAccessError(selectedError)) ? (
         <div className="cc-empty" role="status">
           <h3>{t("arena.gameNotFound")}</h3>
           <p>{t("arena.gameNotFoundDescription")}</p>
@@ -172,6 +182,8 @@ function Arena({
             {t("arena.all")}
           </button>
         </div>
+      ) : slug && pendingGame && !gamePaused ? (
+        <Skeleton className="h-96" />
       ) : slug && (gamePaused || !selected) ? (
         gameRetry
       ) : oldRulesGame ? (
@@ -190,7 +202,13 @@ function Arena({
           anonymized={selected?.anonymized}
           live={current.status === "running"}
           spectator={selected ? { evaluations: selected.spectatorEvaluations } : undefined}
+          beforeExport={slug ? visibility.beforeExport : undefined}
         />
+      )}
+      {slug && selected && !visibility.unavailable && (
+        <div className="my-4">
+          <ReplayReportDialog key={slug} slug={slug} />
+        </div>
       )}
     </>
   );

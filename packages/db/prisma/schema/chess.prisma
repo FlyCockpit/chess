@@ -1,20 +1,28 @@
-/// A complete replay archive. Public readers always filter published=true.
+/// A complete replay archive. Public readers use the centralized visibility predicate.
 model ChessMatch {
-  id                   String              @id @default(cuid(2))
-  publicId             String              @unique @default(dbgenerated("(gen_random_uuid())::text"))
-  slug                 String              @unique
-  createdAt            DateTime            @default(now())
-  updatedAt            DateTime            @default(now()) @updatedAt
+  id                   String                  @id @default(cuid(2))
+  publicId             String                  @unique @default(dbgenerated("(gen_random_uuid())::text"))
+  slug                 String                  @unique
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @default(now()) @updatedAt
   ownerId              String?
-  Owner                User?               @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  Owner                User?                   @relation(fields: [ownerId], references: [id], onDelete: SetNull)
   title                String
   whiteName            String
   blackName            String
-  status               String              @default("draft")
-  published            Boolean             @default(false)
+  status               String                  @default("draft")
+  published            Boolean                 @default(false)
+  /// Publication belongs to the uploader; only administrators can change this independent fence.
+  hiddenAt             DateTime?
+  moderationReason     ChessModerationReason?
+  /// The administrator's statement of reasons, visible to the uploader, never report text.
+  moderationNote       String?
+  moderationVersion    Int                     @default(0)
+  Reports              ChessReplayReport[]
+  ModerationActions    ChessModerationAction[]
   OfficialEntry        ChessOfficialEntry?
   Creation             ChessCreation?
-  source               String              @default("hosted")
+  source               String                  @default("hosted")
   rulesKey             String
   /// Current archives use cockpit-v1. Unsupported versions have no replay.
   rulesVersion         String?
@@ -27,7 +35,7 @@ model ChessMatch {
   heartbeatAt          DateTime?
   /// Internal turn state: idle | model (claimed) | human (parked) | human-move (ready).
   /// Human waits/ready inputs have no runToken and consume no worker slot.
-  turnType             String              @default("idle")
+  turnType             String                  @default("idle")
   turnId               String?
   turnSide             String?
   turnExpectedSeq      Int?
@@ -67,8 +75,9 @@ model ChessMatch {
   /// Whose OpenRouter key pays for the players: "operator" (the server's
   /// OPENROUTER_API_KEY, admin matches only) or "owner-openrouter" (the match
   /// owner's connected key, loaded by owner at claim time; never the operator key).
-  credentialSource     String              @default("operator")
+  credentialSource     String                  @default("operator")
 
+  @@index([hiddenAt, createdAt(sort: Desc), id(sort: Desc)])
   @@index([published, createdAt(sort: Desc), id(sort: Desc)])
   @@index([published, createdAt(sort: Desc), publicId(sort: Desc)])
   @@index([ownerId, createdAt(sort: Desc)])
@@ -159,4 +168,53 @@ model OpenRouterConnection {
   lastCheckedAt DateTime  @default(now())
 
   @@map("openrouter_connection")
+}
+
+/// Fixed categories only; free-text reports and uploader statements are separately bounded.
+enum ChessModerationReason {
+  privacy
+  harassment
+  illegal_content
+  spam
+  other
+  no_violation
+}
+
+/// No transcript or raw IP. Reporter deletion erases the report and its notes.
+model ChessReplayReport {
+  id         String                @id @default(cuid(2))
+  createdAt  DateTime              @default(now())
+  matchId    String
+  Match      ChessMatch            @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  reporterId String?
+  Reporter   User?                 @relation("ChessReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  /// Purpose-bound HMAC of replay + daily IP identity; never the raw IP address.
+  dedupKey   String                @unique
+  reason     ChessModerationReason
+  note       String?
+  reviewedAt DateTime?
+
+  @@index([matchId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([reporterId, id])
+  @@index([reviewedAt, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("chess_replay_report")
+}
+
+/// Administrative decisions survive actor deletion as minimal moderation evidence.
+/// Match deletion removes its history; no copied archive or reporter identity is retained.
+model ChessModerationAction {
+  id        String                @id @default(cuid(2))
+  createdAt DateTime              @default(now())
+  matchId   String
+  Match     ChessMatch            @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  actorId   String?
+  Actor     User?                 @relation("ChessModerationActor", fields: [actorId], references: [id], onDelete: SetNull)
+  hidden    Boolean
+  reason    ChessModerationReason
+  /// Separately authored statement of reasons; never automatically copied from a report.
+  note      String
+
+  @@index([matchId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([actorId, id])
+  @@map("chess_moderation_action")
 }

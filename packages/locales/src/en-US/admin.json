@@ -34,7 +34,8 @@
     "overview": "Overview",
     "users": "Users",
     "jobs": "Jobs",
-    "settings": "Settings"
+    "settings": "Settings",
+    "moderation": "Moderation"
   },
   "jobs": {
     "title": "Jobs",

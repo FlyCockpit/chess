@@ -80,7 +80,7 @@ export async function handleChessReconcileJob(
 ) {
   const data = chessReconcileJobSchema.parse(job.data);
   if (data.reason === "spectator")
-    return backfillSpectatorEvaluations(data.matchId, data.fromPly, signal);
+    return backfillSpectatorEvaluations(data.matchId, data.fromPly, data.access, signal);
   const cutoff = new Date(Date.now() - STALE_HEARTBEAT_MS);
   const select = { id: true, status: true, heartbeatAt: true, archive: true } as const;
   const orderBy = [{ heartbeatAt: "asc" }, { id: "asc" }] as const;
@@ -448,6 +448,7 @@ export async function handleChessRunJob(
   const spectators = matchSpectatorFeed(
     matchId,
     storedSpectatorEvaluations.parse(row.spectatorEvaluations),
+    row.ownerId,
     signal ? AbortSignal.any([signal, spectatorStop.signal]) : spectatorStop.signal,
   );
   let terminalWriteAttempts = 0;
@@ -674,7 +675,9 @@ export async function handleChessRunJob(
     // Human think time must never retain a gameplay slot for spectator draining.
     // Spectator work moves to its bounded queue; replay polling repairs a lost hint.
     spectatorStop.abort();
-    void requestSpectatorBackfill(matchId, 0).catch(() => undefined);
+    void requestSpectatorBackfill(matchId, 0, { purpose: "owner", ownerId: row.ownerId }).catch(
+      () => undefined,
+    );
     return {
       parked: true,
       result: match.result,
@@ -684,6 +687,6 @@ export async function handleChessRunJob(
   }
   // The result is already written. Give the last positions a short, bounded wait
   // (they were evaluated while the game was played); anything left goes to a backfill.
-  await settleSpectatorFeed(matchId, spectators, spectatorStop);
+  await settleSpectatorFeed(matchId, spectators, spectatorStop, row.ownerId);
   return { result: match.result, termination: match.termination, fen: boardAt(match).fen() };
 }

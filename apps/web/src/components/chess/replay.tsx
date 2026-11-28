@@ -24,8 +24,9 @@ import {
   Pause,
   Play,
 } from "lucide-react";
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useMountEffect } from "@/hooks/use-mount-effect";
 import { useNow } from "@/hooks/use-now";
 import { useReplayClock } from "@/hooks/use-replay-clock";
 import { boardIllegal, ILLEGAL_MS, rejectedAt, UNREADABLE_MS } from "./board-motion";
@@ -362,6 +363,7 @@ export function MatchReplay({
   anonymized = false,
   live = false,
   spectator,
+  beforeExport,
 }: {
   match: MatchArchive;
   anonymized?: boolean;
@@ -371,8 +373,35 @@ export function MatchReplay({
    * state). `available: false` means no engine can produce them here.
    */
   spectator?: { evaluations: SpectatorEvaluations | null; available?: boolean };
+  /** Hosted public replays revalidate visibility before creating a downloadable copy. */
+  beforeExport?: () => Promise<boolean>;
 }) {
   const { t, i18n } = useTranslation("chess");
+  const [exportPending, setExportPending] = useState(false);
+  const [exportError, setExportError] = useState(false);
+  const exportLifetime = useRef(true);
+  useMountEffect(() => {
+    exportLifetime.current = true;
+    return () => {
+      exportLifetime.current = false;
+    };
+  });
+  const download = async (format: "json" | "pgn") => {
+    setExportPending(true);
+    setExportError(false);
+    try {
+      if (beforeExport && !(await beforeExport())) {
+        if (exportLifetime.current) setExportError(true);
+        return;
+      }
+      if (!exportLifetime.current) return;
+      downloadGame(match, format, describeEnding);
+    } catch {
+      if (exportLifetime.current) setExportError(true);
+    } finally {
+      if (exportLifetime.current) setExportPending(false);
+    }
+  };
   const match = useMemo(() => {
     if (!anonymized) return original;
     const player = (value: Player): Player => {
@@ -939,15 +968,24 @@ export function MatchReplay({
           </div>
         }
         <div className="cc-export-row">
-          <button type="button" onClick={() => downloadGame(match, "json")}>
+          <button type="button" disabled={exportPending} onClick={() => void download("json")}>
             <Download size={15} />
             {t("replay.json")}
           </button>
-          <button type="button" onClick={() => downloadGame(match, "pgn", describeEnding)}>
+          <button type="button" disabled={exportPending} onClick={() => void download("pgn")}>
             {t("replay.pgn")}
           </button>
-          <VideoExportDialog match={match} spectator={spectator?.evaluations} />
+          <VideoExportDialog
+            match={match}
+            spectator={spectator?.evaluations}
+            beforeExport={beforeExport}
+          />
         </div>
+        {exportError && (
+          <p role="alert" className="cc-error">
+            {t("moderation.exportUnavailable")}
+          </p>
+        )}
         <CopyField value={frame.fen} copyLabel={t("replay.fen")} />
       </aside>
     </div>

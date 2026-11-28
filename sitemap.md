@@ -41,6 +41,7 @@ Gated by the `admin` layout (`apps/web/src/routes/$lang/_app/admin.tsx`). Non-ad
 | `/{lang}/admin/users` | User management — invite (Dialog with Email language; emails a one-time set-password link, which is shown once, closed only by Done, only if it couldn't be emailed), search/filter (active/archived), per-row dropdown actions: resend invite (pending invites only), promote/demote, archive (toast with Undo)/restore, delete (AlertDialog with type-to-confirm). Self-actions (demote/archive/delete on your own account) are blocked client- and server-side. |
 | `/{lang}/admin/jobs` | Failed background jobs across all BullMQ queues — queue, job id, attempts, failure reason, timestamp. |
 | `/{lang}/admin/settings` | Admin-only settings panel (e.g. force-2FA toggle) |
+| `/{lang}/admin/moderation` | Cursor-bounded replay reports and moderation history; hide or restore with a reason visible to the uploader. Admin-only and excluded from public SEO discovery. |
 
 ## Navigation
 

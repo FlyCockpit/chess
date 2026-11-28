@@ -1,7 +1,7 @@
 import { SelectorRow } from "@cockpit-chess/ui/components/selector-row";
 import { cn } from "@cockpit-chess/ui/lib/utils";
 import { createFileRoute, Link, notFound, Outlet } from "@tanstack/react-router";
-import { LayoutDashboard, ListX, Settings, Users } from "lucide-react";
+import { LayoutDashboard, ListX, Settings, ShieldCheck, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { TwoFactorNudge } from "@/components/admin/two-factor-nudge";
@@ -68,6 +68,12 @@ function AdminNav() {
       to: "/$lang/admin/settings" as const,
       label: t("nav.settings"),
       icon: Settings,
+      exact: false,
+    },
+    {
+      to: "/$lang/admin/moderation" as const,
+      label: t("nav.moderation"),
+      icon: ShieldCheck,
       exact: false,
     },
   ];

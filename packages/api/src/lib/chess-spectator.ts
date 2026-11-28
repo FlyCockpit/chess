@@ -4,13 +4,15 @@ import {
   type SpectatorEvaluations,
   storedSpectatorEvaluations,
 } from "@cockpit-chess/chess/spectator";
-import type { Prisma } from "@cockpit-chess/db";
+import prisma, { type Prisma } from "@cockpit-chess/db";
 import {
   CHESS_SPECTATOR_JOB_PRIORITY,
+  type ChessSpectatorAccess,
   chessReconcileQueue,
   chessSpectatorJobId,
   ensureRunnableJob,
 } from "@cockpit-chess/queue";
+import { spectatorAccessWhere } from "./chess-spectator-access";
 
 /** Matches this process asked to backfill recently: a replay poll must not re-enqueue each time. */
 const requested = new Map<string, number>();
@@ -18,25 +20,38 @@ const requested = new Map<string, number>();
 const REQUEST_TTL_MS = 60_000;
 const REQUEST_MEMO_LIMIT = 1000;
 
-function requestBackfill(matchId: string, fromPly: number) {
+function requestBackfill(matchId: string, fromPly: number, access: ChessSpectatorAccess) {
+  const key = chessSpectatorJobId(matchId, fromPly, access);
   const now = Date.now();
-  const last = requested.get(matchId);
+  const last = requested.get(key);
   if (last !== undefined && now - last < REQUEST_TTL_MS) return;
   if (requested.size >= REQUEST_MEMO_LIMIT) requested.clear();
-  requested.set(matchId, now);
+  requested.set(key, now);
   // One job per gap (job id = match + first missing ply): a retained completed or
   // failed job is made runnable again. A read never waits for or fails on the queue.
   void Promise.resolve()
-    .then(() =>
-      ensureRunnableJob(
+    .then(async () => {
+      // A queued microtask may outlive the public get/owner inspection which requested it.
+      const allowed = await prisma.chessMatch.findFirst({
+        where: { id: matchId, ...spectatorAccessWhere(access) },
+        select: { id: true, ownerId: true, slug: true },
+      });
+      if (
+        !allowed ||
+        (access.purpose === "public" &&
+          allowed.ownerId === null &&
+          !/^replay-[a-f0-9]{32}$/.test(allowed.slug))
+      )
+        return;
+      await ensureRunnableJob(
         chessReconcileQueue,
         "chess-spectator",
-        { reason: "spectator", matchId, fromPly },
-        chessSpectatorJobId(matchId, fromPly),
+        { reason: "spectator", matchId, fromPly, access },
+        key,
         { priority: CHESS_SPECTATOR_JOB_PRIORITY },
-      ),
-    )
-    .catch(() => requested.delete(matchId));
+      );
+    })
+    .catch(() => requested.delete(key));
 }
 
 /**
@@ -44,14 +59,20 @@ function requestBackfill(matchId: string, fromPly: number) {
  * leniently. A game that is no longer running but still lacks positions gets one
  * background backfill; a running game's own run evaluates as it plays.
  */
-export function spectatorEvaluationsFor(row: {
-  id: string;
-  status: string;
-  archive: MatchArchive;
-  spectatorEvaluations: Prisma.JsonValue;
-}): SpectatorEvaluations | null {
+export function spectatorEvaluationsFor(
+  row: {
+    id: string;
+    status: string;
+    source: string;
+    archive: MatchArchive;
+    spectatorEvaluations: Prisma.JsonValue;
+  },
+  access: ChessSpectatorAccess,
+): SpectatorEvaluations | null {
   const evaluations = storedSpectatorEvaluations.parse(row.spectatorEvaluations);
   if (
+    row.source !== "hosted" ||
+    row.archive.source !== "hosted" ||
     row.status === "queued" ||
     (row.status === "running" &&
       !(row.archive.source === "hosted" && row.archive.turn.type === "human"))
@@ -63,6 +84,6 @@ export function spectatorEvaluationsFor(row: {
   } catch {
     // An archive that no longer replays has no positions to evaluate.
   }
-  if (missing[0] !== undefined) requestBackfill(row.id, missing[0]);
+  if (missing[0] !== undefined) requestBackfill(row.id, missing[0], access);
   return evaluations;
 }

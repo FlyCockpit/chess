@@ -12,6 +12,7 @@ import { protectedProcedure, publicProcedure } from "../index";
 import { adminExistsForAppConfig } from "../lib/admin-presence";
 import { authRouter } from "./auth";
 import { chessRouter } from "./chess";
+import { chessModerationRouter } from "./chess-moderation";
 import { cliAccessRouter } from "./cli-access";
 import { openrouterRouter } from "./openrouter";
 import { queueRouter } from "./queue";
@@ -64,6 +65,7 @@ export const appRouter = {
   setup: setupRouter,
   queue: queueRouter,
   chess: chessRouter,
+  chessModeration: chessModerationRouter,
   // The caller's own OpenRouter key (Settings → OpenRouter); connecting is the OAuth
   // flow in apps/server/src/openrouter-routes.ts.
   openrouter: openrouterRouter,

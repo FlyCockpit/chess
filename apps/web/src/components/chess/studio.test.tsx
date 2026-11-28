@@ -196,6 +196,77 @@ it("retains a private preview during transient failure and hides it on denial", 
   expect(render()).not.toContain("Private preview");
 });
 
+it("shows the uploader's statement of reasons while retaining private inspection and excluding report details", () => {
+  const archive = createMatch({
+    title: "Moderated replay",
+    rules: {},
+    white: { name: "White", model: "random", protocol: "random" },
+    black: { name: "Black", model: "random", protocol: "random" },
+  });
+  fixture.detail = {
+    ...fixture.detail,
+    isPending: false,
+    isError: false,
+    error: undefined,
+    data: {
+      archive,
+      published: true,
+      hiddenAt: "2026-11-28T00:00:00Z",
+      moderationReason: "privacy",
+      moderationNote: "Remove the <private> contact detail.",
+      Reports: [{ note: "Confidential reporter details" }],
+    },
+  };
+  const html = render();
+  expect(html).toContain(enChess.moderation.ownerTitle);
+  expect(html).toContain(enChess.moderation.reasons.privacy);
+  expect(html).toContain("Remove the &lt;private&gt; contact detail.");
+  expect(html).toContain("Moderated replay");
+  expect(html).not.toContain("Confidential reporter details");
+});
+it("retains hide and restoration statements for an uploader who returns after restoration", () => {
+  const archive = createMatch({
+    title: "Restored replay",
+    rules: {},
+    white: { name: "White", model: "random", protocol: "random" },
+    black: { name: "Black", model: "random", protocol: "random" },
+  });
+  fixture.detail = {
+    ...fixture.detail,
+    isPending: false,
+    isError: false,
+    error: undefined,
+    data: {
+      archive,
+      published: true,
+      hiddenAt: null,
+      moderationReason: "no_violation",
+      moderationNote: "Contact detail was removed.",
+      ModerationActions: [
+        {
+          id: "restore",
+          createdAt: "2026-11-28T01:00:00Z",
+          hidden: false,
+          reason: "no_violation",
+          note: "Contact detail was removed.",
+        },
+        {
+          id: "hide",
+          createdAt: "2026-11-28T00:00:00Z",
+          hidden: true,
+          reason: "privacy",
+          note: "Original privacy concern.",
+        },
+      ],
+    },
+  };
+  const html = render();
+  expect(html).toContain(enChess.moderation.ownerRestoredTitle);
+  expect(html).toContain("Contact detail was removed.");
+  expect(html).toContain("Original privacy concern.");
+  expect(html).not.toContain(enChess.moderation.ownerTitle);
+});
+
 it("tells a signed-in non-admin what the studio is, without a Sign In", () => {
   fixture.auth = { state: { status: "authenticated", session: { user: { role: "user" } } } };
   try {
@@ -427,6 +498,79 @@ it("keeps publishing controls but hides replay controls for old-rules cards", ()
     expect(html).toContain(`>${enChess.studio.unpublish}</button>`);
   } finally {
     fixture.items = [];
+  }
+});
+
+it("shows unsupported-rules moderation statements independently of refused transcript inspection", () => {
+  const beforeItems = fixture.items;
+  const beforeDetail = fixture.detail;
+  fixture.items = [
+    {
+      id: "unsupported-id",
+      slug: "unsupported-replay",
+      title: "Unsupported replay",
+      status: "completed",
+      whiteName: "White",
+      blackName: "Black",
+      published: true,
+      oldRules: true,
+      hiddenAt: null,
+      moderationReason: "no_violation",
+      moderationNote: "The restriction has been removed.",
+      ModerationActions: [
+        {
+          id: "restore-old",
+          createdAt: "2026-11-28T01:00:00Z",
+          hidden: false,
+          reason: "no_violation",
+          note: "The restriction has been removed.",
+        },
+        {
+          id: "hide-old",
+          createdAt: "2026-11-28T00:00:00Z",
+          hidden: true,
+          reason: "privacy",
+          note: "Earlier <private> concern.",
+        },
+      ],
+      Reports: [{ note: "Confidential reporter identity" }],
+    },
+  ];
+  fixture.detail = {
+    ...fixture.detail,
+    data: undefined,
+    isPending: false,
+    isError: true,
+    error: { code: "OLD_RULES" },
+  };
+  try {
+    asUser(() => {
+      const restored = render();
+      expect(restored).toContain(enChess.arena.oldRules);
+      expect(restored).toContain(enChess.moderation.ownerRestoredTitle);
+      expect(restored).toContain(enChess.moderation.reasons.no_violation);
+      expect(restored).toContain("The restriction has been removed.");
+      expect(restored).toContain("Earlier &lt;private&gt; concern.");
+      expect(restored).toContain(enChess.moderation.ownerHistoryBound);
+      expect(restored).not.toContain("Confidential reporter identity");
+      expect(restored).not.toContain(`>${enChess.studio.preview}</button>`);
+      expect(restored).not.toContain(`>${enChess.studio.view}</button>`);
+      fixture.items = fixture.items.map((game) => ({
+        ...game,
+        hiddenAt: "2026-11-28T00:00:00Z",
+        moderationReason: "privacy",
+        moderationNote: "Hidden for a separate privacy concern.",
+      }));
+      const hidden = render();
+      expect(hidden).toContain(enChess.moderation.ownerTitle);
+      expect(hidden).toContain("Hidden for a separate privacy concern.");
+      expect(hidden).not.toContain(enChess.moderation.ownerRestoredTitle);
+      expect(hidden).not.toContain(`>${enChess.studio.preview}</button>`);
+      expect(hidden).not.toContain(`>${enChess.studio.view}</button>`);
+    });
+  } finally {
+    fixture.items = beforeItems;
+    fixture.detail = beforeDetail;
   }
 });
 

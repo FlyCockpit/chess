@@ -49,7 +49,8 @@
     "overview": "Descripción general",
     "users": "Usuarios",
     "jobs": "Trabajos",
-    "settings": "Configuración"
+    "settings": "Configuración",
+    "moderation": "Moderación"
   },
   "overview": {
     "title": "Descripción general del administrador",

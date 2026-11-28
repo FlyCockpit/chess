@@ -26,6 +26,7 @@ import { Route as LangAppAuthDeviceRouteImport } from './routes/$lang/_app/_auth
 import { Route as LangAppAuthSettingsRouteImport } from './routes/$lang/_app/_auth/settings'
 import { Route as LangAppAdminIndexRouteImport } from './routes/$lang/_app/admin/index'
 import { Route as LangAppAdminJobsRouteImport } from './routes/$lang/_app/admin/jobs'
+import { Route as LangAppAdminModerationRouteImport } from './routes/$lang/_app/admin/moderation'
 import { Route as LangAppAdminSettingsRouteImport } from './routes/$lang/_app/admin/settings'
 import { Route as LangAppAdminUsersRouteImport } from './routes/$lang/_app/admin/users'
 import { Route as LangAppAuthRunnerClaimRouteImport } from './routes/$lang/_app/_auth/runner/claim'
@@ -116,6 +117,11 @@ const LangAppAdminJobsRoute = LangAppAdminJobsRouteImport.update({
   path: '/jobs',
   getParentRoute: () => LangAppAdminRoute,
 } as any)
+const LangAppAdminModerationRoute = LangAppAdminModerationRouteImport.update({
+  id: '/moderation',
+  path: '/moderation',
+  getParentRoute: () => LangAppAdminRoute,
+} as any)
 const LangAppAdminSettingsRoute = LangAppAdminSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -169,6 +175,7 @@ export interface FileRoutesByFullPath {
   '/$lang/device': typeof LangAppAuthDeviceRoute
   '/$lang/settings': typeof LangAppAuthSettingsRouteWithChildren
   '/$lang/admin/jobs': typeof LangAppAdminJobsRoute
+  '/$lang/admin/moderation': typeof LangAppAdminModerationRoute
   '/$lang/admin/settings': typeof LangAppAdminSettingsRoute
   '/$lang/admin/users': typeof LangAppAdminUsersRoute
   '/$lang/admin/': typeof LangAppAdminIndexRoute
@@ -189,6 +196,7 @@ export interface FileRoutesByTo {
   '/$lang/verify-email': typeof LangAppVerifyEmailRoute
   '/$lang/device': typeof LangAppAuthDeviceRoute
   '/$lang/admin/jobs': typeof LangAppAdminJobsRoute
+  '/$lang/admin/moderation': typeof LangAppAdminModerationRoute
   '/$lang/admin/settings': typeof LangAppAdminSettingsRoute
   '/$lang/admin/users': typeof LangAppAdminUsersRoute
   '/$lang/admin': typeof LangAppAdminIndexRoute
@@ -216,6 +224,7 @@ export interface FileRoutesById {
   '/$lang/_app/_auth/device': typeof LangAppAuthDeviceRoute
   '/$lang/_app/_auth/settings': typeof LangAppAuthSettingsRouteWithChildren
   '/$lang/_app/admin/jobs': typeof LangAppAdminJobsRoute
+  '/$lang/_app/admin/moderation': typeof LangAppAdminModerationRoute
   '/$lang/_app/admin/settings': typeof LangAppAdminSettingsRoute
   '/$lang/_app/admin/users': typeof LangAppAdminUsersRoute
   '/$lang/_app/admin/': typeof LangAppAdminIndexRoute
@@ -241,6 +250,7 @@ export interface FileRouteTypes {
     | '/$lang/device'
     | '/$lang/settings'
     | '/$lang/admin/jobs'
+    | '/$lang/admin/moderation'
     | '/$lang/admin/settings'
     | '/$lang/admin/users'
     | '/$lang/admin/'
@@ -261,6 +271,7 @@ export interface FileRouteTypes {
     | '/$lang/verify-email'
     | '/$lang/device'
     | '/$lang/admin/jobs'
+    | '/$lang/admin/moderation'
     | '/$lang/admin/settings'
     | '/$lang/admin/users'
     | '/$lang/admin'
@@ -287,6 +298,7 @@ export interface FileRouteTypes {
     | '/$lang/_app/_auth/device'
     | '/$lang/_app/_auth/settings'
     | '/$lang/_app/admin/jobs'
+    | '/$lang/_app/admin/moderation'
     | '/$lang/_app/admin/settings'
     | '/$lang/_app/admin/users'
     | '/$lang/_app/admin/'
@@ -423,6 +435,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LangAppAdminJobsRouteImport
       parentRoute: typeof LangAppAdminRoute
     }
+    '/$lang/_app/admin/moderation': {
+      id: '/$lang/_app/admin/moderation'
+      path: '/moderation'
+      fullPath: '/$lang/admin/moderation'
+      preLoaderRoute: typeof LangAppAdminModerationRouteImport
+      parentRoute: typeof LangAppAdminRoute
+    }
     '/$lang/_app/admin/settings': {
       id: '/$lang/_app/admin/settings'
       path: '/settings'
@@ -510,6 +529,7 @@ const LangAppAuthRouteWithChildren = LangAppAuthRoute._addFileChildren(
 
 interface LangAppAdminRouteChildren {
   LangAppAdminJobsRoute: typeof LangAppAdminJobsRoute
+  LangAppAdminModerationRoute: typeof LangAppAdminModerationRoute
   LangAppAdminSettingsRoute: typeof LangAppAdminSettingsRoute
   LangAppAdminUsersRoute: typeof LangAppAdminUsersRoute
   LangAppAdminIndexRoute: typeof LangAppAdminIndexRoute
@@ -517,6 +537,7 @@ interface LangAppAdminRouteChildren {
 
 const LangAppAdminRouteChildren: LangAppAdminRouteChildren = {
   LangAppAdminJobsRoute: LangAppAdminJobsRoute,
+  LangAppAdminModerationRoute: LangAppAdminModerationRoute,
   LangAppAdminSettingsRoute: LangAppAdminSettingsRoute,
   LangAppAdminUsersRoute: LangAppAdminUsersRoute,
   LangAppAdminIndexRoute: LangAppAdminIndexRoute,

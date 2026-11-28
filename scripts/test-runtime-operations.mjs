@@ -2086,6 +2086,8 @@ async function main() {
     else if (process.argv[3] === "chess-admission") await chessAdmissionCheck();
     else if (process.argv[3] === "chess-official")
       await (await import("./test-chess-official.mjs")).chessOfficialCheck();
+    else if (process.argv[3] === "chess-moderation")
+      await (await import("./test-chess-moderation.mjs")).chessModerationCheck();
     else if (process.argv[3] === "chess-human")
       await (await import("./test-chess-human.mjs")).chessHumanCheck();
     else if (process.argv[3] === "invite-race") await inviteRaceCheck();
@@ -2129,6 +2131,7 @@ async function main() {
       undefined,
       "--chess-admission-only",
       "--chess-official-only",
+      "--chess-moderation-only",
       "--chess-human-only",
       "--runner-machines-only",
       "--runner-transport-only",
@@ -2304,6 +2307,7 @@ async function main() {
         },
       ],
       ["chess-admission", {}],
+      ["chess-moderation", { ...inviteEnv, DATABASE_POOL_MAX: "8" }],
       [
         "chess-human",
         {
@@ -2319,6 +2323,7 @@ async function main() {
     ]) {
       if (process.argv[3] === "--chess-admission-only" && mode !== "chess-admission") continue;
       if (process.argv[3] === "--chess-official-only" && mode !== "chess-official") continue;
+      if (process.argv[3] === "--chess-moderation-only" && mode !== "chess-moderation") continue;
       if (process.argv[3] === "--chess-human-only" && mode !== "chess-human") continue;
       if (process.argv[3] === "--runner-transport-only" && mode !== "runner-transport") continue;
       if (process.argv[3] === "--runner-claims-only" && mode !== "runner-claims") continue;
@@ -2340,7 +2345,12 @@ async function main() {
             ...extra,
             RUNTIME_OPERATIONS_CHILD: "owned-disposable-services",
           },
-          timeout: ["chess-official", "chess-human", "account-deletion"].includes(mode)
+          timeout: [
+            "chess-official",
+            "chess-human",
+            "chess-moderation",
+            "account-deletion",
+          ].includes(mode)
             ? 120_000
             : [
                   "runner-machines",
@@ -2350,15 +2360,27 @@ async function main() {
                 ].includes(mode)
               ? 60_000
               : 45_000,
-          stdio: ["chess-admission", "chess-official", "chess-human", "account-deletion"].includes(
-            mode,
-          )
+          stdio: [
+            "chess-admission",
+            "chess-official",
+            "chess-human",
+            "chess-moderation",
+            "account-deletion",
+          ].includes(mode)
             ? "inherit"
             : ["ignore", "pipe", "pipe"],
           encoding: "utf8",
         },
       );
-      if (!["chess-admission", "chess-official", "chess-human", "account-deletion"].includes(mode))
+      if (
+        ![
+          "chess-admission",
+          "chess-official",
+          "chess-human",
+          "chess-moderation",
+          "account-deletion",
+        ].includes(mode)
+      )
         process.stdout.write(result);
     }
   } finally {

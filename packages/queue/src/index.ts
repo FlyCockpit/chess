@@ -14,6 +14,7 @@ export {
   type CheckBackupFreshnessJobData,
   type ChessReconcileJobData,
   type ChessRunJobData,
+  type ChessSpectatorAccess,
   checkBackupFreshnessJobSchema,
   chessReconcileJobSchema,
   chessRunJobSchema,

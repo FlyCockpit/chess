@@ -21,7 +21,8 @@ import { chessTurnColumns } from "../lib/chess-turn";
 
 vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
-  return { default: mockDeep<typeof prismaInstance>() };
+  const Prisma = await import("../../../db/prisma/generated/internal/prismaNamespace");
+  return { default: mockDeep<typeof prismaInstance>(), Prisma };
 });
 const { ensureRunnableJob, budget, budgetConfigs, env, reconcileAdd } = vi.hoisted(() => ({
   ensureRunnableJob: vi.fn(),
@@ -55,7 +56,12 @@ vi.mock("@cockpit-chess/queue", () => ({
   chessRunQueue: {},
   redisConnection: {},
   chessReconcileQueue: { add: reconcileAdd },
-  chessSpectatorJobId: (id: string, ply: number) => `chess-spectator-${id}-${ply}`,
+  chessSpectatorJobId: (
+    id: string,
+    ply: number,
+    access: { purpose: "public"; version: number } | { purpose: "owner"; ownerId: string },
+  ) =>
+    `chess-spectator-${id}-${ply}-${access.purpose === "public" ? `public-${access.version}` : `owner-${access.ownerId}`}`,
   ensureRunnableJob,
 }));
 vi.mock("@cockpit-chess/env/shared", () => ({ env }));
@@ -139,6 +145,11 @@ function row() {
     blackName: "Baseline",
     status: "running",
     published: false,
+    hiddenAt: null,
+    moderationReason: null,
+    moderationNote: null,
+    moderationVersion: 0,
+    ModerationActions: [],
     OfficialEntry: null,
     source: "local",
     rulesKey: "rules",
@@ -302,6 +313,7 @@ describe("chess public projection and operator boundaries", () => {
           AND: [
             {
               published: true,
+              hiddenAt: null,
               OR: [{ ownerId: null }, { Owner: { is: { deletionRequestedAt: null } } }],
             },
           ],
@@ -685,7 +697,7 @@ describe("chess public projection and operator boundaries", () => {
   });
   it("serves spectator evaluations and asks once for a backfill of a finished game's gaps", async () => {
     reconcileAdd.mockResolvedValue({});
-    const archive = match();
+    const archive = createMatch({ white: baseline, black: baseline, rules: {} }, "hosted");
     const chess = boardAt(archive);
     submitMove(archive, chess, "e2e4");
     finishMatch(archive, "*", "cancelled", "stopped");
@@ -700,7 +712,7 @@ describe("chess public projection and operator boundaries", () => {
       bestMove: null,
     };
     expect(start).toContain("rnbqkbnr");
-    const stored = { ...row(), id: "spectated", status: "stopped", archive };
+    const stored = { ...row(), id: "spectated", source: "hosted", status: "stopped", archive };
     db.chessMatch.findFirst.mockResolvedValue({
       ...stored,
       spectatorEvaluations: { "0": evaluation, bogus: 1 },
@@ -724,8 +736,13 @@ describe("chess public projection and operator boundaries", () => {
       expect(ensureRunnableJob).toHaveBeenCalledExactlyOnceWith(
         { add: reconcileAdd },
         "chess-spectator",
-        { reason: "spectator", matchId: "spectated", fromPly: 1 },
-        "chess-spectator-spectated-1",
+        {
+          reason: "spectator",
+          matchId: "spectated",
+          fromPly: 1,
+          access: { purpose: "public", version: 0 },
+        },
+        "chess-spectator-spectated-1-public-0",
         { priority: 10 },
       ),
     );
@@ -1705,8 +1722,8 @@ describe("hosted human move CAS", () => {
     expect(ensureRunnableJob).toHaveBeenCalledWith(
       { add: reconcileAdd },
       "chess-spectator",
-      { reason: "spectator", matchId: id, fromPly: 0 },
-      `chess-spectator-${id}-0`,
+      { reason: "spectator", matchId: id, fromPly: 0, access: { purpose: "public", version: 0 } },
+      `chess-spectator-${id}-0-public-0`,
       { priority: 10 },
     );
     expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
@@ -2175,6 +2192,119 @@ describe("public durable official ledger", () => {
 });
 
 describe("deletion replay visibility and stale admission", () => {
+  it("delivers owner moderation reasons independently of unsupported archive inspection", async () => {
+    const record = {
+      ...row(),
+      rulesVersion: "unsupported-prerelease",
+      hiddenAt: new Date(),
+      moderationReason: "privacy" as const,
+      moderationNote: "Private statement for the uploader",
+      ModerationActions: [
+        {
+          id: "decision",
+          createdAt: new Date(),
+          hidden: true,
+          reason: "privacy" as const,
+          note: "Private statement for the uploader",
+        },
+      ],
+    };
+    db.chessMatch.findMany.mockResolvedValue([record]);
+    const page = await client("user").studio({ limit: 2 });
+    expect(page.items[0]).toMatchObject({
+      oldRules: true,
+      moderationNote: record.moderationNote,
+      ModerationActions: record.ModerationActions,
+    });
+    const select = db.chessMatch.findMany.mock.calls[0]?.[0]?.select;
+    expect(select).not.toHaveProperty("archive");
+    expect(select).not.toHaveProperty("Reports");
+    expect(select).toMatchObject({
+      ModerationActions: { take: 10, select: { reason: true, note: true } },
+    });
+    expect(select?.ModerationActions).not.toHaveProperty("actorId");
+    db.chessMatch.findFirst.mockResolvedValue(record);
+    await expect(client("user").inspect({ slug: record.slug })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Unsupported ruleset/archive",
+    });
+  });
+
+  it("refuses hidden public transcripts/cards without queue work or leaking owner statements", async () => {
+    const hidden = {
+      ...row(),
+      published: true,
+      hiddenAt: new Date(),
+      moderationReason: "privacy" as const,
+      moderationNote: "PRIVATE uploader statement",
+      ModerationActions: [
+        {
+          id: "action",
+          createdAt: new Date(),
+          hidden: true,
+          reason: "privacy" as const,
+          note: "PRIVATE uploader statement",
+        },
+      ],
+    };
+    db.chessMatch.findFirst.mockResolvedValue(hidden);
+    db.chessMatch.findMany.mockResolvedValue([hidden]);
+    await expect(client(null).get({ slug: hidden.slug })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    expect((await client(null).list({ limit: 2 })).items).toEqual([]);
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+    const publicSelect = db.chessMatch.findFirst.mock.calls[0]?.[0]?.select;
+    expect(publicSelect).not.toHaveProperty("moderationNote");
+    expect(publicSelect).not.toHaveProperty("ModerationActions");
+    const own = await client("user").inspect({ slug: hidden.slug });
+    expect(own.moderationNote).toBe(hidden.moderationNote);
+    expect(own.ModerationActions).toEqual(hidden.ModerationActions);
+    expect(own).not.toHaveProperty("Reports");
+  });
+
+  it.each(["local", "runner"])(
+    "never schedules server scoring for a published %s replay",
+    async (source) => {
+      const archive = match();
+      finishMatch(archive, "*", "cancelled", "stopped");
+      db.chessMatch.findFirst.mockResolvedValue({
+        ...row(),
+        id: `nonhosted-${source}`,
+        source,
+        status: "stopped",
+        archive,
+      });
+      await client(null).get({ slug: "test-game" });
+      await Promise.resolve();
+      expect(ensureRunnableJob).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rechecks visibility after a read before admitting its deferred public scoring job", async () => {
+    const archive = createMatch({ white: baseline, black: baseline, rules: {} }, "hosted");
+    finishMatch(archive, "*", "cancelled", "stopped");
+    db.chessMatch.findFirst
+      .mockResolvedValueOnce({
+        ...row(),
+        id: "hide-before-enqueue",
+        source: "hosted",
+        status: "stopped",
+        archive,
+      })
+      .mockResolvedValueOnce(null);
+    expect((await client(null).get({ slug: "test-game" })).archive).toBeTruthy();
+    await vi.waitFor(() => expect(db.chessMatch.findFirst).toHaveBeenCalledTimes(2));
+    expect(db.chessMatch.findFirst.mock.calls[1]?.[0]?.where).toMatchObject({
+      id: "hide-before-enqueue",
+      published: true,
+      hiddenAt: null,
+      source: "hosted",
+      moderationVersion: 0,
+    });
+    expect(ensureRunnableJob).not.toHaveBeenCalled();
+  });
+
   it("refuses pending-owner old URLs and removes them from public pages even on a stale query fixture", async () => {
     const record = { ...row(), published: true, Owner: { deletionRequestedAt: new Date() } };
     db.chessMatch.findFirst.mockResolvedValue(record as never);

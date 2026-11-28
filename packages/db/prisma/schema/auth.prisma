@@ -1,40 +1,42 @@
 model User {
-  id                   String                @id @default(cuid(2))
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @default(now()) @updatedAt
-  name                 String
-  email                String
-  emailVerified        Boolean               @default(false)
-  image                String?
+  id                     String                  @id @default(cuid(2))
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @default(now()) @updatedAt
+  name                   String
+  email                  String
+  emailVerified          Boolean                 @default(false)
+  image                  String?
   // Better-Auth's admin plugin stores role as a string and supports arbitrary
   // custom roles plus comma-separated multi-role values. Do not narrow this to
   // a Prisma enum unless you also drop those Better-Auth capabilities.
-  role                 String                @default("user")
+  role                   String                  @default("user")
   // Preferred UI locale (BCP 47 tag). Synced into the i18n detection chain
   // ahead of localStorage / navigator so a signed-in user's choice follows
   // them across devices. Stored as String (not enum) because the supported-
   // locale set evolves outside the schema; new locales are added in
   // apps/web/src/i18n/config.ts without a Prisma migration.
-  locale               String                @default("en-US")
-  banned               Boolean?
-  banReason            String?
-  banExpires           DateTime?
-  twoFactorEnabled     Boolean?
-  operationalAlerts    Boolean               @default(true)
+  locale                 String                  @default("en-US")
+  banned                 Boolean?
+  banReason              String?
+  banExpires             DateTime?
+  twoFactorEnabled       Boolean?
+  operationalAlerts      Boolean                 @default(true)
   /// Durable access fence; physical cleanup is completed by the deletion job.
-  deletionRequestedAt  DateTime?
-  deletionState        String                @default("active")
-  deletionCursor       String?
-  deletionAttempts     Int                   @default(0)
-  sessions             Session[]
-  accounts             Account[]
-  twoFactors           TwoFactor[]
-  ChessMatches         ChessMatch[]
-  OpenRouterConnection OpenRouterConnection?
-  DeviceCodes          DeviceCode[]
-  ApiKeys              ApiKey[]
-  RunnerMachines       RunnerMachine[]
-  RunnerClaims         RunnerClaim[]
+  deletionRequestedAt    DateTime?
+  deletionState          String                  @default("active")
+  deletionCursor         String?
+  deletionAttempts       Int                     @default(0)
+  sessions               Session[]
+  accounts               Account[]
+  twoFactors             TwoFactor[]
+  ChessMatches           ChessMatch[]
+  OpenRouterConnection   OpenRouterConnection?
+  DeviceCodes            DeviceCode[]
+  ApiKeys                ApiKey[]
+  RunnerMachines         RunnerMachine[]
+  RunnerClaims           RunnerClaim[]
+  ChessReports           ChessReplayReport[]     @relation("ChessReportReporter")
+  ChessModerationActions ChessModerationAction[] @relation("ChessModerationActor")
 
   @@unique([email])
   @@index([role])

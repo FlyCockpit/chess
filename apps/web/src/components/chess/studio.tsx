@@ -256,10 +256,61 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                 <ShareCard
                   match={detail.archive}
                   slug={selected}
-                  published={detail.published}
+                  published={detail.published && !detail.hiddenAt}
                   spectator={detail.spectatorEvaluations}
                 />
               </div>
+              {detail.moderationReason && (
+                <section className="mb-4 rounded-md border border-destructive/30 p-4" role="status">
+                  <h3 className="font-semibold">
+                    {t(detail.hiddenAt ? "moderation.ownerTitle" : "moderation.ownerRestoredTitle")}
+                  </h3>
+                  <p className="mt-2 text-sm">
+                    {t(
+                      detail.hiddenAt
+                        ? "moderation.ownerExplanation"
+                        : "moderation.ownerRestoredExplanation",
+                    )}
+                  </p>
+                  {detail.moderationReason && (
+                    <p className="mt-2 text-sm font-medium">
+                      {t(`moderation.reasons.${detail.moderationReason}`)}
+                    </p>
+                  )}
+                  {detail.moderationNote && (
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm">
+                      {detail.moderationNote}
+                    </p>
+                  )}
+                  {detail.hiddenAt && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {new Date(detail.hiddenAt).toLocaleString(i18n.language)}
+                    </p>
+                  )}
+                  {Boolean(detail.ModerationActions?.length) && (
+                    <details className="mt-3">
+                      <summary className="flex min-h-11 cursor-pointer items-center text-sm">
+                        {t("moderation.audit")}
+                      </summary>
+                      <p className="text-xs text-muted-foreground">
+                        {t("moderation.ownerHistoryBound")}
+                      </p>
+                      <ol className="mt-2 divide-y">
+                        {detail.ModerationActions.map((action) => (
+                          <li key={action.id} className="py-2 text-sm">
+                            <p>
+                              {t(action.hidden ? "moderation.hidden" : "moderation.restored")} ·{" "}
+                              {t(`moderation.reasons.${action.reason}`)} ·{" "}
+                              {new Date(action.createdAt).toLocaleString(i18n.language)}
+                            </p>
+                            <p className="whitespace-pre-wrap break-words">{action.note}</p>
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
+                </section>
+              )}
               {detail.queuePosition !== null && (
                 <p className="cc-muted mb-4" role="status">
                   {t("studio.queuePosition", { position: detail.queuePosition })}
@@ -336,6 +387,47 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                         <p className="cc-card-ending">{endingHeadlineLabel(t, game.ending)}</p>
                       )}
                       {game.oldRules && <p className="cc-card-old-rules">{t("arena.oldRules")}</p>}
+                      {game.oldRules && game.moderationReason && (
+                        <details className="mt-3 rounded-md border border-destructive/30 p-3">
+                          <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold">
+                            {t(
+                              game.hiddenAt
+                                ? "moderation.ownerTitle"
+                                : "moderation.ownerRestoredTitle",
+                            )}
+                          </summary>
+                          <p className="mt-2 text-sm font-medium">
+                            {t(`moderation.reasons.${game.moderationReason}`)}
+                          </p>
+                          {game.moderationNote && (
+                            <p className="mt-1 whitespace-pre-wrap break-words text-sm">
+                              {game.moderationNote}
+                            </p>
+                          )}
+                          {Boolean(game.ModerationActions?.length) && (
+                            <>
+                              <h4 className="mt-3 text-sm font-medium">{t("moderation.audit")}</h4>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {t("moderation.ownerHistoryBound")}
+                              </p>
+                              <ol className="mt-2 divide-y">
+                                {game.ModerationActions.map((action) => (
+                                  <li key={action.id} className="py-2 text-sm">
+                                    <p>
+                                      {t(
+                                        action.hidden ? "moderation.hidden" : "moderation.restored",
+                                      )}{" "}
+                                      · {t(`moderation.reasons.${action.reason}`)} ·{" "}
+                                      {new Date(action.createdAt).toLocaleString(i18n.language)}
+                                    </p>
+                                    <p className="whitespace-pre-wrap break-words">{action.note}</p>
+                                  </li>
+                                ))}
+                              </ol>
+                            </>
+                          )}
+                        </details>
+                      )}
                       <div className="cc-export-row">
                         {!game.oldRules && (
                           <button type="button" onClick={() => setSelected(game.slug)}>
@@ -362,7 +454,7 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                             {t("studio.stop")}
                           </button>
                         )}
-                        {game.published && !game.oldRules && (
+                        {game.published && !game.hiddenAt && !game.oldRules && (
                           <button type="button" onClick={() => onWatch(game.slug)}>
                             {t("studio.view")}
                           </button>

@@ -1,3 +1,7 @@
+import {
+  spectatorAccessSql,
+  spectatorAccessWhere,
+} from "@cockpit-chess/api/lib/chess-spectator-access";
 import { archiveSchema, type EngineEvaluation } from "@cockpit-chess/chess";
 import { spectatorFeed } from "@cockpit-chess/chess/runner";
 import {
@@ -8,6 +12,7 @@ import {
 import prisma from "@cockpit-chess/db";
 import {
   CHESS_SPECTATOR_JOB_PRIORITY,
+  type ChessSpectatorAccess,
   chessReconcileQueue,
   chessSpectatorJobId,
   ensureRunnableJob,
@@ -41,35 +46,82 @@ async function recordSpectatorEvaluation(
   matchId: string,
   ply: number,
   evaluation: EngineEvaluation,
+  access: ChessSpectatorAccess,
 ) {
   const patch = JSON.stringify({ [String(ply)]: evaluation });
-  await prisma.$transaction([
+  const results = await prisma.$transaction([
     prisma.$executeRaw`SET LOCAL lock_timeout = '2s'`,
     prisma.$executeRaw`SET LOCAL statement_timeout = '5s'`,
-    prisma.$executeRaw`UPDATE "chess_match" SET "spectatorEvaluations" = (CASE WHEN jsonb_typeof("spectatorEvaluations") = 'object' THEN "spectatorEvaluations" ELSE '{}'::jsonb END) || ${patch}::jsonb WHERE "id" = ${matchId}`,
+    prisma.$executeRaw`UPDATE "chess_match" SET "spectatorEvaluations" = (CASE WHEN jsonb_typeof("spectatorEvaluations") = 'object' THEN "spectatorEvaluations" ELSE '{}'::jsonb END) || ${patch}::jsonb WHERE "id" = ${matchId} AND ${spectatorAccessSql(access)}`,
   ]);
+  return results[2] === 1;
+}
+
+async function canEvaluate(matchId: string, access: ChessSpectatorAccess) {
+  const rows = await prisma.$queryRaw<
+    Array<{ id: string }>
+  >`SELECT "id" FROM "chess_match" WHERE "id" = ${matchId} AND ${spectatorAccessSql(access)} LIMIT 1`;
+  return rows.length === 1;
+}
+
+function authorizedFeed(
+  matchId: string,
+  known: SpectatorEvaluations | null,
+  access: ChessSpectatorAccess,
+  signal?: AbortSignal,
+) {
+  let refused = false;
+  const refuse = () => {
+    refused = true;
+    throw new Error("Spectator authority ended");
+  };
+  const feed = spectatorFeed({
+    known,
+    signal,
+    beforeEvaluate: async () => {
+      if (!(await canEvaluate(matchId, access))) refuse();
+    },
+    record: async (ply, evaluation) => {
+      if (!(await recordSpectatorEvaluation(matchId, ply, evaluation, access))) refuse();
+    },
+  });
+  return {
+    update: feed.update,
+    drain: feed.drain,
+    get failed() {
+      return feed.failed;
+    },
+    get remaining() {
+      return feed.remaining;
+    },
+    get refused() {
+      return refused;
+    },
+  };
 }
 
 /** A run's feed: evaluates each committed position in the background (spectator engine lane). */
 export function matchSpectatorFeed(
   matchId: string,
   known: SpectatorEvaluations | null,
+  ownerId: string,
   signal?: AbortSignal,
 ) {
-  return spectatorFeed({
-    known,
-    signal,
-    record: (ply, evaluation) => recordSpectatorEvaluation(matchId, ply, evaluation),
-  });
+  return authorizedFeed(matchId, known, { purpose: "owner", ownerId }, signal);
 }
 
 /** Queues a backfill chunk starting at `fromPly` (a retained finished job runs again). */
-export function requestSpectatorBackfill(matchId: string, fromPly: number) {
+export async function requestSpectatorBackfill(
+  matchId: string,
+  fromPly: number,
+  access: ChessSpectatorAccess,
+) {
+  if (!(await canEvaluate(matchId, access))) return;
   return ensureRunnableJob(
     chessReconcileQueue,
     "chess-spectator",
-    { reason: "spectator", matchId, fromPly },
-    chessSpectatorJobId(matchId, fromPly),
+    { reason: "spectator", matchId, fromPly, access },
+    chessSpectatorJobId(matchId, fromPly, access),
     { priority: CHESS_SPECTATOR_JOB_PRIORITY },
   );
 }
@@ -83,6 +135,7 @@ export async function settleSpectatorFeed(
   matchId: string,
   feed: ReturnType<typeof matchSpectatorFeed>,
   stop: AbortController,
+  ownerId: string,
   ms = SPECTATOR_DRAIN_MS,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -95,7 +148,7 @@ export async function settleSpectatorFeed(
   stop.abort();
   // Best effort: a queue outage only delays the gap until a replay asks for it.
   await Promise.resolve()
-    .then(() => requestSpectatorBackfill(matchId, 0))
+    .then(() => requestSpectatorBackfill(matchId, 0, { purpose: "owner", ownerId }))
     .catch(() => undefined);
   return { handedOff: true };
 }
@@ -110,11 +163,12 @@ export async function settleSpectatorFeed(
 export async function backfillSpectatorEvaluations(
   matchId: string,
   fromPly: number,
+  access: ChessSpectatorAccess,
   signal?: AbortSignal,
   ms = SPECTATOR_CHUNK_MS,
 ) {
-  const row = await prisma.chessMatch.findUnique({
-    where: { id: matchId },
+  const row = await prisma.chessMatch.findFirst({
+    where: { id: matchId, ...spectatorAccessWhere(access) },
     select: {
       status: true,
       source: true,
@@ -124,9 +178,9 @@ export async function backfillSpectatorEvaluations(
       spectatorEvaluations: true,
     },
   });
-  if (!row || row.status === "queued") return { evaluated: false };
+  if (row?.source !== "hosted" || row.status === "queued") return { evaluated: false };
   const archive = archiveSchema.safeParse(row.archive);
-  if (!archive.success) return { evaluated: false };
+  if (!archive.success || archive.data.source !== "hosted") return { evaluated: false };
   if (
     row.status === "running" &&
     !(
@@ -141,9 +195,10 @@ export async function backfillSpectatorEvaluations(
   const known = storedSpectatorEvaluations.parse(row.spectatorEvaluations);
   const chunk = new AbortController();
   const timer = setTimeout(() => chunk.abort(), ms);
-  const feed = matchSpectatorFeed(
+  const feed = authorizedFeed(
     matchId,
     known,
+    access,
     signal ? AbortSignal.any([signal, chunk.signal]) : chunk.signal,
   );
   feed.update(archive.data);
@@ -162,25 +217,26 @@ export async function backfillSpectatorEvaluations(
     chunk.abort();
     throw new Error("Spectator backfill timed out on a write");
   }
+  if (feed.refused) return { evaluated: false };
   if (feed.failed && !chunk.signal.aborted && !signal?.aborted)
     throw new Error("Spectator evaluation failed");
   if ((chunk.signal.aborted || feed.remaining > 0) && !signal?.aborted) {
     // Out of time (the position in flight may be lost too): the next chunk starts at
     // the first position still missing in the database.
-    const current = storedSpectatorEvaluations.parse(
-      (
-        await prisma.chessMatch.findUnique({
-          where: { id: matchId },
-          select: { spectatorEvaluations: true },
-        })
-      )?.spectatorEvaluations ?? null,
-    );
+    if (!(await canEvaluate(matchId, access))) return { evaluated: false };
+    const currentRow = await prisma.chessMatch.findFirst({
+      where: { id: matchId, ...spectatorAccessWhere(access) },
+      select: { spectatorEvaluations: true },
+    });
+    if (!currentRow) return { evaluated: false };
+    const current = storedSpectatorEvaluations.parse(currentRow.spectatorEvaluations);
     const next = missingSpectatorPlies(archive.data, current)[0];
     if (next === undefined) return { evaluated: true };
     // No progress from this chunk's own start would ask for this very (active) job:
     // fail instead, so it is retried (ensureRunnableJob re-runs a failed job).
     if (next <= fromPly) throw new Error("Spectator backfill made no progress");
-    await requestSpectatorBackfill(matchId, next);
+    if (!(await canEvaluate(matchId, access))) return { evaluated: false };
+    await requestSpectatorBackfill(matchId, next, access);
     return { evaluated: false, continued: next };
   }
   return { evaluated: !feed.failed };

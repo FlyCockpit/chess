@@ -65,6 +65,7 @@ import {
   chessTurnMetadata,
   chessTurnSelect,
 } from "../lib/chess-turn";
+import { publicReplayWhere } from "../lib/chess-visibility";
 import { cursorPage, cursorPageInput, pageTake, withCursor } from "../lib/pagination";
 import { createProcedureBudget } from "../lib/procedure-budget";
 import { openOwnerOpenRouterKey, providerKeySecrets } from "../lib/provider-key";
@@ -80,6 +81,8 @@ const summary = {
   blackName: true,
   status: true,
   published: true,
+  hiddenAt: true,
+  moderationVersion: true,
   OfficialEntry: { select: { id: true } },
   source: true,
   rulesKey: true,
@@ -90,11 +93,6 @@ const summary = {
   identityMode: true,
   ending: true,
 } satisfies Prisma.ChessMatchSelect;
-/** Visibility is fenced immediately; D2b later detaches only scrubbed published rows. */
-const publicReplayWhere = {
-  published: true,
-  OR: [{ ownerId: null }, { Owner: { is: { deletionRequestedAt: null } } }],
-} satisfies Prisma.ChessMatchWhereInput;
 const publicSummary = {
   ...summary,
   publicId: true,
@@ -146,7 +144,7 @@ function publicCard(
     turnDeadline: input.turnDeadline,
     pendingMove: input.pendingMove,
   };
-  if (Owner?.deletionRequestedAt) throw new ORPCError("NOT_FOUND");
+  if (input.hiddenAt || Owner?.deletionRequestedAt) throw new ORPCError("NOT_FOUND");
   if (ownerId !== null) return { ...withEnding({ ...row, id: publicId }), anonymized: false };
   const identity = neutralArchiveId(row.slug);
   if (!identity) throw new ORPCError("NOT_FOUND");
@@ -316,6 +314,15 @@ const ownInspectSelect = {
   OfficialEntry: { select: { id: true } },
   createdAt: true,
   credentialSource: true,
+  hiddenAt: true,
+  moderationReason: true,
+  moderationNote: true,
+  moderationVersion: true,
+  ModerationActions: {
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: 10,
+    select: { id: true, createdAt: true, hidden: true, reason: true, note: true },
+  },
 } satisfies Prisma.ChessMatchSelect;
 const OLD_RULES_MESSAGE = "Unsupported ruleset/archive";
 const ownIdSelect = { id: true } satisfies Prisma.ChessMatchSelect;
@@ -420,7 +427,15 @@ async function inspectOwnMatch(slug: string, ownerId: string, sessionId: string)
     official: row.OfficialEntry !== null,
     credentialSource: row.credentialSource === "owner-openrouter" ? "openrouter" : "operator",
     queuePosition,
-    spectatorEvaluations: spectatorEvaluationsFor({ ...row, archive }),
+    hiddenAt: row.hiddenAt,
+    moderationReason: row.moderationReason,
+    moderationNote: row.moderationNote,
+    moderationVersion: row.moderationVersion,
+    ModerationActions: row.ModerationActions,
+    spectatorEvaluations: spectatorEvaluationsFor(
+      { ...row, archive },
+      { purpose: "owner", ownerId },
+    ),
   } as const;
 }
 async function publishOwnMatch(slug: string, ownerId: string, published: boolean) {
@@ -501,7 +516,11 @@ export const chessRouter = {
     return {
       ...page,
       items: page.items.flatMap((row) => {
-        if (row.Owner?.deletionRequestedAt || (row.ownerId === null && !neutralArchiveId(row.slug)))
+        if (
+          row.hiddenAt ||
+          row.Owner?.deletionRequestedAt ||
+          (row.ownerId === null && !neutralArchiveId(row.slug))
+        )
           return [];
         return [publicCard(row, safeIds)];
       }),
@@ -533,19 +552,29 @@ export const chessRouter = {
       ...card,
       archive,
       turn: chessTurnMetadata(archive.turn),
-      spectatorEvaluations: spectatorEvaluationsFor({
-        ...row,
-        archive,
-        spectatorEvaluations: neutralId
-          ? anonymizeSpectatorEvaluations(archive, row.spectatorEvaluations)
-          : row.spectatorEvaluations,
-      }),
+      spectatorEvaluations: spectatorEvaluationsFor(
+        {
+          ...row,
+          archive,
+          spectatorEvaluations: neutralId
+            ? anonymizeSpectatorEvaluations(archive, row.spectatorEvaluations)
+            : row.spectatorEvaluations,
+        },
+        { purpose: "public", version: row.moderationVersion },
+      ),
     };
   }),
   studio: protectedProcedure.input(cursorPageInput).handler(async ({ input, context }) => {
     const rows = await prisma.chessMatch.findMany({
       where: withCursor({ ownerId: context.session.user.id }, "createdAt", input.cursor, "desc"),
-      select: summary,
+      // Moderation statements must remain accessible even when replay parsing
+      // rejects an unsupported archive. This projection is owner-only.
+      select: {
+        ...summary,
+        moderationReason: true,
+        moderationNote: true,
+        ModerationActions: ownInspectSelect.ModerationActions,
+      },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: pageTake(input.limit),
     });

@@ -53,15 +53,20 @@ function save(url: string, fileName: string) {
 export function VideoExportDialog({
   match,
   spectator,
+  beforeExport,
 }: {
   match: MatchArchive;
   /** The game's spectator evaluation, as the game view shows it. */
   spectator?: SpectatorEvaluations | null;
+  /** Public hosted replays must still be available when encoding or downloading. */
+  beforeExport?: () => Promise<boolean>;
 }) {
   const { t, i18n } = useTranslation("chess");
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>({ name: "probing" });
   const [options, setOptions] = useState<VideoOptions>(() => defaultVideoOptions(match, spectator));
+  const [visibilityError, setVisibilityError] = useState(false);
+  const [checking, setChecking] = useState(false);
   // One support check per aspect while the dialog is open (each is a short-lived worker).
   const codecs = useRef<Partial<Record<VideoAspect, Promise<string | null>>>>({});
   const probes = useRef<AbortController | null>(null);
@@ -118,6 +123,8 @@ export function VideoExportDialog({
       setPhase({ name: "probing" });
       return;
     }
+    setChecking(false);
+    setVisibilityError(false);
     const defaults = defaultVideoOptions(match, spectator);
     setOptions(defaults);
     checkSupport(defaults.aspect);
@@ -129,41 +136,81 @@ export function VideoExportDialog({
   };
 
   const start = async () => {
-    const codec = await codecs.current[options.aspect];
-    if (!plan || !codec) return;
     release();
-    probeRun.invalidate();
     const controller = new AbortController();
     abort.current = controller;
-    setPhase({ name: "encoding", done: 0, total: plan.totalFrames });
+    const isCurrent = probeRun.start();
+    setChecking(true);
+    setVisibilityError(false);
     try {
+      const allowed = !beforeExport || (await beforeExport());
+      if (!isCurrent() || controller.signal.aborted) return;
+      if (!allowed) {
+        setVisibilityError(true);
+        return;
+      }
+      const codec = await codecs.current[options.aspect];
+      if (!isCurrent() || controller.signal.aborted || !plan || !codec) return;
+      setChecking(false);
+      setPhase({ name: "encoding", done: 0, total: plan.totalFrames });
       const blob = await encodeVideo(
         plan,
         options.aspect,
         codec,
         (done, total) => {
-          if (!controller.signal.aborted) setPhase({ name: "encoding", done, total });
+          if (isCurrent() && !controller.signal.aborted)
+            setPhase({ name: "encoding", done, total });
         },
         controller.signal,
       );
-      if (controller.signal.aborted) return;
+      if (!isCurrent() || controller.signal.aborted) return;
+      if (beforeExport && !(await beforeExport())) {
+        if (isCurrent()) {
+          setVisibilityError(true);
+          setPhase({ name: "ready" });
+        }
+        return;
+      }
+      if (!isCurrent() || controller.signal.aborted) return;
       const url = URL.createObjectURL(blob);
       objectUrl.current = url;
       const fileName = videoFileName(match);
       setPhase({ name: "done", url, fileName, bytes: blob.size });
       save(url, fileName);
     } catch (error) {
-      if (controller.signal.aborted) return;
+      if (!isCurrent() || controller.signal.aborted) return;
       console.error("video export failed", error);
       setPhase({ name: "error" });
     } finally {
       if (abort.current === controller) abort.current = null;
+      if (isCurrent()) setChecking(false);
     }
   };
 
   const cancel = () => {
     release();
     setPhase({ name: "ready" });
+  };
+
+  const downloadAgain = async (url: string, fileName: string) => {
+    const isCurrent = probeRun.start();
+    setChecking(true);
+    setVisibilityError(false);
+    try {
+      const allowed = !beforeExport || (await beforeExport());
+      if (!isCurrent() || objectUrl.current !== url) return;
+      if (!allowed) {
+        setVisibilityError(true);
+        release();
+        setPhase({ name: "ready" });
+        return;
+      }
+      if (isCurrent() && objectUrl.current === url) save(url, fileName);
+    } catch {
+      if (isCurrent()) setVisibilityError(true);
+    } finally {
+      if (isCurrent()) setChecking(false);
+    }
   };
 
   const busy = phase.name === "encoding";
@@ -185,6 +232,11 @@ export function VideoExportDialog({
           <DialogTitle>{t("video.title")}</DialogTitle>
           <DialogDescription>{t("video.description")}</DialogDescription>
         </DialogHeader>
+        {visibilityError && (
+          <p role="alert" className="text-sm text-destructive">
+            {t("moderation.exportUnavailable")}
+          </p>
+        )}
         {phase.name === "probing" && (
           <div className="min-w-0 space-y-3" aria-busy="true">
             <p className="text-sm text-muted-foreground">{t("video.probing")}</p>
@@ -302,14 +354,15 @@ export function VideoExportDialog({
           ) : phase.name === "done" ? (
             <Button
               className="min-h-[44px] w-full sm:w-auto"
-              onClick={() => save(phase.url, phase.fileName)}
+              disabled={checking}
+              onClick={() => void downloadAgain(phase.url, phase.fileName)}
             >
               {t("video.downloadAgain")}
             </Button>
           ) : (
             <Button
               className="min-h-[44px] w-full sm:w-auto"
-              disabled={phase.name !== "ready" && phase.name !== "error"}
+              disabled={checking || (phase.name !== "ready" && phase.name !== "error")}
               onClick={() => void start()}
             >
               {t(phase.name === "error" ? "video.retry" : "video.start")}

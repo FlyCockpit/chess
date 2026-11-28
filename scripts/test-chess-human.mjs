@@ -369,7 +369,12 @@ export async function chessHumanCheck() {
     );
     const parkedTurn = structuredClone(thirdParked.archive.turn);
     await worker.handleChessReconcileJob({
-      data: { reason: "spectator", matchId: third.id, fromPly: 0 },
+      data: {
+        reason: "spectator",
+        matchId: third.id,
+        fromPly: 0,
+        access: { purpose: "owner", ownerId: third.ownerId },
+      },
     });
     const scoredParked = await coherent(third);
     assert.equal(
@@ -725,16 +730,22 @@ export async function chessHumanCheck() {
         for (const id of matches) {
           const row = await prisma.chessMatch.findUnique({
             where: { id },
-            select: { archive: true },
+            select: { archive: true, ownerId: true, moderationVersion: true },
           });
           const count = row?.archive?.events?.length ?? 0;
           jobs.add(`chess-${id}`);
           for (let tail = 1; tail <= count; tail++) jobs.add(`chess-${id}-turn-${tail}`);
           for (let ply = 0; ply <= count; ply++) {
-            const job = await queues.chessReconcileQueue.getJob(
-              queues.chessSpectatorJobId(id, ply),
-            );
-            await job?.remove();
+            const purposes = [
+              { purpose: "public", version: row?.moderationVersion ?? 0 },
+              ...(row?.ownerId ? [{ purpose: "owner", ownerId: row.ownerId }] : []),
+            ];
+            for (const access of purposes) {
+              const job = await queues.chessReconcileQueue.getJob(
+                queues.chessSpectatorJobId(id, ply, access),
+              );
+              await job?.remove();
+            }
           }
         }
         for (const id of jobs) await (await queues.chessRunQueue.getJob(id))?.remove();

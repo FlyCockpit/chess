@@ -5,7 +5,8 @@ import { type DeepMockProxy, mockReset } from "vitest-mock-extended";
 
 vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
-  return { default: mockDeep<typeof prismaInstance>() };
+  const { Prisma } = await import("../../../../packages/db/prisma/generated/client");
+  return { default: mockDeep<typeof prismaInstance>(), Prisma };
 });
 const { evaluatePosition, ensureJob } = vi.hoisted(() => ({
   evaluatePosition: vi.fn(),
@@ -29,6 +30,8 @@ const { backfillSpectatorEvaluations, matchSpectatorFeed, settleSpectatorFeed } 
   "./chess-spectator"
 );
 
+const access = { purpose: "public", version: 0 } as const;
+const ownerAccess = { purpose: "owner", ownerId: "owner" } as const;
 const player = { name: "Baseline", model: "random", protocol: "random" as const };
 const score = (fen: string) => ({
   engine: "stockfish-19-lite-single" as const,
@@ -60,25 +63,42 @@ const finished = () => {
   return match;
 };
 const row = (overrides: Record<string, unknown>) =>
-  ({ status: "completed", archive: finished(), spectatorEvaluations: null, ...overrides }) as never;
+  ({
+    id: "match-id",
+    ownerId: "owner",
+    slug: "test-game",
+    published: true,
+    hiddenAt: null,
+    moderationVersion: 0,
+    source: "hosted",
+    status: "completed",
+    archive: finished(),
+    spectatorEvaluations: null,
+    ...overrides,
+  }) as never;
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockReset(db);
   db.$executeRaw.mockResolvedValue(1);
+  db.$queryRaw.mockResolvedValue([{ id: "match-id" }]);
+  db.chessMatch.findFirst.mockResolvedValue(row({}));
+  db.$transaction.mockImplementation(async (run) =>
+    typeof run === "function" ? run(db) : Promise.all(run),
+  );
   ensureJob.mockResolvedValue({});
   evaluatePosition.mockImplementation(async (fen: string) => score(fen));
 });
 
 describe("spectator evaluation of hosted games", () => {
   it("merges one ply per write into the spectator column only", async () => {
-    const feed = matchSpectatorFeed("match-id", null);
+    const feed = matchSpectatorFeed("match-id", null, "owner");
     feed.update(finished());
     await feed.drain();
     expect(writtenPlies()).toEqual([0, 1, 2]);
     for (const call of updates())
       expect((call[0] as TemplateStringsArray).join("?")).toBe(
-        `UPDATE "chess_match" SET "spectatorEvaluations" = (CASE WHEN jsonb_typeof("spectatorEvaluations") = 'object' THEN "spectatorEvaluations" ELSE '{}'::jsonb END) || ?::jsonb WHERE "id" = ?`,
+        `UPDATE "chess_match" SET "spectatorEvaluations" = (CASE WHEN jsonb_typeof("spectatorEvaluations") = 'object' THEN "spectatorEvaluations" ELSE '{}'::jsonb END) || ?::jsonb WHERE "id" = ? AND ?`,
       );
     expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
     // Each write is one transaction with lock and statement deadlines first.
@@ -93,7 +113,7 @@ describe("spectator evaluation of hosted games", () => {
   });
   it("backfills only the positions a finished game still lacks", async () => {
     const start = new Chess().fen();
-    db.chessMatch.findUnique.mockResolvedValue(
+    db.chessMatch.findFirst.mockResolvedValue(
       row({
         spectatorEvaluations: {
           "0": score(start),
@@ -101,33 +121,35 @@ describe("spectator evaluation of hosted games", () => {
         },
       }),
     );
-    await expect(backfillSpectatorEvaluations("match-id", 0)).resolves.toEqual({ evaluated: true });
+    await expect(backfillSpectatorEvaluations("match-id", 0, access)).resolves.toEqual({
+      evaluated: true,
+    });
     expect(writtenPlies()).toEqual([1, 2]);
   });
   it("leaves running games to their run, and fails the job on an engine failure", async () => {
-    db.chessMatch.findUnique.mockResolvedValue(row({ status: "running" }));
-    await expect(backfillSpectatorEvaluations("match-id", 0)).resolves.toEqual({
+    db.chessMatch.findFirst.mockResolvedValue(row({ status: "running" }));
+    await expect(backfillSpectatorEvaluations("match-id", 0, access)).resolves.toEqual({
       evaluated: false,
     });
     expect(db.$executeRaw).not.toHaveBeenCalled();
     evaluatePosition.mockRejectedValue(new Error("Engine could not start"));
-    db.chessMatch.findUnique.mockResolvedValue(row({}));
+    db.chessMatch.findFirst.mockResolvedValue(row({}));
     // A failed job is retained; a later read makes it runnable again (ensureRunnableJob).
-    await expect(backfillSpectatorEvaluations("match-id", 0)).rejects.toThrow(
-      "Spectator evaluation failed",
-    );
+    await expect(backfillSpectatorEvaluations("match-id", 0, access)).rejects.toMatchObject({
+      message: "Spectator evaluation failed",
+    });
     expect(db.$executeRaw).not.toHaveBeenCalled();
-    db.chessMatch.findUnique.mockResolvedValue(row({ archive: { format: "nope" } }));
-    await expect(backfillSpectatorEvaluations("match-id", 0)).resolves.toEqual({
+    db.chessMatch.findFirst.mockResolvedValue(row({ archive: { format: "nope" } }));
+    await expect(backfillSpectatorEvaluations("match-id", 0, access)).resolves.toEqual({
       evaluated: false,
     });
   });
   it("reads malformed stored entries as missing and backfills them", async () => {
     const start = new Chess().fen();
-    db.chessMatch.findUnique.mockResolvedValue(
+    db.chessMatch.findFirst.mockResolvedValue(
       row({ spectatorEvaluations: { "0": score(start), "1": { bogus: true }, junk: 1 } }),
     );
-    await backfillSpectatorEvaluations("match-id", 0);
+    await backfillSpectatorEvaluations("match-id", 0, access);
     expect(writtenPlies()).toEqual([1, 2]);
   });
   it("hands the rest of a slow backfill to the next chunk, from the first missing ply", async () => {
@@ -144,17 +166,17 @@ describe("spectator evaluation of hosted games", () => {
             });
           }),
       );
-      db.chessMatch.findUnique
+      db.chessMatch.findFirst
         .mockResolvedValueOnce(row({}))
         .mockResolvedValueOnce(row({ spectatorEvaluations: { "0": score(new Chess().fen()) } }));
-      const done = backfillSpectatorEvaluations("match-id", 0, undefined, 20_000);
+      const done = backfillSpectatorEvaluations("match-id", 0, access, undefined, 20_000);
       await vi.advanceTimersByTimeAsync(40_000);
       await expect(done).resolves.toEqual({ evaluated: false, continued: 1 });
       expect(ensureJob).toHaveBeenCalledWith(
         {},
         "chess-spectator",
-        { reason: "spectator", matchId: "match-id", fromPly: 1 },
-        "chess-spectator-match-id-1",
+        { reason: "spectator", matchId: "match-id", fromPly: 1, access },
+        "chess-spectator-match-id-1-public-0",
         { priority: 10 },
       );
     } finally {
@@ -166,17 +188,17 @@ describe("spectator evaluation of hosted games", () => {
     try {
       evaluatePosition.mockImplementation(() => new Promise(() => {}));
       const stop = new AbortController();
-      const feed = matchSpectatorFeed("match-id", null, stop.signal);
+      const feed = matchSpectatorFeed("match-id", null, "owner", stop.signal);
       feed.update(finished());
-      const settled = settleSpectatorFeed("match-id", feed, stop, 15_000);
+      const settled = settleSpectatorFeed("match-id", feed, stop, "owner", 15_000);
       await vi.advanceTimersByTimeAsync(15_000);
       await expect(settled).resolves.toEqual({ handedOff: true });
       expect(stop.signal.aborted).toBe(true);
       expect(ensureJob).toHaveBeenCalledWith(
         {},
         "chess-spectator",
-        { reason: "spectator", matchId: "match-id", fromPly: 0 },
-        "chess-spectator-match-id-0",
+        { reason: "spectator", matchId: "match-id", fromPly: 0, access: ownerAccess },
+        "chess-spectator-match-id-0-owner-owner",
         { priority: 10 },
       );
     } finally {
@@ -185,9 +207,9 @@ describe("spectator evaluation of hosted games", () => {
   });
   it("lets a finished run go at once when every position is scored", async () => {
     const stop = new AbortController();
-    const feed = matchSpectatorFeed("match-id", null, stop.signal);
+    const feed = matchSpectatorFeed("match-id", null, "owner", stop.signal);
     feed.update(finished());
-    await expect(settleSpectatorFeed("match-id", feed, stop)).resolves.toEqual({
+    await expect(settleSpectatorFeed("match-id", feed, stop, "owner")).resolves.toEqual({
       handedOff: false,
     });
     expect(ensureJob).not.toHaveBeenCalled();
@@ -210,18 +232,18 @@ describe("spectator evaluation of hosted games", () => {
           new Chess("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").fen(),
         ].map((fen, ply) => [String(ply), score(fen)]),
       );
-      db.chessMatch.findUnique
+      db.chessMatch.findFirst
         .mockResolvedValueOnce(row({ archive, spectatorEvaluations: stored }))
         .mockResolvedValueOnce(row({ archive, spectatorEvaluations: stored }));
-      const done = backfillSpectatorEvaluations("match-id", 0, undefined, 20_000);
+      const done = backfillSpectatorEvaluations("match-id", 0, access, undefined, 20_000);
       await vi.advanceTimersByTimeAsync(20_000);
       // Nothing was left in the queue, yet ply 2 is missing: the next chunk starts there.
       await expect(done).resolves.toEqual({ evaluated: false, continued: 2 });
       expect(ensureJob).toHaveBeenCalledWith(
         {},
         "chess-spectator",
-        { reason: "spectator", matchId: "match-id", fromPly: 2 },
-        "chess-spectator-match-id-2",
+        { reason: "spectator", matchId: "match-id", fromPly: 2, access },
+        "chess-spectator-match-id-2-public-0",
         { priority: 10 },
       );
     } finally {
@@ -237,9 +259,11 @@ describe("spectator evaluation of hosted games", () => {
             options.signal?.addEventListener("abort", () => reject(new Error("cancelled"))),
           ),
       );
-      db.chessMatch.findUnique.mockResolvedValue(row({}));
-      const done = backfillSpectatorEvaluations("match-id", 0, undefined, 20_000);
-      const outcome = expect(done).rejects.toThrow("no progress");
+      db.chessMatch.findFirst.mockResolvedValue(row({}));
+      const done = backfillSpectatorEvaluations("match-id", 0, access, undefined, 20_000);
+      const outcome = expect(done).rejects.toMatchObject({
+        message: "Spectator backfill made no progress",
+      });
       await vi.advanceTimersByTimeAsync(20_000);
       await outcome;
       expect(ensureJob).not.toHaveBeenCalled();
@@ -248,21 +272,23 @@ describe("spectator evaluation of hosted games", () => {
     }
   });
   it("fails the backfill job when a write fails, leaving the gap for its retry", async () => {
-    db.chessMatch.findUnique.mockResolvedValue(row({}));
+    db.chessMatch.findFirst.mockResolvedValue(row({}));
     db.$transaction.mockRejectedValueOnce(new Error("could not obtain lock"));
-    await expect(backfillSpectatorEvaluations("match-id", 0)).rejects.toThrow(
-      "Spectator evaluation failed",
-    );
+    await expect(backfillSpectatorEvaluations("match-id", 0, access)).rejects.toMatchObject({
+      message: "Spectator evaluation failed",
+    });
     expect(db.$transaction).toHaveBeenCalledTimes(1);
     expect(ensureJob).not.toHaveBeenCalled();
   });
   it("fails a chunk whose write hangs past its deadline, freeing the queue", async () => {
     vi.useFakeTimers();
     try {
-      db.chessMatch.findUnique.mockResolvedValue(row({}));
+      db.chessMatch.findFirst.mockResolvedValue(row({}));
       db.$transaction.mockImplementation(() => new Promise(() => {}));
-      const done = backfillSpectatorEvaluations("match-id", 0, undefined, 20_000);
-      const outcome = expect(done).rejects.toThrow("timed out on a write");
+      const done = backfillSpectatorEvaluations("match-id", 0, access, undefined, 20_000);
+      const outcome = expect(done).rejects.toMatchObject({
+        message: "Spectator backfill timed out on a write",
+      });
       await vi.advanceTimersByTimeAsync(25_000);
       await outcome;
       expect(ensureJob).not.toHaveBeenCalled();
@@ -286,12 +312,12 @@ it("finishes delayed spectator scoring during an unchanged unclaimed hosted huma
   submitMove(archive, boardAt(archive), "e7e5");
   beginHostedTurn(archive);
   const turn = structuredClone(archive.turn);
-  db.chessMatch.findUnique.mockResolvedValue(
+  db.chessMatch.findFirst.mockResolvedValue(
     row({ status: "running", source: "hosted", turnType: "human", runToken: null, archive }),
   );
   const pending = Promise.withResolvers<ReturnType<typeof score>>();
   evaluatePosition.mockImplementationOnce(() => pending.promise);
-  const job = backfillSpectatorEvaluations("match-id", 0);
+  const job = backfillSpectatorEvaluations("match-id", 0, access);
   await vi.waitFor(() => expect(evaluatePosition).toHaveBeenCalledOnce());
   expect(db.$executeRaw).not.toHaveBeenCalled();
   pending.resolve(score(boardAt(archive, 0).fen()));
@@ -299,4 +325,79 @@ it("finishes delayed spectator scoring during an unchanged unclaimed hosted huma
   expect(writtenPlies()).toEqual([0, 1, 2]);
   expect(archive.turn).toEqual(turn);
   expect(db.chessMatch.updateMany).not.toHaveBeenCalled();
+});
+
+describe("spectator moderation authority", () => {
+  it("does no engine work when a queued public request is now hidden", async () => {
+    db.chessMatch.findFirst.mockResolvedValue(null);
+    expect(await backfillSpectatorEvaluations("match-id", 0, access)).toEqual({ evaluated: false });
+    expect(db.chessMatch.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          published: true,
+          hiddenAt: null,
+          source: "hosted",
+          moderationVersion: 0,
+        }),
+      }),
+    );
+    expect(evaluatePosition).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
+    expect(ensureJob).not.toHaveBeenCalled();
+  });
+
+  it.each(["local", "runner"])("never runs server Stockfish for a %s match", async (source) => {
+    db.chessMatch.findFirst.mockResolvedValue(row({ source }));
+    expect(await backfillSpectatorEvaluations("match-id", 0, access)).toEqual({ evaluated: false });
+    expect(evaluatePosition).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it("stops before the next engine call if visibility ends between positions", async () => {
+    db.$queryRaw.mockResolvedValueOnce([{ id: "match-id" }]).mockResolvedValue([]);
+    expect(await backfillSpectatorEvaluations("match-id", 0, access)).toEqual({ evaluated: false });
+    expect(evaluatePosition).toHaveBeenCalledTimes(1);
+    expect(writtenPlies()).toEqual([0]);
+    expect(ensureJob).not.toHaveBeenCalled();
+  });
+
+  it("refuses a stale public write after hide without retry or owner-purpose handoff", async () => {
+    db.$transaction.mockResolvedValue([0, 0, 0]);
+    expect(await backfillSpectatorEvaluations("match-id", 0, access)).toEqual({ evaluated: false });
+    expect(evaluatePosition).toHaveBeenCalledTimes(1);
+    const guard = updates()[0]?.[3];
+    expect(guard).toMatchObject({ values: [0] });
+    expect(String((guard as { sql: string }).sql)).toContain('"hiddenAt" IS NULL');
+    expect(ensureJob).not.toHaveBeenCalled();
+  });
+
+  it("allows a hidden private replay only with the exact separate owner authority", async () => {
+    db.chessMatch.findFirst.mockResolvedValue(row({ hiddenAt: new Date(), published: false }));
+    expect(await backfillSpectatorEvaluations("match-id", 0, ownerAccess)).toEqual({
+      evaluated: true,
+    });
+    expect(db.chessMatch.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerId: "owner",
+          source: "hosted",
+          Owner: expect.any(Object),
+        }),
+      }),
+    );
+    const guard = updates()[0]?.[3] as unknown as { sql: string; values: unknown[] };
+    expect(guard.values).toEqual(["owner"]);
+    expect(guard.sql).toContain('"deletionRequestedAt" IS NULL');
+    expect(guard.sql).not.toContain('"hiddenAt"');
+  });
+
+  it("refuses deleted or rebound owner authority before any new engine call", async () => {
+    db.$queryRaw.mockResolvedValue([]);
+    expect(await backfillSpectatorEvaluations("match-id", 0, ownerAccess)).toEqual({
+      evaluated: false,
+    });
+    expect(evaluatePosition).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
+    expect(ensureJob).not.toHaveBeenCalled();
+  });
 });

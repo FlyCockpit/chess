@@ -19,7 +19,8 @@ import { type DeepMockProxy, mockReset } from "vitest-mock-extended";
 
 vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
-  return { default: mockDeep<typeof prismaInstance>() };
+  const { Prisma } = await import("../../../../packages/db/prisma/generated/client");
+  return { default: mockDeep<typeof prismaInstance>(), Prisma };
 });
 const { getJob, runner, ensureJob } = vi.hoisted(() => ({
   getJob: vi.fn(),
@@ -120,6 +121,10 @@ function row() {
     blackName: "Baseline",
     status: "running",
     published: false,
+    hiddenAt: null,
+    moderationReason: null,
+    moderationNote: null,
+    moderationVersion: 0,
     official: true,
     source: "hosted",
     rulesKey: "rules",
@@ -165,8 +170,11 @@ beforeEach(() => {
   vi.spyOn(console, "info").mockImplementation(() => {});
   db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
   db.chessMatch.findUnique.mockResolvedValue(row());
+  db.chessMatch.findFirst.mockResolvedValue(row());
+  db.$queryRaw.mockResolvedValue([{ id: "match-id" }]);
   db.chessMatch.findMany.mockResolvedValue([]);
   db.$executeRaw.mockResolvedValue(1);
+  db.$queryRaw.mockResolvedValue([{ id: "match-id" }]);
   db.user.findUnique.mockResolvedValue({ deletionRequestedAt: null, banned: false } as never);
   db.$transaction.mockImplementation(async (run) => {
     if (typeof run !== "function") return Promise.all(run);
@@ -267,7 +275,7 @@ describe("durable chess worker", () => {
     // Only the spectator column is written: never the archive, status or claim.
     for (const call of updates())
       expect((call[0] as TemplateStringsArray).join("?")).toMatch(
-        /^UPDATE "chess_match" SET "spectatorEvaluations" = \(CASE WHEN jsonb_typeof\("spectatorEvaluations"\) = 'object' THEN "spectatorEvaluations" ELSE '\{\}'::jsonb END\) \|\| \?::jsonb WHERE "id" = \?$/,
+        /^UPDATE "chess_match" SET "spectatorEvaluations" = \(CASE WHEN jsonb_typeof\("spectatorEvaluations"\) = 'object' THEN "spectatorEvaluations" ELSE '\{\}'::jsonb END\) \|\| \?::jsonb WHERE "id" = \? AND \?$/,
       );
   });
   it("finishes the game normally when spectator evaluation fails", async () => {
@@ -283,8 +291,13 @@ describe("durable chess worker", () => {
     expect(ensureJob).toHaveBeenCalledWith(
       {},
       "chess-spectator",
-      { reason: "spectator", matchId: "match-id", fromPly: 0 },
-      "chess-spectator-match-id-0",
+      {
+        reason: "spectator",
+        matchId: "match-id",
+        fromPly: 0,
+        access: { purpose: "owner", ownerId: "owner" },
+      },
+      "chess-spectator-match-id-0-owner-owner",
       { priority: 10 },
     );
   });
@@ -300,6 +313,8 @@ describe("durable chess worker", () => {
     mockReset(db);
     db.chessMatch.updateMany.mockResolvedValue({ count: 1 });
     db.chessMatch.findUnique.mockResolvedValue(row());
+    db.chessMatch.findFirst.mockResolvedValue(row());
+    db.$queryRaw.mockResolvedValue([{ id: "match-id" }]);
     ensureJob.mockResolvedValue({});
     evaluatePosition.mockImplementation(async (fen: string) => score(fen));
     db.$transaction.mockImplementation(() => new Promise(() => {}));
@@ -315,8 +330,13 @@ describe("durable chess worker", () => {
     expect(ensureJob).toHaveBeenCalledWith(
       {},
       "chess-spectator",
-      { reason: "spectator", matchId: "match-id", fromPly: 0 },
-      "chess-spectator-match-id-0",
+      {
+        reason: "spectator",
+        matchId: "match-id",
+        fromPly: 0,
+        access: { purpose: "owner", ownerId: "owner" },
+      },
+      "chess-spectator-match-id-0-owner-owner",
       { priority: 10 },
     );
   });
@@ -347,7 +367,14 @@ describe("durable chess worker", () => {
   it("routes a spectator backfill job to the backfill", async () => {
     db.chessMatch.findUnique.mockResolvedValue({ ...row(), status: "running" });
     await expect(
-      handleChessReconcileJob({ data: { reason: "spectator", matchId: "match-id", fromPly: 0 } }),
+      handleChessReconcileJob({
+        data: {
+          reason: "spectator",
+          matchId: "match-id",
+          fromPly: 0,
+          access: { purpose: "owner", ownerId: "owner" },
+        },
+      }),
     ).resolves.toEqual({ evaluated: false });
     expect(db.chessMatch.findMany).not.toHaveBeenCalled();
   });
@@ -1390,12 +1417,18 @@ describe("hosted human worker parking and repair", () => {
     expect(await handleChessRunJob({ data: { matchId: "match-id" } })).toMatchObject({
       parked: true,
     });
-    expect(evaluatePosition).toHaveBeenCalled();
+    await vi.waitFor(() => expect(ensureJob).toHaveBeenCalled());
+    expect(db.$queryRaw).toHaveBeenCalled();
     expect(ensureJob).toHaveBeenCalledWith(
       {},
       "chess-spectator",
-      { reason: "spectator", matchId: "match-id", fromPly: 0 },
-      "chess-spectator-match-id-0",
+      {
+        reason: "spectator",
+        matchId: "match-id",
+        fromPly: 0,
+        access: { purpose: "owner", ownerId: "owner" },
+      },
+      "chess-spectator-match-id-0-owner-owner",
       { priority: 10 },
     );
     const parked = db.chessMatch.updateMany.mock.calls.find(

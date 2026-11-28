@@ -16,6 +16,14 @@ const fixture = vi.hoisted(() => ({
     refetch: vi.fn(),
   },
   online: true,
+  visibility: {
+    replayOptions: {},
+    unavailable: false,
+    error: undefined as unknown,
+    beforeExport: vi.fn(async () => true),
+    retry: vi.fn(),
+  },
+  beforeExport: undefined as (() => Promise<boolean>) | undefined,
   leaderboardOptions: undefined as
     | undefined
     | {
@@ -66,11 +74,22 @@ vi.mock("@/utils/orpc", () => ({
   },
 }));
 vi.mock("./replay", () => ({
-  MatchReplay: ({ match }: { match: { config: { title: string } } }) => (
-    <div data-testid="match-replay">{match.config.title}</div>
-  ),
+  MatchReplay: ({
+    match,
+    beforeExport,
+  }: {
+    match: { config: { title: string } };
+    beforeExport?: () => Promise<boolean>;
+  }) => {
+    fixture.beforeExport = beforeExport;
+    return <div data-testid="match-replay">{match.config.title}</div>;
+  },
 }));
 vi.mock("@/hooks/use-network-status", () => ({ useNetworkStatus: () => fixture.online }));
+vi.mock("@/hooks/use-replay-visibility", () => ({ useReplayVisibility: () => fixture.visibility }));
+vi.mock("./replay-report-dialog", () => ({
+  ReplayReportDialog: () => <button type="button">Report replay</button>,
+}));
 vi.mock("./chess-board", () => ({ ChessBoard: () => null }));
 vi.mock("./local-lab", () => ({ LocalLab: () => null }));
 vi.mock("@/components/consent/consent-preferences-button", () => ({
@@ -98,6 +117,8 @@ beforeEach(() => {
     fetchStatus: "idle",
   };
   fixture.online = true;
+  fixture.visibility = { ...fixture.visibility, unavailable: false, error: undefined };
+  fixture.beforeExport = undefined;
   fixture.leaderboard = {
     ...fixture.leaderboard,
     data: undefined,
@@ -135,6 +156,27 @@ it("retains a selected replay during a failed poll and exposes retry", () => {
   const html = render("arena", "published");
   expect(html).toContain("Loaded replay");
   expect(html).toContain(enChess.arena.gameRetry);
+});
+it("clears a finished selected replay and report controls when the lightweight visibility check refuses it", () => {
+  loadedReplay();
+  fixture.visibility.unavailable = true;
+  const html = render("arena", "published");
+  expect(html).not.toContain("Loaded replay");
+  expect(html).not.toContain("Report replay");
+  expect(html).toContain(enChess.arena.gameNotFound);
+});
+it("keeps loaded content on a transient visibility error and requires fresh authority for exports", () => {
+  loadedReplay();
+  fixture.visibility.error = new Error("network unavailable");
+  const html = render("arena", "published");
+  expect(html).toContain("Loaded replay");
+  expect(html).toContain("Report replay");
+  expect(html).toContain(enChess.moderation.visibilityFailed);
+  expect(fixture.beforeExport).toBe(fixture.visibility.beforeExport);
+});
+it("keeps the offline demonstration independent of hosted export authority", () => {
+  render("arena");
+  expect(fixture.beforeExport).toBeUndefined();
 });
 it("hides a selected replay on not-found or access loss and says the game is not available", () => {
   loadedReplay();
