@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link, useParams } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { ConsentPreferencesButton } from "@/components/consent/consent-preferences-button";
+import { DEFAULT_LOCALE, isSupportedLocale } from "@/i18n/config";
 import { orpc } from "@/utils/orpc";
 
 /**
@@ -21,6 +23,8 @@ import { orpc } from "@/utils/orpc";
  */
 export function PublicFooter() {
   const { t } = useTranslation(["chess", "common"]);
+  const { lang: langParam } = useParams({ strict: false });
+  const lang = isSupportedLocale(langParam) ? langParam : DEFAULT_LOCALE;
   const { data: info } = useQuery(orpc.chess.info.queryOptions());
   return (
     <footer data-public-footer className="cc-footer">
@@ -36,6 +40,21 @@ export function PublicFooter() {
             </p>
           )}
         </div>
+        <nav aria-label={t("common:legal.navigation")} className="flex flex-wrap gap-x-4">
+          <Link to="/$lang/terms" params={{ lang }} className="inline-flex min-h-11 items-center">
+            {t("common:legal.terms.title")}
+          </Link>
+          <Link to="/$lang/privacy" params={{ lang }} className="inline-flex min-h-11 items-center">
+            {t("common:legal.privacy.title")}
+          </Link>
+          <Link
+            to="/$lang/licenses"
+            params={{ lang }}
+            className="inline-flex min-h-11 items-center"
+          >
+            {t("common:legal.licenses.title")}
+          </Link>
+        </nav>
         <ConsentPreferencesButton />
       </div>
     </footer>

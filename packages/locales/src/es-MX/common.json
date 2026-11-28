@@ -88,5 +88,109 @@
     "queued": "No tienes conexión. Este cambio se enviará cuando te vuelvas a conectar. Mantén esta pestaña abierta.",
     "queuedSent": "Conexión restablecida. Se envió tu cambio pendiente."
   },
-  "sourceCode": "Código fuente"
+  "sourceCode": "Código fuente",
+  "legal": {
+    "updated": "Versión para revisión: 28 de noviembre de 2026. Aún no está vigente.",
+    "reviewNotice": "Borrador para revisión antes del lanzamiento. Estos términos y avisos requieren aprobación del operador para entrar en vigor. Los proveedores y los plazos de conservación aún requieren verificación del despliegue.",
+    "navigation": "Información legal",
+    "contactTitle": "Contacto y solicitudes",
+    "contactAddress": "contact@flycockpit.app",
+    "signupIntro": "Antes de crear una cuenta, lee los términos y el aviso de privacidad. El servicio es para personas de 16 años o más.",
+    "reportContact": "Para una solicitud de privacidad, información adicional o revisión de una decisión de moderación, escríbenos:",
+    "terms": {
+      "title": "Términos del servicio",
+      "operator": {
+        "title": "Operador y público",
+        "body": "FlyCockpit, LLC opera Cockpit Chess desde Estados Unidos. El lanzamiento no está dirigido a la Unión Europea. Debes tener al menos 16 años para usar el servicio. Protege tu cuenta y credenciales; usa únicamente claves y máquinas que tengas autorización para usar. Se mantienen la verificación de correo y cualquier segundo factor obligatorio. La edad mínima no significa que el servicio verifique la edad de cada visitante."
+      },
+      "service": {
+        "title": "Qué hace el servicio",
+        "body": "Cockpit Chess ejecuta y reproduce partidas con modelos de lenguaje, personas y jugadores aleatorios. Las llamadas alojadas a modelos y las evaluaciones Stockfish se ejecutan en nuestro servidor/proceso de trabajo. En partidas con la CLI vinculada, las llamadas y evaluaciones se ejecutan en tu máquina, que envía datos de la partida al sitio. Las respuestas de IA pueden ser incorrectas, ofensivas o engañosas. La configuración es ajustable; las instrucciones fijas del modelo se registran con versión y hash. Los resultados son comparaciones exploratorias, no una prueba controlada ni una garantía de calidad del modelo."
+      },
+      "billing": {
+        "title": "Cobros del proveedor y límites del ejecutor",
+        "body": "Conectar OpenRouter es distinto de iniciar sesión en este sitio. Las partidas alojadas con clave propia usan tu clave conectada y OpenRouter cobra según sus términos; los usuarios normales no pueden gastar con la clave del operador. Desconectar aquí no revoca la clave en OpenRouter. Los ejecutores locales usan tu proveedor y clave locales. Los límites operativos predeterminados son US$1 por partida, US$10 diarios y dos partidas simultáneas. Los aumentos desde el navegador requieren verificación reciente y confirmación de la terminal, dentro de los máximos locales predeterminados de US$25 por partida, US$100 diarios y ocho partidas simultáneas. Solo la configuración local de inicio puede elevar esos máximos. Detener no retira una solicitud enviada ni su cobro; revisa la facturación y límites del proveedor."
+      },
+      "official": {
+        "title": "Inicios oficiales y publicación",
+        "body": "Las partidas nuevas son de práctica por defecto. Las partidas alojadas elegibles pueden declararse oficiales antes de su aceptación; la decisión ya no puede cambiar. Cada inicio oficial aceptado permanece en la participación pública, aunque se detenga, se retire su publicación, se oculte, se desconecte o se elimine la cuenta. Los puntos usan todos los inicios; retiros y paradas no suman puntos, y victorias/tablas/derrotas, pendientes y errores se muestran por separado. Los registros públicos mínimos contienen modelos, instrucciones/configuración, posición inicial y resultados, sin transcripciones privadas ni identificadores de cuenta. Las partidas humanas, de ejecutores locales e importadas nunca son oficiales. Los tiempos, costos y evaluaciones locales no están verificados; validar jugadas no verifica la inferencia local."
+      },
+      "publication": {
+        "title": "Publicación y uso responsable",
+        "body": "Las partidas son privadas por defecto. Publicar hace que el contenido mostrado, incluidas respuestas y comentarios de modelos, sea público y se pueda copiar. No incluyas contraseñas, claves ni datos personales. Las partidas privadas también pasan por nuestros sistemas y los proveedores que usas. No ataques el servicio, evadas controles de acceso o gasto, uses credenciales indebidamente ni publiques contenido ilegal, acosador o que invada la privacidad. Autorizas el procesamiento y presentación necesarios para las partidas y publicaciones que solicitas; esto no afirma propiedad sobre las respuestas generadas. Retirar la publicación no recupera las copias que otras personas hicieron."
+      },
+      "moderation": {
+        "title": "Reportes y moderación",
+        "body": "Cualquier persona puede usar Reportar repetición en una repetición publicada, sin iniciar sesión. Elige un motivo y, opcionalmente, describe el contenido en hasta 1,000 caracteres; no incluyas datos personales de contacto ni credenciales. Hay límites por IP y deduplicación diaria. La administración revisa reportes y puede ocultar o restaurar una repetición con un motivo registrado. Quien publicó ve la explicación y decisiones recientes en su partida y en Estudio, incluso si el archivo no es compatible. Nunca se muestra la identidad de quien reportó. Ocultar bloquea el acceso público a la transcripción y sus exportaciones; volver a publicar no lo evita y la participación oficial sigue contando. Escríbenos para aportar información o solicitar revisión; no se promete retiro automático ni plazo de respuesta."
+      },
+      "deletion": {
+        "title": "Exportación, eliminación y partidas conservadas",
+        "body": "Configuración → Perfil ofrece datos de cuenta en JSON y partidas en PGN tras volver a iniciar sesión en los últimos cinco minutos. Configuración → Seguridad ofrece eliminar la cuenta tras autenticación reciente y escribir DELETE; primero, los administradores deben transferir su autoridad. Aceptar bloquea el acceso e inicia la limpieza; no es una eliminación terminada. Se eliminan las partidas privadas. Las publicadas quedan como “usuario eliminado”, con jugadas, tablero, nombres seguros de modelos, instrucciones/configuración y resultados numéricos; se quitan títulos, nombres y comentarios identificadores, respuestas sin procesar y texto de herramientas. Reciben direcciones neutrales y los enlaces identificadores anteriores dejan de funcionar. Las partidas ocultas siguen ocultas. Los registros oficiales mínimos permanecen independientemente. El aviso de privacidad explica respaldos y el registro restringido que evita restauraciones. Esta limpieza no abarca tus archivos locales ni cuentas de proveedores."
+      },
+      "contact": "Usa este único contacto para preguntas del servicio, solicitudes de privacidad, avisos de abuso y revisión de moderación. El relay de correo de lanzamiento solo envía mensajes de cuenta; escribe a este contacto en lugar de usar esos mensajes como canal de soporte. Los derechos del software se rigen por las licencias enlazadas. Estos términos en borrador no añaden restricciones a los derechos GPL de Stockfish. El operador y asesoría legal deben aprobar las disposiciones finales antes del lanzamiento; este borrador no elige foro de disputas, exclusión de garantías ni renuncia a derechos obligatorios."
+    },
+    "privacy": {
+      "title": "Aviso de privacidad",
+      "operator": {
+        "title": "Quién opera el servicio",
+        "body": "FlyCockpit, LLC opera Cockpit Chess desde Estados Unidos. Este lanzamiento no está dirigido a la Unión Europea. Ofrecemos a todas las personas el mismo proceso de acceso/exportación, corrección, eliminación y oposición. Usamos los datos de cuenta y partidas para prestar el servicio que solicitas, y datos de seguridad para protegerlo y atender abusos. El contrato y los intereses legítimos de seguridad y prevención de abusos son las bases propuestas, sujetas a revisión del operador y asesoría legal. Este aviso no afirma cumplimiento normativo ni derechos legales idénticos en todos los lugares."
+      },
+      "data": {
+        "title": "Información que procesamos",
+        "body": "Conservamos nombre, correo, idioma y registros de acceso/seguridad; partidas, jugadas, configuración, instrucciones, respuestas, comentarios, contexto de herramientas y registros de uso/costo; y metadatos seguros de conexiones y ejecutores. La autenticación con contraseña guarda una representación protegida, no la contraseña en texto plano. Las claves OpenRouter se cifran al guardarlas, pero nuestro servidor/proceso de trabajo las descifra para realizar llamadas autorizadas. La seguridad procesa metadatos de solicitudes/red, límites por IP, errores y auditoría administrativa. Algunos registros y alertas de error por correo pueden incluir contexto identificador. Publicar expone el texto mostrado; los registros oficiales mínimos de modelos/configuración/resultados son públicos aunque la transcripción sea privada."
+      },
+      "providers": {
+        "title": "Destinatarios y solicitudes a modelos",
+        "body": "Cloudflare procesa las solicitudes y metadatos de red del proxy. Nuestro proveedor VPS aporta cómputo/almacenamiento; un relay de correo de solo envío recibe destinatarios y mensajes de cuenta, y el proveedor de respaldos configurado recibe copias de la base de datos. OpenRouter y sus proveedores reciben instrucciones, nombres, tablero/historial, comentarios y contexto necesarios para turnos alojados, con tu clave conectada. Enviamos data_collection: deny de OpenRouter para restringir la recopilación del proveedor; la caché de instrucciones sigue habilitada. No es una garantía verificada independientemente de retención cero ni eliminación en el proveedor. Los proveedores ven nuestra IP de salida en llamadas alojadas y la de tu máquina en llamadas locales. El proveedor de inicio de sesión que elijas recibe su flujo de autenticación. Estos servicios pueden procesar datos fuera de tu país; operar desde Estados Unidos no significa que todo quede allí. Las identidades y ubicaciones finales de VPS/relay/respaldos requieren verificación del despliegue."
+      },
+      "runner": {
+        "title": "Ejecutores locales y credenciales",
+        "body": "La CLI vinculada conserva localmente tu clave, dirección del proveedor, registro de gastos y política de límites máximos. El sitio recibe capacidades de modelos, configuración, jugadas, evaluaciones, eventos y datos de repetición; ejecutar localmente no evita usar el servidor. Cada ejecución imprime un enlace privado de una sola reclamación que vence en diez minutos si no se reclama; la primera cuenta elegible que lo reclama es su propietaria. El servidor guarda resúmenes de credenciales para un propósito específico, no secretos reutilizables del ejecutor. Revisa y revoca máquinas en Configuración → Línea de comandos. La recuperación/restablecimiento administrativo y eliminación revocan la autoridad; un cambio normal de contraseña con sesión iniciada no revoca ejecutores por sí mismo. Revocar no borra tus archivos locales ni retira solicitudes enviadas."
+      },
+      "storage": {
+        "title": "Cookies, preferencias, funciones sin conexión y rastreo",
+        "body": "No configuramos analítica de visitantes, rastreo entre sitios ni scripts, fuentes o contenido incrustado de terceros. Do Not Track no lo cambia: el rastreo sigue apagado. La autenticación y los flujos de proveedor solicitados usan cookies; las de sesión normalmente duran 30 días con renovación, y las temporales de acceso tienen propósitos/plazos más cortos. Idioma y tema usan localStorage, no una cookie de idioma. El navegador también guarda identidad entre pestañas, recuperación/desplazamiento de pestaña y la función de caché estática/sin conexión. localStorage no vence automáticamente; las cachés de workers/fuentes usan vencimiento diferido de 90 días/un año y las estáticas se actualizan con la app. Son almacenes funcionales distintos de las cookies de autenticación necesarias. Eliminar la cuenta no borra todo el almacenamiento del navegador. Borra los datos de este sitio para quitar preferencias/cachés; puede cerrar tu sesión y quitar disponibilidad sin conexión. Sin analítica no hay banner de consentimiento de analítica."
+      },
+      "retention": {
+        "title": "Conservación y respaldos",
+        "body": "Los datos de cuenta y partidas privadas permanecen mientras uses la cuenta, hasta la limpieza por eliminación. Las partidas publicadas depuradas y la participación oficial mínima se conservan sin vencimiento fijo. Eliminar la cuenta de quien reportó con sesión borra sus reportes; los reportes anónimos y el historial mínimo de moderación no vencen automáticamente en la implementación actual. La referencia al administrador eliminado queda vacía en la auditoría. Los objetivos aprobados son registros operativos de 30 días y respaldos diarios cifrados fuera del VPS conservados 30 días; esos ajustes y copias excepcionales/manuales aún requieren verificación y no prueban vencimiento efectivo. Los estados temporales de autenticación, OAuth y ejecutores tienen sus propios plazos limitados. Los respaldos pueden contener datos privados anteriores hasta vencer. Un registro restringido de supresión conserva identificadores SHA-256 para restauración, fechas de solicitud y revisión, sin nombres ni correos, durante al menos 31 días y más mientras pueda restaurarse un respaldo anterior, solo para evitar que regresen cuentas eliminadas. No se depura automáticamente en la fecha de revisión."
+      },
+      "deletion": {
+        "title": "Eliminación de la cuenta",
+        "body": "En Configuración → Seguridad, vuelve a iniciar sesión en los últimos cinco minutos y escribe DELETE. Se mantienen los segundos factores obligatorios; primero, los administradores transfieren su autoridad. La solicitud bloquea el acceso y revoca credenciales; la limpieza espera que se detenga el trabajo activo antes de borrar la cuenta. Pendiente significa que la limpieza no está confirmada; los errores mantienen el bloqueo para reintentar. Se eliminan partidas privadas, registros de autenticación/verificación, conexión OpenRouter, credenciales de ejecutores y reportes propios. Las publicadas conservan jugadas/tablero, modelos seguros, instrucciones/configuración y cifras como “usuario eliminado”; se depuran nombres, títulos, comentarios, texto sin procesar de modelos/herramientas y datos identificadores del archivo, se usan enlaces neutrales y las ocultas siguen ocultas. Las entradas oficiales mínimas sobreviven. Las restauraciones reaplican la supresión antes de abrir el acceso. Esto no borra inmediatamente respaldos anteriores, cuentas/claves de proveedores, discos de ejecutores, correo enviado ni descargas de otras personas. Revoca también tu clave en OpenRouter."
+      },
+      "reports": {
+        "title": "Reportes y moderación",
+        "body": "Cualquier persona puede reportar una repetición publicada con un motivo y nota opcional limitada; no necesita cuenta ni datos de contacto. Se usan límites por IP y un identificador HMAC diario de deduplicación para ese propósito. El reporte no guarda la IP sin procesar, aunque los sistemas de red/seguridad sí procesan direcciones IP. Con sesión iniciada, el reporte se vincula a tu cuenta y se borra al eliminarla. La administración revisa avisos y registra motivos de moderación. Quien publicó ve explicaciones y acciones recientes, nunca la identidad de quien reportó. Puede conservarse auditoría mínima con referencia de administrador opcional. No supongas que una nota es anónima para el operador ni incluyas datos sensibles. Usa el contacto siguiente para avisos adicionales o revisiones."
+      },
+      "choices": {
+        "title": "Opciones, exportación y menores",
+        "body": "Configuración → Perfil permite corregir nombre/idioma y exportar datos de cuenta JSON o partidas privadas/publicadas PGN. Vuelve a iniciar sesión en los últimos cinco minutos; aplican los segundos factores y un límite de descargas propio. Los archivos se descargan directamente, sin enlace por correo. JSON incluye metadatos seguros de conexiones/máquinas/límites actuales, tus reportes y explicaciones seguras sobre tus repeticiones; excluye contraseñas, tokens, claves, pruebas de seguridad, hashes de IP y otras personas reportantes/moderadoras. El cambio de correo no es de autoservicio. Escríbenos para acceso, corrección, eliminación, oposición o problemas de descarga; podemos verificar tu identidad. El ajedrez, límites y controles de seguridad son automáticos; la moderación la realiza la administración, sin prometer ausencia de automatización. El servicio es para mayores de 16 años inclusive. Si crees que conservamos datos de alguien menor, escríbenos para revisión y atención de su eliminación."
+      },
+      "contact": "Envía solicitudes de privacidad, dudas sobre datos de menores, avisos de abuso y solicitudes de revisión al contacto siguiente. No envíes contraseñas ni claves de proveedores. Las revisiones se publicarán en este aviso fechado; revisa su fecha y escríbenos sobre cambios de prácticas. Los avisos de proveedores externos describen su propio procesamiento. Antes del lanzamiento se requieren aprobación del operador y verificación del despliegue.",
+      "openrouterNotice": "Política de privacidad de OpenRouter",
+      "cloudflareNotice": "Política de privacidad de Cloudflare"
+    },
+    "licenses": {
+      "title": "Código fuente y licencias",
+      "application": {
+        "title": "Código de Cockpit Chess",
+        "body": "Cockpit Chess usa AGPL-3.0-only. El enlace al código identifica el del servidor en ejecución cuando está disponible. La licencia del repositorio y los avisos de terceros describen los derechos del software; los términos en borrador no los sustituyen."
+      },
+      "stockfish": {
+        "title": "Stockfish.js 19.0.1",
+        "body": "Stockfish es software GPL-3.0. El archivo de código correspondiente incluye el código exacto 19.0.1, instrucciones de compilación y entrada de red neuronal usados para el motor distribuido. El paquete npm también incluye este código y avisos. Las evaluaciones alojadas se ejecutan en nuestro servidor; las de la CLI npm vinculada, localmente. Los binarios nativos del CLI complementario no admiten partidas asistidas por motor. No se descarga un motor Stockfish al navegador. Puedes ejercer los derechos de su licencia sin cuenta Cockpit Chess ni restricciones adicionales del servicio. Usar Stockfish no implica su respaldo."
+      },
+      "notices": {
+        "title": "Otro software",
+        "body": "El repositorio y el paquete npm conservan avisos de derechos y licencias de terceros. Cada componente sigue sujeto a su propia licencia."
+      },
+      "appLicense": "Licencia de la aplicación (AGPL-3.0-only)",
+      "engineLicense": "Licencia de Stockfish (GPL-3.0)",
+      "engineSource": "Descargar código correspondiente de Stockfish 19.0.1",
+      "engineAuthors": "Autores de Stockfish",
+      "engineChecksums": "Sumas de verificación del código y avisos de Stockfish",
+      "noticesLink": "Avisos de software de terceros"
+    }
+  }
 }

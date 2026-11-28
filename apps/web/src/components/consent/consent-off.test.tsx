@@ -7,6 +7,10 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 // The footer's "Source code" link reads `chess.info`; no server here.
 vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: undefined }) }));
+vi.mock("@tanstack/react-router", () => ({
+  useParams: () => ({ lang: "en-US" }),
+  Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
+}));
 
 import { ConsentBanner } from "@/components/consent/consent-banner";
 import { ConsentPreferencesButton } from "@/components/consent/consent-preferences-button";

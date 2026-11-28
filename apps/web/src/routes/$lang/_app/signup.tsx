@@ -119,6 +119,23 @@ function SignupPage() {
         title={t("auth:login.createAccount")}
         description={t("auth:login.createDescription")}
       >
+        <p className="text-sm text-muted-foreground">{t("common:legal.signupIntro")}</p>
+        <div className="flex flex-wrap gap-x-4 text-sm">
+          <Link
+            to="/$lang/terms"
+            params={{ lang }}
+            className="inline-flex min-h-11 items-center underline underline-offset-4"
+          >
+            {t("common:legal.terms.title")}
+          </Link>
+          <Link
+            to="/$lang/privacy"
+            params={{ lang }}
+            className="inline-flex min-h-11 items-center underline underline-offset-4"
+          >
+            {t("common:legal.privacy.title")}
+          </Link>
+        </div>
         <SignUpForm lang={lang} redirectTo={redirectTo} onSignedUp={setPendingEmail} />
         <div className="text-center">
           <Link

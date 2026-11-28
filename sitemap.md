@@ -6,6 +6,14 @@ Current routes for the web app (`apps/web/src/routes/`).
 
 ## Public Routes
 
+The public footer links localized review drafts at `/{lang}/terms`, `/{lang}/privacy`
+and `/{lang}/licenses`. They share the arena shell, remain accessible signed in or
+out, and are included in `PUBLIC_PATHS`, `/sitemap.xml` and `/llms.txt`. Signup
+links to terms/privacy; published-replay reporting includes the single contact
+`contact@flycockpit.app`. Owner/counsel approval and deployment verification remain
+required before launch. The licences page links the exact corresponding Stockfish
+source and GPL text without requiring an account.
+
 Only indexable content pages belong in `apps/server/src/seo.ts` `PUBLIC_PATHS` for `/sitemap.xml` and `/llms.txt`. Auth, demo, and restricted/watch utility routes below are public routes in the router sense, but intentionally excluded from SEO discovery.
 
 | Path | Description |

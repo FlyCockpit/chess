@@ -22,6 +22,9 @@ import { Route as LangAppResetPasswordRouteImport } from './routes/$lang/_app/re
 import { Route as LangAppSignupRouteImport } from './routes/$lang/_app/signup'
 import { Route as LangAppVerifyEmailRouteImport } from './routes/$lang/_app/verify-email'
 import { Route as LangPublicIndexRouteImport } from './routes/$lang/_public/index'
+import { Route as LangPublicLicensesRouteImport } from './routes/$lang/_public/licenses'
+import { Route as LangPublicPrivacyRouteImport } from './routes/$lang/_public/privacy'
+import { Route as LangPublicTermsRouteImport } from './routes/$lang/_public/terms'
 import { Route as LangAppAuthDeviceRouteImport } from './routes/$lang/_app/_auth/device'
 import { Route as LangAppAuthSettingsRouteImport } from './routes/$lang/_app/_auth/settings'
 import { Route as LangAppAdminIndexRouteImport } from './routes/$lang/_app/admin/index'
@@ -95,6 +98,21 @@ const LangAppVerifyEmailRoute = LangAppVerifyEmailRouteImport.update({
 const LangPublicIndexRoute = LangPublicIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => LangPublicRouteRoute,
+} as any)
+const LangPublicLicensesRoute = LangPublicLicensesRouteImport.update({
+  id: '/licenses',
+  path: '/licenses',
+  getParentRoute: () => LangPublicRouteRoute,
+} as any)
+const LangPublicPrivacyRoute = LangPublicPrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
+  getParentRoute: () => LangPublicRouteRoute,
+} as any)
+const LangPublicTermsRoute = LangPublicTermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
   getParentRoute: () => LangPublicRouteRoute,
 } as any)
 const LangAppAuthDeviceRoute = LangAppAuthDeviceRouteImport.update({
@@ -171,6 +189,9 @@ export interface FileRoutesByFullPath {
   '/$lang/reset-password': typeof LangAppResetPasswordRoute
   '/$lang/signup': typeof LangAppSignupRoute
   '/$lang/verify-email': typeof LangAppVerifyEmailRoute
+  '/$lang/licenses': typeof LangPublicLicensesRoute
+  '/$lang/privacy': typeof LangPublicPrivacyRoute
+  '/$lang/terms': typeof LangPublicTermsRoute
   '/$lang/': typeof LangPublicIndexRoute
   '/$lang/device': typeof LangAppAuthDeviceRoute
   '/$lang/settings': typeof LangAppAuthSettingsRouteWithChildren
@@ -194,6 +215,9 @@ export interface FileRoutesByTo {
   '/$lang/reset-password': typeof LangAppResetPasswordRoute
   '/$lang/signup': typeof LangAppSignupRoute
   '/$lang/verify-email': typeof LangAppVerifyEmailRoute
+  '/$lang/licenses': typeof LangPublicLicensesRoute
+  '/$lang/privacy': typeof LangPublicPrivacyRoute
+  '/$lang/terms': typeof LangPublicTermsRoute
   '/$lang/device': typeof LangAppAuthDeviceRoute
   '/$lang/admin/jobs': typeof LangAppAdminJobsRoute
   '/$lang/admin/moderation': typeof LangAppAdminModerationRoute
@@ -220,6 +244,9 @@ export interface FileRoutesById {
   '/$lang/_app/reset-password': typeof LangAppResetPasswordRoute
   '/$lang/_app/signup': typeof LangAppSignupRoute
   '/$lang/_app/verify-email': typeof LangAppVerifyEmailRoute
+  '/$lang/_public/licenses': typeof LangPublicLicensesRoute
+  '/$lang/_public/privacy': typeof LangPublicPrivacyRoute
+  '/$lang/_public/terms': typeof LangPublicTermsRoute
   '/$lang/_public/': typeof LangPublicIndexRoute
   '/$lang/_app/_auth/device': typeof LangAppAuthDeviceRoute
   '/$lang/_app/_auth/settings': typeof LangAppAuthSettingsRouteWithChildren
@@ -246,6 +273,9 @@ export interface FileRouteTypes {
     | '/$lang/reset-password'
     | '/$lang/signup'
     | '/$lang/verify-email'
+    | '/$lang/licenses'
+    | '/$lang/privacy'
+    | '/$lang/terms'
     | '/$lang/'
     | '/$lang/device'
     | '/$lang/settings'
@@ -269,6 +299,9 @@ export interface FileRouteTypes {
     | '/$lang/reset-password'
     | '/$lang/signup'
     | '/$lang/verify-email'
+    | '/$lang/licenses'
+    | '/$lang/privacy'
+    | '/$lang/terms'
     | '/$lang/device'
     | '/$lang/admin/jobs'
     | '/$lang/admin/moderation'
@@ -294,6 +327,9 @@ export interface FileRouteTypes {
     | '/$lang/_app/reset-password'
     | '/$lang/_app/signup'
     | '/$lang/_app/verify-email'
+    | '/$lang/_public/licenses'
+    | '/$lang/_public/privacy'
+    | '/$lang/_public/terms'
     | '/$lang/_public/'
     | '/$lang/_app/_auth/device'
     | '/$lang/_app/_auth/settings'
@@ -405,6 +441,27 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/$lang/'
       preLoaderRoute: typeof LangPublicIndexRouteImport
+      parentRoute: typeof LangPublicRouteRoute
+    }
+    '/$lang/_public/licenses': {
+      id: '/$lang/_public/licenses'
+      path: '/licenses'
+      fullPath: '/$lang/licenses'
+      preLoaderRoute: typeof LangPublicLicensesRouteImport
+      parentRoute: typeof LangPublicRouteRoute
+    }
+    '/$lang/_public/privacy': {
+      id: '/$lang/_public/privacy'
+      path: '/privacy'
+      fullPath: '/$lang/privacy'
+      preLoaderRoute: typeof LangPublicPrivacyRouteImport
+      parentRoute: typeof LangPublicRouteRoute
+    }
+    '/$lang/_public/terms': {
+      id: '/$lang/_public/terms'
+      path: '/terms'
+      fullPath: '/$lang/terms'
+      preLoaderRoute: typeof LangPublicTermsRouteImport
       parentRoute: typeof LangPublicRouteRoute
     }
     '/$lang/_app/_auth/device': {
@@ -572,10 +629,16 @@ const LangAppRouteRouteWithChildren = LangAppRouteRoute._addFileChildren(
 )
 
 interface LangPublicRouteRouteChildren {
+  LangPublicLicensesRoute: typeof LangPublicLicensesRoute
+  LangPublicPrivacyRoute: typeof LangPublicPrivacyRoute
+  LangPublicTermsRoute: typeof LangPublicTermsRoute
   LangPublicIndexRoute: typeof LangPublicIndexRoute
 }
 
 const LangPublicRouteRouteChildren: LangPublicRouteRouteChildren = {
+  LangPublicLicensesRoute: LangPublicLicensesRoute,
+  LangPublicPrivacyRoute: LangPublicPrivacyRoute,
+  LangPublicTermsRoute: LangPublicTermsRoute,
   LangPublicIndexRoute: LangPublicIndexRoute,
 }
 

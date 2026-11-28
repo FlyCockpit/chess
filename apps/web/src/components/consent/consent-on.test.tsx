@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -20,6 +20,10 @@ vi.mock("@/hooks/use-consent", () => ({
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 // The footer's "Source code" link reads `chess.info`; no server here.
 vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: undefined }) }));
+vi.mock("@tanstack/react-router", () => ({
+  useParams: () => ({ lang: "en-US" }),
+  Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
+}));
 
 const { ConsentPreferencesButton } = await import(
   "@/components/consent/consent-preferences-button"

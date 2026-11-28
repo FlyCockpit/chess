@@ -81,6 +81,8 @@ function form() {
 }
 it("lets an anonymous reader submit a bounded note with no identity or transcript", async () => {
   const html = render();
+  expect(html).toContain('href="mailto:contact@flycockpit.app"');
+  expect(html).toContain(enCommon.legal.reportContact);
   expect(html).toContain(enChess.moderation.reportDescription);
   expect(html).toContain('maxLength="1000"');
   await form().onSubmit({ value: { reason: "privacy", note: "  A contact detail is visible.  " } });

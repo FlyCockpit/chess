@@ -15,6 +15,26 @@ const { registerSeoRoutes } = await import("./seo.js");
 const protectedRouteFragments = ["/admin", "/dashboard", "/settings", "/portal"];
 
 describe("SEO routes", () => {
+  it("discovers every localized legal page without exposing private utilities", async () => {
+    const app = new Hono();
+    registerSeoRoutes(app);
+    const sitemap = await (await app.request("/sitemap.xml")).text();
+    const llms = await (await app.request("/llms.txt")).text();
+    for (const path of ["terms", "privacy", "licenses"]) {
+      for (const locale of ["en-US", "es-MX"]) {
+        expect(sitemap).toContain(`<loc>https://app.example.com/${locale}/${path}</loc>`);
+        expect(sitemap).toContain(
+          `hreflang="${locale}" href="https://app.example.com/${locale}/${path}"`,
+        );
+      }
+      expect(llms).toContain(`https://app.example.com/en-US/${path}`);
+    }
+    for (const privatePath of ["/runner/claim", "/signup", "/device"]) {
+      expect(sitemap).not.toContain(privatePath);
+      expect(llms).not.toContain(privatePath);
+    }
+  });
+
   it("uses the configured canonical origin instead of request host headers", async () => {
     const app = new Hono();
     registerSeoRoutes(app);

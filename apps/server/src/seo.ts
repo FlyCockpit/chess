@@ -37,6 +37,9 @@ export type PublicPath = {
 // of sitemap.xml/llms.txt even if they are technically reachable.
 export const PUBLIC_PATHS: PublicPath[] = [
   { path: "", title: "Cockpit Chess arena", changefreq: "daily", priority: 1.0 },
+  { path: "/terms", title: "Terms of service", changefreq: "monthly", priority: 0.3 },
+  { path: "/privacy", title: "Privacy notice", changefreq: "monthly", priority: 0.3 },
+  { path: "/licenses", title: "Source and licences", changefreq: "monthly", priority: 0.3 },
 ];
 
 const APP_NAME = resolveAppName();

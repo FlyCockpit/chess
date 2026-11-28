@@ -88,5 +88,109 @@
     "queued": "You're offline. This change will be sent when you reconnect. Keep this tab open.",
     "queuedSent": "Back online. Your offline change was sent."
   },
-  "sourceCode": "Source code"
+  "sourceCode": "Source code",
+  "legal": {
+    "updated": "Review version: November 28, 2026. Not yet effective.",
+    "reviewNotice": "Prelaunch review draft. Owner approval is required before these terms and notices take effect. Operational providers and retention settings still require deployment verification.",
+    "navigation": "Legal information",
+    "contactTitle": "Contact and requests",
+    "contactAddress": "contact@flycockpit.app",
+    "signupIntro": "Before creating an account, read the terms and privacy notice. The service is for people aged 16 or older.",
+    "reportContact": "For a privacy request, additional information or a review of a moderation decision, contact us:",
+    "terms": {
+      "title": "Terms of service",
+      "operator": {
+        "title": "Operator and audience",
+        "body": "FlyCockpit, LLC operates Cockpit Chess from the United States. The launch is not directed at the European Union. You must be at least 16 to use the service. Protect your account and credentials, and use only keys and runner machines you are authorized to use. Email verification and any required second factor still apply. An age requirement does not mean that the service verifies every visitor’s age."
+      },
+      "service": {
+        "title": "What the service does",
+        "body": "Cockpit Chess runs and replays chess games involving language models, humans and random baselines. Hosted model calls and Stockfish evaluations run on our server/worker. Paired CLI games run model calls and evaluations on your machine, which sends game data to the website. AI replies can be wrong, offensive or misleading. Settings are configurable; fixed model instructions are recorded with a prompt version and hash. Results are exploratory comparisons, not a controlled benchmark or a guarantee of model quality."
+      },
+      "billing": {
+        "title": "Provider billing and runner limits",
+        "body": "Connecting OpenRouter is separate from signing into this website. Hosted own-key games use your connected key and are billed by OpenRouter under its terms; ordinary users cannot spend the operator’s key. Disconnecting here does not revoke the key at OpenRouter. Local runners use your locally configured provider and key. Runner operating defaults are US$1 per match, US$10 per day and two concurrent games. Browser increases require fresh verification and terminal acknowledgement, within local hard defaults of US$25 per match, US$100 per day and concurrency eight. Only local startup configuration can raise hard ceilings. Stopping cannot retract a request already sent or its charge; check provider billing and limits."
+      },
+      "official": {
+        "title": "Official starts and publication",
+        "body": "New games default to practice. Eligible hosted games may be committed as official before acceptance; this choice cannot change afterward. Every accepted official start remains in public participation, even if stopped, unpublished, hidden or disconnected, or after account deletion. Points use all starts; withdrawals and stops add no points, and wins/draws/losses, pending games and errors are separate. Minimal public records contain models, prompt/settings, starting-position scope and outcomes, not private transcripts or account identifiers. Humans, local runners and imported games are never official. Local timing, costs and evaluations are unverified; server legality checks do not verify local inference."
+      },
+      "publication": {
+        "title": "Publishing and responsible use",
+        "body": "Games are private by default. Publishing makes displayed game content, including model replies and remarks, public and copyable. Do not include passwords, keys or personal information in game content. Private games still pass through our systems and the providers you use. Do not attack the service, bypass access or spending controls, misuse credentials, or publish unlawful, harassing or privacy-invasive material. You authorize the processing and display needed for your requested games and publication; this does not assert ownership of generated output. Unpublishing cannot retrieve copies others already made."
+      },
+      "moderation": {
+        "title": "Reporting and moderation",
+        "body": "Anyone can use Report replay on a published replay, without signing in. Choose a reason and optionally describe the content in up to 1,000 characters; do not include personal contact details or credentials. Reports have per-IP limits and daily deduplication. Administrators review reports and can hide or restore a replay with a recorded reason. The uploader sees the statement and recent decisions on their match and in Studio, including when its archive is unsupported. Reporter identity is never shown to the uploader. Hiding blocks public transcript and export access; republishing cannot override it, and official participation remains counted. Contact us to provide more information or request review; no automatic removal or response deadline is promised."
+      },
+      "deletion": {
+        "title": "Export, deletion and retained games",
+        "body": "Settings → Profile offers JSON account data and PGN game downloads after re-sign-in within five minutes. Settings → Security offers account deletion after recent sign-in and typing DELETE; administrators must transfer authority first. Acceptance blocks access and begins cleanup; it is not completed erasure. Private games are deleted. Published games remain as “deleted user”, with moves, board, safe model names, prompt/settings and numerical results; identifying titles, names, comments, raw replies and tool text are removed. They receive neutral URLs and old identifying links stop working. Hidden games stay hidden. Minimal official records persist independently. The privacy notice explains backups and the restricted restore-suppression register. Your local files and provider accounts are outside this cleanup."
+      },
+      "contact": "Use this single contact for service questions, privacy requests, abuse notices and moderation review. The launch mail relay only sends account messages; reply to the contact address rather than treating those messages as a support channel. Software rights are governed by the linked licences. These draft service terms add no restrictions to Stockfish’s GPL rights. Owner/counsel must approve final legal provisions before launch; this draft chooses no dispute forum, warranty exclusion or waiver of mandatory rights."
+    },
+    "privacy": {
+      "title": "Privacy notice",
+      "operator": {
+        "title": "Who operates the service",
+        "body": "FlyCockpit, LLC operates Cockpit Chess from the United States. This launch is not directed at the European Union. The same account access/export, correction, deletion and objection request process is offered to everyone. We use account and game data to provide the service you request, and security data to protect it and handle abuse. Contract and legitimate interests in security and abuse prevention are the proposed bases, subject to owner/counsel review. This notice does not claim statutory compliance or identical legal rights everywhere."
+      },
+      "data": {
+        "title": "Information we process",
+        "body": "We hold account name, email, locale and sign-in/security records; games, moves, settings, prompts, replies, remarks, tool context and usage/cost records; and safe provider connection and runner metadata. Password authentication stores a protected password representation, not your plaintext password. Connected OpenRouter keys are encrypted at rest but decrypted by our server/worker to make authorized calls. Security processing includes request/network metadata, IP-based rate limits, errors and administrative audit. Some logs and emailed error alerts can contain identifying context. Publication exposes displayed game text; minimal official model/settings/outcome records are public even when the transcript is private."
+      },
+      "providers": {
+        "title": "Recipients and model requests",
+        "body": "Cloudflare handles proxied requests and network metadata. Our VPS host provides compute/storage; a send-only mail relay receives recipient addresses and account-message content, and any configured backup host receives database backups. OpenRouter and its model providers receive the prompts, names, board/history, remarks and context needed for hosted turns, under your connected key. We send OpenRouter’s data_collection: deny setting to restrict provider data collection; prompt caching remains enabled. This is not an independently verified zero-retention or upstream-erasure guarantee. Providers see our egress IP for hosted calls and your machine’s for local calls. A sign-in provider you choose receives its authentication flow. These services may process data outside your country; US operation does not mean all processing stays in the US. Final host/relay/backup identities and locations await deployment verification."
+      },
+      "runner": {
+        "title": "Local runners and credentials",
+        "body": "The paired CLI keeps your configured key, endpoint, spending ledger and hard policy locally. The website receives model capabilities, settings, moves, evaluations, events and replay data, so local execution does not make a game server-free. Each run prints a private single-claim link that expires after ten minutes if unclaimed; the first eligible signed-in claimant owns it. The server stores purpose-bound credential digests, not reusable runner secrets. Review and revoke machines in Settings → Command line. Recovery/admin reset and deletion revoke runner authority; an ordinary signed-in password change does not itself revoke runners. Revocation cannot erase your local files or retract requests already sent."
+      },
+      "storage": {
+        "title": "Cookies, preferences, offline features and tracking",
+        "body": "We configure no visitor analytics, cross-site behavioral tracking or third-party scripts, fonts or embeds. Do Not Track does not change this: tracking remains off. Authentication and requested provider flows use cookies; session cookies normally last 30 days with rolling refresh, and temporary sign-in cookies have shorter purposes/lifetimes. Locale and theme preferences use localStorage, not a locale cookie. Browser storage also supports cross-tab identity, tab recovery/scroll state and the offline/static-cache feature. LocalStorage has no automatic expiry; worker/font caches use lazy 90-day/one-year expiry and static caches update with the app. These feature stores are distinct from necessary authentication cookies. Account deletion does not clear every browser store. Clear this site’s browser data to remove preferences/caches; doing so may sign you out and remove offline availability. With analytics disabled there is no analytics consent banner."
+      },
+      "retention": {
+        "title": "Retention and backups",
+        "body": "Account and private game data remain while you use the account, until deletion cleanup. Redacted published games and minimal official participation are retained without a fixed expiry. Signed-in reporter deletion removes their reports; anonymous reports and minimal moderation history have no automatic expiry in the current implementation. An erased administrator’s audit actor becomes empty. The approved deployment targets are 30-day operational logs and daily encrypted off-VPS backups kept 30 days; these settings and exceptional/manual copies still require deployment verification, so they are not a claim of proven expiry. Short-lived authentication, OAuth and runner state use their own bounded lifetimes. Backups may contain earlier private data until they expire. A restricted restore-suppression register keeps purpose-bound SHA-256 identifiers, request dates and review dates, without names or email addresses, for at least 31 days and longer while any older backup remains restorable, solely to prevent deleted accounts returning. It is not automatically pruned at its review date."
+      },
+      "deletion": {
+        "title": "Account deletion",
+        "body": "In Settings → Security, sign in again within five minutes and type DELETE. Existing second-factor requirements apply; administrators transfer authority first. A request first fences access and revokes credentials; worker cleanup waits for live work to stop before erasing the account. Pending means cleanup is not yet confirmed, and failures remain fenced for retry. Cleanup removes private matches, authentication/verification records, stored OpenRouter connection, runner credentials and owned reports. Published matches keep moves/board, safe models, prompt/settings and numbers as “deleted user”; names, titles, comments, raw model/tool text and identifying archive data are scrubbed, neutral links replace old URLs, and hidden matches stay hidden. Minimal official entries survive. Restores reapply suppression before access reopens. This does not erase earlier backups immediately, provider accounts/keys, local runner disks, already-sent mail or viewers’ downloads. Revoke your OpenRouter key there as well."
+      },
+      "reports": {
+        "title": "Reports and moderation",
+        "body": "Anyone may report a published replay with a reason and optional bounded note; no account or contact details are required. Reporting uses per-IP budgets and a purpose-bound daily HMAC deduplication identifier. The report record does not store the raw IP, although network/security systems still process IP addresses. If signed in, the report is linked to your account and is removed on its deletion. Administrators can review notices and record moderation reasons. Replay owners see statements of reasons and recent actions, never reporter identity. Minimal moderation audit may remain with a nullable administrator reference. Do not assume a report note is anonymous to the operator or include sensitive information. Use the contact below for additional notices or review requests."
+      },
+      "choices": {
+        "title": "Your choices, export and children",
+        "body": "Settings → Profile lets you correct your name/locale and export JSON account data or PGN private/published games. Sign in again within five minutes; existing second-factor rules and a separate download budget apply. Files download directly, without an email link. JSON includes safe connection/machine/current-limit metadata, your filed reports and safe statements about your replays; it excludes passwords, tokens, keys, security proofs, IP dedup hashes and other reporters/moderators. Email changes are not currently self-service. Contact us for access, correction, deletion, objection or a problem downloading; we may need to verify identity. Chess, rate limits and security checks are automated; content moderation is administrator-operated, not a promise of no automation. The service is for ages 16 and up. If you believe we hold an underage person’s data, contact us for review and deletion handling."
+      },
+      "contact": "Send privacy requests, child-data concerns, abuse notices and review requests to the address below. Do not send passwords or provider keys. This dated notice is where revisions will be posted; review its date for changes and contact us about changed practices. External provider notices describe their own processing. Owner approval and deployment verification remain required before launch.",
+      "openrouterNotice": "OpenRouter privacy policy",
+      "cloudflareNotice": "Cloudflare privacy policy"
+    },
+    "licenses": {
+      "title": "Source and licences",
+      "application": {
+        "title": "Cockpit Chess source",
+        "body": "Cockpit Chess is AGPL-3.0-only. The source link identifies the running server’s source when available. The repository licence and third-party notices describe software rights; draft service terms do not replace them."
+      },
+      "stockfish": {
+        "title": "Stockfish.js 19.0.1",
+        "body": "Stockfish is GPL-3.0 software. The corresponding-source archive below includes the exact 19.0.1 source, build instructions and neural-network input used for the distributed engine. The npm package also includes this source and the notices. Hosted evaluations run on our server; paired npm CLI evaluations run locally. Native compiled companion binaries do not support engine-assisted games. No Stockfish engine is downloaded into the browser. You may exercise Stockfish’s licence rights without a Cockpit Chess account or additional service restrictions. Use of Stockfish does not imply endorsement."
+      },
+      "notices": {
+        "title": "Other software",
+        "body": "The repository and npm artifact retain third-party copyright and licence notices. Each component remains subject to its own licence."
+      },
+      "appLicense": "Application licence (AGPL-3.0-only)",
+      "engineLicense": "Stockfish licence (GPL-3.0)",
+      "engineSource": "Download Stockfish 19.0.1 corresponding source",
+      "engineAuthors": "Stockfish authors",
+      "engineChecksums": "Stockfish source and notice checksums",
+      "noticesLink": "Third-party notices"
+    }
+  }
 }

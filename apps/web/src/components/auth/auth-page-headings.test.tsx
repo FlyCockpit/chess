@@ -131,6 +131,16 @@ const OPEN = { signupEnabled: true, adminBootstrapSignupEnabled: false, emailEna
 const FORCE_SSO = { signupEnabled: true, forceSso: true, ssoEnabled: true };
 
 describe("one h1 per auth page: the card's title", () => {
+  it("offers terms and privacy before submitting signup, without asserting clickwrap acceptance", () => {
+    fixture.config = OPEN;
+    const Page = component(routes.signup);
+    const html = render(<Page />);
+    expect(html).toContain(enCommon.legal.signupIntro);
+    expect(html).toContain('data-to="/$lang/terms"');
+    expect(html).toContain('data-to="/$lang/privacy"');
+    expect(html.indexOf(enCommon.legal.signupIntro)).toBeLessThan(html.indexOf("<form"));
+  });
+
   it.each([
     ["sign-in", routes.login, OPEN, {}, enAuth.login.signinTitle],
     ["sign-up", routes.signup, OPEN, {}, enAuth.login.createAccount],

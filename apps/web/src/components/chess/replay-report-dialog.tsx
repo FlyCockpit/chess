@@ -66,6 +66,15 @@ export function ReplayReportDialog({ slug }: { slug: string }) {
         <DialogHeader>
           <DialogTitle>{t("chess:moderation.reportTitle")}</DialogTitle>
           <DialogDescription>{t("chess:moderation.reportDescription")}</DialogDescription>
+          <p className="text-sm text-muted-foreground">
+            {t("common:legal.reportContact")}{" "}
+            <a
+              href="mailto:contact@flycockpit.app"
+              className="inline-flex min-h-11 items-center break-all underline underline-offset-4"
+            >
+              {t("common:legal.contactAddress")}
+            </a>
+          </p>
         </DialogHeader>
         {report.isSuccess ? (
           <>
