@@ -5,7 +5,12 @@ import { createOpenaiChat, createOpenaiChatCompletions } from "@tanstack/ai-open
 import { createOpenRouterText } from "@tanstack/ai-openrouter";
 
 import { createAnthropicCacheHttpClient, injectGeminiCacheBreakpoint } from "./openrouter-cache";
-import { type ResponseIdentity, responseIdentityFetch } from "./response-identity";
+import {
+  type ResponseIdentity,
+  responseIdentityFetch,
+  responseJsonUsage,
+  responseUsage,
+} from "./response-identity";
 import type { AgentModel } from "./types";
 
 type OpenAIModel = Parameters<typeof createOpenaiChat>[0];
@@ -21,42 +26,51 @@ const isAnthropicModel = (model: string): boolean => model.startsWith("anthropic
 const isGeminiModel = (model: string): boolean => /^~?google\/gemini-/.test(model);
 
 /** Native Chat Completions bypasses the OpenRouter SDK's beforeRequest hook. */
-const geminiGatewayFetch: typeof fetch = (input, init) => {
-  if (typeof init?.body !== "string") return globalThis.fetch(input, init);
-  const body: unknown = JSON.parse(init.body);
-  return globalThis.fetch(
-    input,
-    injectGeminiCacheBreakpoint(body) ? { ...init, body: JSON.stringify(body) } : init,
-  );
-};
+const geminiGatewayFetch =
+  (base: typeof fetch): typeof fetch =>
+  (input, init) => {
+    if (typeof init?.body !== "string") return base(input, init);
+    const body: unknown = JSON.parse(init.body);
+    return base(
+      input,
+      injectGeminiCacheBreakpoint(body) ? { ...init, body: JSON.stringify(body) } : init,
+    );
+  };
 
 // The adapter emits nullable optional fields that the Messages gateway rejects.
 // Normalize ordinary function definitions while preserving actual cache controls.
-const anthropicGatewayFetch: typeof fetch = async (input, init) => {
-  if (typeof init?.body !== "string") return globalThis.fetch(input, init);
-  const body: unknown = JSON.parse(init.body);
-  if (typeof body !== "object" || body === null || !("tools" in body) || !Array.isArray(body.tools))
-    return globalThis.fetch(input, init);
-  const tools = body.tools.map((tool: unknown) => {
+const anthropicGatewayFetch =
+  (base: typeof fetch): typeof fetch =>
+  async (input, init) => {
+    if (typeof init?.body !== "string") return base(input, init);
+    const body: unknown = JSON.parse(init.body);
     if (
-      typeof tool !== "object" ||
-      tool === null ||
-      ((!("type" in tool) || tool.type !== "custom") && !("input_schema" in tool))
+      typeof body !== "object" ||
+      body === null ||
+      !("tools" in body) ||
+      !Array.isArray(body.tools)
     )
-      return tool;
-    const definition: Record<string, unknown> = { ...tool };
-    if (definition.type === "custom") delete definition.type;
-    if (definition.cache_control === null) delete definition.cache_control;
-    if (typeof definition.input_schema === "object" && definition.input_schema !== null) {
-      const schema: Record<string, unknown> = { ...definition.input_schema };
-      if (schema.required === null) delete schema.required;
-      if (schema.properties === null) schema.properties = {};
-      definition.input_schema = schema;
-    }
-    return definition;
-  });
-  return globalThis.fetch(input, { ...init, body: JSON.stringify({ ...body, tools }) });
-};
+      return base(input, init);
+    const tools = body.tools.map((tool: unknown) => {
+      if (
+        typeof tool !== "object" ||
+        tool === null ||
+        ((!("type" in tool) || tool.type !== "custom") && !("input_schema" in tool))
+      )
+        return tool;
+      const definition: Record<string, unknown> = { ...tool };
+      if (definition.type === "custom") delete definition.type;
+      if (definition.cache_control === null) delete definition.cache_control;
+      if (typeof definition.input_schema === "object" && definition.input_schema !== null) {
+        const schema: Record<string, unknown> = { ...definition.input_schema };
+        if (schema.required === null) delete schema.required;
+        if (schema.properties === null) schema.properties = {};
+        definition.input_schema = schema;
+      }
+      return definition;
+    });
+    return base(input, { ...init, body: JSON.stringify({ ...body, tools }) });
+  };
 
 /**
  * Explicit per-turn output ceiling, forwarded through native `modelOptions`:
@@ -108,18 +122,60 @@ export interface ModelAdapter {
   modelOptions?: Record<string, unknown>;
 }
 
-/** `base` (globalThis.fetch when omitted, read at call time) behind `guard`. */
-const guardedFetch =
-  (guard: () => void, base?: typeof fetch): typeof fetch =>
-  (input, init) => {
-    guard();
-    return (base ?? globalThis.fetch)(input, init);
+/** Final wire boundary: no adapter/cache transform may bypass or follow it. */
+const guardedFetch = (model: AgentModel): typeof fetch => {
+  const authorize = model.authorizeRequest;
+  if (!authorize) {
+    // Keep synchronous hosted guards synchronous, including their thrown refusal.
+    return (input, init) => {
+      model.beforeDispatch?.();
+      return init === undefined ? globalThis.fetch(input) : globalThis.fetch(input, init);
+    };
+  }
+  return async (input, init) => {
+    model.beforeDispatch?.();
+    // SDKs emit either a Request or a JSON string body. Other body carriers cannot
+    // be safely priced without consuming/replacing their stream, so fail closed.
+    if (init?.body !== undefined && init.body !== null && typeof init.body !== "string") {
+      throw new Error("Provider request body cannot be authorized");
+    }
+    const request = new Request(input, init);
+    request.signal.throwIfAborted();
+    const body = await request.clone().text();
+    request.signal.throwIfAborted();
+    const authorized = await authorize({
+      url: request.url,
+      method: request.method,
+      body,
+      signal: request.signal,
+    });
+    request.signal.throwIfAborted();
+    model.beforeDispatch?.();
+    request.signal.throwIfAborted();
+    const outbound = new Request(request, {
+      redirect: "error",
+      ...(authorized ? { body: authorized.body } : {}),
+    });
+    authorized?.beforeSend?.();
+    request.signal.throwIfAborted();
+    // Bun must receive a Request without a second undefined argument.
+    const response = await globalThis.fetch(outbound);
+    if (!authorized?.onUsage) return response;
+    const observed = await responseJsonUsage(
+      response,
+      model.provider,
+      authorized.onUsage,
+      request.signal,
+    );
+    return responseUsage(observed, model.provider, authorized.onUsage, request.signal);
   };
+};
 
 /** Apply the provider policy after SDK serialization, without touching prompts. */
 function privacyFetch(model: AgentModel, base?: typeof fetch): typeof fetch | undefined {
   if (model.dataCollection !== "deny") return base;
   return async (input, init) => {
+    model.beforeDispatch?.();
     const request = new Request(input, init);
     const body: unknown = await request.clone().json();
     if (typeof body !== "object" || body === null || Array.isArray(body))
@@ -162,22 +218,18 @@ export const createModelAdapter = (
       caches ||
       model.headers ||
       model.beforeDispatch ||
+      model.authorizeRequest ||
       onResponseIdentity ||
       model.dataCollection
     ) {
-      const identityFetcher = onResponseIdentity
-        ? responseIdentityFetch(model.provider, onResponseIdentity)
-        : undefined;
-      const fetcher = privacyFetch(model, identityFetcher);
+      const guardedWire = guardedFetch(model);
+      const wire = privacyFetch(model, guardedWire) ?? guardedWire;
+      const fetcher = onResponseIdentity
+        ? responseIdentityFetch(model.provider, onResponseIdentity, wire)
+        : wire;
       const httpClient = caches
         ? createAnthropicCacheHttpClient(HTTPClient, cachesGemini ? "gemini" : "anthropic", fetcher)
-        : new HTTPClient(fetcher ? { fetcher } : undefined);
-      const guard = model.beforeDispatch;
-      if (guard)
-        httpClient.addHook("beforeRequest", (request: Request) => {
-          guard();
-          return request;
-        });
+        : new HTTPClient({ fetcher });
       const extra = model.headers;
       if (extra)
         httpClient.addHook("beforeRequest", (request: Request) => {
@@ -209,15 +261,17 @@ export const createModelAdapter = (
       // Anthropic SDK appends /v1/messages; accept a shared /v1 API prefix.
       ...(model.baseUrl ? { baseURL: model.baseUrl.replace(/\/v1\/?$/, "") } : {}),
       ...(() => {
+        const guardedWire = guardedFetch(model);
+        const wire = privacyFetch(model, guardedWire) ?? guardedWire;
         const gatewayBase =
           model.baseUrl && new URL(model.baseUrl).hostname === "openrouter.ai"
-            ? anthropicGatewayFetch
-            : undefined;
-        const identityBase = onResponseIdentity
+            ? anthropicGatewayFetch(wire)
+            : model.beforeDispatch || model.authorizeRequest || model.dataCollection
+              ? wire
+              : undefined;
+        const base = onResponseIdentity
           ? responseIdentityFetch(model.provider, onResponseIdentity, gatewayBase)
           : gatewayBase;
-        const base = privacyFetch(model, identityBase);
-        if (model.beforeDispatch) return { fetch: guardedFetch(model.beforeDispatch, base) };
         return base ? { fetch: base } : {};
       })(),
       ...(headers ? { defaultHeaders: headers } : {}),
@@ -228,26 +282,25 @@ export const createModelAdapter = (
   // The two OpenAI wire protocols are distinct: createOpenaiChat uses Responses,
   // while compatible chat-only providers need createOpenaiChatCompletions.
   const factory = model.provider === "openai-chat" ? createOpenaiChatCompletions : createOpenaiChat;
+  const guardedWire = guardedFetch(model);
+  const wire = privacyFetch(model, guardedWire) ?? guardedWire;
   const gatewayFetch =
     model.provider === "openai-chat" &&
     (cache?.enabled ?? true) &&
     isGeminiModel(model.model) &&
     model.baseUrl &&
     new URL(model.baseUrl).hostname === "openrouter.ai"
-      ? geminiGatewayFetch
-      : undefined;
-  const identityFetch = onResponseIdentity
+      ? geminiGatewayFetch(wire)
+      : model.beforeDispatch || model.authorizeRequest || model.dataCollection
+        ? wire
+        : undefined;
+  const baseFetch = onResponseIdentity
     ? responseIdentityFetch(model.provider, onResponseIdentity, gatewayFetch)
     : gatewayFetch;
-  const baseFetch = privacyFetch(model, identityFetch);
   // `maxRetries: 0` — one retry layer: the runtime's retry/failover adapter owns retries.
   const adapter = factory(model.model as OpenAIModel, model.apiKey, {
     maxRetries: 0,
-    ...(model.beforeDispatch
-      ? { fetch: guardedFetch(model.beforeDispatch, baseFetch) }
-      : baseFetch
-        ? { fetch: baseFetch }
-        : {}),
+    ...(baseFetch ? { fetch: baseFetch } : {}),
     ...(model.baseUrl ? { baseURL: model.baseUrl } : {}),
     ...(headers ? { defaultHeaders: headers } : {}),
   });

@@ -31,3 +31,12 @@ export function configFile(
 ): string {
   return join(configDir(env, platform), "config.json");
 }
+
+/**
+ * Spend follows the OS user and key, never a website, claim, working directory or
+ * COCKPIT_CHESS_CONFIG_DIR. Changing ordinary CLI profiles cannot reset a day cap.
+ */
+export function runnerSpendFile(authorityId: string, userHome = homedir()): string {
+  if (!/^[a-f0-9]{64}$/.test(authorityId)) throw new Error("RUNNER_SPEND_INVALID");
+  return join(userHome, ".cockpit-chess", "spend-v1", `${authorityId}.json`);
+}

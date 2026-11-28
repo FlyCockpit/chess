@@ -381,6 +381,8 @@ export interface ProviderCredentials {
   beforeDispatch?: () => void;
   /** OpenRouter providers must decline data retention/training for hosted calls. */
   dataCollection?: "deny";
+  /** Local durable spend authority at the actual HTTP seam, including each retry. */
+  authorizeRequest?: AgentModel["authorizeRequest"];
   /** Conservative price quotes, integer microdollars per million tokens. */
   inputMicrosPerMillion: number;
   outputMicrosPerMillion: number;
@@ -503,6 +505,7 @@ export async function advanceMatch(
     ...(credential.headers ? { headers: credential.headers } : {}),
     ...(credential.beforeDispatch ? { beforeDispatch: credential.beforeDispatch } : {}),
     ...(credential.dataCollection ? { dataCollection: credential.dataCollection } : {}),
+    ...(credential.authorizeRequest ? { authorizeRequest: credential.authorizeRequest } : {}),
   };
   const bundle = assertPinnedPrompt(match.config);
   const systemPrompt = matchSystemPrompt(match);

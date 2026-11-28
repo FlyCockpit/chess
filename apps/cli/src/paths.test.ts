@@ -23,3 +23,15 @@ describe("configDir", () => {
     );
   });
 });
+
+describe("runnerSpendFile", () => {
+  it("uses key authority under the OS home without website or configurable profile segments", async () => {
+    const { runnerSpendFile } = await import("./paths");
+    const id = "a".repeat(64);
+    expect(runnerSpendFile(id)).toBe(join(homedir(), ".cockpit-chess", "spend-v1", `${id}.json`));
+    expect(runnerSpendFile(id, "/test-user")).toBe(
+      join("/test-user", ".cockpit-chess", "spend-v1", `${id}.json`),
+    );
+    expect(() => runnerSpendFile("../../elsewhere")).toThrow("RUNNER_SPEND_INVALID");
+  });
+});

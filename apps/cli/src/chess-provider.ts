@@ -7,11 +7,14 @@ import {
 import type { ProviderCredentials } from "@cockpit-chess/chess/runner";
 import { z } from "zod";
 import { t } from "./chess-i18n";
+import type { RunnerMatchAuthority } from "./runner-policy";
 
 export interface LocalProviderOptions {
   baseUrl?: string;
   inputPrice?: string;
   outputPrice?: string;
+  /** Only the paired runner supplies this local object; never read from a server message. */
+  runnerAuthority?: RunnerMatchAuthority;
 }
 
 /** A provider configuration problem whose (translated, key-free) message is safe to show. */
@@ -167,6 +170,19 @@ export async function localCredentials(
     )
   )
     return output;
+  if (options.runnerAuthority) {
+    if (options.baseUrl || options.inputPrice || options.outputPrice)
+      throw new ProviderConfigError(t("cli.message32"));
+    for (const side of ["w", "b"] as const) {
+      const player = side === "w" ? match.config.white : match.config.black;
+      if (player.protocol === "random" || player.protocol === "human") continue;
+      output[side] = await options.runnerAuthority.credentials({
+        model: player.model,
+        protocol: player.protocol,
+      });
+    }
+    return output;
+  }
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
   const { endpoint, local } = providerEndpoint(baseUrl);
   const isOpenRouter = endpoint.hostname === "openrouter.ai";

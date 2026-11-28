@@ -83,6 +83,32 @@ export interface AgentModel {
   beforeDispatch?: () => void;
   /** OpenRouter provider routing policy; does not alter cache prefixes or affinity. */
   dataCollection?: "deny";
+  /**
+   * Awaited at the actual HTTP boundary on every attempt, after cache transforms.
+   * Resolve only after the request's conservative spending bound is durably held.
+   * The optional body replacement permits locally pinned routing/privacy settings;
+   * the authorization must cover that returned body. URL, headers and credentials
+   * are never replaceable here. Throws refuse the request; redirects are disabled.
+   * `beforeSend` revalidates a persisted authorization's expiry synchronously at
+   * the wire boundary; failure retains the conservative reservation but sends nothing.
+   * `onUsage` settles this HTTP attempt from terminal provider-reported usage. It
+   * is awaited before terminal response bytes reach the SDK; failure fails the stream.
+   * Missing, malformed, aborted or failed responses leave the full bound held.
+   * `beforeDispatch` and the abort signal are rechecked after this hook completes.
+   */
+  authorizeRequest?: (request: {
+    url: string;
+    method: string;
+    body: string;
+    signal: AbortSignal;
+  }) => Promise<
+    | undefined
+    | {
+        body: string;
+        beforeSend?: () => void;
+        onUsage?: (usage: unknown) => Promise<void>;
+      }
+  >;
 }
 
 export interface AgentTool<TSchema extends z.ZodType = z.ZodType> {

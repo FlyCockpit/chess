@@ -12,12 +12,40 @@ void instance.init({
       cli: {
         requestTimeout: "Request timed out",
         networkTimeout: "Could not reach {{server}}: timed out",
+        runnerConfig:
+          "Invalid local runner policy. Check runner-policy.json or the local startup flags.",
+        runnerModel:
+          "This model is not permitted locally or has no supported price bound. Choose an available model.",
+        runnerRequest:
+          "The provider request is unsupported. Use a permitted text model and a finite output limit.",
+        runnerLimits:
+          "The local runner limit was reached. Lower the request budget or change limits within the local ceiling.",
+        runnerOffline:
+          "The runner is stopped or disconnected. Reconnect before starting another request.",
+        runnerStorage:
+          "The local spend ledger is unavailable or locked by another runner. Stop the other runner and check local storage before retrying.",
+        runnerPolicy:
+          "Local price-checked ceilings: USD {{match}} per match, USD {{day}} per rolling 24 hours, {{concurrency}} concurrent. Operating limits: USD {{operatingMatch}} per match, USD {{operatingDay}} per rolling 24 hours, {{operatingConcurrency}} concurrent. Limits use prices checked right before each request. A provider price change in that window can exceed a limit once, after which the runner stops. Set a spend limit on the OpenRouter key for an absolute cap. Known final charges settle locally; calls without complete usage keep their full reservation.",
       },
     },
     "es-MX": {
       cli: {
         requestTimeout: "La solicitud agotó el tiempo de espera",
         networkTimeout: "No se pudo conectar con {{server}}: se agotó el tiempo de espera",
+        runnerConfig:
+          "La política local del ejecutor no es válida. Revisa runner-policy.json o las opciones de inicio locales.",
+        runnerModel:
+          "Este modelo no está permitido localmente o no tiene un límite de precio compatible. Elige un modelo disponible.",
+        runnerRequest:
+          "La solicitud al proveedor no es compatible. Usa un modelo de texto permitido y un límite de salida finito.",
+        runnerLimits:
+          "Se alcanzó el límite local del ejecutor. Reduce el presupuesto de la solicitud o cambia los límites dentro del máximo local.",
+        runnerOffline:
+          "El ejecutor está detenido o desconectado. Vuelve a conectarlo antes de iniciar otra solicitud.",
+        runnerStorage:
+          "El registro local de gastos no está disponible o está bloqueado por otro ejecutor. Detén el otro ejecutor y revisa el almacenamiento local antes de reintentar.",
+        runnerPolicy:
+          "Máximos locales con precios verificados: USD {{match}} por partida, USD {{day}} por 24 horas continuas, {{concurrency}} simultáneas. Límites operativos: USD {{operatingMatch}} por partida, USD {{operatingDay}} por 24 horas continuas, {{operatingConcurrency}} simultáneas. Los límites usan precios verificados justo antes de cada solicitud. Un cambio de precio del proveedor en ese intervalo puede superar un límite una vez; después, el ejecutor se detiene. Establece un límite de gasto en la clave de OpenRouter para un tope absoluto. Los cargos finales conocidos se liquidan localmente; las llamadas sin datos completos conservan su reserva total.",
       },
     },
   },

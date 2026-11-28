@@ -772,6 +772,68 @@ describe("message metadata round trip", () => {
 });
 
 describe("OpenRouter provider data policy", () => {
+  it.each<AgentModel["provider"]>(["openrouter", "openai-chat", "openai-responses", "anthropic"])(
+    "applies the single privacy policy before %s durable authorization and preserves cache/session routing",
+    async (provider) => {
+      const protocol = provider === "openrouter" ? "openai-chat" : provider;
+      const base = options(protocol);
+      const authorized: Record<string, unknown>[] = [];
+      let persisted = 0;
+      const requests = captureHttp((index) => {
+        expect(persisted).toBe(index + 1);
+        return responseFor(protocol, index === 0);
+      });
+      const result = await runAgentLoop({
+        ...base,
+        cacheKey: "combined-stable-session",
+        tools: [legalMovesTool],
+        model: {
+          ...base.model,
+          provider,
+          model: "anthropic/claude-haiku-4.5",
+          baseUrl: "https://openrouter.ai/api/v1",
+          dataCollection: "deny",
+          authorizeRequest: async (request) => {
+            const body = JSON.parse(request.body);
+            // The local financial hook observes C1b's final privacy bytes. It
+            // contributes only its pinned route, preserving the injected policy.
+            expect(body.provider).toMatchObject({ data_collection: "deny" });
+            body.provider = {
+              ...body.provider,
+              only: ["local-priced-route"],
+              allow_fallbacks: false,
+              require_parameters: true,
+            };
+            await Promise.resolve();
+            persisted += 1;
+            authorized.push(body);
+            return { body: JSON.stringify(body) };
+          },
+        },
+      });
+      expect(result.stopReason).toBe("completed");
+      expect(requests).toHaveLength(2);
+      for (const [index, request] of requests.entries()) {
+        expect(request.body).toEqual(authorized[index]);
+        expect(request.body.provider).toEqual({
+          data_collection: "deny",
+          only: ["local-priced-route"],
+          allow_fallbacks: false,
+          require_parameters: true,
+        });
+        if (provider === "openrouter")
+          expect(request.body.session_id).toBe("combined-stable-session");
+        else {
+          expect(request.headers.get("x-session-id")).toBe("combined-stable-session");
+          if (provider !== "anthropic")
+            expect(request.body.prompt_cache_key).toBe("combined-stable-session");
+        }
+        if (provider === "openrouter" || provider === "anthropic")
+          expect(countCacheControls(request.body)).toBeGreaterThan(0);
+      }
+    },
+  );
+
   it("rechecks the lease after asynchronous body decoding before any HTTP", async () => {
     let allowed = true;
     const requests = captureHttp(() => chatResponse(false));
