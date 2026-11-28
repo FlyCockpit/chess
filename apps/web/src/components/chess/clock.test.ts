@@ -95,4 +95,32 @@ describe("replay clocks", () => {
     expect(formatClock(9_340)).toBe("0:09.3");
     expect(formatClock(0)).toBe("0:00.0");
   });
+  it("counts a hosted human clock from the authoritative turn start, not the last event or creation", () => {
+    const match = createMatch(
+      {
+        white: { name: "Human", model: "human", protocol: "human" },
+        black: model,
+        rules: { clock: { w: 60_000, b: 60_000 } },
+      },
+      "hosted",
+    );
+    match.createdAt = at(0);
+    expect(liveClock(match, "w", "w", T0 + 15_000)).toBe(60_000);
+    // Queueing and unrelated spectator activity never spend the human clock.
+    match.turn = {
+      type: "human",
+      side: "w",
+      turnId: crypto.randomUUID(),
+      expectedSeq: 0,
+      startedAt: at(20_000),
+      deadline: at(60_000),
+    };
+    expect(liveClock(match, "w", "w", T0 + 25_000)).toBe(55_000);
+    push(match, 30_000, { type: "timing", elapsedMs: 10_000 });
+    match.turn = { ...match.turn, startedAt: at(30_000), expectedSeq: 1 };
+    expect(liveClock(match, "w", "w", T0 + 32_000)).toBe(48_000);
+    expect(liveClock(match, "b", "w", T0 + 32_000)).toBe(60_000);
+    match.turn = { type: "idle" };
+    expect(liveClock(match, "w", "w", T0 + 50_000)).toBe(50_000);
+  });
 });

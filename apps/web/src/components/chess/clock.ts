@@ -30,12 +30,24 @@ export function liveClock(match: MatchArchive, side: Color, turn: Color, now: nu
   const left = clockAt(match, side, match.events.length - 1);
   if (left === null || match.status !== "running" || side !== turn) return left;
   const human = (side === "w" ? match.config.white : match.config.black).protocol === "human";
+  // Queue/idle time is never human think time on hosted games. A durable turn
+  // starts the countdown; local labs retain their event-based timing below.
+  if (
+    human &&
+    match.source === "hosted" &&
+    (match.turn.type !== "human" || match.turn.side !== side)
+  )
+    return left;
   const charged = match.events.findLastIndex((event) => event.type === "timing");
-  const start = human
-    ? (match.events.at(-1)?.at ?? match.createdAt)
-    : match.events
-        .slice(charged + 1)
-        .find((event) => event.type === "reservation" && event.side === side)?.at;
+  const active = match.turn;
+  const start =
+    match.source === "hosted" && active.type === "human" && active.side === side
+      ? active.startedAt
+      : human
+        ? (match.events.at(-1)?.at ?? match.createdAt)
+        : match.events
+            .slice(charged + 1)
+            .find((event) => event.type === "reservation" && event.side === side)?.at;
   if (!start) return left;
   const since = Date.parse(start);
   return Number.isFinite(since) ? Math.max(0, left - Math.max(0, now - since)) : left;

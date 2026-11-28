@@ -136,6 +136,51 @@ const models = [
 ];
 
 describe("CreateMatchDialog", () => {
+  it.each(["white", "black"] as const)(
+    "offers play as %s as practice with a single model picker",
+    (playAs) => {
+      const previous = DEFAULT_VALUES.playAs;
+      DEFAULT_VALUES.playAs = playAs;
+      try {
+        const html = render();
+        expect(html).toContain(enChess.human.mode);
+        expect(html).toContain(enChess.human.practice);
+        expect(html).toContain(enChess.human.createHint);
+        expect(html).toContain(enChess.human.you);
+        expect(html).not.toContain(`>${enChess.create.official}</button>`);
+        formOptions().onSubmit({ value: { ...DEFAULT_VALUES } });
+        expect(mutation.mutate).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            official: false,
+            [playAs]: expect.objectContaining({ protocol: "human", model: "human" }),
+            rules: expect.objectContaining({ context: "fresh" }),
+          }),
+        );
+      } finally {
+        DEFAULT_VALUES.playAs = previous;
+      }
+    },
+  );
+  it("explains the conservative remaining-key cap without claiming the human spends", () => {
+    const previous = DEFAULT_VALUES.playAs;
+    DEFAULT_VALUES.playAs = "white";
+    try {
+      const html = renderToStaticMarkup(
+        <I18nextProvider i18n={i18n}>
+          <CreateMatchDialog
+            disabled={false}
+            billingOptions={["openrouter"]}
+            ownKeyRemainingMicros={3_000_000}
+            onCreated={vi.fn()}
+          />
+        </I18nextProvider>,
+      );
+      expect(html).toContain("only the model spends");
+      expect(html).not.toContain("both players bill it");
+    } finally {
+      DEFAULT_VALUES.playAs = previous;
+    }
+  });
   it("puts the two model pickers, the summary and Start first", () => {
     catalog.state = { data: { models }, isError: false, refetch: () => undefined };
     const html = render();

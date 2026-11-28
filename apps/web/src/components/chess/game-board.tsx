@@ -16,11 +16,13 @@ export function GameBoard({
   match,
   onMove,
   disabled,
+  flipped = false,
   lookups = false,
 }: {
   match: MatchArchive;
   onMove: (move: string) => void;
   disabled: boolean;
+  flipped?: boolean;
   /** Show the model's legal-move lookups on the board. */
   lookups?: boolean;
 }) {
@@ -53,6 +55,7 @@ export function GameBoard({
       fen={fen}
       onMove={onMove}
       disabled={disabled}
+      flipped={flipped}
       lastMove={lastMove}
       lookup={lookup}
       motion={playback.motion}
@@ -61,6 +64,11 @@ export function GameBoard({
       onInteract={playback.finish}
       illegal={illegal}
       playFen={source.fenAt(match.events.length - 1)}
+      inputKey={
+        match.turn.type === "idle"
+          ? match.events.length
+          : `${match.turn.turnId}:${match.turn.expectedSeq}`
+      }
     />
   );
 }

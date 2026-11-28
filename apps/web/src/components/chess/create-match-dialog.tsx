@@ -355,7 +355,7 @@ export function CreateMatchDialog({
                 ownKeyRemainingMicros !== null &&
                 limits.maxCostMicros < operatorLimits.maxCostMicros && (
                   <p className="cc-field-hint">
-                    {t("create.remainingCap", {
+                    {t(values.playAs === "none" ? "create.remainingCap" : "human.remainingCap", {
                       remaining: openRouterMoney(i18n.language, ownKeyRemainingMicros),
                       max: currency.format(budgetMax),
                     })}
@@ -363,45 +363,86 @@ export function CreateMatchDialog({
                 )}
             </div>
             <div className="cc-create-quick">
-              <form.Field name="official">
+              <form.Field name="playAs">
                 {(field) => (
                   <div className="cc-choice">
-                    <span className="cc-field-label">{t("create.participationLabel")}</span>
+                    <span className="cc-field-label">{t("human.mode")}</span>
                     <SegmentedControl
-                      ariaLabel={t("create.participationLabel")}
-                      value={field.state.value ? "official" : "practice"}
-                      onChange={(next) => field.handleChange(next === "official")}
-                      items={[
-                        { value: "practice", label: t("create.practice") },
-                        { value: "official", label: t("create.official") },
-                      ]}
+                      ariaLabel={t("human.mode")}
+                      value={field.state.value}
+                      onChange={(next) => {
+                        field.handleChange(next);
+                        if (next !== "none") {
+                          form.setFieldValue("official", false);
+                          form.setFieldValue("context", "fresh");
+                        }
+                      }}
+                      items={
+                        [
+                          { value: "none", label: t("human.watchModels") },
+                          { value: "white", label: t("human.playWhite") },
+                          { value: "black", label: t("human.playBlack") },
+                        ] as const
+                      }
                     />
-                    <p className="cc-field-hint">{t("create.participationHint")}</p>
-                    <p className="cc-field-hint" role="note">
-                      {t(
-                        field.state.value
-                          ? "create.officialCommitment"
-                          : "create.practiceCommitment",
-                      )}
-                    </p>
+                    {field.state.value !== "none" && (
+                      <p className="cc-field-hint">{t("human.createHint")}</p>
+                    )}
                   </div>
                 )}
               </form.Field>
+              {values.playAs !== "none" ? (
+                <p className="cc-pill">{t("human.practice")}</p>
+              ) : (
+                <form.Field name="official">
+                  {(field) => (
+                    <div className="cc-choice">
+                      <span className="cc-field-label">{t("create.participationLabel")}</span>
+                      <SegmentedControl
+                        ariaLabel={t("create.participationLabel")}
+                        value={field.state.value ? "official" : "practice"}
+                        onChange={(next) => field.handleChange(next === "official")}
+                        items={[
+                          { value: "practice", label: t("create.practice") },
+                          { value: "official", label: t("create.official") },
+                        ]}
+                      />
+                      <p className="cc-field-hint">{t("create.participationHint")}</p>
+                      <p className="cc-field-hint" role="note">
+                        {t(
+                          field.state.value
+                            ? "create.officialCommitment"
+                            : "create.practiceCommitment",
+                        )}
+                      </p>
+                    </div>
+                  )}
+                </form.Field>
+              )}
               <div className="cc-create-players">
                 {(["white", "black"] as const).map((name) => (
                   <form.Field key={name} name={name}>
-                    {(field) => (
-                      <ModelPicker
-                        side={name === "white" ? "w" : "b"}
-                        value={field.state.value}
-                        onChange={(id) => field.handleChange(id)}
-                        catalog={catalog}
-                        catalogState={catalogState}
-                        onRetry={() => void retryCatalog()}
-                        errors={field.state.meta.errors}
-                        needsTools={needsTools}
-                      />
-                    )}
+                    {(field) =>
+                      values.playAs === name ? (
+                        <div className="cc-choice">
+                          <span className="cc-field-label">
+                            {t(`colors.${name === "white" ? "w" : "b"}`)}
+                          </span>
+                          <strong>{t("human.you")}</strong>
+                        </div>
+                      ) : (
+                        <ModelPicker
+                          side={name === "white" ? "w" : "b"}
+                          value={field.state.value}
+                          onChange={(id) => field.handleChange(id)}
+                          catalog={catalog}
+                          catalogState={catalogState}
+                          onRetry={() => void retryCatalog()}
+                          errors={field.state.meta.errors}
+                          needsTools={needsTools}
+                        />
+                      )
+                    }
                   </form.Field>
                 ))}
               </div>
@@ -458,29 +499,35 @@ export function CreateMatchDialog({
                   title={t("create.sections.players")}
                   hint={t("create.sections.playersHint")}
                   status={[
-                    protocolLabel("white")(values.whiteProtocol),
-                    protocolLabel("black")(values.blackProtocol),
+                    values.playAs === "white"
+                      ? t("human.you")
+                      : protocolLabel("white")(values.whiteProtocol),
+                    values.playAs === "black"
+                      ? t("human.you")
+                      : protocolLabel("black")(values.blackProtocol),
                     t(`identity.${values.identity}`),
                   ].join(" · ")}
                 >
-                  {(["white", "black"] as const).map((side) => (
-                    <form.Field
-                      key={side}
-                      name={side === "white" ? "whiteProtocol" : "blackProtocol"}
-                    >
-                      {(field) => (
-                        <ChoiceField
-                          field={field}
-                          label={t("create.protocolLabel", {
-                            side: t(`colors.${side === "white" ? "w" : "b"}`),
-                          })}
-                          options={PROTOCOL_CHOICES}
-                          optionLabel={protocolLabel(side)}
-                          explain={() => t("create.protocolHint")}
-                        />
-                      )}
-                    </form.Field>
-                  ))}
+                  {(["white", "black"] as const)
+                    .filter((side) => side !== values.playAs)
+                    .map((side) => (
+                      <form.Field
+                        key={side}
+                        name={side === "white" ? "whiteProtocol" : "blackProtocol"}
+                      >
+                        {(field) => (
+                          <ChoiceField
+                            field={field}
+                            label={t("create.protocolLabel", {
+                              side: t(`colors.${side === "white" ? "w" : "b"}`),
+                            })}
+                            options={PROTOCOL_CHOICES}
+                            optionLabel={protocolLabel(side)}
+                            explain={() => t("create.protocolHint")}
+                          />
+                        )}
+                      </form.Field>
+                    ))}
                   <form.Field name="identity">
                     {(field) => (
                       <ChoiceField
@@ -517,7 +564,7 @@ export function CreateMatchDialog({
                       <ChoiceField
                         field={field}
                         label={t("studio.contextLabel")}
-                        options={CONTEXT_MODES}
+                        options={values.playAs === "none" ? CONTEXT_MODES : ["fresh"]}
                         optionLabel={(value) => t(`context.${value}`)}
                         explain={(value) => t(`create.explain.context.${value}`)}
                       />

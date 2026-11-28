@@ -72,6 +72,34 @@ const issuesFor = (value: Partial<CreateMatchValues>, server = limits) => {
 const errorsFor = (value: Partial<CreateMatchValues>, server = limits) =>
   issuesFor(value, server).map((issue) => String(issue.path[0]));
 
+describe("hosted human creation", () => {
+  it.each(["white", "black"] as const)(
+    "creates exactly one %s human against a model with a finite deadline",
+    (side) => {
+      const value = { ...DEFAULT_VALUES, playAs: side, [side]: "" };
+      expect(errorsFor(value)).toEqual([]);
+      const config = toMatchConfig(value, catalog, t);
+      expect(config.success).toBe(true);
+      if (!config.success) return;
+      expect(config.data[side]).toMatchObject({ protocol: "human", model: "human" });
+      expect(config.data[side === "white" ? "black" : "white"].protocol).not.toBe("human");
+      expect(config.data.rules.context).toBe("fresh");
+      expect(config.data.rules.turnTimeoutMs).toBeGreaterThan(0);
+      expect(config.data.rules.turnTimeoutMs).toBeLessThanOrEqual(300_000);
+      expect(officialEligible(config.data)).toBe(false);
+      expect(config.data.title).toContain(enChess.lab.human);
+    },
+  );
+  it.each([{ official: true }, { context: "persistent" as const }])(
+    "rejects unsupported human settings rather than silently changing them: %o",
+    (settings) => {
+      const value = { ...DEFAULT_VALUES, playAs: "white" as const, ...settings };
+      expect(errorsFor(value).length).toBeGreaterThan(0);
+      expect(toMatchConfig(value, catalog, t)).toEqual({ success: false });
+    },
+  );
+});
+
 describe("official participation", () => {
   it("defaults to practice regardless of hosted budget limits", () => {
     expect(DEFAULT_VALUES.official).toBe(false);

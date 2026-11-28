@@ -799,5 +799,34 @@
   "endingHelp": {
     "account-limit": "Raise the key's limit or add credits on OpenRouter, then start a new match.",
     "credential-revoked": "Reconnect OpenRouter in Settings, then start a new match."
+  },
+  "human": {
+    "mode": "How do you want to play?",
+    "watchModels": "Watch two models",
+    "playWhite": "Play as White",
+    "playBlack": "Play as Black",
+    "createHint": "Human games are always practice with fresh model context. Only the model uses the selected OpenRouter key. Your per-move safety limit applies even without a game clock.",
+    "practice": "Human vs model · Practice",
+    "you": "You",
+    "playTitle": "Play your match",
+    "yourTurn": "Your turn. Choose a piece and destination, or type a move below.",
+    "modelTurn": "The model is thinking. Your next turn will appear here automatically.",
+    "queued": "Waiting for the model worker. This view updates automatically.",
+    "sending": "Sending your move. Wait for the server to acknowledge it.",
+    "acknowledged": "Move acknowledged. Refreshing the authoritative board…",
+    "uncertain": "Your move may have arrived. Refresh the game to check; it will not be sent again. If this turn stays unchanged, wait for the server deadline or stop the match.",
+    "offline": "You are offline. Reconnect to refresh the game before playing; no move will be queued or sent again.",
+    "stale": "The game could not be refreshed. Your board is saved here; try refreshing before your next move.",
+    "expired": "The displayed deadline has passed. Refresh to see the server's decision; your device clock does not decide the result.",
+    "finished": "This match has ended. Review the final moves and result below, or start another practice match.",
+    "deadline": "{{side}} server deadline {{time}} · about {{remaining}} left",
+    "inputHelp": "Tap a piece then its destination, drag it, or use the keyboard. Choose a promotion piece when asked.",
+    "moveLabel": "Your move",
+    "moveHint": "Use starting and destination squares, for example e2e4. For promotion add q, r, b or n, for example a7a8n.",
+    "send": "Send move",
+    "remainingCap": "Your key has {{remaining}} left. This form conservatively caps the model budget at {{max}}; only the model spends.",
+    "resign": "Resign",
+    "resync": "Refresh game",
+    "rejected": "The server refused that move. Refresh the game, then choose a move for the current turn."
   }
 }

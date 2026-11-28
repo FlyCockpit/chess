@@ -1,5 +1,5 @@
 import { Chess, type Color, type PieceSymbol, type Square } from "@cockpit-chess/chess";
-import { type CSSProperties, memo, useMemo, useState } from "react";
+import { type CSSProperties, memo, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { WideContent } from "@/components/wide-content";
 import type { BoardIllegal, BoardMotion } from "./board-motion";
@@ -98,6 +98,7 @@ export const ChessBoard = memo(function ChessBoard({
   onInteract,
   illegal,
   playFen,
+  inputKey,
   announce = false,
 }: {
   fen: string;
@@ -122,14 +123,41 @@ export const ChessBoard = memo(function ChessBoard({
    * moves always follow it, never the position on screen mid-motion.
    */
   playFen?: string;
+  /** A new authoritative turn invalidates input even when its FEN is unchanged. */
+  inputKey?: string | number;
   /** Announce each rejected attempt politely as the board shows it. */
   announce?: boolean;
 }) {
   const { t } = useTranslation("chess");
-  const [selectedSquare, setSelected] = useState<Square | null>(null);
-  const [promotion, setPromotion] = useState<{ from: Square; to: Square } | null>(null);
+  const [selection, setSelection] = useState<{
+    square: Square;
+    version: object;
+  } | null>(null);
+  const [promotion, setPromotion] = useState<{
+    from: Square;
+    to: Square;
+    version: object;
+  } | null>(null);
   const shown = useMemo(() => new Chess(fen), [fen]);
   const live = playFen ?? fen;
+  // A committed input epoch, independent of board animation. New props hide
+  // old selection/promotion immediately; the ref callback retires gestures
+  // before browser events can run, without mutating refs during render.
+  const playable = Boolean(onMove);
+  const version = useMemo(
+    () => ({ live, inputKey, disabled, playable }),
+    [live, inputKey, disabled, playable],
+  );
+  const input = useRef({ version, disabled, locked: false });
+  const drag = useRef<{
+    pointerId: number;
+    from: Square;
+    x: number;
+    y: number;
+    moved: boolean;
+    version: object;
+  } | null>(null);
+  const suppressClick = useRef(false);
   const chess = useMemo(() => (live === fen ? shown : new Chess(live)), [live, fen, shown]);
   const squares = useMemo(() => {
     const list = shown.board().flatMap((row, rowIndex) =>
@@ -143,21 +171,8 @@ export const ChessBoard = memo(function ChessBoard({
     if (flipped) list.reverse();
     return list;
   }, [shown, flipped]);
-  // A selection survives a position change only while it still holds a piece
-  // of the side to move; otherwise it is stale and ignored.
-  const selected =
-    selectedSquare && chess.get(selectedSquare)?.color === chess.turn() ? selectedSquare : null;
-  // Same rule for an open promotion picker: it belongs to one pawn of the side to
-  // move, and closes once the position or interactivity no longer allows that move.
-  const promotionPiece = promotion ? chess.get(promotion.from) : undefined;
-  const activePromotion =
-    promotion &&
-    onMove &&
-    !disabled &&
-    promotionPiece?.type === "p" &&
-    promotionPiece.color === chess.turn()
-      ? promotion
-      : null;
+  const selected = selection?.version === version && !disabled && onMove ? selection.square : null;
+  const activePromotion = promotion?.version === version && onMove && !disabled ? promotion : null;
   const targets = useMemo(
     () => (selected ? chess.moves({ square: selected, verbose: true }).map((move) => move.to) : []),
     [chess, selected],
@@ -168,23 +183,56 @@ export const ChessBoard = memo(function ChessBoard({
   // the top one, else (both edge ranks outlined) the middle of the board.
   const outlinedRows = outlined.map((square) => place(square, flipped).row);
   const captionAt = !outlinedRows.includes(7) ? "" : !outlinedRows.includes(0) ? "top" : "middle";
+  function send(move: string) {
+    if (!onMove || disabled || input.current.locked || input.current.version !== version) return;
+    input.current.locked = true;
+    setPromotion(null);
+    setSelection(null);
+    onMove(move);
+  }
+  function move(from: Square, to: Square) {
+    if (!chess.moves({ square: from, verbose: true }).some((candidate) => candidate.to === to))
+      return false;
+    if (chess.get(from)?.type === "p" && (to[1] === "8" || to[1] === "1"))
+      setPromotion({ from, to, version });
+    else send(`${from}${to}`);
+    return true;
+  }
   function choose(square: Square) {
-    if (!onMove || disabled || activePromotion) return;
+    if (
+      !onMove ||
+      disabled ||
+      activePromotion ||
+      input.current.locked ||
+      input.current.version !== version
+    )
+      return;
     onInteract?.();
-    if (selected && targets.includes(square)) {
-      const piece = chess.get(selected);
-      if (piece?.type === "p" && (square[1] === "8" || square[1] === "1"))
-        setPromotion({ from: selected, to: square });
-      else {
-        onMove(`${selected}${square}`);
-        setSelected(null);
-      }
-    } else setSelected(chess.get(square)?.color === chess.turn() ? square : null);
+    if (selected && move(selected, square)) return;
+    setSelection(chess.get(square)?.color === chess.turn() ? { square, version } : null);
   }
   return (
     <div className="cc-board-wrap">
       <WideContent>
         <div
+          ref={(node) => {
+            if (!node) return;
+            if (input.current.version !== version) {
+              if (drag.current) suppressClick.current = true;
+              drag.current = null;
+              input.current = { version, disabled, locked: false };
+            }
+            // A single-finger piece drag owns its gesture. Keep the global
+            // touch-action and pinch zoom; scrolling still works from empty or
+            // opposing squares. React's delegated touch listeners are passive,
+            // so this narrowly scoped native listener must opt out of that.
+            const moveTouch = (event: TouchEvent) => {
+              if (event.touches.length === 1 && drag.current && !input.current.disabled)
+                event.preventDefault();
+            };
+            node.addEventListener("touchmove", moveTouch, { passive: false });
+            return () => node.removeEventListener("touchmove", moveTouch);
+          }}
           className={`cc-board ${onMove ? "cc-playable-board" : ""}`}
           role="group"
           aria-label={t("board.label")}
@@ -193,7 +241,93 @@ export const ChessBoard = memo(function ChessBoard({
             <button
               type="button"
               key={square}
-              onClick={() => choose(square)}
+              onClick={(event) => {
+                if (suppressClick.current && event.detail !== 0) {
+                  suppressClick.current = false;
+                  return;
+                }
+                suppressClick.current = false;
+                choose(square);
+              }}
+              onPointerDown={(event) => {
+                if (
+                  !onMove ||
+                  disabled ||
+                  activePromotion ||
+                  input.current.locked ||
+                  input.current.version !== version ||
+                  drag.current ||
+                  !event.isPrimary ||
+                  event.button !== 0
+                )
+                  return;
+                suppressClick.current = false;
+                if (chess.get(square)?.color !== chess.turn()) return;
+                onInteract?.();
+                drag.current = {
+                  pointerId: event.pointerId,
+                  from: square,
+                  x: event.clientX,
+                  y: event.clientY,
+                  moved: false,
+                  version,
+                };
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }}
+              onPointerMove={(event) => {
+                const current = drag.current;
+                if (
+                  !current ||
+                  current.pointerId !== event.pointerId ||
+                  current.version !== version
+                )
+                  return;
+                if (
+                  !current.moved &&
+                  Math.hypot(event.clientX - current.x, event.clientY - current.y) >= 8
+                ) {
+                  current.moved = true;
+                  setSelection({ square: current.from, version });
+                }
+              }}
+              onPointerUp={(event) => {
+                const current = drag.current;
+                if (!current || current.pointerId !== event.pointerId) return;
+                drag.current = null;
+                if (current.version !== version) return;
+                const moved =
+                  current.moved ||
+                  Math.hypot(event.clientX - current.x, event.clientY - current.y) >= 8;
+                if (!moved) return;
+                suppressClick.current = true;
+                setSelection(null);
+                const rect = event.currentTarget.parentElement?.getBoundingClientRect();
+                if (
+                  !rect ||
+                  event.clientX < rect.left ||
+                  event.clientX >= rect.right ||
+                  event.clientY < rect.top ||
+                  event.clientY >= rect.bottom
+                )
+                  return;
+                const column = Math.floor(((event.clientX - rect.left) / rect.width) * 8);
+                const row = Math.floor(((event.clientY - rect.top) / rect.height) * 8);
+                const to =
+                  `${"abcdefgh"[flipped ? 7 - column : column]}${flipped ? row + 1 : 8 - row}` as Square;
+                move(current.from, to);
+              }}
+              onPointerCancel={(event) => {
+                if (drag.current?.pointerId !== event.pointerId) return;
+                suppressClick.current = true;
+                drag.current = null;
+                setSelection(null);
+              }}
+              onLostPointerCapture={(event) => {
+                if (drag.current?.pointerId !== event.pointerId) return;
+                suppressClick.current = true;
+                drag.current = null;
+                setSelection(null);
+              }}
               disabled={disabled || !onMove}
               aria-label={
                 piece
@@ -207,9 +341,12 @@ export const ChessBoard = memo(function ChessBoard({
               aria-pressed={selected === square}
               className={`cc-square ${(rowIndex + columnIndex) % 2 === 0 ? "cc-light" : "cc-dark"} ${selected === square ? "cc-selected" : ""} ${lastMove?.slice(0, 2) === square || lastMove?.slice(2, 4) === square ? "cc-last" : ""}`}
               onKeyDown={(event) => {
-                const delta = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -8, ArrowDown: 8 }[
-                  event.key
-                ];
+                const delta = {
+                  ArrowLeft: -1,
+                  ArrowRight: 1,
+                  ArrowUp: -8,
+                  ArrowDown: 8,
+                }[event.key];
                 if (delta === undefined) return;
                 event.preventDefault();
                 const next = event.currentTarget.parentElement?.children.item(
@@ -276,9 +413,7 @@ export const ChessBoard = memo(function ChessBoard({
               key={piece}
               type="button"
               onClick={() => {
-                onMove?.(`${activePromotion.from}${activePromotion.to}${piece}`);
-                setPromotion(null);
-                setSelected(null);
+                send(`${activePromotion.from}${activePromotion.to}${piece}`);
               }}
             >
               {t(`pieces.${piece}`)}

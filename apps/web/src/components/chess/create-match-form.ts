@@ -129,6 +129,8 @@ export function budgetStops(min: number, max: number) {
 }
 
 export type CreateMatchValues = {
+  /** none = watch two models; otherwise the owner's human side. */
+  playAs: "none" | "white" | "black";
   official: boolean;
   title: string;
   white: string;
@@ -158,6 +160,7 @@ export type CreateMatchValues = {
 
 /** The same defaults the form always started from; only the protocol is now derived. */
 export const DEFAULT_VALUES: CreateMatchValues = {
+  playAs: "none",
   official: false,
   title: "",
   white: "openai/gpt-4.1-nano",
@@ -248,12 +251,13 @@ export function createMatchSchema(t: TFunction<"chess">, limits: HostedLimits = 
     .max(LIMITS.model, { message: t("create.errors.modelLength", { max: LIMITS.model }) });
   return z
     .object({
+      playAs: z.enum(["none", "white", "black"]),
       official: z.boolean(),
       title: z.string().max(LIMITS.title, {
         message: t("create.errors.title", { max: LIMITS.title }),
       }),
-      white: model,
-      black: model,
+      white: z.string(),
+      black: z.string(),
       whiteProtocol: z.enum(PROTOCOL_CHOICES),
       blackProtocol: z.enum(PROTOCOL_CHOICES),
       identity: z.enum(IDENTITY_MODES),
@@ -291,6 +295,19 @@ export function createMatchSchema(t: TFunction<"chess">, limits: HostedLimits = 
       }),
     })
     .superRefine((value, context) => {
+      for (const side of ["white", "black"] as const) {
+        if (value.playAs === side) continue;
+        const parsed = model.safeParse(value[side]);
+        if (!parsed.success)
+          for (const issue of parsed.error.issues)
+            context.addIssue({ code: "custom", path: [side], message: issue.message });
+      }
+      if (value.playAs !== "none" && (value.official || value.context !== "fresh"))
+        context.addIssue({
+          code: "custom",
+          path: [value.official ? "official" : "context"],
+          message: t("human.createHint"),
+        });
       if (Object.keys(timeControlErrors(t, value.time)).length) return;
       if (moveLimitMs(value.moveLimit, clockFromTimeControl(value.time)) === null)
         context.addIssue({
@@ -345,13 +362,13 @@ function playerName(id: string, catalog: readonly CatalogModel[] | undefined) {
 
 /** The title a blank title field becomes. */
 export function autoTitle(
-  value: Pick<CreateMatchValues, "white" | "black">,
+  value: Pick<CreateMatchValues, "white" | "black" | "playAs">,
   catalog: readonly CatalogModel[] | undefined,
   t: TFunction<"chess">,
 ) {
   return t("create.autoTitle", {
-    white: playerName(value.white, catalog),
-    black: playerName(value.black, catalog),
+    white: value.playAs === "white" ? t("lab.human") : playerName(value.white, catalog),
+    black: value.playAs === "black" ? t("lab.human") : playerName(value.black, catalog),
   }).slice(0, LIMITS.title);
 }
 
@@ -360,6 +377,8 @@ export function toMatchConfig(
   catalog: readonly CatalogModel[] | undefined,
   t: TFunction<"chess">,
 ): { success: true; data: MatchConfig } | { success: false } {
+  if (value.playAs !== "none" && (value.official || value.context !== "fresh"))
+    return { success: false };
   const whiteName = playerName(value.white, catalog);
   const blackName = playerName(value.black, catalog);
   const title = value.title.trim() || autoTitle(value, catalog, t);
@@ -371,16 +390,30 @@ export function toMatchConfig(
   if (replyCap === undefined) return { success: false };
   const parsed = matchConfigSchema.safeParse({
     title,
-    white: {
-      name: whiteName,
-      model: value.white.trim(),
-      protocol: resolveProtocol(value.whiteProtocol, value.white, catalog),
-    },
-    black: {
-      name: blackName,
-      model: value.black.trim(),
-      protocol: resolveProtocol(value.blackProtocol, value.black, catalog),
-    },
+    white:
+      value.playAs === "white"
+        ? {
+            name: t("lab.human"),
+            model: "human",
+            protocol: "human",
+          }
+        : {
+            name: whiteName,
+            model: value.white.trim(),
+            protocol: resolveProtocol(value.whiteProtocol, value.white, catalog),
+          },
+    black:
+      value.playAs === "black"
+        ? {
+            name: t("lab.human"),
+            model: "human",
+            protocol: "human",
+          }
+        : {
+            name: blackName,
+            model: value.black.trim(),
+            protocol: resolveProtocol(value.blackProtocol, value.black, catalog),
+          },
     rules: {
       context: value.context,
       opponentIdentity: value.identity,

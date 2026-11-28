@@ -45,6 +45,9 @@ vi.mock("@/hooks/use-auth-session", () => ({
   }),
 }));
 vi.mock("@/hooks/use-document-admits", () => ({ useDocumentAdmits: () => true }));
+vi.mock("@/hooks/use-hosted-human-turn", () => ({
+  useHostedHumanTurn: () => ({ accessDenied: false }),
+}));
 vi.mock("@/hooks/use-entity-mutation", () => ({
   useEntityMutation: () => ({ isPending: false, isError: false, mutate: vi.fn(), reset: vi.fn() }),
 }));

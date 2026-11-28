@@ -1,4 +1,4 @@
-import { createMatch } from "@cockpit-chess/chess";
+import { beginHostedTurn, createMatch } from "@cockpit-chess/chess";
 import enChess from "@cockpit-chess/locales/src/en-US/chess.json";
 import enCommon from "@cockpit-chess/locales/src/en-US/common.json";
 import { createInstance } from "i18next";
@@ -8,6 +8,9 @@ import { I18nextProvider } from "react-i18next";
 import { beforeAll, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
+  moveDenied: false,
+  humanBlocked: false,
+  humanPhase: undefined as "pending" | "uncertain" | undefined,
   admitted: true,
   items: [] as Record<string, unknown>[],
   enabled: [] as unknown[],
@@ -72,6 +75,38 @@ vi.mock("@/utils/orpc", () => ({
 }));
 vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => fixture.auth }));
 vi.mock("@/hooks/use-document-admits", () => ({ useDocumentAdmits: () => fixture.admitted }));
+vi.mock("@/hooks/use-now", () => ({ useNow: () => Date.now() }));
+vi.mock("@/hooks/use-hosted-human-turn", () => ({
+  useHostedHumanTurn: ({
+    match,
+    blocked,
+  }: {
+    match?: { config: { white: { protocol: string }; black: { protocol: string } } };
+    blocked: boolean;
+  }) => {
+    fixture.humanBlocked = blocked;
+    return {
+      humanSide:
+        match?.config.white.protocol === "human"
+          ? "w"
+          : match?.config.black.protocol === "human"
+            ? "b"
+            : undefined,
+      disabled: blocked || Boolean(fixture.humanPhase),
+      accessDenied: fixture.moveDenied,
+      playable: true,
+      phase: fixture.humanPhase,
+      online: true,
+      submit: vi.fn(),
+      resync: vi.fn(),
+    };
+  },
+}));
+vi.mock("./game-board", () => ({
+  GameBoard: ({ disabled, flipped }: { disabled: boolean; flipped: boolean }) => (
+    <div data-play-board data-disabled={String(disabled)} data-flipped={String(flipped)} />
+  ),
+}));
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ to, children }: { to: string; children: ReactNode }) => <a data-to={to}>{children}</a>,
 }));
@@ -442,3 +477,57 @@ it("keeps published practice outside official results and displays permanent off
     fixture.items = previous;
   }
 });
+
+it.each(["white", "black"] as const)(
+  "offers %s human controls only in the owner's inspected hosted game",
+  (side) => {
+    const human = { name: "Human", model: "human", protocol: "human" as const };
+    const model = { name: "Model", model: "openai/model", protocol: "openai-chat" as const };
+    const archive = createMatch(
+      {
+        title: "Owner human practice",
+        white: side === "white" ? human : model,
+        black: side === "black" ? human : model,
+        rules: {},
+      },
+      "hosted",
+    );
+    beginHostedTurn(archive);
+    fixture.detail = {
+      ...fixture.detail,
+      data: { archive, published: false, queuePosition: null },
+      isPending: false,
+      isError: false,
+      error: undefined,
+    };
+    try {
+      const html = render();
+      expect(html).toContain(enChess.human.practice);
+      expect(html).toContain(enChess.human.moveLabel);
+      expect(html).toContain('autoComplete="off"');
+      expect(html).toContain('inputMode="text"');
+      expect(html).toContain(`data-flipped="${side === "black"}"`);
+      expect(html).toContain(enChess.human.resync);
+      expect(html).toContain('role="timer" aria-live="off"');
+      fixture.detail.isError = true;
+      fixture.detail.error = new Error("offline");
+      const cached = render();
+      expect(cached).toContain("Owner human practice");
+      expect(cached).toContain('data-disabled="true"');
+      expect(cached).toContain(enChess.human.stale);
+      fixture.detail.error = { code: "FORBIDDEN" };
+      expect(render()).not.toContain("data-play-board");
+      fixture.detail = { ...fixture.detail, isError: false, error: undefined };
+      fixture.moveDenied = true;
+      expect(render()).not.toContain("Owner human practice");
+      fixture.moveDenied = false;
+      fixture.admitted = false;
+      expect(render()).not.toContain("data-play-board");
+      expect(fixture.humanBlocked).toBe(true);
+    } finally {
+      fixture.moveDenied = false;
+      fixture.admitted = true;
+      fixture.detail.data = undefined;
+    }
+  },
+);

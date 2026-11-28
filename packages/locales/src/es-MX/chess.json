@@ -799,5 +799,34 @@
   "endingHelp": {
     "account-limit": "Sube el límite de la clave o agrega saldo en OpenRouter y luego empieza una partida nueva.",
     "credential-revoked": "Vuelve a conectar OpenRouter en Configuración y luego empieza una partida nueva."
+  },
+  "human": {
+    "mode": "¿Cómo quieres jugar?",
+    "watchModels": "Ver dos modelos",
+    "playWhite": "Jugar con blancas",
+    "playBlack": "Jugar con negras",
+    "createHint": "Las partidas con una persona siempre son de práctica y usan contexto nuevo para el modelo. Solo el modelo usa la clave de OpenRouter seleccionada. El límite de seguridad por jugada aplica incluso sin reloj de partida.",
+    "practice": "Persona contra modelo · Práctica",
+    "you": "Tú",
+    "playTitle": "Juega tu partida",
+    "yourTurn": "Es tu turno. Elige una pieza y su destino, o escribe una jugada abajo.",
+    "modelTurn": "El modelo está pensando. Tu siguiente turno aparecerá aquí automáticamente.",
+    "queued": "Esperando al procesador del modelo. Esta vista se actualiza automáticamente.",
+    "sending": "Enviando tu jugada. Espera la confirmación del servidor.",
+    "acknowledged": "Jugada confirmada. Actualizando el tablero con el estado del servidor…",
+    "uncertain": "Es posible que tu jugada haya llegado. Actualiza la partida para comprobarlo; no se enviará de nuevo. Si el turno no cambia, espera el plazo del servidor o detén la partida.",
+    "offline": "No tienes conexión. Reconéctate para actualizar la partida antes de jugar; ninguna jugada quedará en cola ni se enviará de nuevo.",
+    "stale": "No se pudo actualizar la partida. Tu tablero se conserva aquí; intenta actualizar antes de tu siguiente jugada.",
+    "expired": "El plazo mostrado ya pasó. Actualiza para ver la decisión del servidor; el reloj de tu dispositivo no decide el resultado.",
+    "finished": "Esta partida terminó. Revisa las últimas jugadas y el resultado abajo, o inicia otra partida de práctica.",
+    "deadline": "Plazo del servidor para {{side}}: {{time}} · quedan aproximadamente {{remaining}}",
+    "inputHelp": "Toca una pieza y luego su destino, arrástrala o usa el teclado. Elige una pieza de promoción cuando se te indique.",
+    "moveLabel": "Tu jugada",
+    "moveHint": "Usa las casillas de origen y destino, por ejemplo e2e4. Para promover agrega q, r, b o n, por ejemplo a7a8n.",
+    "send": "Enviar jugada",
+    "remainingCap": "A tu clave le quedan {{remaining}}. Este formulario limita el presupuesto del modelo a {{max}} de forma conservadora; solo el modelo gasta.",
+    "resign": "Rendirme",
+    "resync": "Actualizar partida",
+    "rejected": "El servidor rechazó esa jugada. Actualiza la partida y luego elige una jugada para el turno actual."
   }
 }

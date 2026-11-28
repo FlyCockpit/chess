@@ -15,7 +15,7 @@ import {
 } from "@cockpit-chess/ui/components/dialog";
 import { toast } from "@cockpit-chess/ui/components/sileo";
 import { Skeleton } from "@cockpit-chess/ui/components/skeleton";
-import { TextareaField } from "@cockpit-chess/ui/components/text-field";
+import { TextareaField, TextField } from "@cockpit-chess/ui/components/text-field";
 import { useForm, useStore } from "@tanstack/react-form";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -28,16 +28,20 @@ import { QueryBoundary } from "@/components/query-boundary";
 import { useAuthSession } from "@/hooks/use-auth-session";
 import { useDocumentAdmits } from "@/hooks/use-document-admits";
 import { useEntityMutation } from "@/hooks/use-entity-mutation";
+import { useHostedHumanTurn } from "@/hooks/use-hosted-human-turn";
+import { useNow } from "@/hooks/use-now";
 import { fileDropTargetRef } from "@/lib/file-drop-registry";
 import { networkFailureKind } from "@/lib/network-failure";
 import { openRouterMoney } from "@/lib/openrouter-connect";
 import { isQueryAccessError } from "@/lib/query-access-error";
 import { friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
+import { formatClock, liveClock } from "./clock";
 import { CreateMatchDialog } from "./create-match-dialog";
 import { keyExhausted } from "./create-match-form";
 import { endingHeadlineLabel } from "./ending-label";
 import { replayRefetch } from "./evaluation";
+import { GameBoard } from "./game-board";
 import {
   checkArchiveFile,
   formatFileSize,
@@ -115,14 +119,20 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
     error: detailFailure,
     isPending: detailPending,
     isError: detailError,
-    refetch: retryDetail,
   } = useQuery({
     ...orpc.chess.inspect.queryOptions({ input: { slug: selected || "not-selected" } }),
     enabled: studio && Boolean(selected),
     meta: { skipGlobalErrorToast: true },
     refetchInterval: replayRefetch,
   });
-  const detail = isQueryAccessError(detailFailure) ? undefined : detailData;
+  const humanTurn = useHostedHumanTurn({
+    ownerId: signedIn ? state.session.user.id : undefined,
+    slug: selected,
+    match: detailData?.archive,
+    blocked: !studio || detailError,
+  });
+  const detail =
+    isQueryAccessError(detailFailure) || humanTurn.accessDenied ? undefined : detailData;
   const publish = useEntityMutation(orpc.chess.publish.mutationOptions(), {
     invalidateKey: orpc.chess.key(),
     successMessage: t("studio.success"),
@@ -235,8 +245,8 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
           {createArea}
           {/* The previewed game (also where Create and Import land) comes first, so choosing
               one shows it at once; the list follows. */}
-          {selected && detailError && (
-            <InlineRetry onRetry={() => void retryDetail()} message={t("studio.error")} />
+          {selected && (detailError || humanTurn.accessDenied) && (
+            <InlineRetry onRetry={() => void humanTurn.resync()} message={t("studio.error")} />
           )}
           {selected && detailPending && <Skeleton className="h-96" />}
           {selected && detail && (
@@ -267,6 +277,17 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
                     )}
                   </Link>
                 </p>
+              )}
+              {detail.archive.source === "hosted" && humanTurn.humanSide && (
+                <HostedHumanPlay
+                  key={detail.archive.id}
+                  match={detail.archive}
+                  controls={humanTurn}
+                  queued={detail.status === "queued"}
+                  stale={detailError}
+                  stopPending={stop.isPending}
+                  onStop={() => stop.mutate({ slug: selected })}
+                />
               )}
               <MatchReplay
                 key={detail.archive.id}
@@ -367,6 +388,186 @@ export function Studio({ onWatch }: { onWatch: (slug: string) => void }) {
     </>
   );
 }
+/** One owner-only play surface; public replay remains read-only. */
+function HostedHumanPlay({
+  match,
+  controls,
+  queued,
+  stale,
+  stopPending,
+  onStop,
+}: {
+  match: MatchArchive;
+  controls: ReturnType<typeof useHostedHumanTurn>;
+  queued: boolean;
+  stale: boolean;
+  stopPending: boolean;
+  onStop: () => void;
+}) {
+  const { t, i18n } = useTranslation("chess");
+  const running = match.status === "running";
+  const now = useNow(running);
+  const turn = match.turn;
+  const expired = turn.type !== "idle" && now >= Date.parse(turn.deadline);
+  const disabled = controls.disabled || expired || stopPending;
+  const status = !running
+    ? "finished"
+    : !controls.online
+      ? "offline"
+      : stale
+        ? "stale"
+        : controls.phase === "uncertain"
+          ? "uncertain"
+          : controls.phase === "pending"
+            ? "sending"
+            : controls.phase === "acknowledged"
+              ? "acknowledged"
+              : expired
+                ? "expired"
+                : queued
+                  ? "queued"
+                  : controls.playable
+                    ? "yourTurn"
+                    : "modelTurn";
+  return (
+    <section className="cc-baseline-layout mb-8" aria-label={t("human.playTitle")}>
+      <div className="cc-board-panel">
+        <div className="cc-player">
+          <strong>{match.config[controls.humanSide === "b" ? "white" : "black"].name}</strong>
+        </div>
+        <GameBoard
+          match={match}
+          onMove={(move) => {
+            if (!disabled) controls.submit(move);
+          }}
+          disabled={disabled}
+          flipped={controls.humanSide === "b"}
+          lookups
+        />
+        <div className="cc-player">
+          <strong>{t("human.you")}</strong>
+          <span>{t(`colors.${controls.humanSide ?? "w"}`)}</span>
+        </div>
+      </div>
+      <div className="cc-lab-instructions min-w-0">
+        <p className="cc-pill">{t("human.practice")}</p>
+        <h3 className="mt-4">{t("human.playTitle")}</h3>
+        <p role="status" aria-live="polite">
+          {t(`human.${status}`)}
+        </p>
+        {running && turn.type !== "idle" && (
+          <p className="cc-muted" role="timer" aria-live="off">
+            {t("human.deadline", {
+              side: t(`colors.${turn.side}`),
+              time: new Date(turn.deadline).toLocaleTimeString(i18n.language),
+              remaining: formatClock(Math.max(0, Date.parse(turn.deadline) - now)),
+            })}
+          </p>
+        )}
+        {match.config.rules.clock && (
+          <p className="cc-muted" role="timer" aria-live="off">
+            {(["w", "b"] as const)
+              .map(
+                (side) =>
+                  `${t(`colors.${side}`)} ${formatClock(liveClock(match, side, turn.type === "idle" ? "w" : turn.side, now) ?? 0)}`,
+              )
+              .join(" · ")}
+          </p>
+        )}
+        <p className="cc-field-hint">{t("human.inputHelp")}</p>
+        <HostedMoveInput
+          key={turn.type === "idle" ? match.events.length : turn.turnId}
+          disabled={disabled}
+          onSubmit={controls.submit}
+        />
+        {Boolean(controls.error) && (
+          <p className="cc-error" role="alert">
+            {t(controls.phase === "uncertain" ? "human.uncertain" : "human.rejected")}
+          </p>
+        )}
+        <div className="cc-hero-actions mt-4">
+          <Button
+            type="button"
+            variant="outline"
+            className="min-h-11"
+            onClick={() => void controls.resync()}
+          >
+            {t("human.resync")}
+          </Button>
+          {running && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11"
+                disabled={disabled}
+                onClick={() => controls.submit("resign")}
+              >
+                {t("human.resign")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11"
+                disabled={stopPending || !controls.online}
+                onClick={onStop}
+              >
+                {t("studio.stop")}
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+function HostedMoveInput({
+  disabled,
+  onSubmit,
+}: {
+  disabled: boolean;
+  onSubmit: (move: string) => void;
+}) {
+  const { t } = useTranslation("chess");
+  const form = useForm({
+    defaultValues: { move: "" },
+    onSubmit: ({ value }) => {
+      if (!disabled) onSubmit(value.move);
+    },
+  });
+  const text = useStore(form.store, (state) => state.values.move);
+  const validMove = /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(text.trim().toLowerCase());
+  return (
+    <form
+      noValidate
+      className="cc-form-grid"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void form.handleSubmit();
+      }}
+    >
+      <form.Field name="move">
+        {(field) => (
+          <TextField
+            field={field}
+            label={t("human.moveLabel")}
+            description={t("human.moveHint")}
+            autoComplete="off"
+            inputMode="text"
+            autoCapitalize="none"
+            spellCheck={false}
+            maxLength={5}
+            disabled={disabled}
+          />
+        )}
+      </form.Field>
+      <Button type="submit" className="min-h-11" disabled={disabled || !validMove}>
+        {t("human.send")}
+      </Button>
+    </form>
+  );
+}
+
 function ImportDialog({ onImported }: { onImported: (slug: string) => void }) {
   const { t, i18n } = useTranslation("chess");
   const [open, setOpen] = useState(false);
