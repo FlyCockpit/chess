@@ -15,6 +15,9 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  * pinned through the breakpoint classes; real widths are checked in a browser.
  */
 const fixture = vi.hoisted(() => ({
+  lang: "en-US",
+  redirectTo: undefined as unknown,
+  hash: "",
   offline: false,
   degraded: false,
   config: undefined as Record<string, unknown> | undefined,
@@ -22,19 +25,38 @@ const fixture = vi.hoisted(() => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({
-  useParams: () => ({ lang: "en-US" }),
+  useParams: () => ({ lang: fixture.lang }),
+  useSearch: () => ({ redirectTo: fixture.redirectTo }),
+  useLocation: ({ select }: { select: (location: { hash: string }) => string }) =>
+    select({ hash: fixture.hash }),
   Link: ({
     to,
     className,
+    params,
+    search,
+    target,
+    rel,
     "aria-label": ariaLabel,
     children,
   }: {
     to: string;
     className?: string;
+    params: { lang: string };
+    search: { redirectTo?: string };
+    target?: string;
+    rel?: string;
     "aria-label"?: string;
     children: ReactNode;
   }) => (
-    <a data-to={to} className={className ?? ""} aria-label={ariaLabel}>
+    <a
+      data-to={to}
+      className={className ?? ""}
+      aria-label={ariaLabel}
+      href={`${to.replace("$lang", params.lang)}${search.redirectTo === undefined ? "" : `?${new URLSearchParams({ redirectTo: search.redirectTo })}`}`}
+      data-redirect={search.redirectTo}
+      target={target}
+      rel={rel}
+    >
       {children}
     </a>
   ),
@@ -73,6 +95,9 @@ beforeAll(async () => {
   });
 });
 beforeEach(() => {
+  fixture.lang = "en-US";
+  fixture.redirectTo = undefined;
+  fixture.hash = "";
   fixture.config = { signupEnabled: true };
   fixture.session = "anonymous";
   fixture.offline = fixture.degraded = false;
@@ -86,7 +111,7 @@ const render = () =>
   );
 
 function links(html: string) {
-  return [...html.matchAll(/<a data-to="([^"]*)" class="([^"]*)" aria-label="([^"]*)">/g)].map(
+  return [...html.matchAll(/<a data-to="([^"]*)" class="([^"]*)" aria-label="([^"]*)"[^>]*>/g)].map(
     ([, to, className, label]) => ({ to, classes: (className ?? "").split(" "), label }),
   );
 }
@@ -102,6 +127,57 @@ describe("signed out", () => {
       expect(link.classes).toEqual(expect.arrayContaining(["w-11", "px-0", "sm:w-auto"]));
       expect(link.classes).not.toContain("hidden");
     }
+  });
+
+  it("preserves only safe current-locale destinations on both links", () => {
+    for (const [input, expected] of [
+      ["/en-US/?tab=studio", "/en-US/?tab=studio"],
+      ["/en-US/study?tab=one#section", "/en-US/study?tab=one#section"],
+      ["https://evil.example/", "/en-US"],
+      ["/es-MX/study", "/en-US"],
+      ["/en-US/login", "/en-US"],
+      ["/en-US/signup", "/en-US"],
+    ]) {
+      fixture.redirectTo = input;
+      const html = render();
+      expect(html.match(/data-redirect=/g)).toHaveLength(2);
+      expect(html.split(`data-redirect="${expected}"`)).toHaveLength(3);
+      const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((match) => match[1]);
+      expect(hrefs).toHaveLength(2);
+      for (const href of hrefs) {
+        expect(new URL(href ?? "", "https://example.test").searchParams.get("redirectTo")).toBe(
+          expected,
+        );
+      }
+    }
+  });
+
+  it("omits an absent redirect and does not forward an ordinary outer hash", () => {
+    fixture.hash = "heading";
+    const html = render();
+    expect(html).not.toContain("data-redirect=");
+    expect(html).not.toContain("heading");
+    expect(html).not.toContain('target="_blank"');
+    expect(html).toContain('href="/en-US/signup"');
+    expect(html).toContain('href="/en-US/login"');
+  });
+
+  it("opens clean auth links in a new tab only for a valid outer claim", () => {
+    fixture.redirectTo = "/en-US/runner/claim";
+    fixture.hash = `runner-claim=${"a".repeat(64)}`;
+    const html = render();
+    expect(html.match(/target="_blank" rel="noopener noreferrer"/g)).toHaveLength(2);
+    expect(html).not.toContain(fixture.hash);
+    const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((match) => match[1]);
+    expect(hrefs).toHaveLength(2);
+    for (const href of hrefs) {
+      const url = new URL(href ?? "", "https://example.test");
+      expect(url.searchParams.get("redirectTo")).toBe("/en-US/runner/claim");
+      expect(url.hash).toBe("");
+      expect(url.href).not.toContain(fixture.hash);
+    }
+    fixture.hash = "runner-claim=invalid";
+    expect(render()).not.toContain('target="_blank"');
   });
 
   it("offers Sign Up while only the admin bootstrap is open", () => {

@@ -3,7 +3,7 @@ import { toast } from "@cockpit-chess/ui/components/sileo";
 import { Skeleton } from "@cockpit-chess/ui/components/skeleton";
 import { cn } from "@cockpit-chess/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useLocation, useParams, useSearch } from "@tanstack/react-router";
 import { LogIn, LogOut, RefreshCw, User, UserPlus } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -11,8 +11,10 @@ import { useTranslation } from "react-i18next";
 import { useAuthSession } from "@/hooks/use-auth-session";
 import { DEFAULT_LOCALE, isSupportedLocale } from "@/i18n/config";
 import { signOutAndLeave, signOutFailureKey } from "@/lib/explicit-sign-out";
+import { runnerClaimToken } from "@/lib/runner-claim-link";
 import { runSessionCheck } from "@/lib/session-retry";
 import { orpc } from "@/utils/orpc";
+import { safeRedirectTo } from "@/utils/safe-redirect";
 
 // Lazy so the shared Base UI overlay chunk (Menu/Dialog/focus-guards) leaves the
 // eager first-paint bundle. Only the signed-in branch touches Base UI; the
@@ -31,6 +33,11 @@ export default function UserMenu() {
   // top-level `/` redirect route without throwing.
   const params = useParams({ strict: false });
   const lang = isSupportedLocale(params.lang) ? params.lang : DEFAULT_LOCALE;
+  const search = useSearch({ strict: false });
+  const hash = useLocation({ select: (location) => location.hash });
+  const redirectTo =
+    search.redirectTo === undefined ? undefined : safeRedirectTo(search.redirectTo, lang);
+  const keepClaimTab = runnerClaimToken(hash) !== null;
   const authSession = useAuthSession();
   const { data: configData, isPending: configPending } = useQuery(orpc.appConfig.queryOptions());
   const { t } = useTranslation("nav");
@@ -114,7 +121,9 @@ export default function UserMenu() {
           <Link
             to="/$lang/signup"
             params={{ lang }}
-            search={{ redirectTo: undefined }}
+            search={{ redirectTo }}
+            target={keepClaimTab ? "_blank" : undefined}
+            rel={keepClaimTab ? "noopener noreferrer" : undefined}
             aria-label={t("userMenu.signUp")}
             className={cn(buttonVariants({ size: "touch" }), "w-11 px-0 sm:w-auto sm:px-3.5")}
           >
@@ -125,7 +134,9 @@ export default function UserMenu() {
         <Link
           to="/$lang/login"
           params={{ lang }}
-          search={{ redirectTo: undefined }}
+          search={{ redirectTo }}
+          target={keepClaimTab ? "_blank" : undefined}
+          rel={keepClaimTab ? "noopener noreferrer" : undefined}
           aria-label={t("userMenu.signIn")}
           className={cn(
             buttonVariants({ size: "touch", variant: "outline" }),

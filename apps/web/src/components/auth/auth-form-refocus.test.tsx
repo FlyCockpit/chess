@@ -71,6 +71,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useRouter: () => ({ invalidate: vi.fn() }),
   useLocation: () => fixture.hash,
   useParams: () => ({ lang: "en-US" }),
+  useSearch: () => fixture.search,
   Link: ({ to, className, children }: { to: string; className?: string; children: ReactNode }) => (
     <a data-to={to} className={className ?? ""}>
       {children}

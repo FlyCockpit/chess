@@ -27,6 +27,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   Outlet: () => <NotFoundOutlet />,
   redirect: () => undefined,
   useParams: () => ({ lang: "en-US" }),
+  useSearch: () => ({}),
   useNavigate: () => vi.fn(),
   useRouter: () => ({ invalidate: vi.fn() }),
   useRouterState: () => undefined,
