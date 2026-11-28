@@ -148,6 +148,23 @@ afterEach(() => {
 describe("durable runner transport controls", () => {
   const stop = { type: "stop", matchId: "owned", payload: { commandId: "durable1" } } as const;
 
+  it("retains socket stop evidence until native close has finished", async () => {
+    const h = harness();
+    const { active, peer, transport } = await connect(h);
+    active.close();
+    expect(active.isClosed()).toBe(true);
+    expect(h.leases.has("machine1")).toBe(true);
+    expect(h.store.release).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(peer.terminate).toHaveBeenCalledOnce();
+    expect(h.leases.has("machine1")).toBe(true);
+    active.finished();
+    await transport.idle();
+    expect(h.store.release).toHaveBeenCalledOnce();
+    expect(h.leases.has("machine1")).toBe(false);
+    await transport.drain();
+  });
+
   it("stops the socket immediately and joins one disconnect write across close, finished and drain", async () => {
     const write = Promise.withResolvers<void>();
     const disconnected = vi.fn(() => write.promise);

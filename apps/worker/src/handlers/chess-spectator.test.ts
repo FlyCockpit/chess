@@ -23,6 +23,18 @@ vi.mock("@cockpit-chess/queue", async () => {
     ensureRunnableJob: ensureJob,
   };
 });
+vi.mock("@cockpit-chess/queue/chess-job-registry", () => ({
+  publishRegisteredChessJob: (
+    _matchId: string,
+    _surface: string,
+    name: string,
+    data: unknown,
+    jobId: string,
+    _assertFresh: () => void,
+    options: { priority?: number },
+  ) => ensureJob({}, name, data, jobId, options),
+}));
+vi.mock("@cockpit-chess/env/shared", () => ({ env: { DATABASE_POOL_MAX: 3 } }));
 vi.mock("../../../../packages/chess/src/engine", () => ({ evaluatePosition }));
 const { default: prisma } = await import("@cockpit-chess/db");
 const db = prisma as DeepMockProxy<typeof prismaInstance>;
@@ -86,6 +98,8 @@ beforeEach(() => {
   db.$executeRaw.mockResolvedValue(1);
   db.$queryRaw.mockResolvedValue([{ id: "match-id" }]);
   db.chessMatch.findFirst.mockResolvedValue(row({}));
+  db.chessMatch.findUnique.mockResolvedValue({ ownerId: "owner" } as never);
+  db.user.findUnique.mockResolvedValue({ deletionRequestedAt: null, banned: false } as never);
   db.$transaction.mockImplementation(async (run) =>
     typeof run === "function" ? run(db) : Promise.all(run),
   );

@@ -19,6 +19,9 @@
     "./account-deletion": {
       "default": "./src/account-deletion.ts"
     },
+    "./account-deletion-verifications": {
+      "default": "./src/account-deletion-verifications.ts"
+    },
     "./ban": {
       "default": "./src/ban.ts"
     },

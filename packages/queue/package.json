@@ -9,9 +9,11 @@
     "test": "vitest run --config ../../vitest.config.ts --passWithNoTests"
   },
   "exports": {
+    "./account-deletion": "./src/account-deletion.ts",
     "./consumer-health": "./src/consumer-health.ts",
     "./chess-capacity": "./src/chess-capacity.ts",
     "./chess-key-revocation": "./src/chess-key-revocation.ts",
+    "./chess-job-registry": "./src/chess-job-registry.ts",
     "./chess-key-revocation/test-support": "./src/chess-key-revocation.test-support.ts",
     ".": {
       "default": "./src/index.ts"

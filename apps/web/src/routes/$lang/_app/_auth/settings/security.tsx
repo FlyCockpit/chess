@@ -1,3 +1,4 @@
+import { isAdminRole } from "@cockpit-chess/auth/roles";
 import { Button } from "@cockpit-chess/ui/components/button";
 import {
   Card,
@@ -12,15 +13,30 @@ import { toast } from "@cockpit-chess/ui/components/sileo";
 import { Skeleton } from "@cockpit-chess/ui/components/skeleton";
 import { TextField } from "@cockpit-chess/ui/components/text-field";
 import { useForm } from "@tanstack/react-form";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { KeyRound, ShieldCheck, ShieldOff } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import z from "zod";
 
+import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { TwoFactorSetupDetails } from "@/components/two-factor-setup-details";
+import { useAuthSession } from "@/hooks/use-auth-session";
 import { authClient } from "@/lib/auth-client";
+import {
+  announceSessionChange,
+  isDocumentReplaced,
+  leaveDocument,
+  markExplicitSignOut,
+  subscribeDocumentIdentity,
+} from "@/lib/document-identity";
+import { signOutAndLeave } from "@/lib/explicit-sign-out";
+import {
+  type AccountDeletionIssue,
+  accountDeletionIssue,
+  hasRecentDeletionProof,
+} from "@/utils/account-deletion";
 import { codeFailureMessage, friendly } from "@/utils/friendly-error";
 import { orpc } from "@/utils/orpc";
 import { resolvePasswordChangeErrorMessage } from "@/utils/password-change-error";
@@ -54,20 +70,178 @@ function SecuritySettings() {
         </CardHeader>
         <CardContent>{has2FA ? <Disable2FASection /> : <Enable2FASection />}</CardContent>
       </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("security.deleteAccountTitle")}</CardTitle>
-          <CardDescription>{t("security.deleteAccountUnavailable")}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">{t("security.deleteAccountPlan")}</p>
-          <p className="text-sm text-muted-foreground">{t("security.deleteAccountProviderKey")}</p>
-          <Button type="button" variant="destructive" className="min-h-[44px]" disabled>
-            {t("security.deleteAccountAction")}
-          </Button>
-        </CardContent>
-      </Card>
+      <DeleteAccountSection />
     </div>
+  );
+}
+
+function DeleteAccountSection() {
+  const { session: routeSession } = Route.useRouteContext();
+  const { lang } = Route.useParams();
+  const { t } = useTranslation(["settings", "common"]);
+  const authSession = useAuthSession();
+  const [open, setOpen] = useState(false);
+  const [issue, setIssue] = useState<AccountDeletionIssue | null>(null);
+  const [reauthenticating, setReauthenticating] = useState(false);
+  const current =
+    authSession.state.status === "authenticated" &&
+    authSession.state.session.user.id === routeSession.user.id &&
+    !authSession.meta.isDegraded
+      ? authSession.state.session
+      : null;
+  const admin = isAdminRole(current?.user.role ?? routeSession.user.role) || issue === "admin";
+  const recent = hasRecentDeletionProof(current?.session.authenticatedAt) && issue !== "reauth";
+  const deletion = useMutation(
+    orpc.settings.deleteAccount.mutationOptions({
+      // Acceptance revokes this session. Its explicit identity-boundary load
+      // owns navigation, just as the shared sign-out flow does.
+      onMutate: () => {
+        const undo = markExplicitSignOut();
+        let redirected = false;
+        const unsubscribe = subscribeDocumentIdentity(() => {
+          // A session check can observe revocation before the response arrives.
+          // The transport then quarantines its callback. Leave that document
+          // with an honest uncertain acknowledgement instead of stranding it.
+          if (!redirected && isDocumentReplaced()) {
+            redirected = true;
+            unsubscribe();
+            leaveDocument(`/${lang}/login?accountDeletion=unconfirmed`);
+          }
+        });
+        return { undo, unsubscribe };
+      },
+      onSuccess: (_result, _input, context) => {
+        context?.unsubscribe();
+        announceSessionChange();
+        leaveDocument(`/${lang}/login?accountDeletion=pending`);
+      },
+      onError: (error, _input, context) => {
+        context?.unsubscribe();
+        const nextIssue = accountDeletionIssue(error);
+        if (nextIssue === "unavailable") {
+          // This refusal follows the durable fence: sessions are already
+          // revoked, and background cleanup must retry its external register.
+          announceSessionChange();
+          leaveDocument(`/${lang}/login?accountDeletion=pending`);
+          return;
+        }
+        context?.undo();
+        setIssue(nextIssue);
+      },
+    }),
+  );
+
+  async function reauthenticate() {
+    if (deletion.isPending || reauthenticating) return;
+    setReauthenticating(true);
+    const result = await signOutAndLeave(
+      `/${lang}/login?redirectTo=${encodeURIComponent(`/${lang}/settings/security`)}`,
+    );
+    if (!result.ok) {
+      setIssue("unknown");
+      setReauthenticating(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("settings:security.deleteAccountTitle")}</CardTitle>
+        <CardDescription>{t("settings:security.deleteAccountDescription")}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">{t("settings:security.deleteAccountPlan")}</p>
+        <p className="text-sm text-muted-foreground">
+          {t("settings:security.deleteAccountProviderKey")}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          {t("settings:security.deleteAccountBackups")}
+        </p>
+        {admin ? (
+          <p className="text-sm" role="status">
+            {t("settings:security.deleteAccountAdmin")}
+          </p>
+        ) : !current ? (
+          authSession.state.status === "pending" ? (
+            <Skeleton className="h-11 w-48" />
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm">{t("settings:security.deleteAccountSessionCheck")}</p>
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-[44px]"
+                onClick={() => void authSession.actions.retry()}
+              >
+                {t("common:actions.tryAgain")}
+              </Button>
+            </div>
+          )
+        ) : !recent ? (
+          <>
+            <p className="text-sm">{t("settings:security.deleteAccountReauth")}</p>
+            <Button
+              type="button"
+              variant="outline"
+              className="min-h-[44px]"
+              disabled={reauthenticating}
+              onClick={() => void reauthenticate()}
+            >
+              {reauthenticating
+                ? t("settings:security.deleteAccountSigningOut")
+                : t("settings:security.deleteAccountSignInAgain")}
+            </Button>
+          </>
+        ) : (
+          <Button
+            type="button"
+            variant="destructive"
+            className="min-h-[44px]"
+            disabled={deletion.isPending}
+            onClick={() => {
+              if (!hasRecentDeletionProof(current.session.authenticatedAt)) {
+                setIssue("reauth");
+                return;
+              }
+              setIssue(null);
+              setOpen(true);
+            }}
+          >
+            {deletion.isPending
+              ? t("settings:security.deleteAccountRequesting")
+              : t("settings:security.deleteAccountAction")}
+          </Button>
+        )}
+        {issue && issue !== "admin" && issue !== "reauth" ? (
+          <p className="text-sm text-destructive" role="alert">
+            {t(`settings:security.deleteAccountErrors.${issue}`)}
+          </p>
+        ) : null}
+        <ConfirmDeleteDialog
+          open={open}
+          onOpenChange={setOpen}
+          title={t("settings:security.deleteAccountTitle")}
+          description={t("settings:security.deleteAccountConfirmation")}
+          confirmToken="DELETE"
+          typePrompt={t("settings:security.deleteAccountType")}
+          copyAriaLabel={t("settings:security.deleteAccountCopy")}
+          inputMode="text"
+          confirmLabel={t("settings:security.deleteAccountAction")}
+          pendingLabel={t("settings:security.deleteAccountRequesting")}
+          isPending={deletion.isPending}
+          disabled={!current || !recent || admin}
+          onConfirm={(confirmation) => {
+            if (confirmation !== "DELETE") return;
+            if (!hasRecentDeletionProof(current?.session.authenticatedAt)) {
+              setIssue("reauth");
+              return;
+            }
+            setIssue(null);
+            deletion.mutate({ confirmation });
+          }}
+        />
+      </CardContent>
+    </Card>
   );
 }
 

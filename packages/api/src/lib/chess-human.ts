@@ -1,7 +1,7 @@
 import type { MatchArchive, TurnState } from "@cockpit-chess/chess";
-import prisma from "@cockpit-chess/db";
-import { chessRunQueue, ensureRunnableJob } from "@cockpit-chess/queue";
+import { publishRegisteredChessJob } from "@cockpit-chess/queue/chess-job-registry";
 import { DbNull } from "../../../db/prisma/generated/internal/prismaNamespace";
+import { withChessJobPublication } from "./chess-jobs";
 import { chessTurnColumns } from "./chess-turn";
 
 /** One recoverable wake per durable event tail, shared by API and worker repair. */
@@ -22,12 +22,9 @@ export async function wakeHostedMatch(matchId: string, archive: MatchArchive): P
   if (archive.source !== "hosted") return;
   const jobId = chessRunJobId(matchId, archive);
   try {
-    const current = await prisma.chessMatch.findUnique({
-      where: { id: matchId },
-      select: { source: true, status: true },
-    });
-    if (current?.source !== "hosted" || current.status !== "queued") return;
-    await ensureRunnableJob(chessRunQueue, "chess-run", { matchId }, jobId);
+    await withChessJobPublication(matchId, "run", (assertFresh) =>
+      publishRegisteredChessJob(matchId, "run", "chess-run", { matchId }, jobId, assertFresh),
+    );
   } catch {
     console.error("[chess] Hosted wake unavailable", { matchId, jobId });
   }

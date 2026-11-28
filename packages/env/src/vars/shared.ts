@@ -41,6 +41,10 @@ export const sharedVars = {
   // Fresh UUID set by the image entrypoint for each server/worker host.
   // Admission and the serving-process heartbeat must share this identity.
   COCKPIT_CHESS_INSTANCE_ID: z.uuid().optional(),
+  // External write-ahead erasure register. Completion and restore refuse when
+  // this restricted persistent directory is unavailable; backups being off
+  // does not make an erased account safe to resurrect from an older dump.
+  ACCOUNT_DELETION_REGISTER_DIR: z.string().startsWith("/").optional(),
   // ---- Backups. BACKUP_ENABLED (strict true|false, default false) is the
   // backup switch: the migration runner (scripts/db/migrate-runtime.mjs)
   // takes its pre-migration / pre-drop dumps only when it is true, and the

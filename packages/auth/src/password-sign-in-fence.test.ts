@@ -132,8 +132,11 @@ vi.mock("@cockpit-chess/db", () => {
             return fn(...args);
           };
         const session = table("session");
+        const verification = table("verification");
+        const user = table("user");
         try {
           const result = await work({
+            $executeRaw: open(async () => 1),
             $queryRaw: open(async (strings: TemplateStringsArray, ...values: unknown[]) => {
               if (!strings.join("?").includes("pg_try_advisory_xact_lock(hashtext(?))")) {
                 throw new Error("unexpected SQL");
@@ -146,6 +149,11 @@ vi.mock("@cockpit-chess/db", () => {
               return [{ locked: true }];
             }),
             session: { findFirst: open(session.findFirst) },
+            user: { findUnique: open(user.findUnique) },
+            verification: {
+              findFirst: open(verification.findFirst),
+              create: open(verification.create),
+            },
           });
           // Like Prisma: an interactive transaction that expired before the
           // callback returned rejects at commit.
@@ -429,6 +437,33 @@ beforeEach(async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   await seed();
+});
+
+describe("late two-factor credential proof", () => {
+  it("cannot recreate a non-FK owner proof after physical erasure while the after-hook was paused", async () => {
+    const pause = pausePoint();
+    const verification = {
+      identifier: "2fa-delayed-erasure",
+      value: USER,
+      expiresAt: new Date(Date.now() + 600_000),
+    };
+    const writing = fence.withPasswordSignInFence(
+      post("/sign-in/email", { email: EMAIL, password: OLD_PASSWORD }),
+      async () => {
+        tables.db.verification?.push({ id: "initial-challenge", ...verification });
+        await pause.wait();
+        await fence.recordTwoFactorChallenge(verification);
+        return Response.json({});
+      },
+    );
+    await pause.reached;
+    tables.db.user = [];
+    tables.db.account = [];
+    tables.db.verification = [];
+    pause.release();
+    await expect(writing).rejects.toThrow("Session refused");
+    expect(tables.db.verification).toEqual([]);
+  });
 });
 
 // Every case pays several real scrypt hashes.

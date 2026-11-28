@@ -123,6 +123,9 @@ const prismaStub = vi.hoisted(() => {
         return {
           email: user.email,
           emailVerified: user.emailVerified,
+          deletionRequestedAt: user.deletionRequestedAt,
+          banned: user.banned,
+          banExpires: user.banExpires,
           accounts: table("account")
             .filter((row) => row.userId === user.id)
             .map((row) => ({ providerId: row.providerId }))
@@ -698,7 +701,11 @@ it("uses the pepper password hooks", () => {
 // fence) are left out: they need the server's sign-in wrappers, and these
 // tests sign the admin in directly. Every sign-up pays a real scrypt hash,
 // hence the roomier timeouts below.
-async function realAuth({ verificationDeliveryFails = false, withTwoFactor = false } = {}) {
+async function realAuth({
+  verificationDeliveryFails = false,
+  withTwoFactor = false,
+  fenceResetProofWrites = false,
+} = {}) {
   const { betterAuth: realBetterAuth } =
     await vi.importActual<typeof import("better-auth")>("better-auth");
   const { createAuthMiddleware } =
@@ -754,9 +761,18 @@ async function realAuth({ verificationDeliveryFails = false, withTwoFactor = fal
   const instance = realBetterAuth({
     baseURL: "https://app.example.test",
     secret: "disposable-unit-test-secret-with-no-external-use",
-    database: countingAdapter,
+    database: fenceResetProofWrites
+      ? (adapterOptions: Parameters<NonNullable<CapturedOptions["database"]>>[0]) => {
+          if (!options.database) throw new Error("Production adapter is missing");
+          return recording(options.database(adapterOptions));
+        }
+      : countingAdapter,
     rateLimit: { enabled: false },
-    advanced: options.advanced,
+    advanced: {
+      ...options.advanced,
+      // Pinned BA otherwise skips origin/CSRF enforcement when NODE_ENV=test.
+      ...(fenceResetProofWrites ? { disableOriginCheck: false, disableCSRFCheck: false } : {}),
+    },
     user: options.user,
     emailAndPassword: { ...options.emailAndPassword, enabled: true },
     emailVerification: { sendOnSignUp: true, sendOnSignIn: true, sendVerificationEmail },
@@ -815,6 +831,98 @@ async function realAuth({ verificationDeliveryFails = false, withTwoFactor = fal
   };
   return { db, signUp, countAdapterCalls, instance, sendVerificationEmail, signedInAdmin };
 }
+
+describe("password recovery response privacy with the production proof fence", () => {
+  const requestReset = (
+    instance: Awaited<ReturnType<typeof realAuth>>["instance"],
+    email: string,
+    redirectTo = "/en-US/reset-password",
+  ) =>
+    instance.handler(
+      new Request("https://app.example.test/api/auth/request-password-reset", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://app.example.test" },
+        body: JSON.stringify({ email, redirectTo }),
+      }),
+    );
+  const person = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    name: "Recovery fixture",
+    email: `${id}@example.test`,
+    emailVerified: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    role: "user",
+    ...extra,
+  });
+
+  it("returns the exact missing-address success for pending and permanently blocked accounts without proof or mail", async () => {
+    const { instance, db } = await realAuth({ fenceResetProofWrites: true });
+    const pending = person("recovery-pending", { deletionRequestedAt: new Date() });
+    const blocked = person("recovery-blocked", { banned: true, banExpires: null });
+    db.user!.push(pending, blocked);
+    vi.mocked(sendEmail).mockClear();
+    recordResetLinkMailed.mockClear();
+    const missing = await requestReset(instance, "recovery-missing@example.test");
+    expect(missing.status).toBe(200);
+    const expected = await missing.text();
+    expect(JSON.parse(expected)).toEqual({
+      status: true,
+      message: "If this email exists in our system, check your email for the reset link",
+    });
+    for (const user of [pending, blocked]) {
+      const response = await requestReset(instance, user.email);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(expected);
+    }
+    expect(db.verification).toEqual([]);
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(recordResetLinkMailed).not.toHaveBeenCalled();
+  });
+
+  it("stays neutral if erasure wins after the endpoint's user lookup but before proof insertion", async () => {
+    const { instance, db } = await realAuth({ fenceResetProofWrites: true });
+    const erased = person("recovery-erased");
+    db.user!.push(erased);
+    vi.mocked(sendEmail).mockClear();
+    prismaStub.$transaction.mockImplementationOnce(
+      async (operation: unknown, options?: unknown) => {
+        db.user = db.user!.filter((user) => user.id !== erased.id);
+        return prismaStub.runTransaction(operation, options);
+      },
+    );
+    const response = await requestReset(instance, erased.email);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      status: true,
+      message: "If this email exists in our system, check your email for the reset link",
+    });
+    expect(db.verification).toEqual([]);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("preserves active-account recovery and does not normalize unrelated origin or storage failures", async () => {
+    const { instance, db } = await realAuth({ fenceResetProofWrites: true });
+    const active = person("recovery-active");
+    db.user!.push(active);
+    vi.mocked(sendEmail).mockClear();
+    const activeResponse = await requestReset(instance, active.email);
+    expect(activeResponse.status).toBe(200);
+    expect(db.verification!.filter((row) => row.value === active.id)).toHaveLength(1);
+    expect(sendEmail).toHaveBeenCalledOnce();
+    const refusedOrigin = await requestReset(
+      instance,
+      active.email,
+      "https://foreign.example.test/reset",
+    );
+    expect(refusedOrigin.status).toBe(403);
+    prismaStub.$transaction.mockRejectedValueOnce(new Error("synthetic storage unavailable"));
+    const unavailable = await requestReset(instance, active.email);
+    expect(unavailable.status).toBe(500);
+    expect(db.verification!.filter((row) => row.value === active.id)).toHaveLength(1);
+    expect(sendEmail).toHaveBeenCalledOnce();
+  });
+});
 
 describe("session IP minimization", () => {
   it.each(["198.51.100.7", "203.0.113.200, 198.51.100.7, 192.0.2.10", "2001:db8::7"])(

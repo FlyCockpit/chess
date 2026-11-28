@@ -1,4 +1,5 @@
 import { Queue } from "bullmq";
+import { createChessJobBackend } from "./chess-job-publication.js";
 import { redisConnection } from "./connection.js";
 import { QUEUE_NAMES } from "./jobs.js";
 
@@ -38,19 +39,27 @@ const defaultJobOptions = {
 };
 
 /** Hosted chess match runs (one attempt; the reconcile sweep handles failures). */
-export const chessRunQueue = new Queue(QUEUE_NAMES.chessRun, {
-  connection: redisConnection,
-  defaultJobOptions: { ...defaultJobOptions, attempts: 1 },
-});
+export const chessRunQueue = new Queue(
+  QUEUE_NAMES.chessRun,
+  {
+    connection: redisConnection,
+    defaultJobOptions: { ...defaultJobOptions, attempts: 1 },
+  },
+  createChessJobBackend,
+);
 
 /**
  * Chess reconcile sweep. Cron-only; `attempts: 1` like the other sweeps — the
  * next firing (a minute later) is the retry.
  */
-export const chessReconcileQueue = new Queue(QUEUE_NAMES.chessReconcile, {
-  connection: redisConnection,
-  defaultJobOptions: { ...defaultJobOptions, attempts: 1 },
-});
+export const chessReconcileQueue = new Queue(
+  QUEUE_NAMES.chessReconcile,
+  {
+    connection: redisConnection,
+    defaultJobOptions: { ...defaultJobOptions, attempts: 1 },
+  },
+  createChessJobBackend,
+);
 
 /**
  * Deletes expired short-lived credentials (sessions, verifications, device

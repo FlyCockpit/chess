@@ -35,7 +35,34 @@ const { getJob, runner, ensureJob } = vi.hoisted(() => ({
         ) => Promise<unknown>),
   },
 }));
-const { reconcileRunners } = vi.hoisted(() => ({ reconcileRunners: vi.fn() }));
+const { reconcileRunners, sweepDeletion } = vi.hoisted(() => ({
+  reconcileRunners: vi.fn(),
+  sweepDeletion: vi.fn(),
+}));
+vi.mock("@cockpit-chess/api/lib/account-deletion-cleanup", () => ({
+  sweepAccountDeletions: sweepDeletion,
+}));
+vi.mock("@cockpit-chess/api/lib/chess-jobs", () => ({
+  withChessJobPublication: (
+    _id: string,
+    _access: unknown,
+    publish: (guard: () => void) => unknown,
+  ) => publish(() => {}),
+}));
+vi.mock("@cockpit-chess/queue/chess-job-registry", () => ({
+  publishRegisteredChessJob: (
+    _id: string,
+    surface: string,
+    name: string,
+    data: unknown,
+    jobId: string,
+    _guard: () => void,
+    options = {},
+  ) =>
+    surface === "run"
+      ? ensureJob({ getJob }, name, data, jobId)
+      : ensureJob({}, name, data, jobId, options),
+}));
 vi.mock("@cockpit-chess/api/lib/chess-runner", () => ({
   reconcileRunnerMatches: reconcileRunners,
 }));
@@ -1027,7 +1054,7 @@ describe("chess reconcile sweep", () => {
     for (const [query] of db.chessMatch.findMany.mock.calls.slice(1))
       expect(query?.where?.source).toBe("hosted");
   });
-  it("settles pending owners before runner recovery and runner recovery before hosted repair", async () => {
+  it("settles pending owners and cleanup before runner recovery, then hosted repair", async () => {
     rows([], []);
     let finishDeletion = (_rows: never[]) => {};
     db.chessMatch.findMany.mockImplementationOnce(
@@ -1051,6 +1078,7 @@ describe("chess reconcile sweep", () => {
     finish({ scanned: 0, settled: 0 });
     await expect(pending).resolves.toEqual({ scanned: 0, errored: 0 });
     expect(db.chessMatch.findMany).toHaveBeenCalledTimes(4);
+    expect(sweepDeletion).toHaveBeenCalledOnce();
     expect(db.chessMatch.findMany.mock.invocationCallOrder[0]).toBeLessThan(
       reconcileRunners.mock.invocationCallOrder[0] ?? 0,
     );

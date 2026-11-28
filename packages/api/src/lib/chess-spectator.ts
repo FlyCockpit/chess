@@ -4,15 +4,14 @@ import {
   type SpectatorEvaluations,
   storedSpectatorEvaluations,
 } from "@cockpit-chess/chess/spectator";
-import prisma, { type Prisma } from "@cockpit-chess/db";
+import type { Prisma } from "@cockpit-chess/db";
 import {
   CHESS_SPECTATOR_JOB_PRIORITY,
   type ChessSpectatorAccess,
-  chessReconcileQueue,
   chessSpectatorJobId,
-  ensureRunnableJob,
 } from "@cockpit-chess/queue";
-import { spectatorAccessWhere } from "./chess-spectator-access";
+import { publishRegisteredChessJob } from "@cockpit-chess/queue/chess-job-registry";
+import { withChessJobPublication } from "./chess-jobs";
 
 /** Matches this process asked to backfill recently: a replay poll must not re-enqueue each time. */
 const requested = new Map<string, number>();
@@ -32,23 +31,16 @@ function requestBackfill(matchId: string, fromPly: number, access: ChessSpectato
   void Promise.resolve()
     .then(async () => {
       // A queued microtask may outlive the public get/owner inspection which requested it.
-      const allowed = await prisma.chessMatch.findFirst({
-        where: { id: matchId, ...spectatorAccessWhere(access) },
-        select: { id: true, ownerId: true, slug: true },
-      });
-      if (
-        !allowed ||
-        (access.purpose === "public" &&
-          allowed.ownerId === null &&
-          !/^replay-[a-f0-9]{32}$/.test(allowed.slug))
-      )
-        return;
-      await ensureRunnableJob(
-        chessReconcileQueue,
-        "chess-spectator",
-        { reason: "spectator", matchId, fromPly, access },
-        key,
-        { priority: CHESS_SPECTATOR_JOB_PRIORITY },
+      await withChessJobPublication(matchId, access, (assertFresh) =>
+        publishRegisteredChessJob(
+          matchId,
+          "spectator",
+          "chess-spectator",
+          { reason: "spectator", matchId, fromPly, access },
+          key,
+          assertFresh,
+          { priority: CHESS_SPECTATOR_JOB_PRIORITY },
+        ),
       );
     })
     .catch(() => requested.delete(key));

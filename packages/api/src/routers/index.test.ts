@@ -70,6 +70,9 @@ vi.mock("@cockpit-chess/queue", () => {
     redisConnection: {},
   };
 });
+vi.mock("@cockpit-chess/queue/chess-job-registry", () => ({
+  publishRegisteredChessJob: vi.fn(),
+}));
 
 // @cockpit-chess/auth builds the Better-Auth instance (prismaAdapter, plugins) at
 // import time — stub it so the graph loads without that machinery.

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import { RUNNER_APPLICATION_FRAMES_PER_MINUTE } from "@cockpit-chess/chess/runner-protocol";
+import {
+  RUNNER_DELETION_LEASE_MS,
+  runnerMachineLeaseKey,
+} from "@cockpit-chess/queue/account-deletion";
 
 /** One live lease per machine across replicas; identifiers never contain credentials. */
 export type RunnerLease = {
@@ -14,7 +18,7 @@ type RedisCommands = {
   eval(script: string, numberOfKeys: number, ...args: (string | number)[]): Promise<unknown>;
 };
 
-export const RUNNER_LEASE_TTL_MS = 60_000;
+export const RUNNER_LEASE_TTL_MS = RUNNER_DELETION_LEASE_MS;
 export const RUNNER_IP_CONNECTIONS = 16;
 export const RUNNER_ACTIONS_PER_MINUTE = RUNNER_APPLICATION_FRAMES_PER_MINUTE;
 export const RUNNER_REPLACEMENT_CHANNEL = "runner_ws_replaced";
@@ -70,7 +74,7 @@ redis.call('ZREM', KEYS[2], ARGV[2])
 return 1`;
 
 function leaseKey(lease: RunnerLease) {
-  return `runner:ws:lease:${lease.machineId}`;
+  return runnerMachineLeaseKey(lease.machineId);
 }
 function ipKey(lease: RunnerLease) {
   return ipAddressKey(lease.ip);

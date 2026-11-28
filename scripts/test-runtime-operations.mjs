@@ -2127,12 +2127,25 @@ async function main() {
         queues.redisConnection.disconnect();
       }
     } else if (
-      ["account-deletion", "account-deletion-pool3", "operator-funding"].includes(process.argv[3])
+      [
+        "account-deletion",
+        "account-deletion-pool3",
+        "account-deletion-cleanup",
+        "operator-funding",
+      ].includes(process.argv[3])
     ) {
       try {
         if (process.argv[3] === "operator-funding")
           await (await import("./lib/operator-funding-check.mjs")).operatorFundingCheck();
-        else if (process.argv[3] === "account-deletion-pool3")
+        else if (process.argv[3] === "account-deletion-cleanup") {
+          await (
+            await import("./lib/account-deletion-cleanup-check.mjs")
+          ).accountDeletionCleanupCheck();
+          await (
+            await import("./lib/chess-deletion-publication-check.mjs")
+          ).chessDeletionPublicationCheck();
+          await (await import("./lib/chess-key-retirement-check.mjs")).chessKeyRetirementCheck();
+        } else if (process.argv[3] === "account-deletion-pool3")
           await (await import("./lib/account-deletion-check.mjs")).accountDeletionPoolCheck();
         else {
           await (await import("./lib/account-deletion-check.mjs")).accountDeletionCheck();
@@ -2172,6 +2185,7 @@ async function main() {
       "--runner-transport-only",
       "--runner-claims-only",
       "--account-deletion-only",
+      "--account-deletion-cleanup-only",
       "--runner-limits-only",
       "--account-export-only",
       "--impersonation-only",
@@ -2291,7 +2305,9 @@ async function main() {
       NODE_ENV: "production",
       BACKUP_ENABLED: "false",
       BACKUP_SCHEDULE: "off",
+      ACCOUNT_DELETION_REGISTER_DIR: resolve(temporary, "deletion-register"),
     };
+    mkdirSync(fixtureEnv.ACCOUNT_DELETION_REGISTER_DIR, { mode: 0o700 });
     for (const operation of ["empty database", "unchanged schema"]) {
       execFileSync(
         process.execPath,
@@ -2332,6 +2348,17 @@ async function main() {
       ["runner-limits", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["runner-transport", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
       ["account-export", { ...inviteEnv, DATABASE_POOL_MAX: "5" }],
+      [
+        "account-deletion-cleanup",
+        {
+          ...inviteEnv,
+          DATABASE_POOL_MAX: "8",
+          CHESS_PROVIDER_KEY_SECRET: "ab".repeat(32),
+          CHESS_HOSTED_ENABLED: "true",
+          CHESS_USER_MATCHES_ENABLED: "true",
+          OPENROUTER_ORIGIN: "https://openrouter.example.test",
+        },
+      ],
       [
         "account-deletion",
         {
@@ -2402,6 +2429,11 @@ async function main() {
       if (process.argv[3] === "--account-export-only" && mode !== "account-export") continue;
       if (process.argv[3] === "--impersonation-only" && mode !== "impersonation") continue;
       if (process.argv[3] === "--account-deletion-only" && !mode.startsWith("account-deletion"))
+        continue;
+      if (
+        process.argv[3] === "--account-deletion-cleanup-only" &&
+        mode !== "account-deletion-cleanup"
+      )
         continue;
       if (process.argv[3] === "--runner-limits-only" && mode !== "runner-limits") continue;
       if (

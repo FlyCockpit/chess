@@ -6,7 +6,8 @@ import { ownerActiveInTransaction } from "./account-deletion.js";
 import { revokeCredentialsAfterPasswordReset } from "./credential-revocation.js";
 import { lockCliCredentials } from "./device-redemption-lock.js";
 import { withLockSlot } from "./lock-slots.js";
-import { admitResetSpend } from "./password-reset-links.js";
+import { admitResetSpend, RESET_ACCOUNT_UNAVAILABLE_CODE } from "./password-reset-links.js";
+import { impersonationSessionBinding } from "./password-sign-in-fence.js";
 import {
   assertPasswordWriteLocked,
   isResetPasswordWrite,
@@ -40,6 +41,112 @@ export function createCredentialSetupAdapter(database = prisma) {
     const make = (client: typeof prisma | Prisma.TransactionClient) =>
       prismaAdapter(client, { provider: "postgresql" })(options);
     const bind = (inner: Adapter, tx?: Prisma.TransactionClient): Adapter => {
+      // Set only after reset consumption acquired CLI credentials, before
+      // admission takes the setup lock. Never take another owner's lock later.
+      let resetCredentialOwner: string | undefined;
+      /** Current non-FK auth proofs must share deletion's owner fence. */
+      const createVerification = async <T>(
+        data: Record<string, unknown>,
+        write: (adapter: Adapter) => Promise<T>,
+      ): Promise<T> => {
+        const { identifier, value } = data;
+        if (typeof identifier !== "string" || typeof value !== "string")
+          throw new Error("Authentication verification requires an identifier and value");
+        const insert = async (client: Prisma.TransactionClient, writer: Adapter) => {
+          // Resolve children through their live challenge/session anchor. Resolve
+          // again after acquiring the owner's lock: an early lookup is no proof
+          // that reset/deletion did not remove the anchor while this write waited.
+          const resolveOwner = async (): Promise<string | null> => {
+            if (identifier.startsWith("2fa-otp-") || identifier.startsWith("2fa-attempts-")) {
+              const key = identifier.slice(identifier.startsWith("2fa-otp-") ? 8 : 13);
+              if (key.startsWith("2fa-")) {
+                const challenge = await client.verification.findFirst({
+                  where: { identifier: key, expiresAt: { gt: new Date() } },
+                  select: { value: true },
+                });
+                if (!challenge) throw new APIError("UNAUTHORIZED");
+                return challenge.value;
+              }
+              const separator = key.lastIndexOf("!");
+              if (!identifier.startsWith("2fa-otp-") || separator < 1)
+                throw new APIError("UNAUTHORIZED");
+              const userId = key.slice(0, separator);
+              const session = await client.session.findFirst({
+                where: { id: key.slice(separator + 1), userId, expiresAt: { gt: new Date() } },
+                select: { id: true },
+              });
+              if (!session) throw new APIError("UNAUTHORIZED");
+              return userId;
+            }
+            if (
+              identifier.startsWith("reset-password:") ||
+              identifier.startsWith("2fa-") ||
+              identifier.startsWith("trust-device-") ||
+              identifier.startsWith("delete-account-") ||
+              identifier.startsWith("runner-limit-totp:v1:")
+            )
+              return value;
+            if (
+              identifier.startsWith("auth-state:") ||
+              identifier.startsWith("reset-password-mailed:") ||
+              identifier.startsWith("runner-limits:v1:") ||
+              identifier.startsWith("runner-limit-proof:v1:")
+            ) {
+              let parsed: unknown;
+              try {
+                parsed = JSON.parse(value);
+              } catch {
+                throw new APIError("UNAUTHORIZED");
+              }
+              if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+                throw new APIError("UNAUTHORIZED");
+              const record = parsed as Record<string, unknown>;
+              if (identifier.startsWith("auth-state:")) {
+                if (record.link === undefined) return null; // Anonymous sign-in state, ten-minute TTL.
+                if (typeof record.link !== "object" || record.link === null)
+                  throw new APIError("UNAUTHORIZED");
+                const link = record.link as Record<string, unknown>;
+                if (typeof link.userId !== "string" || typeof link.email !== "string")
+                  throw new APIError("UNAUTHORIZED");
+                const owner = await client.user.findUnique({
+                  where: { id: link.userId },
+                  select: { email: true },
+                });
+                if (owner?.email !== link.email) throw new APIError("UNAUTHORIZED");
+                return link.userId;
+              }
+              if (typeof record.userId !== "string") throw new APIError("UNAUTHORIZED");
+              return record.userId;
+            }
+            throw new Error("Unsupported authentication verification namespace");
+          };
+          const owner = await resolveOwner();
+          if (owner === null) return write(writer);
+          if (tx) {
+            assertPasswordWriteLocked();
+            if (resetCredentialOwner !== owner) throw new APIError("UNAUTHORIZED");
+          } else {
+            await lockCliCredentials(owner, client);
+          }
+          if (!(await ownerActiveInTransaction(client, owner))) {
+            if (identifier.startsWith(RESET_PASSWORD_IDENTIFIER_PREFIX))
+              throw new APIError("UNAUTHORIZED", {
+                code: RESET_ACCOUNT_UNAVAILABLE_CODE,
+                message: "Authentication request unavailable",
+              });
+            throw new APIError("UNAUTHORIZED");
+          }
+          if ((await resolveOwner()) !== owner) throw new APIError("UNAUTHORIZED");
+          return write(writer);
+        };
+        if (tx) return insert(tx, inner);
+        return withLockSlot(() =>
+          database.$transaction((client) => insert(client, make(client)), {
+            isolationLevel: "ReadCommitted",
+            timeout: 20_000,
+          }),
+        );
+      };
       const verificationWrite = async <T>(
         args: Parameters<Adapter["update"]>[0],
         write: (adapter: Adapter) => Promise<T>,
@@ -152,6 +259,7 @@ export function createCredentialSetupAdapter(database = prisma) {
               throw new Error("Reset consumption requires its password transaction");
             assertPasswordWriteLocked();
             await lockCliCredentials(row.value, tx);
+            resetCredentialOwner = row.value;
             if (
               !(await admitResetSpend(
                 tx,
@@ -203,6 +311,49 @@ export function createCredentialSetupAdapter(database = prisma) {
           select?: string[];
           forceAllowId?: boolean;
         }): Promise<R> => {
+          if (args.model.toLowerCase() === "verification")
+            return createVerification(args.data, (writer) => writer.create<T, R>(args));
+          if (args.model.toLowerCase() === "session" && args.data.impersonatedBy) {
+            if (tx) throw new Error("Impersonation cannot nest inside a reset transaction");
+            const binding = Object.getOwnPropertyDescriptor(args.data, impersonationSessionBinding)
+              ?.value as
+              | { actorId?: unknown; parentSessionId?: unknown; targetUserId?: unknown }
+              | undefined;
+            if (
+              !binding ||
+              typeof binding.actorId !== "string" ||
+              typeof binding.parentSessionId !== "string" ||
+              binding.actorId !== args.data.impersonatedBy ||
+              binding.targetUserId !== args.data.userId
+            )
+              throw new APIError("UNAUTHORIZED");
+            const { actorId, parentSessionId } = binding;
+            // A peer owns this session's FK; erasing the actor cannot cascade it.
+            // Serialize the actual insertion with actor deletion/reset instead.
+            const data = { ...args.data };
+            Reflect.deleteProperty(data, impersonationSessionBinding);
+            return withLockSlot(() =>
+              database.$transaction(
+                async (client) => {
+                  await lockCliCredentials(actorId, client);
+                  if (!(await ownerActiveInTransaction(client, actorId)))
+                    throw new APIError("UNAUTHORIZED");
+                  const parent = await client.session.findFirst({
+                    where: {
+                      id: parentSessionId,
+                      userId: actorId,
+                      impersonatedBy: null,
+                      expiresAt: { gt: new Date() },
+                    },
+                    select: { id: true },
+                  });
+                  if (!parent) throw new APIError("UNAUTHORIZED");
+                  return make(client).create<T, R>({ ...args, data });
+                },
+                { isolationLevel: "ReadCommitted", timeout: 20_000 },
+              ),
+            );
+          }
           if (
             args.model.toLowerCase() === "user" &&
             getAllowedUserCreationMode() === "admin-invite"

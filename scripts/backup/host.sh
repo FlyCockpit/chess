@@ -159,13 +159,35 @@ discover_app() {
   docker network inspect "$network" >/dev/null 2>&1 || die "the app's network \"$network\" does not exist."
   postgres="$(in_project -f label=com.docker.compose.service=postgres | head -n1)"
 
-  # Only what the one-off container needs: the database and the backup bucket.
+  # Only what the one-off container needs: database, backup bucket and the
+  # external account-erasure register. Never forward unrelated app secrets.
   app_env() {
     docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$server" |
-      grep -E '^(DATABASE_URL|BACKUP_S3_[A-Z_]+)=' || true
+      grep -E '^(DATABASE_URL|BACKUP_S3_[A-Z_]+|ACCOUNT_DELETION_REGISTER_DIR)=' || true
   }
   volume_args=()
   [ -n "$volume" ] && volume_args=(-v "$volume:/backups")
+  local register_dir register_mounted destination mount_type mount_source
+  register_dir="$(app_env | sed -n 's/^ACCOUNT_DELETION_REGISTER_DIR=//p')"
+  register_mounted=0
+  if [ -n "$register_dir" ] && { [ "$action" = restore ] || [ "$action" = drill ]; }; then
+    while IFS=$'\t' read -r destination mount_type mount_source; do
+      [ "$destination" = "$register_dir" ] || continue
+      case "$mount_type" in
+        bind | volume)
+          volume_args+=(--mount "type=$mount_type,source=$mount_source,target=$register_dir,readonly")
+          register_mounted=1
+          ;;
+        *) die "the account deletion register must use a persistent bind or volume mount." ;;
+      esac
+    done < <(docker inspect -f '{{range .Mounts}}{{printf "%s\t%s\t" .Destination .Type}}{{if eq .Type "volume"}}{{.Name}}{{else}}{{.Source}}{{end}}{{printf "\n"}}{{end}}' "$server")
+  fi
+  case "$action" in
+    restore | drill)
+      [ -n "$register_dir" ] && [ "$register_mounted" = 1 ] ||
+        die "mount the current external account-erasure register and set ACCOUNT_DELETION_REGISTER_DIR on the app before restore or drill."
+      ;;
+  esac
   return 0
 }
 

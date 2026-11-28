@@ -67,6 +67,26 @@ vi.mock("@cockpit-chess/queue", () => ({
     `chess-spectator-${id}-${ply}-${access.purpose === "public" ? `public-${access.version}` : `owner-${access.ownerId}`}`,
   ensureRunnableJob,
 }));
+vi.mock("@cockpit-chess/queue/chess-job-registry", () => ({
+  publishRegisteredChessJob: (
+    _matchId: string,
+    surface: string,
+    name: string,
+    data: unknown,
+    jobId: string,
+    _assertFresh: () => void,
+    options?: { priority?: number },
+  ) =>
+    options
+      ? ensureRunnableJob(
+          surface === "run" ? {} : { add: reconcileAdd },
+          name,
+          data,
+          jobId,
+          options,
+        )
+      : ensureRunnableJob({}, name, data, jobId),
+}));
 vi.mock("@cockpit-chess/env/shared", () => ({ env }));
 vi.mock("../lib/procedure-budget", () => ({
   createProcedureBudget: (options: Record<string, unknown>) => {
@@ -263,7 +283,15 @@ beforeEach(() => {
   db.$transaction.mockImplementation(((fn: (tx: typeof db) => unknown) => fn(db)) as never);
   db.$queryRaw.mockResolvedValue([] as never);
   db.chessMatch.count.mockResolvedValue(0);
-  db.chessMatch.findUnique.mockResolvedValue({ source: "hosted", status: "queued" } as never);
+  db.chessMatch.findUnique.mockResolvedValue({
+    ownerId: "owner",
+    source: "hosted",
+    status: "queued",
+  } as never);
+  db.chessMatch.findFirst.mockImplementation((async (args: { select?: Record<string, unknown> }) =>
+    args.select?.ownerId && args.select.slug && Object.keys(args.select).length === 2
+      ? { ownerId: "owner", slug: "test-game" }
+      : null) as never);
   db.openRouterConnection.findUnique.mockResolvedValue(null);
   db.chessCreation.findUnique.mockResolvedValue(null);
   db.chessOfficialEntry.count.mockResolvedValue(0);

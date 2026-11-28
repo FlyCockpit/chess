@@ -345,6 +345,8 @@ describe("runner operating limits", () => {
     } as never);
     const input = { ...raise, verification: { method: "totp" as const, code: "123456" } };
     expect(await service.prove(session, input)).toMatchObject({ proof: expect.any(String) });
+    const usedId = `runner-limit-totp:v1:${createHash("sha256").update(session.userId).update("\0").update(input.verification.code).digest("hex")}`;
+    expect(stored.get(usedId)?.value).toBe(session.userId);
     expect(await service.prove(session, input)).toBeNull();
     tx.twoFactor.findUnique.mockResolvedValue({
       verified: true,

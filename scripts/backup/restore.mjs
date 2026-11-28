@@ -22,7 +22,7 @@
  *      migration or migration runner can work meanwhile. The target is
  *      re-inspected under the locks; a recorded unfinished migration is reported.
  *   5. Writers: refuses while other sessions are connected (stop app + worker
- *      first) unless --allow-active-connections.
+ *      first). Live writers are never allowed during erasure suppression.
  *   6. Snapshot: a non-empty target is dumped first (pre-migrate.sh --label
  *      pre-restore --required → /backups and/or S3) unless --skip-snapshot.
  *   7. Restore: schema drop (replace only) + the whole archive run in ONE
@@ -46,6 +46,10 @@ import { createGunzip } from "node:zlib";
 
 import { HOLD_DDL } from "../db/lib/contracts.mjs";
 import { prismaSchemaName } from "../db/lib/migration-state.mjs";
+import {
+  accountDeletionSuppressionSql,
+  readAccountDeletionSuppressions,
+} from "./account-deletion-suppression.mjs";
 import {
   detectArchiveFormat,
   expectedConfirmation,
@@ -489,8 +493,8 @@ async function assertNoWriters(env, lockPid, allow) {
   throw new Refusal(
     `${count} other connection(s) are using ${env.PGDATABASE}: ${who}.\n` +
       "Stop the app and worker (Dokploy: stop the service; container platforms: scale app + worker to zero) and any\n" +
-      "other client, then re-run. If a connection is a pooler or provider monitor you cannot stop and you are\n" +
-      "certain nothing writes, add --allow-active-connections. Nothing was changed.",
+      "other client, then re-run. If a pooler or provider monitor cannot be stopped, use an isolated target\n" +
+      "without those connections. Nothing was changed.",
   );
 }
 
@@ -934,6 +938,14 @@ async function main() {
       );
     }
 
+    // There is no safe erasure register snapshot while live writers may append
+    // to it. Restore requires the existing stop/drain contract without a bypass.
+    if (args.allowActiveConnections)
+      throw new Refusal(
+        "account deletion suppression requires all writers stopped; --allow-active-connections cannot be used for restore.",
+      );
+    await readAccountDeletionSuppressions(process.env.ACCOUNT_DELETION_REGISTER_DIR);
+
     const lock = await openLockSession(env);
     try {
       if (!lock.restoreLock) throw new Refusal("another restore is running against this database.");
@@ -1005,6 +1017,11 @@ async function main() {
         throw new Refusal(
           "the lock session ended before the restore started; nothing was changed.",
         );
+      // Re-read after the final no-writers check and snapshot, under all restore
+      // locks. Completed erasures recorded since preparation must not be lost.
+      const suppressions = await readAccountDeletionSuppressions(
+        process.env.ACCOUNT_DELETION_REGISTER_DIR,
+      );
       // The lock session itself runs the restore transaction: the locks are
       // never released between the checks and COMMIT.
       applyStarted = true;
@@ -1013,7 +1030,11 @@ async function main() {
         env,
         target.occupied,
         lock.handOver(),
-        restoreHoldSql(prismaSchemaName(process.env.DATABASE_URL ?? "")),
+        restoreHoldSql(prismaSchemaName(process.env.DATABASE_URL ?? "")) +
+          accountDeletionSuppressionSql(
+            suppressions,
+            prismaSchemaName(process.env.DATABASE_URL ?? ""),
+          ),
       );
       if (!result.ok) {
         const { outcome, reason } = await settleOutcome(result, env);
@@ -1042,6 +1063,9 @@ async function main() {
         summary = `migration summary unavailable (${error instanceof Error ? error.message : String(error)})`;
       }
       console.log(`\nRestore complete. ${summary}.`);
+      console.log(
+        `Applied ${suppressions.length} external account-erasure suppression record(s) before COMMIT. Matching restored accounts remain fenced pending; physical cleanup resumes through the deletion worker.`,
+      );
     } finally {
       await lock.close();
     }

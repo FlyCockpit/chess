@@ -6,6 +6,7 @@ import type IORedis from "ioredis";
  */
 export function fakeValkey() {
   const sets = new Map<string, Map<string, number>>();
+  const values = new Map<string, string>();
   const state = { down: false, uptimeSeconds: 3600, failAfterApplying: false };
   const published: Array<[string, string]> = [];
   const set = (key: string) => {
@@ -18,6 +19,43 @@ export function fakeValkey() {
   const bound = (value: number | string) =>
     value === "-inf" ? -Infinity : value === "+inf" ? Infinity : Number(value);
   const connection = {
+    async get(key: string) {
+      if (state.down) throw new Error("valkey down");
+      return values.get(key) ?? null;
+    },
+    async set(key: string, value: string, condition?: string) {
+      if (state.down) throw new Error("valkey down");
+      if (condition === "NX" && values.has(key)) return null;
+      values.set(key, value);
+      if (state.failAfterApplying) throw new Error("valkey reply lost");
+      return "OK";
+    },
+    async eval(
+      script: string,
+      _count: number,
+      epoch: string,
+      key: string,
+      ...args: (string | number)[]
+    ) {
+      if (state.down) throw new Error("valkey down");
+      if (script.startsWith("-- cockpit-chess:key-cache-retire:v1")) {
+        values.set(epoch, "retired");
+        const deleted = sets.delete(key) ? 1 : 0;
+        if (state.failAfterApplying) throw new Error("valkey reply lost");
+        return deleted;
+      }
+      if (!script.startsWith("-- cockpit-chess:key-cache-record:v1"))
+        throw new Error("Unsupported fake Valkey script");
+      const [captured, now, hash, keep] = args;
+      if (captured === "retired" || values.get(epoch) !== captured) return [0];
+      if (hash !== "") set(key).set(String(hash), Number(now));
+      const sorted = [...set(key)].sort((a, b) => a[1] - b[1]);
+      for (const [member] of sorted.slice(0, Math.max(0, sorted.length - Number(keep))))
+        set(key).delete(member);
+      const result = [1, ...[...set(key)].sort((a, b) => b[1] - a[1]).map(([member]) => member)];
+      if (state.failAfterApplying) throw new Error("valkey reply lost");
+      return result;
+    },
     multi() {
       const ops: Array<() => unknown> = [];
       const chain = {
@@ -71,8 +109,12 @@ export function fakeValkey() {
   };
   return {
     sets,
+    values,
     state,
     published,
-    connection: connection as unknown as Pick<IORedis, "multi" | "zscore" | "publish">,
+    connection: connection as unknown as Pick<
+      IORedis,
+      "multi" | "zscore" | "publish" | "set" | "get" | "eval"
+    >,
   };
 }

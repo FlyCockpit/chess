@@ -2,7 +2,15 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -49,6 +57,8 @@ export function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "backup-restore-cli-test-"));
   const archive = join(dir, "manual-20261113T000000Z.dump");
   const receipt = join(dir, "commit-observed.txt");
+  const suppressionDirectory = join(dir, "account-deletions");
+  mkdirSync(suppressionDirectory, { mode: 0o700 });
   writeFileSync(archive, "PGDMP-inert-test-archive");
   // The fixtures' `#!/usr/bin/env node` finds node here, so the spawn-failure
   // modes can run with a PATH of this directory alone.
@@ -214,6 +224,7 @@ if (queryIndex !== -1) {
     // (node's own directory may hold one too).
     PATH: mode.endsWith("spawn-fail") ? dir : `${dir}:${dirname(process.execPath)}:/usr/bin:/bin`,
     DATABASE_URL: "postgresql://127.0.0.1/restore_fixture",
+    ACCOUNT_DELETION_REGISTER_DIR: suppressionDirectory,
     RESTORE_FIXTURE_RECEIPT: receipt,
     RESTORE_FIXTURE_MODE: mode,
     RESTORE_FIXTURE_XACT: xact,
@@ -236,6 +247,7 @@ if (queryIndex !== -1) {
     dir,
     archive,
     receipt,
+    suppressionDirectory,
     env,
     commit,
     xactQueries,

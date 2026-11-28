@@ -269,7 +269,9 @@ export const openrouterRouter = {
    */
   disconnect: protectedProcedure.handler(async ({ context }) => {
     const userId = context.session.user.id;
-    const deadline = Date.now() + DISCONNECT_DEADLINE_MS;
+    const requestedAt = Date.now();
+    const requestedMono = performance.now();
+    const deadline = requestedAt + DISCONNECT_DEADLINE_MS;
     // Over budget rejects at once; a slow limiter is not waited on (it fails open).
     const budget = disconnectBudget(userId);
     budget.catch(() => undefined);
@@ -284,6 +286,22 @@ export const openrouterRouter = {
       // A queued lock-slot waiter must not begin effects after the caller's
       // bounded transaction window has already expired.
       if (Date.now() >= deadline - DISCONNECT_DEADLINE_MS / 2) throw unavailable();
+      const transactionStartedAt = Date.now();
+      const transactionStartedMono = performance.now();
+      const assertRevocationFresh = () => {
+        const transactionAge = Math.max(
+          Date.now() - transactionStartedAt,
+          performance.now() - transactionStartedMono,
+        );
+        const requestAge = Math.max(Date.now() - requestedAt, performance.now() - requestedMono);
+        // Keep a full second before Prisma releases this five-second holder.
+        // A late key-cache initializer may never capture a fresh epoch after it.
+        if (
+          transactionAge >= DISCONNECT_DEADLINE_MS / 2 - 1000 ||
+          requestAge >= DISCONNECT_DEADLINE_MS - 1000
+        )
+          throw unavailable();
+      };
       return prisma.$transaction(
         async (tx) => {
           // Keep credential -> admission -> match ordering shared with deletion.
@@ -311,10 +329,21 @@ export const openrouterRouter = {
           ORDER BY "id" FOR UPDATE`;
           // Revoked before the row goes: a run that loaded the key before the delete
           // commits finds it on this list. Without the list nothing is deleted.
-          const recorded = await within(
-            () => recordChessKeyRevoked(redisConnection, userId, found?.keyHash ?? null),
-            Math.min(deadline, Date.now() + 2000),
-          );
+          // A previously admitted disconnect may arrive after the durable
+          // deletion fence. It still cancels below, but must never initiate a
+          // new account-linked cache write, even if its DB connection is lost.
+          const recorded = owner.deletionRequestedAt
+            ? []
+            : await within(
+                () =>
+                  recordChessKeyRevoked(
+                    redisConnection,
+                    userId,
+                    found?.keyHash ?? null,
+                    assertRevocationFresh,
+                  ),
+                Math.min(deadline, Date.now() + 2000),
+              );
           if (!recorded) throw unavailable();
           // That exact key: one connected meanwhile (another tab's callback) stays.
           if (found)

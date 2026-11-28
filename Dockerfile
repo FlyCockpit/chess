@@ -264,6 +264,7 @@ COPY scripts/lib/bounded-child.mjs ./scripts/lib/
 COPY scripts/backup/pre-migrate.sh \
      scripts/backup/restore.sh \
      scripts/backup/restore.mjs \
+     scripts/backup/account-deletion-suppression.mjs \
      scripts/backup/lib.mjs \
      scripts/backup/s3.mjs \
      scripts/backup/schedule.mjs \
@@ -285,7 +286,8 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Drop privileges. The `node` user (uid 1000) ships in node:26-slim. The
 # server only reads /app at runtime; the entrypoint's writes go to /tmp
-# (mktemp), to the node-owned /backups mount point, and to
+# (mktemp), to the node-owned /backups mount point, the separately provisioned
+# account-erasure register mount, and to
 # Postgres over the network, so no chown of /app is needed.
 RUN mkdir -p /backups && chown node:node /backups
 USER node

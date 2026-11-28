@@ -167,8 +167,8 @@ export function createRunnerTransport(options: Options) {
       clearTimeout(helloTimeout);
       heartbeatNonces.clear();
       connections.delete(api);
-      // Do not await an unavailable store before stopping authority locally.
-      void run(options.leases.release(lease)).catch(() => {});
+      // Keep the lease until the native socket has actually finished. Cleanup
+      // must not mistake a requested close for confirmed transport termination.
       // Persist grace on every detected close. The backend compares this exact
       // generation so a retired socket cannot disconnect its replacement.
       if (options.controls?.disconnected) {
@@ -464,6 +464,7 @@ export function createRunnerTransport(options: Options) {
       finished() {
         close();
         clearTimeout(terminating);
+        void run(options.leases.release(lease)).catch(() => {});
       },
       idle: () => processing,
       tick,

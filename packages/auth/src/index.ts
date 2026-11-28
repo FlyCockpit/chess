@@ -42,10 +42,12 @@ import { refuseEmailChange } from "./email-change-policy.js";
 import { createPasswordPepper } from "./password-pepper.js";
 import {
   isResetLinkRedeemable,
+  neutralizeUnavailablePasswordResetResponse,
   recordResetLinkMailed,
   resetTokenOf,
 } from "./password-reset-links.js";
 import {
+  bindImpersonationSession,
   fencePasswordSessionAfter,
   fencePasswordSessionBefore,
   recordTwoFactorChallenge,
@@ -412,6 +414,10 @@ export const auth = betterAuth({
     // password is already committed; the revocation retries and logs loudly
     // exactly as it does for a reset (credential-revocation.ts).
     after: createAuthMiddleware(async (ctx) => {
+      if (ctx.path === "/request-password-reset") {
+        const neutral = neutralizeUnavailablePasswordResetResponse(ctx);
+        if (neutral) return neutral;
+      }
       // Sign-up answers byte-identically for a free and a registered address,
       // so it is no account-existence oracle (signup-response.ts).
       if (ctx.path === SIGN_UP_EMAIL_PATH) {
@@ -576,7 +582,7 @@ export const auth = betterAuth({
           // Better Auth's IP default; never copy a legacy IP into a new row.
           return {
             data: {
-              ...(tagged?.data ?? session),
+              ...bindImpersonationSession(tagged?.data ?? session, context),
               authenticatedAt: await sessionAuthenticationTime(session, context),
               ipAddress: "",
             },

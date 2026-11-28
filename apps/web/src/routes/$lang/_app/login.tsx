@@ -34,6 +34,7 @@ import {
 } from "@/lib/runner-claim-link";
 import { setSessionHint } from "@/lib/session-hint";
 import { verificationCallback } from "@/lib/verify-email-search";
+import { accountDeletionAcknowledgement } from "@/utils/account-deletion";
 import {
   codeFailureMessage,
   friendly,
@@ -45,8 +46,11 @@ import { safeRedirectTo } from "@/utils/safe-redirect";
 
 export const Route = createFileRoute("/$lang/_app/login")({
   staticData: { pendingShape: "form", pendingWidth: "narrow" },
-  validateSearch: (search: Record<string, unknown>) => ({
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { redirectTo: string | undefined; accountDeletion?: "pending" | "unconfirmed" } => ({
     redirectTo: typeof search.redirectTo === "string" ? search.redirectTo : undefined,
+    accountDeletion: accountDeletionAcknowledgement(search.accountDeletion),
   }),
   beforeLoad: async ({ params, search, location }) => {
     watchRunnerClaimIdentity(location.pathname, params.lang);
@@ -81,7 +85,7 @@ const initialTwoFactorState = {
 function LoginPage() {
   markAnonymousOnlyRoute();
   const { lang } = Route.useParams();
-  const { redirectTo } = Route.useSearch();
+  const { redirectTo, accountDeletion } = Route.useSearch();
   const hash = useLocation({ select: (location) => location.hash });
   const [twoFactor, setTwoFactor] = useState(initialTwoFactorState);
   const authSession = useAuthSession();
@@ -98,7 +102,7 @@ function LoginPage() {
     isLoadingError: configError,
     refetch: refetchConfig,
   } = useQuery(orpc.appConfig.queryOptions());
-  const { t } = useTranslation(["auth", "common"]);
+  const { t } = useTranslation(["auth", "common", "settings"]);
 
   const ssoEnabled = configData?.ssoEnabled ?? false;
   const forceSso = configData?.forceSso === true;
@@ -260,6 +264,13 @@ function LoginPage() {
               : t("auth:login.signinDescription")
           }
         >
+          {accountDeletion ? (
+            <p role="status" className="rounded-md border p-3 text-sm">
+              {accountDeletion === "pending"
+                ? t("settings:security.deleteAccountAccepted")
+                : t("settings:security.deleteAccountUnconfirmed")}
+            </p>
+          ) : null}
           {ssoEnabled && (
             <>
               {claimToken ? (

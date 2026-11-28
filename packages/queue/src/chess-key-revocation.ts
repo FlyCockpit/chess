@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import type IORedis from "ioredis";
 
 /**
@@ -31,6 +32,20 @@ const REVOKED_TTL_SECONDS = 24 * 60 * 60;
 /** Revoked hashes kept per user (newest first); keys are created at most 20 per 10 min. */
 const REVOKED_KEEP = 50;
 const LOADING = "loading";
+const REVOCATION_WRITE_MS = 1500;
+const epochKey = (userId: string) =>
+  `cockpit-chess:key-retirement:${createHash("sha256").update("chess-key-retirement:v1:").update(userId).digest("hex")}`;
+const RECORD_REVOCATION = `-- cockpit-chess:key-cache-record:v1
+if ARGV[1] == 'retired' or redis.call('GET', KEYS[1]) ~= ARGV[1] then return {0} end
+if ARGV[3] ~= '' then redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3]) end
+redis.call('ZREMRANGEBYRANK', KEYS[2], 0, -(tonumber(ARGV[4]) + 1))
+redis.call('EXPIRE', KEYS[2], ARGV[5])
+local hashes = redis.call('ZREVRANGE', KEYS[2], 0, -1)
+table.insert(hashes, 1, 1)
+return hashes`;
+const RETIRE_REVOCATIONS = `-- cockpit-chess:key-cache-retire:v1
+redis.call('SET', KEYS[1], 'retired')
+return redis.call('DEL', KEYS[2])`;
 
 export interface ChessKeyRevocation {
   userId: string;
@@ -77,19 +92,47 @@ export function parseChessKeyRevocation(raw: string): ChessKeyRevocation | undef
 
 /** Records `keyHash` as revoked for `userId`; returns every recently revoked hash. */
 export async function recordChessKeyRevoked(
-  connection: Multi,
+  connection: Pick<IORedis, "set" | "get" | "eval">,
   userId: string,
   keyHash: string | null,
+  assertOwnerLockFresh: () => void,
 ): Promise<string[]> {
-  const key = `${REVOKED}${userId}`;
-  const results = await exec(connection, (multi) => {
-    if (keyHash) multi.zadd(key, Date.now(), keyHash);
-    multi.zremrangebyrank(key, 0, -(REVOKED_KEEP + 1));
-    multi.expire(key, REVOKED_TTL_SECONDS);
-    multi.zrevrange(key, 0, -1);
-  });
-  const hashes = results.at(-1);
-  return Array.isArray(hashes) ? hashes.filter((hash) => typeof hash === "string") : [];
+  const startedAt = Date.now();
+  const startedMono = performance.now();
+  const assertFresh = () => {
+    assertOwnerLockFresh();
+    if (Math.max(Date.now() - startedAt, performance.now() - startedMono) >= REVOCATION_WRITE_MS)
+      throw new Error("Key revocation publication expired");
+  };
+  const epoch = epochKey(userId);
+  // NX cannot replace retirement. The short original deadline prevents a
+  // suspended initializer from acquiring fresh authority after a store restart.
+  assertFresh();
+  await connection.set(epoch, randomUUID(), "NX");
+  assertFresh();
+  const captured = await connection.get(epoch);
+  if (!captured || captured === "retired") throw new Error("Key revocation state retired");
+  assertFresh();
+  // The guard and every cache mutation execute in ONE Redis operation. A
+  // client timeout or delayed reconnect replay cannot resurrect erased data.
+  const result = await connection.eval(
+    RECORD_REVOCATION,
+    2,
+    epoch,
+    `${REVOKED}${userId}`,
+    captured,
+    Date.now(),
+    keyHash ?? "",
+    REVOKED_KEEP,
+    REVOKED_TTL_SECONDS,
+  );
+  if (
+    !Array.isArray(result) ||
+    result[0] !== 1 ||
+    result.slice(1).some((hash) => typeof hash !== "string")
+  )
+    throw new Error("Key revocation state retired");
+  return result.slice(1) as string[];
 }
 
 /** Whether `keyHash` was revoked for `userId` (a worker's check after loading a key). */
@@ -109,6 +152,14 @@ export async function publishChessKeyRevocation(
 }
 
 const member = (holder: string, keyHash: string | null) => `${holder}|${keyHash ?? LOADING}`;
+
+/** Only after confirmed termination: remove the erased account's hash history. */
+export async function forgetChessKeyRevocations(connection: Pick<IORedis, "eval">, userId: string) {
+  // Never erase the live lease registry to manufacture stop evidence.
+  // This minimal purpose-bound marker intentionally has no TTL: a captured
+  // mutation can arrive arbitrarily late. It contains no raw owner or key hash.
+  await connection.eval(RETIRE_REVOCATIONS, 2, epochKey(userId), `${REVOKED}${userId}`);
+}
 
 /** Takes (or refreshes) `holder`'s lease as loading (`keyHash` null) or on `keyHash`. */
 export async function holdChessKeyLease(

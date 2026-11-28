@@ -248,8 +248,8 @@ export function createRunnerLimitsService(db: Database = prisma, verify = verify
           const expiresAt = new Date(Date.now() + 90_000);
           await tx.verification.upsert({
             where: { id: usedId },
-            create: { id: usedId, identifier: usedId, value: "used", expiresAt },
-            update: { expiresAt },
+            create: { id: usedId, identifier: usedId, value: session.userId, expiresAt },
+            update: { value: session.userId, expiresAt },
           });
           await tx.twoFactor.update({
             where: { userId: session.userId },

@@ -6,6 +6,8 @@
 
 Back up `BETTER_AUTH_SECRET` separately from the database and retain the keys needed for older backups. A restored database may need its original key for [password pepper rotation or recovery](./auth-and-routing.md#password-pepper).
 
+Account erasure also needs the [external suppression register](#account-erasure-suppression). This is independent of the backup opt-in: account deletion stays pending and an actual restore refuses when that register is unavailable.
+
 ## Daily backups
 
 ### Dokploy with the generated compose (the default) — recommended
@@ -20,9 +22,9 @@ What it does: a few minutes after it starts (when the last backup is missing or 
 
 ### Dokploy-managed Postgres
 
-If Postgres is a Dokploy database instead of part of the compose, use Dokploy's built-in backups: database → **Backups** tab → add an S3 destination, a daily schedule, and a retention of at least 14 days ([deployment.md](./deployment.md#backups-before-real-data)). Dokploy writes gzip-wrapped `pg_dump` files; `restore` reads them directly, and Dokploy's database Restore button is detected automatically.
+If Postgres is a Dokploy database instead of part of the compose, use Dokploy's built-in backups: database → **Backups** tab → add an S3 destination, a daily schedule, and a retention of at least 14 days ([deployment.md](./deployment.md#backups-before-real-data)). Dokploy writes gzip-wrapped `pg_dump` files; the guarded image `restore` command reads them directly and reapplies account-erasure suppression. A direct Dokploy restore must stay isolated until the same suppression has been applied; detecting a restore for schema holds alone does not prevent erased accounts returning.
 
-Avoid Dokploy's **Volume Backups** for the database: restoring such a copy is not detected. If you ever do, start only the database, run `bash app-db.sh hold-deletions` ([§ The server helper](#the-server-helper-app-dbsh)) or the image's `hold-deletions` command, then start the app ([schema-migrations.md § Holding deletions by hand](./schema-migrations.md#holding-deletions-by-hand)).
+Avoid Dokploy's **Volume Backups** for the database: restoring such a copy is not detected. If you ever do, keep all application writers stopped, hold schema deletions as described below, and follow [account-erasure suppression](#account-erasure-suppression) before starting the app. A hold alone does not reapply erasure requests.
 
 Record the chosen backup system, bucket prefix, retention, alerts and owner in your deployment records.
 
@@ -67,6 +69,18 @@ The writer/restore identity needs `GetObject`, `GetObjectVersion`, `PutObject` a
 
 S3 expiration is controlled by bucket lifecycle rules, never local pruning. A successful dump logs `[backup] Verified <path>`; when S3 is configured, also require upload success and record the object key, ETag and version ID. A silent no-destination exit (without `--required`) is not evidence of a backup. `--required` makes a missing destination fail; image command `backup` already uses it.
 
+### Account-erasure suppression
+
+Mount a separate persistent directory into every app and worker replica and the restore container. Set `ACCOUNT_DELETION_REGISTER_DIR` to its absolute path, for example `/account-deletions`. The directory must already exist, belong to the runtime user, and have mode `0700`; committed records have mode `0600`. Use a restricted shared filesystem when replicas run on different hosts. Do not put the register inside Postgres storage, a database dump, an ephemeral container layer, or any snapshot that will be rolled back with the database. The image does not create a disposable default. The Dokploy host helper forwards this setting and mounts the matching app volume read-only into restore and drill commands.
+
+The erasure flow fsyncs one idempotent record before it can finish. A record contains only a purpose-bound SHA-256 restoration identifier, the request time and a review expiry; it contains no email, name, raw user ID, key or replay. This restricted operational register is separate from anonymous official statistics. Back it up through a separately controlled current copy: losing or restoring an outdated register can resurrect authority from old backups. The configured deployment must preserve the current register across both database restoration and host loss; this code does not claim an off-site copy was configured or erase remote backup objects.
+
+Each record's review expiry is at least 31 days after the request and append time. It is **never automatically deleted or ignored** at expiry. The owner may prune a record only after verifying every backup or provider recovery point predating the erasure is permanently unavailable, including noncurrent object versions, manual and pre-restore dumps. The public deployment's 30-day backup expiry is established by G1; it is not inferred from this local retention date. Retain records longer when an older backup still exists.
+
+An actual guarded restore requires the complete current register, even when it is empty or `BACKUP_ENABLED=false`. A missing, unreadable, permissively accessible, malformed or over-capacity register refuses before the restore transaction. The command reads it again after draining writers and taking the pre-restore snapshot, then reapplies it **inside the same transaction as the archive, before COMMIT**. Matching restored users become deletion-pending, sessions/API keys/device approvals/password and SSO credentials/2FA/OpenRouter connections are removed, runners are revoked, active games stop as owner withdrawals, and outstanding runner commands are cancelled. Existing terminal outcomes and the permanent official ledger remain unchanged. Public readers immediately hide pending-owner replays. The normal deletion worker then resumes physical cleanup and anonymization; restore success is not physical-erasure completion.
+
+Stop every app, worker and other database writer for this operation. `--allow-active-connections` is refused for actual restores because it permits a suppression-register race. Start the current image after success, and confirm pending deletion cleanup finishes before treating restored accounts as physically erased. If using provider PITR, a volume snapshot or a direct database restore, first restore into an isolated database with no application admission, take a logical dump of that isolated result, then use the guarded image `restore` command with the current register for the final target. Do not point the app at the unsuppressed intermediate database. No automated destructive restore is introduced.
+
 ## Restore
 
 Restore is a command in the app image: `restore <source> [options]`. It runs **inside the target network** (a one-off container on the Dokploy server, or a one-shot job on a container platform) using that environment's `DATABASE_URL`. Agents prepare the exact command; **the owner runs it**. On Dokploy, [the server helper](#the-server-helper-app-dbsh) can guide the operation.
@@ -87,7 +101,8 @@ restore --list                    list the backups in /backups, newest first
                              then drop app schemas and restore, in one transaction)
 --etag <etag>                S3 only, required: the exact object ETag
 --version-id <id>            S3 only: pin an object version
---allow-active-connections   proceed although other sessions are connected
+--allow-active-connections   refused for actual restores; account-erasure suppression
+                             requires every writer stopped
 --skip-snapshot              with --replace: skip the pre-restore snapshot
                              (only when a provider snapshot exists)
 --guided                     after the preview, ask and fill in --confirm / --replace /
@@ -95,7 +110,7 @@ restore --list                    list the backups in /backups, newest first
                              holds data needs its name typed (needs docker run -it)
 ```
 
-What it does for you: verifies the archive before touching anything, checks the target, refuses while other sessions are connected, snapshots the current database (to `/backups` and/or S3, so one must be configured) before replacing it, and holds the same locks as migrations (Prisma's and the migration runner's) so a deploy cannot migrate halfway through a restore; it refuses while a migration runner is working. It re-checks whether the target is empty after taking the locks and refuses if that changed. One database session takes those locks before the checks and keeps it through the snapshot and the restore transaction itself, so no migration or second restore can run at any point in between.
+What it does for you: verifies the archive before touching anything, checks the target and current external erasure register, refuses while other sessions are connected, snapshots the current database (to `/backups` and/or S3, so one must be configured) before replacing it, and holds the same locks as migrations (Prisma's and the migration runner's) so a deploy cannot migrate halfway through a restore; it refuses while a migration runner is working. It re-checks whether the target is empty after taking the locks and refuses if that changed. One database session takes those locks before the checks and keeps it through the snapshot and the restore transaction itself, so no migration or second restore can run at any point in between. Account-erasure suppressions commit atomically with the restored data.
 
 Always preview first: run it **without** `--confirm`, read the preview, then run it with `--confirm` (or use `--guided`, which shows the preview and then asks). A refusal or failure before the restore transaction starts (a failed check, the archive verification, the pre-restore snapshot) changes nothing and exits `3`. If anything fails after the restore transaction started but before COMMIT is sent, it rolls back and the target is left as it was (exit `4`). After COMMIT was sent, `restore` reports "rolled back" only when that is provable: psql (run with `ON_ERROR_STOP`) stopped on an SQL error before printing the confirmation that follows COMMIT (a client-side `\echo`, so nothing after COMMIT can raise an SQL error and the failing statement came at or before COMMIT); or the server's `pg_xact_status()` for the restore transaction (its id is printed right after `BEGIN`, so this needs PostgreSQL 13 or newer) says aborted. Otherwise it is uncertain (exit `1`, or `129`/`130`/`143` for a signal): inspect the target before making any unchanged claim or retrying. Callers treat `0`, `3` and `4` as definite; any other status means "inspect the target".
 
@@ -155,13 +170,13 @@ Exit status of `bash app-db.sh restore`:
 
 Restarts are best effort (a failed `docker start` does not change the exit status): confirm with `docker ps`. A Ctrl-C, TERM or HUP after that prompt is not a cancel: the helper exits `130`, `143` or `129`; before the restore was invoked it first tries to start the writers again; once it was invoked, the last case of the `other` row applies. Under `| tee` the pipeline reports `tee`'s status: use `set -o pipefail` or `${PIPESTATUS[0]}` to see the helper's. Ctrl-C in the terminal also stops `tee` (its last lines, such as the cancel message, may not reach the log), so `pipefail` then reports `tee`'s `130`: read `${PIPESTATUS[0]}`, or log with `tee -i`, which ignores Ctrl-C.
 
-A restore by `restore` is detected automatically: scheduled deletions wait 7 days. Dokploy's database Restore button is detected too. Restoring a Dokploy **Volume Backups** copy is not: start only the database, run `bash app-db.sh hold-deletions`, then start the app ([schema-migrations.md § Holding deletions by hand](./schema-migrations.md#holding-deletions-by-hand)).
+A restore by `restore` is detected automatically: scheduled schema deletions wait 7 days. Dokploy's database Restore button is detected too. Restoring a Dokploy **Volume Backups** copy is not: start only the database and run `bash app-db.sh hold-deletions` ([schema-migrations.md § Holding deletions by hand](./schema-migrations.md#holding-deletions-by-hand)). Apply [account-erasure suppression](#account-erasure-suppression) before any application admission for these alternative restore paths; schema holds do not defer account erasure.
 
 Dokploy-managed Postgres (no `postgres` service in the compose): the helper does not apply; run the same `restore` image command by hand as a one-off container on `dokploy-network` with the app's `DATABASE_URL` (agents prepare it). Dokploy's own S3 backups restore via `s3://` when `BACKUP_S3_*` points at that bucket, or download the `.sql.gz` into the backups volume first.
 
 ### On a container platform
 
-Prefer the provider's own restore (point-in-time recovery into a new server, then switch `DATABASE_URL`) for whole-database recovery. To load a logical dump, the infra workflow runs the app image as a one-shot job (Azure Container Apps job / ECS RunTask) with command `restore <source> …`, the environment's secrets, and app + worker scaled to zero. Same two runs: preview, then `--confirm`. Then deploy the current SHA as usual so the `migrate` job brings the schema forward.
+Provider point-in-time recovery must first target an isolated server with no application admission. Convert that result to a logical dump, then run the guarded image restore with the current [external register](#account-erasure-suppression) before switching `DATABASE_URL`. To load a logical dump, the infra workflow runs the app image as a one-shot job (Azure Container Apps job / ECS RunTask) with command `restore <source> …`, the environment's secrets, the separate register mount, and app + worker scaled to zero. Same two runs: preview, then `--confirm`. Then deploy the current SHA as usual so the `migrate` job brings the schema forward.
 
 If the restored database is **newer** than the image (its history has migrations the image lacks), the app starts only when every one of those is rollback-safe and none of their deletions has run; otherwise it refuses with `db-ahead` and you deploy a newer SHA. If it reports `failed`, follow [schema-migrations.md § Recovery runbook](./schema-migrations.md#recovery-runbook).
 
@@ -170,7 +185,7 @@ If the restored database is **newer** than the image (its history has migrations
 A restore can bring back data a scheduled deletion already removed, and the matching `contract.sql` would delete it again on the next start. So every restore holds scheduled deletions for 7 days:
 
 - the `restore` command writes the hold itself, and a point-in-time restore, any `pg_restore --clean`, and a dump restored into another server or database are detected by the runner at the next start;
-- a provider snapshot restore, a Dokploy Volume Backups copy, a `pg_restore --data-only`, or any provider restore whose identity behavior has not been verified may not be detected: start only the database, run the image's `hold-deletions` command ([schema-migrations.md § Holding deletions by hand](./schema-migrations.md#holding-deletions-by-hand)), then start the app.
+- a provider snapshot restore, a Dokploy Volume Backups copy, a `pg_restore --data-only`, or any provider restore whose identity behavior has not been verified may not be detected: start only the database and run the image's `hold-deletions` command ([schema-migrations.md § Holding deletions by hand](./schema-migrations.md#holding-deletions-by-hand)). Apply [account-erasure suppression](#account-erasure-suppression) before starting the app.
 
 If you restored to get a deleted field's data back, ship the `--recover` PR within those 7 days ([schema-migrations.md § Getting a field back](./schema-migrations.md#getting-a-field-back)).
 

@@ -9,7 +9,8 @@ const db = vi.hoisted(() => ({
     updateMany: vi.fn(),
     create: vi.fn(),
   },
-  verification: { findMany: vi.fn(), deleteMany: vi.fn() },
+  verification: { findFirst: vi.fn(), findMany: vi.fn(), deleteMany: vi.fn(), create: vi.fn() },
+  session: { findFirst: vi.fn(), create: vi.fn() },
   account: { findFirst: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   $executeRaw: vi.fn(),
   $transaction: vi.fn(),
@@ -17,6 +18,9 @@ const db = vi.hoisted(() => ({
 vi.mock("@cockpit-chess/db", () => ({ default: db }));
 vi.mock("@cockpit-chess/env/shared", () => ({ env: { DATABASE_POOL_MAX: 3 } }));
 const { createCredentialSetupAdapter } = await import("./credential-setup-adapter");
+const { bindImpersonationSession, impersonationSessionBinding } = await import(
+  "./password-sign-in-fence"
+);
 const { releaseSlots, tryAcquireSlots } = await import("./lock-slots");
 const adapter = createCredentialSetupAdapter()({});
 type Selector = Parameters<typeof adapter.update>[0]["where"][number];
@@ -43,9 +47,174 @@ beforeEach(() => {
   db.user.create.mockResolvedValue(user);
   db.user.updateMany.mockResolvedValue({ count: 1 });
   db.verification.findMany.mockResolvedValue([]);
+  db.verification.findFirst.mockResolvedValue({ value: user.id });
+  db.verification.create.mockImplementation(async ({ data }) => ({ id: "verification", ...data }));
+  db.session.findFirst.mockResolvedValue({ id: "session" });
+  db.session.create.mockImplementation(async ({ data }) => ({ id: "impersonation", ...data }));
   db.verification.deleteMany.mockResolvedValue({ count: 0 });
   db.$executeRaw.mockResolvedValue(1);
   db.$transaction.mockImplementation(async (run: (tx: typeof db) => Promise<unknown>) => run(db));
+});
+
+describe("impersonation session insertion fence", () => {
+  const data = () =>
+    bindImpersonationSession(
+      { userId: "peer", impersonatedBy: user.id, token: "synthetic" },
+      {
+        path: "/admin/impersonate-user",
+        context: { session: { session: { id: "parent", userId: user.id } } },
+      },
+    );
+  const insert = () => adapter.create({ model: "session", data: data() });
+
+  it("checks the actor and exact live parent under the insertion transaction", async () => {
+    await insert();
+    expect(db.$executeRaw.mock.calls.map((args) => args[1])).toEqual([
+      `cli-credentials:${user.id}`,
+    ]);
+    expect(db.session.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: "parent",
+        userId: user.id,
+        impersonatedBy: null,
+        expiresAt: { gt: expect.any(Date) },
+      },
+      select: { id: true },
+    });
+    expect(db.session.create).toHaveBeenCalledOnce();
+    expect(Object.getOwnPropertySymbols(db.session.create.mock.calls[0]![0].data)).toEqual([]);
+  });
+
+  it.each([null, { deletionRequestedAt: new Date() }])(
+    "refuses insertion when the actor is erased or fenced after before-hook validation",
+    async (actor) => {
+      db.$executeRaw.mockImplementation(async () => {
+        db.user.findUnique.mockResolvedValue(actor);
+        return 1;
+      });
+      await expect(insert()).rejects.toMatchObject({ status: "UNAUTHORIZED" });
+      expect(db.session.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses when the exact parent was revoked while waiting", async () => {
+    db.$executeRaw.mockImplementation(async () => {
+      db.session.findFirst.mockResolvedValue(null);
+      return 1;
+    });
+    await expect(insert()).rejects.toMatchObject({ status: "UNAUTHORIZED" });
+    expect(db.session.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a missing or mismatched server-only before-hook binding", async () => {
+    const bound = data();
+    expect(Object.getOwnPropertySymbols({ ...bound })).toContain(impersonationSessionBinding);
+    for (const candidate of [
+      { userId: "peer", impersonatedBy: user.id },
+      { ...bound, userId: "other-peer" },
+      { ...bound, impersonatedBy: "other-actor" },
+    ]) {
+      await expect(adapter.create({ model: "session", data: candidate })).rejects.toMatchObject({
+        status: "UNAUTHORIZED",
+      });
+    }
+    expect(db.session.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("owned Verification insertion fence", () => {
+  const insert = (identifier: string, value: string) =>
+    adapter.create({
+      model: "verification",
+      data: { identifier, value, expiresAt: new Date(Date.now() + 600_000) },
+    });
+
+  it.each(["reset-password:token", "2fa-challenge", "trust-device-device"])(
+    "inserts %s only within the active owner credential transaction",
+    async (identifier) => {
+      await insert(identifier, user.id);
+      expect(db.$executeRaw.mock.calls.map((args) => args[1])).toEqual([
+        `cli-credentials:${user.id}`,
+      ]);
+      expect(db.verification.create).toHaveBeenCalledOnce();
+      expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+        isolationLevel: "ReadCommitted",
+        timeout: 20_000,
+      });
+    },
+  );
+
+  it.each([
+    "reset-password:token",
+    "2fa-challenge",
+    "2fa-otp-2fa-challenge",
+    "2fa-attempts-2fa-challenge",
+    `2fa-otp-${user.id}!session`,
+    "trust-device-device",
+  ])("refuses delayed %s after physical owner erasure", async (identifier) => {
+    let entered!: () => void;
+    let resume!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    db.$executeRaw.mockImplementation(async () => {
+      entered();
+      await released;
+      return 1;
+    });
+    const writing = insert(identifier, user.id);
+    await waiting;
+    db.user.findUnique.mockResolvedValue(null);
+    resume();
+    await expect(writing).rejects.toMatchObject({ status: "UNAUTHORIZED" });
+    expect(db.verification.create).not.toHaveBeenCalled();
+  });
+
+  it.each(["2fa-otp-2fa-challenge", "2fa-attempts-2fa-challenge"])(
+    "rechecks %s anchor after its owner lock wait",
+    async (identifier) => {
+      db.$executeRaw.mockImplementation(async () => {
+        db.verification.findFirst.mockResolvedValue(null);
+        return 1;
+      });
+      await expect(insert(identifier, "0")).rejects.toMatchObject({ status: "UNAUTHORIZED" });
+      expect(db.verification.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses signed-in OTP rearming after its parent session is removed", async () => {
+    db.$executeRaw.mockImplementation(async () => {
+      db.session.findFirst.mockResolvedValue(null);
+      return 1;
+    });
+    await expect(insert(`2fa-otp-${user.id}!session`, "otp:1")).rejects.toMatchObject({
+      status: "UNAUTHORIZED",
+    });
+    expect(db.verification.create).not.toHaveBeenCalled();
+  });
+
+  it("fences owned SSO link state but leaves current anonymous sign-in state usable", async () => {
+    db.user.findUnique.mockResolvedValue({ ...user, deletionRequestedAt: null });
+    await insert(
+      "auth-state:link",
+      JSON.stringify({ link: { userId: user.id, email: user.email } }),
+    );
+    expect(db.verification.create).toHaveBeenCalledOnce();
+    db.verification.create.mockClear();
+    db.user.findUnique.mockResolvedValue(null);
+    await expect(
+      insert("auth-state:link", JSON.stringify({ link: { userId: user.id, email: user.email } })),
+    ).rejects.toMatchObject({ status: "UNAUTHORIZED" });
+    expect(db.verification.create).not.toHaveBeenCalled();
+    await insert(
+      "auth-state:anonymous",
+      JSON.stringify({ callbackURL: "/", codeVerifier: "synthetic" }),
+    );
+    expect(db.verification.create).toHaveBeenCalledOnce();
+  });
 });
 
 describe.each(["update", "updateMany"] as const)("activation %s selectors", (method) => {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CATALOG_TTL_MS,
+  getCachedModelCatalog,
   getModelCatalog,
   openRouterModelsUrl,
   parseCatalog,
@@ -73,6 +74,24 @@ describe("parseCatalog", () => {
 
 describe("getModelCatalog", () => {
   beforeEach(() => resetModelCatalogCache());
+  it("offers a passive cold, fresh or stale snapshot without dispatching or retrying", async () => {
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network"));
+    try {
+      expect(getCachedModelCatalog()).toBeNull();
+      const first = await getModelCatalog(Date.now(), async () => ok());
+      expect(getCachedModelCatalog()).toBe(first);
+      const failing = vi.fn(async () => new Response("down", { status: 503 }));
+      const stale = await getModelCatalog(Date.now() + CATALOG_TTL_MS + 1, failing);
+      expect(getCachedModelCatalog()).toBe(stale);
+      expect(stale.stale).toBe(true);
+      expect(failing).toHaveBeenCalledOnce();
+      expect(network).not.toHaveBeenCalled();
+      resetModelCatalogCache();
+      expect(getCachedModelCatalog()).toBeNull();
+    } finally {
+      network.mockRestore();
+    }
+  });
   it("fetches once without credentials and serves the cache within the TTL", async () => {
     const fetcher = vi.fn(async () => ok());
     const first = await getModelCatalog(Date.now(), fetcher);

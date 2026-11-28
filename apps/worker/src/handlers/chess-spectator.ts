@@ -1,3 +1,4 @@
+import { withChessJobPublication } from "@cockpit-chess/api/lib/chess-jobs";
 import {
   spectatorAccessSql,
   spectatorAccessWhere,
@@ -13,10 +14,9 @@ import prisma from "@cockpit-chess/db";
 import {
   CHESS_SPECTATOR_JOB_PRIORITY,
   type ChessSpectatorAccess,
-  chessReconcileQueue,
   chessSpectatorJobId,
-  ensureRunnableJob,
 } from "@cockpit-chess/queue";
+import { publishRegisteredChessJob } from "@cockpit-chess/queue/chess-job-registry";
 
 /**
  * Spectator evaluation of hosted games (see packages/chess/src/spectator.ts): stored in
@@ -117,12 +117,16 @@ export async function requestSpectatorBackfill(
   access: ChessSpectatorAccess,
 ) {
   if (!(await canEvaluate(matchId, access))) return;
-  return ensureRunnableJob(
-    chessReconcileQueue,
-    "chess-spectator",
-    { reason: "spectator", matchId, fromPly, access },
-    chessSpectatorJobId(matchId, fromPly, access),
-    { priority: CHESS_SPECTATOR_JOB_PRIORITY },
+  return withChessJobPublication(matchId, access, (assertFresh) =>
+    publishRegisteredChessJob(
+      matchId,
+      "spectator",
+      "chess-spectator",
+      { reason: "spectator", matchId, fromPly, access },
+      chessSpectatorJobId(matchId, fromPly, access),
+      assertFresh,
+      { priority: CHESS_SPECTATOR_JOB_PRIORITY },
+    ),
   );
 }
 

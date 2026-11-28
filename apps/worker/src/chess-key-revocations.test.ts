@@ -172,13 +172,13 @@ describe("OpenRouter key-use leases in a worker", () => {
     await run.loaded("hash-b");
     // Disconnect, the way the API does it, while this worker misses the message.
     const disconnect = async () => {
-      const revoked = await recordChessKeyRevoked(valkey.connection, "user-b", null);
+      const revoked = await recordChessKeyRevoked(valkey.connection, "user-b", null, () => {});
       return chessKeyLeasesBlocking(valkey.connection, "user-b", revoked, null).then(
         (busy) => (busy ? "pending" : "none"),
         () => "pending",
       );
     };
-    await recordChessKeyRevoked(valkey.connection, "user-b", "hash-b");
+    await recordChessKeyRevoked(valkey.connection, "user-b", "hash-b", () => {});
     expect(await disconnect()).toBe("pending");
     // Valkey restarts and loses everything: leases and the revoked list.
     valkey.sets.clear();

@@ -448,6 +448,19 @@ export const ENV_VARS: EnvVar[] = [
     ],
   },
   {
+    key: "ACCOUNT_DELETION_REGISTER_DIR",
+    group: "runtime",
+    source: "manual",
+    advanced: true,
+    example: "/account-deletions",
+    comment: [
+      "Restricted persistent deletion-suppression directory shared by app, worker and restore.",
+      "Must exist, be owned by the runtime user and have mode 0700; no ephemeral default.",
+      "Keep outside database snapshots, retain through the last restorable backup, and back it up separately.",
+      "Deletion stays pending and restores refuse without it, even when BACKUP_ENABLED=false.",
+    ],
+  },
+  {
     key: "PORT",
     hidden: true,
     group: "runtime",

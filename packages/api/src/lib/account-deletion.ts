@@ -6,7 +6,12 @@ import { passwordWriteLockKey } from "@cockpit-chess/auth/password-write-lock";
 import { hasRole } from "@cockpit-chess/auth/roles";
 import { lockSetPasswordLinks } from "@cockpit-chess/auth/set-password-link-lock";
 import prisma, { Prisma } from "@cockpit-chess/db";
+import { env } from "@cockpit-chess/env/shared";
 import { ORPCError } from "@orpc/server";
+import {
+  appendAccountDeletionSuppression,
+  assertAccountDeletionRegisterAvailable,
+} from "../../../../scripts/backup/account-deletion-suppression.mjs";
 import { type AdminMutationActor, withAdminRemovalGuard } from "./admin-presence";
 import { CHESS_CREATE_LOCK } from "./chess-locks";
 import { forEachPage, keysetWhere } from "./pagination";
@@ -63,6 +68,15 @@ export async function requestAccountDeletion(
   userId: string,
   authority: { kind: "self"; sessionId: string } | ({ kind: "admin" } & AdminMutationActor),
 ): Promise<DeletionStatus> {
+  try {
+    await assertAccountDeletionRegisterAvailable(env.ACCOUNT_DELETION_REGISTER_DIR);
+  } catch {
+    throw new ORPCError("SERVICE_UNAVAILABLE", {
+      message:
+        "Account deletion cannot be started right now. Contact the operator or try again later.",
+      data: { reason: "DELETION_NOT_READY" },
+    });
+  }
   return withLockSlot(
     () => {
       const deadline = performance.now() + SAFE_LOCK_MS;
@@ -141,6 +155,22 @@ export async function requestAccountDeletion(
                 undefined,
                 Math.min(20_000, remaining),
               );
+              // Acceptance is not returned until its suppression is durable
+              // outside database backups. An append failure cannot undo the
+              // already committed access fence; a retry records the same intent.
+              try {
+                await appendAccountDeletionSuppression({
+                  directory: env.ACCOUNT_DELETION_REGISTER_DIR,
+                  userId,
+                  requestedAt: accepted.requestedAt,
+                });
+              } catch {
+                throw new ORPCError("SERVICE_UNAVAILABLE", {
+                  message:
+                    "Your account is blocked pending cleanup. Contact support or retry shortly.",
+                  data: { reason: "CLEANUP_UNAVAILABLE" },
+                });
+              }
               // The fence and revocations are durable now. Finish the active
               // matches in ReadCommitted before releasing any lock or
               // answering. A failure leaves pending intent for safe cleanup retry.

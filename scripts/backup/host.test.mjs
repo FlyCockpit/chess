@@ -25,6 +25,8 @@ function run(
     stopSignal = "",
     gone = false,
     imageGone = false,
+    registerDir = "/account-deletions",
+    registerMount = "volume",
   } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "backup-host-test-"));
@@ -61,11 +63,13 @@ case "$1" in
     format=$3 id=$4
     if [ "$format" = "{{.Image}}" ]; then echo app-image
     elif [ "$format" = "{{.Config.Image}}" ]; then echo postgres:18
+    elif [[ $format == *.Mounts* && $format == *.Type* ]]; then
+      if [ -n "$HOST_TEST_REGISTER_MOUNT" ]; then printf '%s\\t%s\\talpha-deletions\\n' "$HOST_TEST_REGISTER_DIR" "$HOST_TEST_REGISTER_MOUNT"; fi
     elif [[ $format == *.Mounts* ]]; then echo "$HOST_TEST_VOLUME"
     elif [[ $format == *.NetworkSettings* ]]; then echo "dokploy-network alpha_default"
     elif [[ $format == *.Config.Labels* ]]; then echo "\${id/app-/}"
     elif [[ $format == *.State.Running* ]]; then echo true
-    elif [[ $format == *.Config.Env* ]]; then printf 'DATABASE_URL=%s\\nBACKUP_S3_BUCKET=fake-backups\\nBACKUP_S3_SECRET_ACCESS_KEY=fake-secret\\nS3_ACCESS_KEY_ID=fake-upload-key\\nUNRELATED_SECRET=must-not-pass\\n' "postgresql://fake:fake@db/app"
+    elif [[ $format == *.Config.Env* ]]; then printf 'DATABASE_URL=%s\\nBACKUP_S3_BUCKET=fake-backups\\nBACKUP_S3_SECRET_ACCESS_KEY=fake-secret\\nS3_ACCESS_KEY_ID=fake-upload-key\\nUNRELATED_SECRET=must-not-pass\\nACCOUNT_DELETION_REGISTER_DIR=%s\\n' "postgresql://fake:fake@db/app" "$HOST_TEST_REGISTER_DIR"
     fi ;;
   image)
     if [ "$2" = inspect ] && [ -n "\${HOST_TEST_IMAGE_GONE:-}" ]; then
@@ -109,6 +113,8 @@ exit 0
         HOST_TEST_STOP_SIGNAL: stopSignal,
         HOST_TEST_STOP_FAIL_ON: stopFailOn,
         HOST_TEST_RESTORE_SIGNAL: restoreSignal,
+        HOST_TEST_REGISTER_DIR: registerDir,
+        HOST_TEST_REGISTER_MOUNT: registerMount,
         ...(markOnStop ? { HOST_TEST_MARK: join(dir, "stopped") } : {}),
         ...(gone ? { HOST_TEST_GONE: join(dir, "reader-gone") } : {}),
         ...(imageGone ? { HOST_TEST_IMAGE_GONE: "1" } : {}),
@@ -186,18 +192,45 @@ test("host offers matching projects and discovers the selected container, volume
   assert.deepEqual(runCall.args.slice(-2), ["restore", "--list"]);
 });
 
-test("host forwards only backup settings through an --env-file process substitution", () => {
+test("host forwards only backup and erasure-register settings through an --env-file process substitution", () => {
   const result = run("main backup --project alpha");
   assert.equal(result.status, 0, result.stderr);
   const call = result.calls.find((item) => item.envPath);
   assert.match(call.envPath, /^\/(dev\/fd|proc\/self\/fd)\/\d+$/);
   assert.match(call.env, /DATABASE_URL=postgresql:\/\/fake/);
   assert.match(call.env, /BACKUP_S3_SECRET_ACCESS_KEY=fake-secret/);
+  assert.match(call.env, /ACCOUNT_DELETION_REGISTER_DIR=\/account-deletions/);
   // The app upload key is not a backup setting: never forwarded.
   assert.doesNotMatch(call.env, /^S3_ACCESS_KEY_ID=/m);
   assert.doesNotMatch(call.env, /UNRELATED_SECRET/);
   assert.deepEqual(result.files.sort(), ["calls.log", "docker"]);
   assert.doesNotMatch(result.stdout + result.stderr, /fake-secret|postgresql:/);
+});
+
+test("host requires a persistent current register before stopping writers for restore", () => {
+  for (const options of [{ registerDir: "" }, { registerMount: "" }, { registerMount: "tmpfs" }]) {
+    const result = run(
+      "require_terminal() { return 0; }\nask() { return 0; }\nmain restore --project alpha",
+      options,
+    );
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /account.*register/);
+    assert.ok(!result.calls.some((call) => ["stop", "start", "run"].includes(call.args[0])));
+  }
+});
+
+test("host mounts the current register read-only for restore and drill", () => {
+  for (const action of ["restore daily.dump", "drill daily.dump"]) {
+    const result = run(
+      `require_terminal() { return 0; }\nask() { return 0; }\nmain ${action} --project alpha`,
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const call = result.calls.find((item) => item.args.includes("--env-file"));
+    assert.ok(
+      call.args.includes("type=volume,source=alpha-deletions,target=/account-deletions,readonly"),
+    );
+    assert.match(call.env, /ACCOUNT_DELETION_REGISTER_DIR=\/account-deletions/);
+  }
 });
 
 test("host starts the app again after a successful restore (stop, restore, then stop-then-start)", () => {

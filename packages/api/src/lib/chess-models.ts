@@ -105,6 +105,11 @@ type CacheState = {
 };
 const cache: CacheState = { value: null, expiresAt: 0, inflight: null };
 
+/** Passive trusted snapshot for erasure; never refresh or wait on upstream IO. */
+export function getCachedModelCatalog(): ModelCatalog | null {
+  return cache.value;
+}
+
 export function resetModelCatalogCache() {
   cache.value = null;
   cache.expiresAt = 0;

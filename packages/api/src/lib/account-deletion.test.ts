@@ -6,6 +6,11 @@ vi.mock("@cockpit-chess/db", async () => {
   const { mockDeep } = await import("vitest-mock-extended");
   return { Prisma: { DbNull: Symbol("DbNull") }, default: mockDeep() };
 });
+vi.mock("../../../../scripts/backup/account-deletion-suppression.mjs", () => ({
+  appendAccountDeletionSuppression: vi.fn(),
+  assertAccountDeletionRegisterAvailable: vi.fn(),
+}));
+vi.mock("@cockpit-chess/env/shared", () => ({ env: {} }));
 vi.mock("@cockpit-chess/auth/credential-revocation", () => ({
   revokeCredentialsInTransaction: vi.fn(),
 }));
@@ -23,6 +28,9 @@ const { revokeCredentialsInTransaction } = await import(
   "@cockpit-chess/auth/credential-revocation"
 );
 const { requestAccountDeletion } = await import("./account-deletion");
+const { assertAccountDeletionRegisterAvailable, appendAccountDeletionSuppression } = await import(
+  "../../../../scripts/backup/account-deletion-suppression.mjs"
+);
 const { invalidateForceTwoFactorSettingsCache, isTwoFactorPolicySatisfied } = await import(
   "./two-factor-policy"
 );
@@ -31,6 +39,29 @@ const locks = mockDeep<Prisma.TransactionClient>();
 const timeline: string[] = [];
 const admin = { kind: "admin", userId: "admin", sessionId: "admin-session" } as const;
 const db = vi.mocked(prisma);
+
+it("refuses an unavailable deployment before committing destructive intent", async () => {
+  vi.mocked(assertAccountDeletionRegisterAvailable).mockRejectedValueOnce(
+    new Error("not configured"),
+  );
+  await expect(requestAccountDeletion("u1", admin)).rejects.toMatchObject({
+    code: "SERVICE_UNAVAILABLE",
+    data: { reason: "DELETION_NOT_READY" },
+  });
+  expect(db.$transaction).not.toHaveBeenCalled();
+});
+
+it("never acknowledges acceptance if external suppression fails after the durable fence", async () => {
+  vi.mocked(appendAccountDeletionSuppression).mockRejectedValueOnce(new Error("storage failed"));
+  await expect(requestAccountDeletion("u1", admin)).rejects.toMatchObject({
+    code: "SERVICE_UNAVAILABLE",
+    data: { reason: "CLEANUP_UNAVAILABLE" },
+  });
+  expect(tx.user.update).toHaveBeenCalledWith(
+    expect.objectContaining({ data: expect.objectContaining({ deletionState: "pending" }) }),
+  );
+  expect(locks.chessMatch.updateMany).not.toHaveBeenCalled();
+});
 
 beforeEach(() => {
   mockReset(tx);

@@ -31,6 +31,9 @@ vi.mock("@cockpit-chess/queue", async () => {
   fake.valkey = fakeValkey();
   return { redisConnection: fake.valkey.connection };
 });
+vi.mock("@cockpit-chess/queue/chess-job-registry", () => ({
+  publishRegisteredChessJob: vi.fn(),
+}));
 vi.mock("../lib/procedure-budget", () => ({ createProcedureBudget: () => async () => {} }));
 const { default: prisma } = await import("@cockpit-chess/db");
 const db = prisma as DeepMockProxy<typeof prismaInstance>;
@@ -364,6 +367,24 @@ describe("openrouter.disconnect", () => {
     expect(JSON.stringify(fake.valkey.published)).not.toContain("CANARY");
   });
 
+  it("refuses Redis initialization when earlier lock queries consumed the original holder window", async () => {
+    const original = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(original);
+    try {
+      db.$queryRaw.mockImplementationOnce((async () => {
+        clock.mockReturnValue(original + 4500);
+        return [];
+      }) as never);
+      await expect(client("late-holder").disconnect()).rejects.toMatchObject({
+        code: "SERVICE_UNAVAILABLE",
+      });
+      expect(fake.valkey.sets.get(`${REVOKED}late-holder`)).toBeUndefined();
+      expect(db.openRouterConnection.deleteMany).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("waits for the active match row lock before exposing key revocation to a worker", async () => {
     let release: (rows: never[]) => void = () => undefined;
     const blocked = new Promise<never[]>((resolve) => {
@@ -395,6 +416,7 @@ describe("openrouter.disconnect", () => {
     db.user.findUnique.mockResolvedValue({ deletionRequestedAt: new Date() } as never);
     release();
     await expect(disconnecting).resolves.toMatchObject({ disconnected: true });
+    expect(fake.valkey.sets.get(`${REVOKED}user-c`)).toBeUndefined();
     expect(db.chessMatch.updateMany).toHaveBeenCalledExactlyOnceWith({
       where: {
         ownerId: "user-c",

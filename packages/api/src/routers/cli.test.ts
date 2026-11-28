@@ -16,6 +16,9 @@ vi.mock("@cockpit-chess/queue", () => ({
   ensureRunnableJob: vi.fn(),
   redisConnection: {},
 }));
+vi.mock("@cockpit-chess/queue/chess-job-registry", () => ({
+  publishRegisteredChessJob: vi.fn(),
+}));
 vi.mock("@cockpit-chess/env/server", () => ({ env: {}, ADMIN_EMAILS: new Set<string>() }));
 vi.mock("@cockpit-chess/env/shared", () => ({ env: {} }));
 const getCliRelease = vi.hoisted(() => vi.fn());

@@ -165,9 +165,18 @@ export async function anonymizePublishedReplayBatch(
   userId: string,
   afterId?: string,
   safeModelIds: ReadonlySet<string> = new Set(),
+  matchIds?: readonly string[],
 ) {
   const rows = await tx.chessMatch.findMany({
-    where: { ownerId: userId, published: true, ...(afterId ? { id: { gt: afterId } } : {}) },
+    where: {
+      ownerId: userId,
+      published: true,
+      ...(matchIds
+        ? { id: { in: [...matchIds], ...(afterId ? { gt: afterId } : {}) } }
+        : afterId
+          ? { id: { gt: afterId } }
+          : {}),
+    },
     orderBy: { id: "asc" },
     take: ANONYMIZATION_BATCH_SIZE,
     select: { id: true, archive: true, spectatorEvaluations: true },

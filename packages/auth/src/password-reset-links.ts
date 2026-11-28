@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import prisma, { type Prisma } from "@cockpit-chess/db";
+import { isAPIError } from "better-auth/api";
+import { ownerActiveInTransaction } from "./account-deletion.js";
 import { isAccountDeletionPending } from "./account-state.js";
+import { lockCliCredentials } from "./device-redemption-lock.js";
 import { withLockSlot } from "./lock-slots.js";
 import {
   lockSetPasswordLinks,
@@ -37,6 +40,26 @@ import {
 
 /** Better-Auth's endpoint that spends a reset token (`POST /api/auth/reset-password`). */
 export const RESET_PASSWORD_PATH = "/reset-password";
+
+/** Only the owned-proof writer emits this refusal; recovery stays enumeration-neutral. */
+export const RESET_ACCOUNT_UNAVAILABLE_CODE = "RESET_ACCOUNT_UNAVAILABLE";
+
+/** Preserve pinned Better Auth's exact missing-address response without creating a proof. */
+export function neutralizeUnavailablePasswordResetResponse(ctx: {
+  context: { returned?: unknown };
+}): Response | undefined {
+  const error = ctx.context.returned;
+  if (!isAPIError(error) || error.body?.code !== RESET_ACCOUNT_UNAVAILABLE_CODE) return;
+  // Dispatch retains the endpoint's status after a plain JSON after-hook
+  // replacement. An explicit response also replaces its former 401 status.
+  return Response.json(
+    {
+      status: true,
+      message: "If this email exists in our system, check your email for the reset link",
+    },
+    { status: 200 },
+  );
+}
 
 /**
  * The "this token was mailed" row: identifier `reset-password-mailed:<sha256(token)>`
@@ -117,7 +140,9 @@ export async function recordResetLinkMailed(input: {
   const now = input.now ?? new Date();
   return withLockSlot(() =>
     prisma.$transaction(async (tx) => {
+      await lockCliCredentials(input.userId, tx);
       await lockSetPasswordLinks(input.userId, tx);
+      if (!(await ownerActiveInTransaction(tx, input.userId))) return false;
       const link = await tx.verification.findFirst({
         where: {
           identifier: `${RESET_PASSWORD_IDENTIFIER_PREFIX}${input.token}`,

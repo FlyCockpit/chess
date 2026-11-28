@@ -144,6 +144,35 @@ afterEach(() => {
 });
 
 describe("recordResetLinkMailed", () => {
+  it("does not recreate mailed identity JSON when deletion completes before its owner lock is granted", async () => {
+    link("late-mail");
+    let entered!: () => void;
+    let resume!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    db.$executeRaw.mockImplementationOnce(async () => {
+      entered();
+      await released;
+      return 1;
+    });
+    const writing = recordResetLinkMailed({
+      token: "late-mail",
+      userId: "u1",
+      email: "ada@example.com",
+      now,
+    });
+    await waiting;
+    state.users = [];
+    state.verifications = [];
+    resume();
+    expect(await writing).toBe(false);
+    expect(state.verifications).toEqual([]);
+  });
+
   it("records a mailed link beside it, keyed by the token's hash, expiring with it", async () => {
     link("tok-1");
     expect(
@@ -183,8 +212,14 @@ describe("recordResetLinkMailed", () => {
     expect(db.$transaction).toHaveBeenCalledTimes(1);
     // The lock comes first, so a resend, reset or activation (which delete
     // links under it) cannot delete the link between the check and the insert.
-    expect(state.calls).toEqual(["lock", "verification.findFirst", "verification.create"]);
-    expect(state.locks).toEqual(["set-password-link:u1"]);
+    expect(state.calls).toEqual([
+      "lock",
+      "lock",
+      "user.findUnique",
+      "verification.findFirst",
+      "verification.create",
+    ]);
+    expect(state.locks).toEqual(["cli-credentials:u1", "set-password-link:u1"]);
   });
 
   it("records nothing for an expired link", async () => {
@@ -408,6 +443,7 @@ describe("lock slots", () => {
     expect(state.transactionSlots).toEqual([1, 1]);
     expect(state.slotsHeld).toBe(0);
     expect(state.locks).toEqual([
+      "cli-credentials:u1",
       "set-password-link:u1",
       "set-password-link:u1",
       "set-password-link:u1",

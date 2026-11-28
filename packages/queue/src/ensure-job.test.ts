@@ -19,6 +19,32 @@ function changingJob(...states: string[]) {
 }
 
 describe("ensureRunnableJob", () => {
+  it("refuses a missing job before add when publication authority expired", async () => {
+    const queue = { getJob: vi.fn().mockResolvedValue(null), add: vi.fn() };
+    await expect(
+      ensureRunnableJob(queue as never, "work", { id: "1" }, "work-1", {
+        beforeWrite: () => {
+          throw new Error("publication expired");
+        },
+      }),
+    ).rejects.toThrow("publication expired");
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it("refuses to replace a retained payload after authority expired while reading its state", async () => {
+    const job = retainedJob("completed");
+    const queue = { getJob: vi.fn().mockResolvedValue(job), add: vi.fn() };
+    await expect(
+      ensureRunnableJob(queue as never, "work", { id: "1" }, "work-1", {
+        beforeWrite: () => {
+          throw new Error("publication expired");
+        },
+      }),
+    ).rejects.toThrow();
+    expect(job.updateData).not.toHaveBeenCalled();
+    expect(job.retry).not.toHaveBeenCalled();
+  });
+
   it.each(["active", "waiting", "delayed", "prioritized", "waiting-children"])(
     "deduplicates a live %s job",
     async (state) => {

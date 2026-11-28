@@ -45,6 +45,9 @@ vi.mock("@cockpit-chess/queue", () => ({
   chessRunQueue: {},
   ensureRunnableJob: vi.fn(),
 }));
+vi.mock("@cockpit-chess/queue/chess-job-registry", () => ({
+  publishRegisteredChessJob: vi.fn(),
+}));
 const { withLockSlot } = await import("@cockpit-chess/auth/lock-slots");
 const { default: prisma } = await import("@cockpit-chess/db");
 const db = prisma as DeepMockProxy<typeof prismaInstance>;

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { restore, runRestore } from "./restore-fixture.mjs";
+import { fixture, restore, runRestore } from "./restore-fixture.mjs";
 
 test("restore preview is a refusal (exit 3) that never invokes a transaction", () => {
   const result = runRestore({ preview: true });
@@ -21,6 +21,48 @@ test("a committed restore exits 0 and reports completion", () => {
   assert.equal(result.commit, "commit observed");
   assert.match(result.output, /Restore complete/);
   assert.doesNotMatch(result.output, /REFUSED|FATAL/);
+  assert.match(result.output, /external account-erasure suppression record\(s\) before COMMIT/);
+});
+
+test("a missing suppression register refuses before the restore transaction", () => {
+  const f = fixture();
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [restore, f.archive, "--confirm", "RESTORE:restore_fixture"],
+      {
+        env: { ...f.env("exit:0"), ACCOUNT_DELETION_REGISTER_DIR: "" },
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.equal(f.commit(), null);
+    assert.match(result.stderr, /ACCOUNT_DELETION_REGISTER_DIR/);
+    assert.doesNotMatch(result.stdout, /Restoring into/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("active-connection bypass cannot race erasure-suppression acceptance", () => {
+  const f = fixture();
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [restore, f.archive, "--allow-active-connections", "--confirm", "RESTORE:restore_fixture"],
+      {
+        env: f.env("exit:0"),
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.equal(f.commit(), null);
+    assert.match(result.stderr, /suppression requires all writers stopped/);
+  } finally {
+    f.cleanup();
+  }
 });
 
 test("a psql failure after COMMIT was sent reports an uncertain outcome, never 'rolled back; unchanged'", () => {

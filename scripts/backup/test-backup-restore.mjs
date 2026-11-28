@@ -29,6 +29,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { appendAccountDeletionSuppression } from "./account-deletion-suppression.mjs";
 import { containerPrefix, e2eNames } from "./e2e-names.mjs";
 
 const SCRIPTS = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,6 +44,7 @@ const toolContainers = new Set();
 let toolNumber = 0;
 const work = mkdtempSync(join(tmpdir(), "backup-restore-test-"));
 const backups = join(work, "backups");
+const suppressionDirectory = join(work, "account-deletions");
 const uid = `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`;
 
 /**
@@ -119,7 +121,11 @@ function tool(db, command, { mount = "rw" } = {}) {
       uid,
       "-v",
       `${SCRIPTS}:/app/scripts:ro`,
+      "-v",
+      `${suppressionDirectory}:/account-deletions:ro`,
       ...volume,
+      "-e",
+      "ACCOUNT_DELETION_REGISTER_DIR=/account-deletions",
       "-e",
       `DATABASE_URL=postgresql://postgres@${PG}:5432/${db}?schema=public`,
       // For direct pg_dump/pg_restore calls in tests; the scripts derive their
@@ -244,6 +250,7 @@ RUN ldconfig && node --version
     sql("postgres", `CREATE DATABASE ${db};`);
   sql("app", SEED);
   mkdirSync(backups);
+  mkdirSync(suppressionDirectory, { mode: 0o700 });
 }
 
 function teardown() {
@@ -643,16 +650,38 @@ try {
   });
 
   step("restore: one session holds the locks from the checks through the restore", () => {
-    // A reader holds a lock so the restore transaction blocks right after its
-    // schema drop starts. While it is blocked, a probe must NOT be able to take
-    // Prisma's migration lock; then the restore backend is terminated, and the
-    // whole replace must roll back.
+    // The archive pauses inside a CHECK function only in the restoring session.
+    // Observe from postgres so no target session exists during no-writers checks.
+    // Once the restore transaction is applying data, a target probe must NOT take
+    // Prisma's migration lock; terminating the restore then rolls everything back.
+    sql("postgres", "CREATE DATABASE restore_lock_src;");
+    const seeded = restore("restore_lock_src", raw, "--confirm", "RESTORE:restore_lock_src");
+    assert.equal(seeded.code, 0, seeded.out);
+    sql(
+      "restore_lock_src",
+      `
+      CREATE FUNCTION restore_lock_pause() RETURNS boolean LANGUAGE plpgsql AS $$
+      BEGIN
+        IF current_setting('application_name') = 'cockpit-chess-restore-lock' THEN
+          PERFORM pg_sleep(30);
+        END IF;
+        RETURN true;
+      END $$;
+      ALTER TABLE "User" ADD CONSTRAINT restore_lock_pause_check CHECK (restore_lock_pause());
+    `,
+    );
+    const pauseDump = tool("restore_lock_src", [
+      "pg_dump",
+      "-Fc",
+      "-f",
+      "/backups/restore-lock-pause.dump",
+    ]);
+    assert.equal(pauseDump.code, 0, pauseDump.out);
     sql("postgres", "CREATE TABLE IF NOT EXISTS lock_probe (got boolean)");
     const q = (db, text) => `psql -X -q -At -h ${PG} -U postgres -d ${db} -c "${text}"`;
     const waiting =
-      "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'cockpit-chess-restore-lock' AND wait_event_type = 'Lock'";
+      "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'cockpit-chess-restore-lock' AND wait_event = 'PgSleep' AND xact_start IS NOT NULL";
     const helper = [
-      `psql -X -q -h ${PG} -U postgres -d restored_misc -c 'BEGIN; LOCK TABLE "User" IN ACCESS SHARE MODE; SELECT pg_sleep(30); COMMIT;' &`,
       "for i in $(seq 1 300); do",
       `  n=$(${q("postgres", waiting)})`,
       '  if [ "$n" -gt 0 ]; then',
@@ -665,10 +694,6 @@ try {
       "  sleep 0.1",
       "done",
       "sleep 1",
-      q(
-        "postgres",
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'restored_misc' AND query LIKE '%pg_sleep(30)%'",
-      ),
     ].join("\n");
     // The helper runs in its own container: inside the server container it
     // would be reparented to the postmaster, which treats any exiting child
@@ -677,19 +702,17 @@ try {
       docker(["run", "-d", "--rm", "--network", NETWORK, TOOLS_IMAGE, "bash", "-c", helper]).code,
       0,
     );
-    spawnSync("sleep", ["1"]);
     const result = restore(
       "restored_misc",
-      raw,
+      "/backups/restore-lock-pause.dump",
       "--replace",
       "--skip-snapshot",
-      "--allow-active-connections",
       "--confirm",
       "RESTORE:restored_misc",
     );
     // The terminated backend aborted the transaction: rolled back (exit 4),
-    // because COMMIT was never sent (pg_restore was still blocked on the full
-    // pipe) or because the server reports the transaction aborted.
+    // because COMMIT was never sent or because the server reports the aborted
+    // transaction after pg_restore finished streaming into the paused session.
     assert.equal(result.code, 4, result.out);
     assert.match(
       result.out,
@@ -699,6 +722,191 @@ try {
     spawnSync("sleep", ["3"]);
     assert.equal(sql("postgres", "SELECT string_agg(got::text, ',') FROM lock_probe"), "false");
     assert.equal(fingerprint("restored_misc"), sourcePrint);
+  });
+
+  await stepAsync(
+    "restore: a pre-erasure dump cannot restore erased account authority",
+    async () => {
+      for (const db of ["erasure_src", "erasure_dst"]) sql("postgres", `CREATE DATABASE ${db};`);
+      // This current-column fixture isolates the actual guarded restore path. The
+      // runtime deletion harness separately exercises full Prisma FK/ledger triggers.
+      sql(
+        "erasure_src",
+        `
+      CREATE TABLE "user" (id text PRIMARY KEY, "deletionRequestedAt" timestamptz, "deletionState" text NOT NULL DEFAULT 'active', "deletionCursor" text);
+      INSERT INTO "user" (id) VALUES ('erase-victim'), ('keep-peer');
+      CREATE TABLE "session" (id text PRIMARY KEY, "userId" text REFERENCES "user" ON DELETE CASCADE, "impersonatedBy" text);
+      CREATE TABLE "apikey" (id text PRIMARY KEY, "referenceId" text REFERENCES "user" ON DELETE CASCADE);
+      CREATE TABLE "device_code" (id text PRIMARY KEY, "userId" text REFERENCES "user" ON DELETE CASCADE);
+      CREATE TABLE "account" (id text PRIMARY KEY, "userId" text REFERENCES "user" ON DELETE CASCADE);
+      CREATE TABLE "two_factor" (id text PRIMARY KEY, "userId" text REFERENCES "user" ON DELETE CASCADE);
+      CREATE TABLE "openrouter_connection" (id text PRIMARY KEY, "userId" text REFERENCES "user" ON DELETE CASCADE);
+      CREATE TABLE "runner_machine" (id text PRIMARY KEY, "userId" text REFERENCES "user" ON DELETE CASCADE, "revokedAt" timestamptz, "connectionGeneration" integer NOT NULL DEFAULT 7);
+      CREATE TABLE "chess_match" (
+        id text PRIMARY KEY, "ownerId" text REFERENCES "user" ON DELETE SET NULL, source text, status text, published boolean,
+        "runToken" text, "terminalCause" text, ending jsonb, "turnType" text, "turnId" text, "turnSide" text, "turnExpectedSeq" integer,
+        "turnStartedAt" timestamptz, "turnDeadline" timestamptz, "pendingMove" jsonb, "runnerState" text, "runnerGeneration" integer,
+        "runnerResumeDeadline" timestamptz, "runnerRevision" integer NOT NULL DEFAULT 3
+      );
+      CREATE TABLE "runner_command" (id text PRIMARY KEY, "matchId" text REFERENCES "chess_match" ON DELETE CASCADE, "ackedAt" timestamptz, "cancelledAt" timestamptz);
+      CREATE TABLE "chess_official_entry" (id text PRIMARY KEY, "matchId" text REFERENCES "chess_match" ON DELETE SET NULL, status text, "terminalCause" text);
+      INSERT INTO "session" VALUES ('victim-session', 'erase-victim', NULL), ('peer-session', 'keep-peer', NULL), ('impersonated', 'keep-peer', 'erase-victim');
+      INSERT INTO "apikey" VALUES ('victim-key','erase-victim'), ('peer-key','keep-peer');
+      INSERT INTO "device_code" VALUES ('victim-code','erase-victim'), ('peer-code','keep-peer');
+      INSERT INTO "account" VALUES ('victim-sso','erase-victim'), ('peer-sso','keep-peer');
+      INSERT INTO "two_factor" VALUES ('victim-2fa','erase-victim'), ('peer-2fa','keep-peer');
+      INSERT INTO "openrouter_connection" VALUES ('victim-provider','erase-victim'), ('peer-provider','keep-peer');
+      INSERT INTO "runner_machine" (id,"userId") VALUES ('victim-machine','erase-victim'), ('peer-machine','keep-peer');
+      INSERT INTO "chess_match" (id,"ownerId",source,status,published,"runToken","runnerState","runnerGeneration") VALUES
+        ('active-hosted','erase-victim','hosted','running',true,'old-token',NULL,NULL),
+        ('active-runner','erase-victim','runner','running',false,NULL,'running',7),
+        ('terminal','erase-victim','hosted','completed',true,NULL,NULL,NULL),
+        ('peer-game','keep-peer','runner','running',true,NULL,'running',7);
+      UPDATE "chess_match" SET "terminalCause"='board-result', ending='{"kind":"mate"}'::jsonb WHERE id='terminal';
+      INSERT INTO "runner_command" (id,"matchId") VALUES ('victim-command','active-runner'), ('peer-command','peer-game');
+      INSERT INTO "chess_official_entry" VALUES ('official-sentinel','terminal','completed','board-result');
+    `,
+      );
+      const dump = tool("erasure_src", ["pg_dump", "-Fc", "-f", "/backups/before-erasure.dump"]);
+      assert.equal(dump.code, 0, dump.out);
+      await appendAccountDeletionSuppression({
+        directory: suppressionDirectory,
+        userId: "erase-victim",
+        requestedAt: new Date(),
+      });
+      sql("erasure_src", `DELETE FROM "user" WHERE id='erase-victim';`);
+      assert.equal(sql("erasure_src", `SELECT count(*) FROM "user" WHERE id='erase-victim'`), "0");
+      const result = restore(
+        "erasure_dst",
+        "/backups/before-erasure.dump",
+        "--confirm",
+        "RESTORE:erasure_dst",
+      );
+      assert.equal(result.code, 0, result.out);
+      assert.match(result.out, /Applied 1 external account-erasure suppression/);
+      assert.equal(
+        sql(
+          "erasure_dst",
+          `SELECT "deletionState" || '|' || ("deletionRequestedAt" IS NOT NULL)::text FROM "user" WHERE id='erase-victim'`,
+        ),
+        "pending|true",
+      );
+      assert.equal(
+        sql(
+          "erasure_dst",
+          `SELECT "deletionState" || '|' || ("deletionRequestedAt" IS NULL)::text FROM "user" WHERE id='keep-peer'`,
+        ),
+        "active|true",
+      );
+      assert.equal(
+        sql("erasure_dst", `SELECT string_agg(id, ',' ORDER BY id) FROM "session"`),
+        "peer-session",
+      );
+      for (const table of [
+        "apikey",
+        "device_code",
+        "account",
+        "two_factor",
+        "openrouter_connection",
+      ])
+        assert.equal(sql("erasure_dst", `SELECT count(*) FROM "${table}"`), "1", table);
+      assert.equal(
+        sql(
+          "erasure_dst",
+          `SELECT ("revokedAt" IS NOT NULL)::text || '|' || "connectionGeneration" FROM "runner_machine" WHERE id='victim-machine'`,
+        ),
+        "true|8",
+      );
+      assert.equal(
+        sql(
+          "erasure_dst",
+          `SELECT ("revokedAt" IS NULL)::text || '|' || "connectionGeneration" FROM "runner_machine" WHERE id='peer-machine'`,
+        ),
+        "true|7",
+      );
+      assert.equal(
+        sql(
+          "erasure_dst",
+          `SELECT string_agg(status || ':' || "terminalCause" || ':' || ("runToken" IS NULL)::text, ',' ORDER BY id) FROM "chess_match" WHERE id IN ('active-hosted','active-runner')`,
+        ),
+        "stopped:owner-delete:true,stopped:owner-delete:true",
+      );
+      assert.equal(
+        sql(
+          "erasure_dst",
+          `SELECT "runnerState" || '|' || ("runnerGeneration" IS NULL)::text || '|' || "runnerRevision" FROM "chess_match" WHERE id='active-runner'`,
+        ),
+        "stopped|true|4",
+      );
+      assert.equal(
+        sql(
+          "erasure_dst",
+          `SELECT status || '|' || "terminalCause" FROM "chess_match" WHERE id='terminal'`,
+        ),
+        "completed|board-result",
+      );
+      assert.equal(
+        sql(
+          "erasure_dst",
+          `SELECT status || '|' || "runnerGeneration" FROM "chess_match" WHERE id='peer-game'`,
+        ),
+        "running|7",
+      );
+      assert.equal(
+        sql(
+          "erasure_dst",
+          `SELECT string_agg(id || ':' || ("cancelledAt" IS NOT NULL)::text, ',' ORDER BY id) FROM "runner_command"`,
+        ),
+        "peer-command:false,victim-command:true",
+      );
+      assert.equal(
+        sql(
+          "erasure_dst",
+          `SELECT id || '|' || status || '|' || "terminalCause" FROM "chess_official_entry"`,
+        ),
+        "official-sentinel|completed|board-result",
+      );
+    },
+  );
+  step("restore: suppression failure rolls archive and revocations back together", () => {
+    sql("postgres", "CREATE DATABASE erasure_incomplete;");
+    // A non-current archive cannot be admitted with a nonempty erasure register.
+    sql(
+      "erasure_incomplete",
+      `CREATE TABLE "user" (id text PRIMARY KEY, "deletionRequestedAt" timestamptz, "deletionState" text, "deletionCursor" text); INSERT INTO "user" (id,"deletionState") VALUES ('erase-victim','active');`,
+    );
+    const dump = tool("erasure_incomplete", [
+      "pg_dump",
+      "-Fc",
+      "-f",
+      "/backups/incomplete-erasure.dump",
+    ]);
+    assert.equal(dump.code, 0, dump.out);
+    const result = restore(
+      "erasure_dst",
+      "/backups/incomplete-erasure.dump",
+      "--replace",
+      "--confirm",
+      "RESTORE:erasure_dst",
+    );
+    assert.equal(result.code, 4, result.out);
+    assert.match(result.out, /ROLLED BACK/);
+    assert.doesNotMatch(result.out, /Restore complete/);
+    assert.equal(
+      sql("erasure_dst", `SELECT "deletionState" FROM "user" WHERE id='erase-victim'`),
+      "pending",
+    );
+    assert.equal(
+      sql("erasure_dst", `SELECT "deletionState" FROM "user" WHERE id='keep-peer'`),
+      "active",
+    );
+    assert.equal(
+      sql(
+        "erasure_dst",
+        `SELECT id || '|' || status || '|' || "terminalCause" FROM "chess_official_entry"`,
+      ),
+      "official-sentinel|completed|board-result",
+    );
   });
 } finally {
   teardown();

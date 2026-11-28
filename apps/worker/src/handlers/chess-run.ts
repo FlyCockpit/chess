@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-
+import { sweepAccountDeletions } from "@cockpit-chess/api/lib/account-deletion-cleanup";
 import { chessRunJobId, chessTurnData } from "@cockpit-chess/api/lib/chess-human";
+import { withChessJobPublication } from "@cockpit-chess/api/lib/chess-jobs";
 import { reconcileRunnerMatches } from "@cockpit-chess/api/lib/chess-runner";
 import {
   chessStatsColumns,
@@ -45,10 +46,10 @@ import {
   chessReconcileJobSchema,
   chessRunJobSchema,
   chessRunQueue,
-  ensureRunnableJob,
   isLiveJobState,
   type Job,
 } from "@cockpit-chess/queue";
+import { publishRegisteredChessJob } from "@cockpit-chess/queue/chess-job-registry";
 import { leaseOwnerKeyRun } from "../chess-key-revocations";
 import { registerHeartbeat } from "./chess-heartbeat";
 import {
@@ -205,6 +206,7 @@ export async function handleChessReconcileJob(
   if (data.reason === "spectator")
     return backfillSpectatorEvaluations(data.matchId, data.fromPly, data.access, signal);
   await settlePendingDeletionMatches();
+  await sweepAccountDeletions(signal);
   // Pending deletion settles first so its terminal cause wins runner recovery.
   // Runner rows never become hosted jobs, including after a missed disconnect
   // notification or a different replica taking over the transport lease.
@@ -276,7 +278,16 @@ export async function handleChessReconcileJob(
           archive.config.white.protocol === "human" ||
           archive.config.black.protocol === "human"
         ) {
-          await ensureRunnableJob(chessRunQueue, "chess-run", { matchId: row.id }, jobId);
+          await withChessJobPublication(row.id, "run", (assertFresh) =>
+            publishRegisteredChessJob(
+              row.id,
+              "run",
+              "chess-run",
+              { matchId: row.id },
+              jobId,
+              assertFresh,
+            ),
+          );
           continue;
         }
       }

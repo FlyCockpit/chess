@@ -152,8 +152,8 @@ Options
                                restored, all in one transaction.
   --etag <etag>                S3 only, required: the exact object ETag to restore.
   --version-id <id>            S3 only: pin a specific object version.
-  --allow-active-connections   Proceed although other sessions are connected
-                               (only when you are certain nothing writes).
+  --allow-active-connections   Refused for actual restores: erasure suppression
+                               requires every writer stopped.
   --skip-snapshot              With --replace: do not take the pre-restore
                                snapshot (only when a provider snapshot exists).
   --guided                     After the preview, ask in the terminal and fill in

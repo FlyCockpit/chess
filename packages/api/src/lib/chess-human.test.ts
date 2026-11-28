@@ -13,6 +13,16 @@ const { default: prisma } = await import("@cockpit-chess/db");
 const db = prisma as DeepMockProxy<typeof prismaInstance>;
 const { enqueue } = vi.hoisted(() => ({ enqueue: vi.fn() }));
 vi.mock("@cockpit-chess/queue", () => ({ chessRunQueue: {}, ensureRunnableJob: enqueue }));
+vi.mock("@cockpit-chess/queue/chess-job-registry", () => ({
+  publishRegisteredChessJob: (
+    _matchId: string,
+    _surface: string,
+    name: string,
+    data: unknown,
+    jobId: string,
+  ) => enqueue({}, name, data, jobId),
+}));
+vi.mock("@cockpit-chess/env/shared", () => ({ env: { DATABASE_POOL_MAX: 3 } }));
 const { chessRunJobId, chessTurnData, wakeHostedMatch } = await import("./chess-human");
 const baseline = { name: "Random", model: "random", protocol: "random" as const };
 const match = () => createMatch({ white: baseline, black: baseline, rules: {} }, "hosted");
@@ -20,7 +30,13 @@ const match = () => createMatch({ white: baseline, black: baseline, rules: {} },
 beforeEach(() => {
   enqueue.mockReset().mockResolvedValue({});
   mockReset(db);
-  db.chessMatch.findUnique.mockResolvedValue({ source: "hosted", status: "queued" } as never);
+  db.chessMatch.findUnique.mockResolvedValue({ ownerId: "owner" } as never);
+  db.chessMatch.findFirst.mockResolvedValue({ ownerId: "owner", slug: "game" } as never);
+  db.user.findUnique.mockResolvedValue({ deletionRequestedAt: null, banned: false } as never);
+  db.$transaction.mockImplementation(async (run) => {
+    if (typeof run !== "function") throw new Error("Expected publication transaction");
+    return run(db);
+  });
 });
 
 describe("hosted human persistence helpers", () => {
@@ -82,6 +98,9 @@ describe("hosted human persistence helpers", () => {
       { source: "hosted", status: "stopped" },
     ]) {
       db.chessMatch.findUnique.mockResolvedValue(current as never);
+      // The projected transaction query returns no row unless the current
+      // source/status still satisfy its hosted+queued predicate.
+      db.chessMatch.findFirst.mockResolvedValue(null);
       await wakeHostedMatch("id", match());
     }
     expect(enqueue).not.toHaveBeenCalled();

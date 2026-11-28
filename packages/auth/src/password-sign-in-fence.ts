@@ -2,7 +2,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import prisma from "@cockpit-chess/db";
 import * as z from "zod";
+import { ownerActiveInTransaction } from "./account-deletion.js";
+import { lockCliCredentials } from "./device-redemption-lock.js";
 import { DEVICE_TOKEN_PATH } from "./device-session-origin.js";
+import { withLockSlot } from "./lock-slots.js";
 import { assertPasswordWriteLocked, passwordWriteLockHeld } from "./password-write-lock.js";
 import { readBodyFields } from "./request-body-field.js";
 
@@ -223,6 +226,31 @@ function parentSession(context: HookContext): { id: string } | null {
   return context?.context?.session?.session ?? null;
 }
 
+// Server-only binding survives Better Auth's before-hook object spreads but
+// cannot be supplied by a JSON caller. The adapter consumes it before Prisma.
+export const impersonationSessionBinding = Symbol("impersonation-session-binding");
+
+export function bindImpersonationSession<
+  T extends { userId: string; impersonatedBy?: string | null },
+>(session: T, context: HookContext) {
+  if (!session.impersonatedBy) return session;
+  const parent = context?.context?.session?.session;
+  if (
+    context?.path !== "/admin/impersonate-user" ||
+    !parent ||
+    parent.userId !== session.impersonatedBy
+  )
+    throw refused();
+  return {
+    ...session,
+    [impersonationSessionBinding]: {
+      actorId: session.impersonatedBy,
+      parentSessionId: parent.id,
+      targetUserId: session.userId,
+    },
+  };
+}
+
 /**
  * A session derived from a signed-in one is valid only while that parent row
  * exists: a reset deletes every session before it writes the new hash.
@@ -418,14 +446,35 @@ export async function recordTwoFactorChallenge(verification: {
   if (!fence?.userId || verification.value !== fence.userId) return;
   if (!TWO_FACTOR_CHALLENGE.test(verification.identifier)) return;
   const identifier = challengeFenceIdentifier(verification.identifier, fence.credential);
-  await prisma.verification.create({
-    data: {
-      identifier,
-      value: fence.userId,
-      expiresAt: verification.expiresAt,
-      createdAt: fence.authenticatedAt,
-    },
-    select: { id: true },
-  });
+  const userId = fence.userId;
+  await withLockSlot(() =>
+    prisma.$transaction(
+      async (tx) => {
+        await lockCliCredentials(userId, tx);
+        if (!(await ownerActiveInTransaction(tx, userId))) throw refused();
+        // A reset or deletion may have consumed the challenge before its
+        // asynchronous after-hook resumed. Never recreate an orphan proof.
+        const challenge = await tx.verification.findFirst({
+          where: {
+            identifier: verification.identifier,
+            value: userId,
+            expiresAt: { gt: new Date() },
+          },
+          select: { id: true },
+        });
+        if (!challenge) throw refused();
+        await tx.verification.create({
+          data: {
+            identifier,
+            value: userId,
+            expiresAt: verification.expiresAt,
+            createdAt: fence.authenticatedAt,
+          },
+          select: { id: true },
+        });
+      },
+      { isolationLevel: "ReadCommitted", timeout: 20_000 },
+    ),
+  );
   fence.verificationIdentifiers.push(verification.identifier, identifier);
 }

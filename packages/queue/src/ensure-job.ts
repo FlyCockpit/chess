@@ -47,7 +47,7 @@ export async function ensureRunnableJob<Data>(
   data: Data,
   jobId: string,
   /** BullMQ priority for a newly added job (a retried job keeps the one it was added with). */
-  options: { priority?: number } = {},
+  options: { priority?: number; beforeWrite?: () => void } = {},
 ): Promise<RunnableJob> {
   let lastState = "missing";
 
@@ -56,7 +56,14 @@ export async function ensureRunnableJob<Data>(
     // retention bookkeeping wins the race after getJob(). Classify that job in
     // the same loop instead of assuming an add result is newly waiting.
     const existing = await queue.getJob(jobId);
-    const candidate = existing ?? (await queue.add(name, data, { ...options, jobId }));
+    let candidate = existing;
+    if (!candidate) {
+      options.beforeWrite?.();
+      candidate = await queue.add(name, data, {
+        ...(options.priority === undefined ? {} : { priority: options.priority }),
+        jobId,
+      });
+    }
     const state = await candidate.getState();
     lastState = state;
 
@@ -73,7 +80,9 @@ export async function ensureRunnableJob<Data>(
       // Before the retry, never after: a job moved back to waiting can be
       // picked up by a worker on the next tick, and updating its data then
       // would race the very handler that is reading it.
+      options.beforeWrite?.();
       await candidate.updateData(data);
+      options.beforeWrite?.();
       await candidate.retry(state);
       return candidate;
     } catch {}

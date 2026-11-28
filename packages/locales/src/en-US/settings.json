@@ -15,9 +15,8 @@
   },
   "security": {
     "deleteAccountTitle": "Delete account",
-    "deleteAccountUnavailable": "Account deletion is not available yet. Once enabled, it will require a fresh sign-in and confirmation.",
-    "deleteAccountPlan": "The plan is to remove private matches and retain published replays with moves, model names, settings and results. Personal text will be removed and replays will get a new neutral URL.",
-    "deleteAccountProviderKey": "Revoke any connected provider key with the provider as well.",
+    "deleteAccountPlan": "Private matches are deleted. Published replays keep legal moves, approved model identifiers, settings and results, with personal text removed and new neutral URLs. Official participation remains counted.",
+    "deleteAccountProviderKey": "We remove the connected key from our service. To revoke it at OpenRouter, also delete it in OpenRouter’s key settings. Files and keys on your own runner stay on your device.",
     "deleteAccountAction": "Delete account",
     "passwordTitle": "Password",
     "passwordDescription": "Change the password you use to sign in.",
@@ -51,7 +50,26 @@
     "disable": "Disable 2FA",
     "disabling": "Disabling…",
     "couldNotDisable": "Couldn't disable 2FA. Try again.",
-    "disabledSuccess": "Two-factor authentication disabled"
+    "disabledSuccess": "Two-factor authentication disabled",
+    "deleteAccountDescription": "Deleting your account signs you out immediately. Cleanup continues safely in the background.",
+    "deleteAccountBackups": "Existing email deliveries, operational logs and encrypted backups follow their retention periods. A restricted deletion register prevents an old backup from restoring your account.",
+    "deleteAccountAdmin": "Transfer your administrator role to another administrator before deleting your account.",
+    "deleteAccountSessionCheck": "Verify your current sign-in before requesting deletion. If the check fails, try again when you are connected.",
+    "deleteAccountReauth": "Sign out and sign in again using your password or identity provider, then return here within five minutes. You will still need to confirm deletion.",
+    "deleteAccountSignInAgain": "Sign out and sign in again",
+    "deleteAccountSigningOut": "Signing out…",
+    "deleteAccountRequesting": "Requesting deletion…",
+    "deleteAccountConfirmation": "This cannot be undone. Acceptance blocks account access and signs out every device while cleanup runs. Private matches are deleted; published replays are retained without personal text and official participation stays counted. Acceptance means pending cleanup, not completed erasure.",
+    "deleteAccountType": "Type DELETE to request account deletion",
+    "deleteAccountCopy": "Copy deletion confirmation",
+    "deleteAccountAccepted": "Your deletion request was accepted and your sessions were revoked. Cleanup is pending and retries safely until live resources have stopped and account data is removed. Published replays are retained without personal text; official participation remains counted. This message is an acknowledgement, not confirmation of completed erasure. You do not need to sign in again to finish cleanup.",
+    "deleteAccountErrors": {
+      "unavailable": "Account access is blocked while deletion cleanup retries. Contact the operator if you need help.",
+      "rateLimit": "Too many deletion attempts. Wait ten minutes, then try again.",
+      "unknown": "We could not confirm the request. Try again if you are still signed in. If you were signed out after confirming, cleanup may already be pending.",
+      "notReady": "Account deletion cannot be started right now. Try again later or contact the operator."
+    },
+    "deleteAccountUnconfirmed": "Your sign-in ended before we could confirm the deletion response. If the request was accepted, access is blocked and cleanup continues in the background. This message does not confirm completed erasure. Contact the operator if you need help confirming your request."
   },
   "navCli": "Command line",
   "cli": {
